@@ -149,7 +149,7 @@ static float act_gate_(float g, float u, int gptoss, float lim, float alpha) {
 }
 
 static void moe(float *o, const float *x, int n, int d, int E, int K, int H,
-                const float *router, const float *w1, const float *w3,
+                const float *router, const float *rb, const float *w1, const float *w3,
                 const float *w2, const float *b1, const float *b2,
                 const float *b3, int sh, int shh, const float *sw1,
                 const float *sw3, const float *sw2, const float *sg,
@@ -162,7 +162,8 @@ static void moe(float *o, const float *x, int n, int d, int E, int K, int H,
     float *hh = (float *)malloc(sizeof(float) * H);
     for (int i = 0; i < n; i++) {
         const float *xi = x + (size_t)i * d;
-        for (int e = 0; e < E; e++) lg[e] = dot_(xi, router + (size_t)e * d, d);
+        for (int e = 0; e < E; e++)
+            lg[e] = dot_(xi, router + (size_t)e * d, d) + (rb ? rb[e] : 0.f);
         if (routing == 1) {
             for (int k = 0; k < K; k++) {
                 int best = -1; float bv = -INFINITY;
@@ -385,6 +386,8 @@ def emit_c(ir, info, params):
             elif k == "MoE":
                 for nm in ("router", "w1", "w3", "w2"):
                     order.append((key(i, j, nm), pre + nm))
+                if a["router_bias"]:
+                    order.append((key(i, j, "router.bias"), pre + "router.bias"))
                 if a["expert_bias"]:
                     for nm in ("b1", "b3", "b2"):
                         order.append((key(i, j, nm), pre + nm))
@@ -473,7 +476,9 @@ def emit_c(ir, info, params):
                 sh = a["shared"]
                 lb.append(
                     f" moe({dst}, {src[0]}, n, D, {E}, {K}, {hid},"
-                    f" P({key(i,j,'router')}), P({key(i,j,'w1')}),"
+                    f" P({key(i,j,'router')}),"
+                    f" {'P(' + key(i,j,'router.bias') + ')' if a['router_bias'] else 'NULL'},"
+                    f" P({key(i,j,'w1')}),"
                     f" P({key(i,j,'w3')}), P({key(i,j,'w2')}),"
                     f" {'P(' + key(i,j,'b1') + ')' if a['expert_bias'] else 'NULL'},"
                     f" {'P(' + key(i,j,'b2') + ')' if a['expert_bias'] else 'NULL'},"

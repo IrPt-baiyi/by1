@@ -51,6 +51,19 @@
 
 **验收**：`by1c.py qwen3-next-shaped.by1` 和 `by1c.py gpt-oss-shaped.by1` 都 PASS。
 
+**进度**：已加 MoE / sink / attn_bias / YaRN / partial。
+`llama-shaped` 2.241e-07 ✅、`mixtral-shaped` 1.744e-07 ✅、
+`gpt-oss-shaped` **3.546e-03 ❌**（从 0.758 降到这里，还差一个数量级到 1e-4）。
+`qwen3-next-shaped` 还没动（缺 GDN 的 delta 规则与 conv 状态）。
+
+**gpt-oss 剩下的 3.5e-3 嫌疑**（按可能性排）：
+1. YaRN 里 `lo/hi` 用 float32 的 `logf` 算，而 numpy 用 float64 —— 会移动 ramp 的过渡带
+2. `powf` 在 base=150000 这种量级上的精度
+3. sink 在滑窗层与全量层上的交互（gpt-oss 是交替的，shaped 模型里 window=None，所以这条应该不成立）
+
+**注意**：`by1c.py` 里那次替换区间跨过了刚插入的 `moe` 函数，把它删了 —— 改这种大文件时，
+替换的**起止锚点之间**包含了什么，要先看清楚。
+
 **预计**：一个工作段。风险中等——今晚已经两次堆溢出，都是"中间层比 d_model 宽"
 这一类；每加一个 op 都要问一遍"这块缓冲够不够"。
 
