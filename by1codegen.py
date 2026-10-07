@@ -306,7 +306,10 @@ def compile_ir(info: Dict[str, Any]) -> Dict[str, Any]:
                 "k_heads": nk, "v_heads": nv, "k_dim": dk, "v_dim": dv,
                 "conv_kernel": int(_num(attrs.get("conv_kernel"), 4)),
                 "act": str(attrs.get("act", "silu")),
-                "norm_eps": float(_num(attrs.get("norm_eps"), 1e-6)),
+                # 跟着模型的 rms_norm_eps 走。之前这里写死 1e-6，而 RMSNorm 那边是 1e-5 ——
+                # 同一个模型里两个 eps，隔离测试因为显式传了值所以没暴露。
+                "norm_eps": float(_num(attrs.get("norm_eps"),
+                                       _num(hp.get("rms_eps"), 1e-5))),
                 "l2_eps": float(_num(attrs.get("l2_eps"), 1e-6)),
                 "out_dim": int(_num(attrs.get("out_dim")) or nv * dv)}}
         return None
