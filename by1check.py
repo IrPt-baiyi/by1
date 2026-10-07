@@ -1336,6 +1336,103 @@ def check(path: str) -> Tuple[Report, dict]:
             out[lt] = parse_rope(v)
         return out or None
 
+    def gen_rope_scaling():
+        """官方 config 里那份**摊平的** rope_scaling（旧格式）：
+        从 position 里带缩放的那个键上取。"""
+        if pb is None:
+            return None
+        for k, v in pb.assigns.items():
+            d = parse_rope(v)
+            if d.get("factor") is None:
+                continue
+            return {"factor": _coerce(d.get("factor")),
+                    "high_freq_factor": _coerce(d.get("high_freq_factor",
+                                                     d.get("high_freq", 4))),
+                    "low_freq_factor": _coerce(d.get("low_freq_factor",
+                                                    d.get("low_freq", 1))),
+                    "original_max_position_embeddings":
+                        _coerce(d.get("original_max_position_embeddings",
+                                      d.get("original", 4096))),
+                    "rope_type": d.get("rope_type", "default")}
+        return None
+
+    def gen_attention_other_setting():
+        """滑窗那一套的注意力参数 —— 和全量层不同（Step-3.7 是 96 vs 64 头）。"""
+        for (_s, m, a, _k, _t) in layer_seq:
+            win = str(a.get("window", "")).strip().lower()
+            if win in ("", "none", "null", "0"):
+                continue
+            hd = int(float(a.get("head_dim") or 0))
+            return {"attention_type": "sliding_attention",
+                    "head_dim": hd,
+                    "num_attention_groups": int(float(a.get("kv") or 0)),
+                    "num_attention_heads": int(float(a.get("q") or 0)),
+                    "true_head_dim": hd}
+        return None
+
+    def gen_by_layer(key):
+        """逐层字典：{层号字符串: 值}。官方 config 的 moe_num_experts_by_layer 就是它。
+        **只有这个键存在的层才进字典** —— 稠密层不该出现。"""
+        out = {}
+        for li, (_s, _m, a, _k, atts) in enumerate(layer_seq):
+            if key.startswith("attach."):
+                sub, v = key[7:], ""
+                for am in atts:
+                    ma = mechs.get(am)
+                    if ma is not None:
+                        # **先看这一层有没有逐层覆盖** —— 只看声明值的话
+                        # Step-3.7 的 42 层会全报 288。
+                        v = overrides.get((_s, li, am), {}).get(
+                            sub, ma.assigns.get(sub, ""))
+                        break
+                if v in ("", None):
+                    continue
+            else:
+                v = a.get(key, "")
+                if v in ("", None):
+                    continue
+            out[str(li)] = _coerce(v)
+        return out or None
+
+    def gen_per_layer_rope(key):
+        """逐层的 rope 参数。position 是按**层类型**声明的，
+        要先经 layer_types 映射到每一层 —— 所以不能直接用 per_layer()。"""
+        lts = gen_layer_types() or []
+        rbt = gen_rope_parameters() or {}
+        return [_coerce((rbt.get(lt) or {}).get(key, "")) for lt in lts]
+
+    def gen_join(inner, sep):
+        vals = resolve_field(inner)
+        if not isinstance(vals, list):
+            return vals
+        return sep.join(str(x) for x in vals)
+
+    def gen_pad(inner, n, mode="zero"):
+        vals = resolve_field(inner)
+        if not isinstance(vals, list):
+            return vals
+        # 官方有些逐层数组比层数长（Step-3.7 是 48、层数是 45）。
+        # **补什么，两种都有，而且长得很像**：
+        #   layer_types / partial_rotary_factors / rope_theta  重复最后一个
+        #   swiglu_limits / swiglu_limits_shared               补 0
+        # 猜错的话数组长度对、值也对，只有尾巴不同。
+        if len(vals) >= n:
+            return vals[:n]
+        if mode == "cycle" and vals:
+            # **按周期续**：官方 Step-3.7 的 layer_types 是 48 长、模型是 45 层，
+            # 45/46/47 接着 4 周期的第 1/2/3 项（都是滑窗）。
+            # 既不是"重复最后一个"（那会给出全量层），也不是补零。
+            per = None
+            for cand in range(1, len(vals) // 2 + 1):
+                if all(vals[i] == vals[i % cand] for i in range(len(vals))):
+                    per = cand
+                    break
+            if per:
+                return vals + [vals[i % per] for i in range(len(vals), n)]
+            return vals + [vals[-1]] * (n - len(vals))
+        fill = vals[-1] if (mode == "last" and vals) else 0
+        return vals + [fill] * (n - len(vals))
+
     def lookup_attr(mech, sel, attr):
         _n, conds = parse_state_key(f"{mech}[{sel}]" if sel else mech)
         for (_s, m, a, _k, _t) in layer_seq:
@@ -1366,6 +1463,50 @@ def check(path: str) -> Tuple[Report, dict]:
                 out.append(_coerce(a.get(key, "")))
         return out
 
+    def gen_per_layer_d(key, default):
+        """per_layer(attach.swiglu_limit, 0) —— 属性**缺失**时给默认值。
+
+        不能复用 gen_per_layer：它在属性缺失时会退回**机制类型名**
+        （'MoE'/'FFN'），于是那个回退值看起来"非空"，默认值永远用不上，
+        逐层数组里就混进了字符串。这里查的是属性本身有没有。
+        """
+        out = []
+        for li, (_s, _m, a, _k, atts) in enumerate(layer_seq):
+            if key.startswith("attach."):
+                sub, v = key[7:], None
+                for am in atts:
+                    ma = mechs.get(am)
+                    if ma is not None:
+                        # 逐层覆盖优先于声明值
+                        v = overrides.get((_s, li, am), {}).get(
+                            sub, ma.assigns.get(sub))
+                        break
+            else:
+                v = a.get(key)
+            out.append(_coerce(v) if v not in (None, "") else default)
+        return out
+
+    def gen_sliding_window():
+        """滑窗宽度 —— 从**开了窗的那些层**取，不是第 0 层（第 0 层可能是全量）。"""
+        for (_s, _m, a, _k, _t) in layer_seq:
+            w = str(a.get("window", "")).strip().lower()
+            if w not in ("", "none", "null", "0"):
+                return int(float(w))
+        return None
+
+    def gen_rope_parameters_flat():
+        """官方**同时**有两份：摊平的 rope_scaling，和带逐层 rope_theta 的
+        rope_parameters。后者就是前者加一个数组。"""
+        sc = gen_rope_scaling()
+        if sc is None:
+            return None
+        out = dict(sc)
+        # 内嵌的 rope_theta 也要和顶层那份**一样**按周期补齐（48），
+        # 否则两份不一致。
+        out["rope_theta"] = gen_pad("per_layer_rope(rope_theta)", 48,
+                                    "cycle")
+        return out
+
     def resolve_field(val):
         v = val.strip()
         if len(v) >= 2 and v.startswith('"') and v.endswith('"'):
@@ -1380,6 +1521,35 @@ def check(path: str) -> Tuple[Report, dict]:
             return gen_layer_types()
         if v in ("position", "rope_parameters"):
             return gen_rope_parameters()
+        if v == "rope_scaling":
+            return gen_rope_scaling()
+        if v == "rope_parameters_flat":
+            return gen_rope_parameters_flat()
+        if v == "sliding_window":
+            return gen_sliding_window()
+        if v == "attention_other_setting":
+            return gen_attention_other_setting()
+        m = re.match(r"^by_layer\(\s*([\w.]+)\s*\)$", v)
+        if m:
+            return gen_by_layer(m.group(1))
+        m = re.match(r'^per_layer_rope\(\s*([\w.]+)\s*\)$', v)
+        if m:
+            return gen_per_layer_rope(m.group(1))
+        m = re.match(r'^join\(\s*(.+?)\s*,\s*"(.*?)"\s*\)$', v)
+        if m:
+            return gen_join(m.group(1), m.group(2))
+        m = re.match(r"^per_layer\(\s*([\w.]+)\s*,\s*([\w.-]+)\s*\)$", v)
+        if m:
+            return gen_per_layer_d(m.group(1), _coerce(m.group(2)))
+        m = re.match(r"^pad_cycle\(\s*(.+?)\s*,\s*(\d+)\s*\)$", v)
+        if m:
+            return gen_pad(m.group(1), int(m.group(2)), "cycle")
+        m = re.match(r"^pad_last\(\s*(.+?)\s*,\s*(\d+)\s*\)$", v)
+        if m:
+            return gen_pad(m.group(1), int(m.group(2)), "last")
+        m = re.match(r"^pad\(\s*(.+?)\s*,\s*(\d+)\s*\)$", v)
+        if m:
+            return gen_pad(m.group(1), int(m.group(2)))
         m = re.match(r"^per_layer\(\s*([\w.]+)\s*\)$", v)
         if m:
             return gen_per_layer(m.group(1))

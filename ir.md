@@ -456,3 +456,58 @@ python by1rope.py
 
 **教训：「契约对了」不等于「生成的对了」。** 这两条路必须都能被检查到 ——
 而当时只有前一条有检查。
+
+---
+
+## 19. config 生成器：从 4 种表达式扩到 13 种（Step-3.7 压出来的）
+
+**Step-3.7 的 config 逐字段对拍跑不起来** —— 它的字段超出了生成器的能力。
+补齐之后：
+
+```
+step-3.7-flash   一致 47   值不同 0   by1 多出 0   官方多出 2
+                 （多出的两个永远是 architectures / transformers_version 这类 HF 元数据）
+```
+
+新增的表达式：
+
+| 写法 | 干什么 |
+|---|---|
+| `by_layer(attach.experts)` | 逐层字典 `{"3": 255, "4": 266, ...}` |
+| `join(indices_where(...), ",")` | 拼成字符串（`moe_layers_enum`） |
+| `per_layer(attach.x, 0)` | 属性**缺失**时给默认值 |
+| `per_layer_rope(rope_theta)` | 逐层 rope 参数（position 是按层类型声明的，要先映射） |
+| `sliding_window` | 从**开了窗的层**取（第 0 层可能是全量） |
+| `rope_scaling` / `rope_parameters_flat` | 摊平 / 带逐层数组的两份 |
+| `attention_other_setting` | 滑窗那一套的注意力参数 |
+| `pad` / `pad_last` / `pad_cycle` | 补齐到指定长度 |
+
+### 补齐规则**有三种，而且长得很像**
+
+官方那些逐层数组长度是 48、模型是 45 层（`12 × 4` vs `11 × 4 + 1`）。
+多出来的 3 个位置补什么，三种规则各有实例：
+
+```
+layer_types             45/46/47 → sliding_attention   按 4 周期续
+partial_rotary_factors           → 1.0
+rope_theta                       → 10000.0
+swiglu_limits                    → 0.0, 0.0, 0.0       补零
+```
+
+我一开始全用了 `pad_last`（重复最后一个）——**数组长度对、大部分值也对，
+只有尾巴三项不同**。又一个"看着对"。
+
+### 顺带修的一处
+
+`per_layer` 在属性缺失时会退回**机制类型名**（`'MoE'`/`'FFN'`），
+于是逐层数组里混进了字符串。新的 `per_layer(x, default)` 查的是属性本身有没有。
+
+---
+
+## 20. 共享专家原来没走 `_swiglu`
+
+`by1codegen` 里共享专家那条路是裸的 `F.silu(sw1(x)) * sw3(x)` ——
+**风格（silu / gptoss）和夹取值对它都不生效**。
+
+Step-3.7 的 `swiglu_limits_shared`（路由专家夹 7、共享专家夹 16）逼出了这个。
+现在共享专家也走 `_swiglu`，用自己的夹取值。

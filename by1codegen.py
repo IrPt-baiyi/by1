@@ -58,7 +58,7 @@ ATTRS = {
             "layer_kind", "structural",
             # Block 1.2：MoE 侧的机制属性
             "routing", "act", "swiglu_limit", "alpha", "expert_bias",
-            "shared_gate",
+            "shared_gate", "swiglu_limit_shared",
             # 分组路由（noaux_tc）的结构属性：只决定契约的等价类划分，
             # 计算还没实现 —— 但声明出来不该报错
             "n_group", "topk_group"},
@@ -364,6 +364,9 @@ def compile_ir(info: Dict[str, Any]) -> Dict[str, Any]:
                             .lower() or "softmax_topk"),
                 "act": str(attrs.get("act", "silu")),
                 "limit": _num(attrs.get("swiglu_limit")),
+                # 共享专家的夹取值是**独立**的：Step-3.7 的路由专家夹 7、
+                # 共享专家夹 16。原来共享专家那条路是裸的 F.silu，夹取对它不生效。
+                "limit_shared": _num(attrs.get("swiglu_limit_shared")),
                 "alpha": float(_num(attrs.get("alpha"), 1.702)),
                 "expert_bias": _flag(attrs.get("expert_bias")),
                 "shared_gate": _flag(attrs.get("shared_gate")),
@@ -787,6 +790,7 @@ class MLP(nn.Module):
         self.gate = a["gate"]
         self.style = a.get("act", "silu")
         self.limit = a.get("limit")
+        self.limit_shared = a.get("limit_shared")
         self.alpha = a.get("alpha", 1.702)
         self.w1 = nn.Linear(d, a["hidden"], bias=False)
         self.w2 = nn.Linear(a["hidden"], d, bias=False)
@@ -888,7 +892,10 @@ class MoE(nn.Module):
                 ye = ye + self.b2[e]
             out[rows] += topv[rows][hit[rows]].unsqueeze(-1) * ye
         if self.n_shared:
-            se = self.sw2(F.silu(self.sw1(xf)) * self.sw3(xf))
+            # 共享专家也要走 _swiglu —— 它有自己的夹取值，而且风格（silu / gptoss）
+            # 必须和路由专家一致。原来这里是裸的 F.silu。
+            se = self.sw2(_swiglu(self.sw1(xf), self.sw3(xf), self.style,
+                                  self.limit_shared, self.alpha))
             if getattr(self, "shared_gate", None) is not None:
                 se = se * torch.sigmoid(self.shared_gate(xf))
             out = out + se
