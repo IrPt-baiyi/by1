@@ -16,3 +16,5 @@ hello_model.py
 llamacpp/
 
 cgen/
+
+_sh/

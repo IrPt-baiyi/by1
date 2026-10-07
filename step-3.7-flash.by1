@@ -1,0 +1,157 @@
+# ── step-3.7-flash.by1 ────────────────────────────────────────────────
+# StepFun Step-3.7-Flash 的社区微调版（180B，LynnStyle / GLM52-SFT / GPT55-RL）。
+#
+# 这个案例和前几个不同：**llama.cpp 可能已经有它了**（src/models/step35.cpp，551 行，
+# 支持 MoE 专家、路由器偏置、MTP 的 NextN 张量）。所以它压的不是"有没有"，
+# 而是"够不够"。
+#
+# 事实来源：
+#   refs/nerkyor_Step-3.7-...config.json   官方 config
+#   refs/step37.index.json                 753 个权重的名字
+#   以及 5 个分片的头（形状）
+#
+# ⚠️ 这份文件里标了 ⚠️ 的地方，是**当前语言说不出来的**。
+
+model Step-3.7-Flash-180B-LynnStyle {
+  arch    step3p5
+  ctx     262144
+
+  hparams {
+    d_model = 4096
+    n_layer = 45
+    vocab   = 128896
+    rms_eps = 1e-05
+  }
+
+  # 全量层 64 个头、滑窗层 96 个头 —— 同一族、不同结构属性。
+  # 实测：层 3（滑窗）q_proj = [12288, 4096] → 96 × 128
+  mech Attn : Attention {
+    heads      = { kv = 8, head_dim = 128 }
+    qk_norm    = true
+    head_gate  = per_head          # 实测：每层都有 self_attn.g_proj.weight
+    structural = [ q, head_dim, qk_norm, head_gate, out_dim ]
+  }
+
+  # 层 0-2 是稠密
+  mech Dense : FFN {
+    hidden     = 11264
+    layer_kind = dense
+  }
+
+  # 层 3-44 是 MoE：288 专家选 8、sigmoid 路由、带路由器偏置、有共享专家
+  mech MoE : MoE {
+    experts       = 288
+    top_k         = 8
+    hidden        = 1280
+    shared        = 1
+    shared_hidden = 1280
+    router_bias   = true
+    routing       = sigmoid_topk
+    routed_scale  = 3.0
+    layer_kind    = sparse
+    structural    = [ experts, hidden, shared_hidden ]
+  }
+
+  schedule {
+    full  = 1 * Attn(q = 64,  window = none, out_dim = 8192)
+    slide = 3 * Attn(q = 96,  window = 512,  out_dim = 12288)
+    block = full + slide
+  }
+
+  stack main {
+    # 45 层 = 11 × 4 + 1（最后那层又是全量）
+    pattern = 11 * block + 1 * full
+    main[0..2]   >> Dense
+    main[3..44]  >> MoE
+  }
+
+  position {
+    # 实测：rope_theta 是数组 —— 全量层 5e6、滑窗层 1e4
+    #      partial_rotary_factors 也是数组 —— 全量层 0.5、滑窗层 1.0
+    full  = llama3(rope(base = 5000000, pairing = half), factor = 2.0,
+                   original = 131072, high_freq = 32, low_freq = 1,
+                   partial = 0.5)
+    slide = rope(base = 10000, pairing = half, partial = 1.0)
+  }
+
+  # ── 张量契约 ──────────────────────────────────────────────────────
+  # 实测形状（层 3 = 滑窗 + MoE）：
+  #   q_proj [12288,4096]  k/v_proj [1024,4096]  o_proj [4096,12288]
+  #   g_proj [96,4096]     q_norm/k_norm [128]
+  #   moe.gate [255,4096]  moe.gate_proj [255,1280,4096]
+  #   share_expert.gate_proj [1280,4096]
+  tensors {
+    Attn {
+      q_proj.weight : (q * head_dim, d_model)
+      k_proj.weight : (kv * head_dim, d_model)
+      v_proj.weight : (kv * head_dim, d_model)
+      o_proj.weight : (d_model, q * head_dim)
+      g_proj.weight : (q, d_model)
+      q_norm.weight : (head_dim,)
+      k_norm.weight : (head_dim,)
+    }
+    Dense {
+      gate_proj.weight : (hidden, d_model)
+      up_proj.weight   : (hidden, d_model)
+      down_proj.weight : (d_model, hidden)
+    }
+    MoE {
+      gate.weight       : (experts, d_model)
+      router_bias       : (experts,)
+      gate_proj.weight  : (experts, hidden, d_model)
+      up_proj.weight    : (experts, hidden, d_model)
+      down_proj.weight  : (experts, d_model, hidden)
+      share_gate.weight : (shared_hidden, d_model)
+      share_up.weight   : (shared_hidden, d_model)
+      share_down.weight : (d_model, shared_hidden)
+    }
+    layer {
+      input_layernorm.weight           : (d_model,)
+      post_attention_layernorm.weight  : (d_model,)
+    }
+    global {
+      embed.weight      : (vocab, d_model)
+      final_norm.weight : (d_model,)
+      lm_head.weight    : (vocab, d_model)
+    }
+  }
+
+  # ⚠️ 缺口 1：**每一层的专家数都不一样**（实测 249~288，42 个不同值）。
+  #    config 里是 moe_num_experts_by_layer，张量形状里也是真的不同：
+  #      层 3 的 moe.gate_proj.weight 是 [255, 1280, 4096]
+  #      层 4 的是 [266, 1280, 4096]
+  #    现在只能写一个数。这是**逐层属性覆盖**，语言里没有。
+  #    而 llama.cpp 的 step35.cpp 用的是**一个** n_expert —— 它多半也吃不下这个。
+
+  # ⚠️ 缺口 2：`swiglu_limits` 是逐层数组（只有 43/44 层是 7，共享专家是 16）。
+  #    同样是逐层覆盖。
+
+  # ⚠️ 缺口 3：`num_nextn_predict_layers = 3` —— MTP 头（NextN）。
+  #    llama.cpp 有对应的张量类型，但 by1 里还没有"额外的预测头"这个概念。
+
+  # ⚠️ 缺口 4：`rope_type = "llama3"` —— Llama-3 式频率缩放（high/low_freq_factor），
+  #    和 YaRN 不是一回事。我这里有 yarn(...) 的包装，没有 llama3(...) 的。
+
+  # ⚠️ 缺口 5：`step37_dynamic_prune_plan` —— 这个版本是按层剪枝过的。
+  #    "哪些专家被剪掉了"属于**权重**，不属于架构，但它改变了张量形状。
+
+  emit {
+    train -> torch.module {
+      name        = "model.layers.{i}.{scope}{physical}"
+      global_name = "{physical}"
+      scope { Attn = self_attn., Dense = mlp., MoE = moe., layer = "", global = "" }
+      rename {
+        gate.weight       = gate.weight,
+        router_bias       = router_bias,
+        gate_proj.weight  = gate_proj.weight,
+        up_proj.weight    = up_proj.weight,
+        down_proj.weight  = down_proj.weight,
+        share_gate.weight = share_expert.gate_proj.weight,
+        share_up.weight   = share_expert.up_proj.weight,
+        share_down.weight = share_expert.down_proj.weight,
+        embed.weight      = model.embed_tokens.weight,
+        final_norm.weight = model.norm.weight
+      }
+    }
+  }
+}
