@@ -1345,15 +1345,27 @@ def check(path: str) -> Tuple[Report, dict]:
             d = parse_rope(v)
             if d.get("factor") is None:
                 continue
-            return {"factor": _coerce(d.get("factor")),
-                    "high_freq_factor": _coerce(d.get("high_freq_factor",
-                                                     d.get("high_freq", 4))),
-                    "low_freq_factor": _coerce(d.get("low_freq_factor",
-                                                    d.get("low_freq", 1))),
-                    "original_max_position_embeddings":
-                        _coerce(d.get("original_max_position_embeddings",
-                                      d.get("original", 4096))),
-                    "rope_type": d.get("rope_type", "default")}
+            # **两种缩放的 config 键完全不同**，不能共用一份模板：
+            #   yarn    beta_fast / beta_slow / factor / truncate
+            #   llama3  factor / high_freq_factor / low_freq_factor
+            # 共同项只有 original_max_position_embeddings 和 rope_type。
+            ty = str(d.get("rope_type") or "default").strip().lower()
+            orig = _coerce(d.get("original_max_position_embeddings",
+                                 d.get("original", 4096)))
+            if ty == "llama3":
+                return {"factor": _coerce(d.get("factor")),
+                        "high_freq_factor": _coerce(
+                            d.get("high_freq_factor", d.get("high_freq", 4))),
+                        "low_freq_factor": _coerce(
+                            d.get("low_freq_factor", d.get("low_freq", 1))),
+                        "original_max_position_embeddings": orig,
+                        "rope_type": ty}
+            return {"beta_fast": _coerce(d.get("beta_fast", 32)),
+                    "beta_slow": _coerce(d.get("beta_slow", 1)),
+                    "factor": _coerce(d.get("factor")),
+                    "original_max_position_embeddings": orig,
+                    "rope_type": ty,
+                    "truncate": bool(d.get("truncate", True))}
         return None
 
     def gen_attention_other_setting():
@@ -1517,6 +1529,16 @@ def check(path: str) -> Tuple[Report, dict]:
             return None
         if len(v) >= 2 and v.startswith("[") and v.endswith("]"):
             return [_coerce(x) for x in split_top(v[1:-1])]
+        if len(v) >= 2 and v.startswith("{") and v.endswith("}"):
+            # 嵌套字面量，例如 quantization_config。
+            # 值是 "a": b, "c": d 的形式（键必须带引号，值是 _coerce 处理）。
+            out = {}
+            for item in split_top(v[1:-1]):
+                if ":" not in item:
+                    continue
+                k, val = item.split(":", 1)
+                out[k.strip().strip('"')] = resolve_field(val.strip())
+            return out
         if v in ("schedule", "layer_types"):
             return gen_layer_types()
         if v in ("position", "rope_parameters"):
@@ -1527,6 +1549,25 @@ def check(path: str) -> Tuple[Report, dict]:
             return gen_rope_parameters_flat()
         if v == "sliding_window":
             return gen_sliding_window()
+        if v == "rope_theta":
+            # 全局的 rope base —— 有些模型的 Attention 机制里没写，
+            # 只在 position 里声明了。
+            for _v in (pb.assigns.values() if pb else []):
+                _d = parse_rope(_v)
+                # position 里写的是 rope(base = N)，键叫 base
+                if _d.get("base") is not None:
+                    return _coerce(_d["base"])
+                if _d.get("rope_theta") is not None:
+                    return _coerce(_d["rope_theta"])
+            return None
+        if v == "initial_context_length":
+            for _v in (pb.assigns.values() if pb else []):
+                _d = parse_rope(_v)
+                if _d.get("original_max_position_embeddings") is not None:
+                    return _coerce(_d["original_max_position_embeddings"])
+                if _d.get("original") is not None:
+                    return _coerce(_d["original"])
+            return None
         if v == "attention_other_setting":
             return gen_attention_other_setting()
         m = re.match(r"^by_layer\(\s*([\w.]+)\s*\)$", v)

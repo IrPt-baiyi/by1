@@ -511,3 +511,37 @@ swiglu_limits                    → 0.0, 0.0, 0.0       补零
 
 Step-3.7 的 `swiglu_limits_shared`（路由专家夹 7、共享专家夹 16）逼出了这个。
 现在共享专家也走 `_swiglu`，用自己的夹取值。
+
+---
+
+## 21. gpt-oss-120b 的 config —— 最后一个"跳过"被补上
+
+它的 `field` 映射从来没写过，验证器一直在打"跳过"。补上之后 **30/30、0 不同**。
+
+**六个真实模型的 config 全部通了：**
+
+| 模型 | 一致 | 值不同 | by1 多出 | 官方多出 |
+|---|---|---|---|---|
+| gemma-4-31b | 36 | 0 | 0 | 0 |
+| gpt-oss-120b | 30 | 0 | 0 | 2 |
+| laguna-xs-2.1 | 35 | 0 | 0 | 2 |
+| ling-3.0-tiny | 72 | 0 | 0 | 3 |
+| instella-3b | 21 | 0 | 0 | 3 |
+| step-3.7-flash | 47 | 0 | 0 | 2 |
+| **合计** | **241** | **0** | **0** | 12 |
+
+那 12 个"官方多出"永远是 `architectures` / `auto_map` / `transformers_version`
+这类 **HF 元数据** —— 它们描述的是"这份权重怎么被加载"，
+不是"这个模型的架构是什么"，本来就不该由架构描述生成。
+
+### 这一轮修的三处
+
+1. **`rope_scaling` 的键随类型变**：YaRN 是
+   `{beta_fast, beta_slow, factor, original_max_position_embeddings, rope_type, truncate}`，
+   llama3 是 `{factor, high_freq_factor, low_freq_factor, ...}` ——
+   **共同项只有两个**。原来共用一份模板，对 YaRN 全错。
+2. **`{...}` 字面量**：`quantization_config` 这种嵌套结构以前解析不了。
+3. **`rope_theta` 要从 `position` 里取**：有些模型的 Attention 机制里没写它。
+
+顺带：gpt-oss-120b 的 `.by1` 里原来**没声明 `rms_eps`**，
+以及 YaRN 少了 `truncate = false` —— 都是这次对拍逼出来的。
