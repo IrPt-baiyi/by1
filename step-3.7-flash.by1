@@ -70,14 +70,22 @@ model Step-3.7-Flash-180B-LynnStyle {
     # 张量形状里也是真的：层 3 的 moe.gate_proj.weight 是 [255,1280,4096]，
     # 层 4 的是 [266,1280,4096]。值按被选中的层顺序分配。
     main[3..44] : MoE.experts = [255, 266, 251, 261, 260, 264, 261, 262, 260, 264, 262, 258, 258, 252, 257, 257, 259, 260, 264, 264, 265, 259, 260, 260, 257, 267, 265, 261, 263, 255, 262, 256, 259, 253, 258, 249, 288, 288, 288, 288, 288, 288]
+
+    # 逐层 swiglu_limit：只有 43/44 层夹 7 —— 官方 config 里
+    # swiglu_limits 的 48 个值中只有这两个非零。
+    # 同一个逐层覆盖语法的**第二个用例**（第一个是专家数）。
+    main[43..44] : MoE.swiglu_limit = [7, 7]
   }
 
   position {
     # 实测：rope_theta 是数组 —— 全量层 5e6、滑窗层 1e4
     #      partial_rotary_factors 也是数组 —— 全量层 0.5、滑窗层 1.0
+    # 参数名跟官方 config 的键一致（high_freq_factor / low_freq_factor），
+    # 这样 config 生成是直通，也不需要第二套名字。
     full  = llama3(rope(base = 5000000, pairing = half), factor = 2.0,
-                   original = 131072, high_freq = 32, low_freq = 1,
-                   partial = 0.5)
+                   original_max_position_embeddings = 131072,
+                   high_freq_factor = 32, low_freq_factor = 1,
+                   partial_rotary_factor = 0.5)
     slide = rope(base = 10000, pairing = half, partial = 1.0)
   }
 

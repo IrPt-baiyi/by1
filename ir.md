@@ -400,3 +400,59 @@ DeepSeek V4.1 同一类。codegen 对它**明确拒绝**，不会按 GDN 生成�
 
 **如果想做，需要的东西是明确的**：一台有 CUDA 的机器，或者 llama.cpp 的
 `bailingmoe3.cpp` 能在本地跑起来当判卷人。
+
+---
+
+## 17. llama3 式 RoPE（Step-3.7 压出来的第三个缺口）—— ✅ 已实现并验证
+
+```
+python by1rope.py
+  逆频率最大绝对差: 5.960e-08   相对 5.960e-08
+  attention_factor: 参考 1.000000   by1 1.000000
+  当成 YaRN 算的话最大绝对差: 1.068e-04  （确实不同，类型区分是必要的）
+  [PASS] llama3 RoPE 与参考一致
+```
+
+**判卷人**：transformers 的 `_compute_llama3_parameters`。
+
+**两个容易混的地方：**
+
+1. **llama3 和 YaRN 都改频率、参数名还重叠**（`factor`、
+   `original_max_position_embeddings`），但改法完全不同：YaRN 调的是 ramp 的
+   起止维，llama3 调的是**波长阈值**。所以 `rope_type` 必须从描述里读出来，
+   不能"有 factor 就是 YaRN"。
+2. **llama3 的 attention_factor 恒为 1.0**（参考实现的注释写着
+   "Unused in this type of RoPE"）。跟着 YaRN 的公式算会多乘一个 1.069 ——
+   位置 0 上看不出来，要靠对拍。
+
+**判卷人抓到的实现错误**：我的 `p0` 漏了 `1.0 /`，第一个频率正好变成倒数
+（1.2725 而参考是 0.7858）。YaRN 分支没漏，因为它后面才取倒数 ——
+我把变量名从 `pos` 改成 `p0` 的时候把语义也带跑了。
+
+新增 `llama3-shaped.by1`：三后端全过（C↔NumPy 5.114e-07、NumPy↔Torch 4.462e-07）。
+
+---
+
+## 18. 逐层覆盖原来只改了契约，没改生成的计算 —— ✅ 已修
+
+**这是今晚最危险的一个 bug，因为它两个检查都能过。**
+
+```
+逐层覆盖 main[3..44] : MoE.experts = [...] 加上之后：
+  by1check 的契约      18 种专家数（255/266/251/…/288）  ✓
+  by1verify 张量对拍   753 声明、728 命中、形状 0 不符    ✓
+  compile_ir 生成的计算 42 层全是 experts=288            ✗ ← 没人看这里
+```
+
+**照这份描述生成出来的模型，每一层都会用 288 个专家 —— 而所有检查都是绿的。**
+
+原因：`overrides` 在 `by1check` 里算出来之后只用在张量契约上，
+没有传给 `compile_ir`；而 `compile_ir` 取挂载机制的属性时用的是**声明值**。
+
+修法：`info` 里带上 `overrides`，`compile_ir` 合并到挂载机制的属性上。
+
+修复后：`compile_ir` 看到 19 种组合，`swiglu_limit` 落在 43/44 层 = 7.0，
+和官方 config 逐项一致。
+
+**教训：「契约对了」不等于「生成的对了」。** 这两条路必须都能被检查到 ——
+而当时只有前一条有检查。

@@ -1529,6 +1529,10 @@ def check(path: str) -> Tuple[Report, dict]:
         "decl_params": decl_params,
         "tens": trows,
         "layers": [(s, m, a) for (s, m, a, k, _t) in layer_seq],
+        # 逐层覆盖要传给下游 —— 否则契约按逐层算、而生成的计算全用默认值，
+        # 那就是一个**看起来对的错模型**：张量检查全过，跑起来每层宽度都一样。
+        "overrides": {"%s|%d|%s" % k: dict(v)
+                      for k, v in overrides.items()},
         "layer_out": layer_out,
         "emit": emit_rules,
         "state": state_src,

@@ -1,0 +1,105 @@
+# ── llama3-shaped.by1 ─────────────────────────────────────────────────
+# llama3 式 RoPE 缩放的最小可跑模型。
+#
+# 存在理由：Step-3.7 的 45 层里混了三种东西（llama3 缩放、逐层专家数、
+# 逐层 swiglu_limit），任何一个出错都分不清是谁。把 llama3 单独拎出来，
+# 让它走完三个后端。
+#
+#   python by1rope.py                    对 transformers 的 _compute_llama3_parameters
+#   python by1exec.py llama3-shaped.by1 --compare
+#   python by1c.py llama3-shaped.by1 --gcc <gcc> --seq 16
+
+model llama3-shaped {
+  arch  llama3_shaped
+  ctx   262144
+
+  hparams {
+    d_model = 256
+    n_layer = 4
+    vocab   = 512
+    rms_eps = 1e-05
+  }
+
+  # 全量层：llama3 缩放 + 部分旋转（0.5）
+  mech Full : Attention {
+    heads       = { q = 4, kv = 2, head_dim = 64 }
+    out_dim     = 256
+    partial     = 0.5
+    structural  = [ q, kv, head_dim, window, out_dim ]
+  }
+
+  # 滑窗层：不缩放、全旋转
+  mech Slide : Attention {
+    heads       = { q = 4, kv = 2, head_dim = 64 }
+    out_dim     = 256
+    window      = 512
+    partial     = 1.0
+    structural  = [ q, kv, head_dim, window, out_dim ]
+  }
+
+  mech MLP_ : FFN { hidden = 512 }
+
+  schedule {
+    full  = 1 * Full
+    slide = 3 * Slide
+    block = full + slide
+  }
+
+  stack main {
+    pattern = 1 * block
+    main[:] >> MLP_
+  }
+
+  # 两种层类型、两套位置策略 —— 这正是 Step-3.7 的结构
+  position {
+    full  = llama3(rope(base = 5000000, pairing = half), factor = 2.0,
+                   original_max_position_embeddings = 131072,
+                   high_freq_factor = 32, low_freq_factor = 1,
+                   partial_rotary_factor = 0.5)
+    slide = rope(base = 10000, pairing = half, partial = 1.0)
+  }
+
+  tensors {
+    Full {
+      q_proj.weight : (q * head_dim, d_model)
+      k_proj.weight : (kv * head_dim, d_model)
+      v_proj.weight : (kv * head_dim, d_model)
+      o_proj.weight : (d_model, out_dim)
+    }
+    Slide {
+      q_proj.weight : (q * head_dim, d_model)
+      k_proj.weight : (kv * head_dim, d_model)
+      v_proj.weight : (kv * head_dim, d_model)
+      o_proj.weight : (d_model, out_dim)
+    }
+    MLP_ {
+      gate_proj.weight : (hidden, d_model)
+      up_proj.weight   : (hidden, d_model)
+      down_proj.weight : (d_model, hidden)
+    }
+    layer {
+      attn_norm.weight : (d_model,)
+      mlp_norm.weight  : (d_model,)
+    }
+    global {
+      embed.weight      : (vocab, d_model)
+      final_norm.weight : (d_model,)
+      lm_head.weight    : (vocab, d_model)
+    }
+  }
+
+  emit {
+    train -> torch.module {
+      name        = "model.layers.{i}.{scope}{physical}"
+      global_name = "{physical}"
+      scope { Full = self_attn., Slide = self_attn., MLP_ = mlp.,
+              layer = "", global = "" }
+      rename {
+        attn_norm.weight = input_layernorm.weight,
+        mlp_norm.weight  = post_attention_layernorm.weight,
+        embed.weight      = model.embed_tokens.weight,
+        final_norm.weight = model.norm.weight
+      }
+    }
+  }
+}

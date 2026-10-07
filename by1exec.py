@@ -57,14 +57,27 @@ def softmax(x, axis=-1):
 
 
 def rope_tables(head_dim, n, base, yarn=None):
+    """和 by1codegen 那份逐字对应。yarn 这个参数其实是「缩放参数」，
+    里面带 type 字段区分 yarn / llama3。"""
     half = head_dim // 2
-    if yarn:
+    if yarn and (yarn.get("type") or "yarn") == "llama3":
+        fac = float(yarn["factor"])
+        hf, lf = float(yarn["high_freq"]), float(yarn["low_freq"])
+        old = float(yarn["original"])
+        p0 = 1.0 / (base ** (np.arange(0, half) / half))
+        wl = 2 * np.pi / p0
+        lo_wl, hi_wl = old / lf, old / hf
+        out = np.where(wl > lo_wl, p0 / fac, p0)
+        smooth = (old / wl - lf) / (hf - lf)
+        inv = np.where((wl >= hi_wl) & (wl <= lo_wl),
+                       (1 - smooth) * out / fac + smooth * out, out)
+    elif yarn:
         fac, orig = yarn["factor"], yarn["original"]
         bf, bs = yarn["beta_fast"], yarn["beta_slow"]
 
-        def cd(nr):
+        def corr_dim(nr):
             return (head_dim * np.log(orig / (nr * 2 * np.pi))) / (2 * np.log(base))
-        lo, hi = cd(bf), cd(bs)
+        lo, hi = corr_dim(bf), corr_dim(bs)
         if yarn.get("truncate", True):
             lo, hi = np.floor(lo), np.ceil(hi)
         lo, hi = max(lo, 0.0), min(hi, head_dim - 1)
@@ -74,8 +87,9 @@ def rope_tables(head_dim, n, base, yarn=None):
         pos = base ** (np.arange(0, head_dim, 2) / head_dim)
         inv = (1.0 / (fac * pos)) * ramp + (1.0 / pos) * (1 - ramp)
     else:
-        inv = 1.0 / (base ** (np.arange(half) / half))
-    f = np.outer(np.arange(n), inv)
+        inv = 1.0 / (base ** (np.arange(0, half) / half))
+    t = np.arange(n)
+    f = np.outer(t, inv)
     return np.cos(f), np.sin(f)
 
 

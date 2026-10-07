@@ -100,8 +100,12 @@ static void silu_(float *x, size_t n) {
    truncate=0 时校正区间不取整 —— 过渡带的位置会因此不同。 */
 static void rope(float *q, float *k, int n, int nh, int nkv, int hd,
                  float base, int pairing, float scale, int nrot,
-                 int yon, float yfac, int yorig, float ybf, float ybs,
-                 int ytrunc) {
+                 int rtype, float yfac, int yorig, float ybf, float ybs,
+                 int ytrunc, float yhf, float ylf) {
+    /* rtype: 0 = 不缩放  1 = yarn  2 = llama3
+       **两种缩放都改频率、参数名还重叠，所以类型必须显式传进来。**
+       yhf/ylf 是 llama3 的 high/low_freq_factor —— 不复用 ybf/ybs，
+       因为它们含义不同（YaRN 的 beta 是 ramp 起止维，llama3 的是波长阈值）。 */
     /* 全程 float64 —— numpy 那边是 float64，用 float32 算会把 ramp 的
        过渡带挪一点点，位置 0 上看不出来，多了就累积成 1e-3 量级。 */
     const double PI2 = 6.283185307179586;
@@ -109,7 +113,7 @@ static void rope(float *q, float *k, int n, int nh, int nkv, int hd,
     int half = rdim / 2;
     float *inv = (float *)malloc(sizeof(float) * half);
     double dlo = 0.0, dhi = 1.0;
-    if (yon) {
+    if (rtype == 1) {
         dlo = ((double)rdim * log((double)yorig / ((double)ybf * PI2)))
               / (2.0 * log((double)base));
         dhi = ((double)rdim * log((double)yorig / ((double)ybs * PI2)))
@@ -121,7 +125,22 @@ static void rope(float *q, float *k, int n, int nh, int nkv, int hd,
     }
     for (int i = 0; i < half; i++) {
         double p = pow((double)base, -2.0 * (double)i / (double)rdim);
-        if (!yon) { inv[i] = (float)p; continue; }
+        if (rtype == 0) { inv[i] = (float)p; continue; }
+        if (rtype == 2) {
+            /* llama3（Llama 3.1）：按**波长**分三段，中间那段平滑插值。
+               p 就是 inv_freq（已经取过倒数）。 */
+            double wl = PI2 / p;
+            double lo_wl = (double)yorig / (double)ylf;
+            double hi_wl = (double)yorig / (double)yhf;
+            double out = (wl > lo_wl) ? (p / (double)yfac) : p;
+            if (wl >= hi_wl && wl <= lo_wl) {
+                double sm = ((double)yorig / wl - (double)ylf)
+                            / ((double)yhf - (double)ylf);
+                out = (1.0 - sm) * out / (double)yfac + sm * out;
+            }
+            inv[i] = (float)out;
+            continue;
+        }
         double r = ((double)i - dlo) / (dhi - dlo);
         if (r < 0.0) r = 0.0;
         if (r > 1.0) r = 1.0;
@@ -822,16 +841,22 @@ def emit_c(ir, info, params):
                               f" P({key(i,j,'kn.w')}), n, {nh}, {nkv}, {hd},"
                               f" {1 if a.get('norm_one_plus') else 0});")
                 _y = a.get("yarn") or {}
+                _ty = _y.get("type") or "yarn"
+                # llama3 的 attention_factor 恒为 1.0，别跟着 YaRN 的公式算
+                _sc = a["rope_scale"] if (not _y or _ty == "yarn") else 1.0
+                _rt = 0 if not _y else (2 if _ty == "llama3" else 1)
                 _nrot = int(hd * a.get("rope_partial", 1.0))
                 lb.append(f" rope(q, kk, n, {nh}, {nkv}, {hd},"
                           f" {float(a['rope_base'])}f,"
                           f" {0 if a['rope_pairing']=='half' else 1},"
-                          f" {float(a['rope_scale'])}f, {_nrot},"
-                          f" {1 if _y else 0}, {float(_y.get('factor',1))}f,"
+                          f" {float(_sc)}f, {_nrot},"
+                          f" {_rt}, {float(_y.get('factor',1))}f,"
                           f" {int(_y.get('original',4096))},"
                           f" {float(_y.get('beta_fast',32))}f,"
                           f" {float(_y.get('beta_slow',1))}f,"
-                          f" {1 if _y.get('truncate',True) else 0});")
+                          f" {1 if _y.get('truncate',True) else 0},"
+                          f" {float(_y.get('high_freq',4))}f,"
+                          f" {float(_y.get('low_freq',1))}f);")
                 lb.append(f" attention(ob, q, kk, vv, n, {nh}, {nkv}, {hd}, {hd},"
                           f" {a['window'] if a['window'] else 0},"
                           f" {'P(' + key(i,j,'sink') + ')' if a['sink'] else 'NULL'});")

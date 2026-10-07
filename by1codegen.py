@@ -143,16 +143,26 @@ def _rope_spec(info, li):
         return {"base": base, "pairing": pairing, "scale": 1.0,
                 "yarn": _yarn_params(info),
                 "partial": float(_num(_rope_decl(info, "partial", "1"), 1.0))}
+    # **类型必须从描述里读出来，不能按"有 factor 就是 YaRN"猜。**
+    # yarn 和 llama3 都改频率、参数名还重叠，混起来会静默算错。
+    rtype = str(d.get("rope_type") or "default").strip().lower()
     yarn = None
     if d.get("factor") is not None:
-        yarn = {"factor": float(d.get("factor", 1)),
+        yarn = {"type": rtype if rtype in ("yarn", "llama3") else "yarn",
+                "factor": float(d.get("factor", 1)),
                 "original": int(d.get("original_max_position_embeddings", 4096)),
                 "beta_fast": float(d.get("beta_fast", 32)),
                 "beta_slow": float(d.get("beta_slow", 1)),
+                "high_freq": float(d.get("high_freq_factor",
+                                          d.get("high_freq", 4))),
+                "low_freq": float(d.get("low_freq_factor",
+                                        d.get("low_freq", 1))),
                 "truncate": bool(d.get("truncate", True))}
-    # attention_factor 是 YaRN 对 cos/sin 的整体缩放（位置 0 上就看得出来）
+    # attention_factor 是 YaRN 对 cos/sin 的整体缩放（位置 0 上就看得出来）。
+    # **llama3 没有这一项** —— 它的 attention_factor 恒为 1.0（参考实现的注释
+    # 就写着 "Unused in this type of RoPE"）。跟着 YaRN 的公式算是错的。
     fac = d.get("attention_factor")
-    if fac is None and yarn:
+    if fac is None and yarn and yarn["type"] == "yarn":
         fac = 0.1 * math.log(yarn["factor"]) + 1.0 if yarn["factor"] > 1 else 1.0
     return {"base": int(d.get("rope_theta", base)), "pairing": pairing,
             "scale": float(fac if fac is not None else 1.0), "yarn": yarn,
@@ -171,10 +181,21 @@ def _yarn_params(info):
             m = re.search(r"\b" + k + r"\s*=\s*([\w.+-]+)", s)
             return float(m.group(1)) if m else float(d)
         mt = re.search(r"\btruncate\s*=\s*(\w+)", s)
-        return {"factor": g("factor", 1),
+        # 包装器的名字就是类型：yarn(...) / llama3(...)。
+        # **两者都改频率，但改法完全不同** —— 名字一样、参数名还重叠，
+        # 不区分就会把 llama3 当 YaRN 算。
+        ty = "yarn"
+        for _w in ("llama3", "yarn"):
+            if re.search(r"\b" + _w + r"\s*\(", s):
+                ty = _w
+                break
+        return {"type": ty,
+                "factor": g("factor", 1),
                 "original": int(g("original", 4096)),
                 "beta_fast": g("beta_fast", 32),
                 "beta_slow": g("beta_slow", 1),
+                "high_freq": g("high_freq_factor", g("high_freq", 4)),
+                "low_freq": g("low_freq_factor", g("low_freq", 1)),
                 # truncate=False 时不做 floor/ceil —— 过渡带的位置会因此不同
                 "truncate": (mt.group(1).lower() not in ("false", "no", "off"))
                             if mt else True}
@@ -418,9 +439,19 @@ def compile_ir(info: Dict[str, Any]) -> Dict[str, Any]:
         return ops
 
     layers = []
+    _ov_all = info.get("overrides") or {}
     for li, (_s, m, a, _k, atts) in enumerate(info["layer_seq"]):
         mixer = one_mech(m, a, li)
-        attached = [one_mech(am, defaults.get(am, {}), li) for am in atts]
+
+        def _with_ov(am, _s=_s, li=li):
+            """挂在层上的机制，属性要合并这一层的逐层覆盖。
+            不做的话：契约按逐层算、生成的计算全用默认值 —— 一个
+            **看起来对的错模型**（张量检查全过，跑起来宽度都一样）。"""
+            base_a = dict(defaults.get(am, {}))
+            base_a.update(_ov_all.get("%s|%d|%s" % (_s, li, am), {}))
+            return base_a
+
+        attached = [one_mech(am, _with_ov(am), li) for am in atts]
         attached = [x for x in attached if x]
         if mixer is None or mixer["kind"] not in ("Attention", "Linear", "MLA"):
             err(f"第 {li} 层没有可用的 token 混合器 —— 生成不出来")
@@ -510,7 +541,23 @@ class RMSNorm(nn.Module):
 
 def rope_tables(head_dim, n, base, device, yarn=None):
     half = head_dim // 2
-    if yarn:
+    if yarn and (yarn.get("type") or "yarn") == "llama3":
+        # llama3 式缩放（Llama 3.1）：按**波长**分三段，中间那段做平滑插值。
+        # 和 YaRN 不是一回事 —— YaRN 调的是 ramp 的起止维，llama3 调的是波长阈值。
+        fac = float(yarn["factor"])
+        hf, lf = float(yarn["high_freq"]), float(yarn["low_freq"])
+        old = float(yarn["original"])
+        # **必须取倒数**：参考是 inv_freq = 1/(base**(arange(0,dim,2)/dim))。
+        # 漏了 1.0/ 的话，第一个频率正好变成它的倒数（1.27 而参考是 0.786）。
+        p0 = 1.0 / (base ** (torch.arange(0, half, device=device).float() / half))
+        wl = 2 * math.pi / p0
+        lo_wl, hi_wl = old / lf, old / hf
+        out = torch.where(wl > lo_wl, p0 / fac, p0)
+        smooth = (old / wl - lf) / (hf - lf)
+        out = torch.where((wl >= hi_wl) & (wl <= lo_wl),
+                          (1 - smooth) * out / fac + smooth * out, out)
+        inv = out
+    elif yarn:
         # YaRN：低频插值 / 高频外推，中间一条 ramp 过渡
         fac, orig = yarn["factor"], yarn["original"]
         bf, bs = yarn["beta_fast"], yarn["beta_slow"]
