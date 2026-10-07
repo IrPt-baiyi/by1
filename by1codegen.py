@@ -47,7 +47,10 @@ ATTRS = {
                   # Block 1.2：注意力侧的四个机制属性
                   "sink", "kv_tie", "head_gate", "rope_scale",
                   # Block 1.3：Qwen3-Next 逼出来的两个
-                  "q_gate", "partial"},
+                  "q_gate", "partial",
+                  # 门控的激活函数。Laguna 用 softplus、Ling 用 sigmoid ——
+                  # **同名不同义**，必须写出来，不能靠默认值猜。
+                  "gate_act"},
     "FFN": {"hidden", "act", "gate", "bias", "layer_kind", "structural",
             "swiglu_limit", "alpha"},
     "MoE": {"experts", "top_k", "shared", "hidden", "shared_hidden",
@@ -56,6 +59,12 @@ ATTRS = {
             # Block 1.2：MoE 侧的机制属性
             "routing", "act", "swiglu_limit", "alpha", "expert_bias",
             "shared_gate"},
+    # MLA：低秩压缩的注意力（DeepSeek 提出）。
+    # kv 被压到 c_kv，k_rot 是**单头**共享的 —— 这是它和 GQA 的根本区别。
+    "MLA": {"heads", "q", "head_dim", "q_lora", "kv_lora",
+            "qk_nope", "qk_rope", "v_dim", "out_dim",
+            "head_gate", "gate_act", "bias", "structural",
+            "rope", "rope_base", "pairing", "norm_eps"},
     # Block 1.3：线性 / 递归注意力。第一个**真的带状态**的机制。
     "Linear": {"k_heads", "v_heads", "k_dim", "v_dim", "conv_kernel",
                "act", "norm_eps", "l2_eps", "out_dim", "structural",
@@ -252,7 +261,51 @@ def compile_ir(info: Dict[str, Any]) -> Dict[str, Any]:
                 "sink": _flag(attrs.get("sink")),
                 "kv_tie": _flag(attrs.get("kv_tie")),
                 "head_gate": (str(attrs.get("head_gate", "off")).strip().lower()
-                              or "off")}}
+                              or "off"),
+                "gate_act": (str(attrs.get("gate_act", "softplus")).strip().lower()
+                             or "softplus")}}
+
+        if kind == "MLA":
+            h = {k: _num(attrs.get(k)) for k in
+                 ("q", "q_lora", "kv_lora", "qk_nope", "qk_rope",
+                  "v_dim", "head_dim")}
+            if h["q"] is None:
+                h["q"] = _heads(attrs.get("heads")).get("q")
+            if h["head_dim"] is None:
+                h["head_dim"] = _heads(attrs.get("heads")).get("head_dim")
+            miss = [k for k, v in h.items()
+                    if v is None and k != "head_dim"]
+            if miss:
+                err(f"机制 '{name}' 缺少 {', '.join(miss)} —— codegen 需要 "
+                    f"q / q_lora / kv_lora / qk_nope / qk_rope / v_dim")
+                return None
+            q, qn, kr = int(h["q"]), int(h["qk_nope"]), int(h["qk_rope"])
+            # qk_head_dim = nope + rope，和参考实现一致；给了就校验一下
+            if h["head_dim"] is not None and int(h["head_dim"]) != qn + kr:
+                err(f"机制 '{name}': head_dim={int(h['head_dim'])} 但 "
+                    f"qk_nope({qn}) + qk_rope({kr}) = {qn + kr}")
+                return None
+            rs = (_rope_spec(info, li) if li is not None else
+                  {"base": base, "pairing": pairing})
+            return {"kind": "MLA", "mech": name, "attrs": {
+                "q": q, "q_lora": int(h["q_lora"]), "kv_lora": int(h["kv_lora"]),
+                "qk_nope": qn, "qk_rope": kr, "v_dim": int(h["v_dim"]),
+                "head_dim": qn + kr,
+                "out_dim": int(_num(attrs.get("out_dim")) or q * int(h["v_dim"])),
+                "bias": _flag(attrs.get("bias", attrs.get("attn_bias"))),
+                "rope_base": int(_num(attrs.get("rope_base"), rs["base"])),
+                "pairing": attrs.get("pairing", rs["pairing"]),
+                "head_gate": (str(attrs.get("head_gate", "off")).strip().lower()
+                              or "off"),
+                # 默认 sigmoid —— Ling 的参考就是这么写的（Laguna 的普通
+                # Attention 默认 softplus，两者不同名同义，所以分开写）
+                "gate_act": (str(attrs.get("gate_act", "sigmoid")).strip().lower()
+                             or "sigmoid"),
+                # 跟着模型的 rms_norm_eps 走**必须**。GDN 那边为这个 bug 修过一次
+                # （原来写死 1e-6，而 RMSNorm 是 1e-5），MLA 这里又犯了一遍。
+                "norm_eps": float(_num(attrs.get("norm_eps"),
+                                       _num(hp.get("rms_eps"), 1e-5))),
+                "norm_one_plus": norm_1p}}
 
         if kind == "FFN":
             hid = _num(attrs.get("hidden"))
@@ -459,13 +512,89 @@ def rope_tables(head_dim, n, base, device, yarn=None):
 
 
 def apply_rope(x, cos, sin, pairing="interleaved"):
+    """两种配对约定。**名字一样，含义不同，所以写清楚**：
+
+      half         对半进（x[i] 配 x[i+d/2]）、拼接着出  —— 多数模型
+      interleaved  奇偶进（x[2i] 配 x[2i+1]）、**拼接着出** —— DeepSeek/Ling
+
+    注意 interleaved 说的是**输入**交错，输出仍是前半/后半 —— 这是
+    transformers 的 apply_rotary_pos_emb_interleave 的实际行为（它的文档也写了
+    "与 de-interleaved 的 rotate_half 写法逐位相同"）。
+    曾经把它写成"输出也交错"（stack 而非 cat），随机输入下差 5.0 —— 看着像对的。
+    """
     c, s = cos[None, None], sin[None, None]
     if pairing == "half":
         h = x.shape[-1] // 2
         x1, x2 = x[..., :h], x[..., h:]
         return torch.cat([x1 * c - x2 * s, x1 * s + x2 * c], dim=-1)
     x1, x2 = x[..., 0::2], x[..., 1::2]
-    return torch.stack([x1 * c - x2 * s, x1 * s + x2 * c], dim=-1).flatten(-2)
+    return torch.cat([x1 * c - x2 * s, x1 * s + x2 * c], dim=-1)
+
+
+class MLAttention(nn.Module):
+    """MLA：低秩压缩的注意力（DeepSeek 提出，Ling 用同一套）。
+
+        q  = q_b_proj(q_a_layernorm(q_a_proj(x)))        拆 [qk_nope | qk_rope]
+        kv = kv_a_proj_with_mqa(x)                       拆 [c_kv | k_rot]
+        k_nope, v = split(kv_b_proj(kv_a_layernorm(c_kv)), [qk_nope, v_dim])
+
+    和 GQA 的根本区别：**k_rot 是单头的**，RoPE 只作用在那 qk_rope 维上，
+    然后广播到所有头。qk_head_dim = qk_nope + qk_rope，scaling 用前者。
+    """
+
+    def __init__(self, a, d):
+        super().__init__()
+        self.nh = a["q"]
+        self.qk_nope, self.qk_rope = a["qk_nope"], a["qk_rope"]
+        self.qk_head = self.qk_nope + self.qk_rope
+        self.v_dim, self.kv_lora = a["v_dim"], a["kv_lora"]
+        _op = a.get("norm_one_plus", False)
+        _eps = a.get("norm_eps", 1e-5)
+        self.q_a_proj = nn.Linear(d, a["q_lora"], bias=a["bias"])
+        self.q_a_layernorm = RMSNorm(a["q_lora"], eps=_eps, one_plus=_op)
+        self.q_b_proj = nn.Linear(a["q_lora"], self.nh * self.qk_head, bias=False)
+        self.kv_a_proj_with_mqa = nn.Linear(
+            d, self.kv_lora + self.qk_rope, bias=a["bias"])
+        self.kv_a_layernorm = RMSNorm(self.kv_lora, eps=_eps, one_plus=_op)
+        self.kv_b_proj = nn.Linear(
+            self.kv_lora, self.nh * (self.qk_nope + self.v_dim), bias=False)
+        self.dense = nn.Linear(self.nh * self.v_dim, d, bias=a["bias"])
+        self.base = a["rope_base"]
+        self.pairing = a["pairing"]
+        self.head_gate = a.get("head_gate", "off")
+        self.gate_act = a.get("gate_act", "sigmoid")
+        if self.head_gate != "off":
+            self.g_proj = nn.Linear(d, self.nh, bias=False)
+        self.scaling = self.qk_head ** -0.5
+
+    def forward(self, x):
+        b, n, _ = x.shape
+        q = self.q_b_proj(self.q_a_layernorm(self.q_a_proj(x)))
+        q = q.view(b, n, self.nh, self.qk_head).transpose(1, 2)
+        q_pass, q_rot = q.split([self.qk_nope, self.qk_rope], dim=-1)
+        c_kv, k_rot = self.kv_a_proj_with_mqa(x).split(
+            [self.kv_lora, self.qk_rope], dim=-1)
+        kv = self.kv_b_proj(self.kv_a_layernorm(c_kv))
+        kv = kv.view(b, n, self.nh, self.qk_nope + self.v_dim).transpose(1, 2)
+        k_pass, v = kv.split([self.qk_nope, self.v_dim], dim=-1)
+        k_rot = k_rot.view(b, 1, n, self.qk_rope)
+        cos, sin = rope_tables(self.qk_rope, n, self.base, x.device)
+        q_rot = apply_rope(q_rot, cos, sin, self.pairing)
+        k_rot = apply_rope(k_rot, cos, sin, self.pairing)
+        k_rot = k_rot.expand(*k_pass.shape[:-1], -1)
+        qq = torch.cat([q_pass, q_rot], dim=-1)
+        kk = torch.cat([k_pass, k_rot], dim=-1)
+        att = (qq @ kk.transpose(-2, -1)) * self.scaling
+        idx = torch.arange(n, device=x.device)
+        att = att.masked_fill(~(idx[None, :] <= idx[:, None]),
+                              float("-inf")).softmax(-1)
+        o = (att @ v).transpose(1, 2).reshape(b, n, self.nh * self.v_dim)
+        if self.head_gate != "off":
+            g = self.g_proj(x).float()
+            g = torch.sigmoid(g) if self.gate_act == "sigmoid" else F.softplus(g)
+            o = (o.view(b, n, self.nh, self.v_dim)
+                 * g.to(o.dtype).unsqueeze(-1)).reshape(b, n, -1)
+        return self.dense(o)
 
 
 class Attention(nn.Module):
@@ -557,7 +686,10 @@ class Attention(nn.Module):
         if gate is not None:
             o = o * torch.sigmoid(gate.reshape(b, n, -1))
         if self.head_gate != "off":
-            g = F.softplus(self.g_proj(x).float()).to(o.dtype)
+            # 激活函数是**机制属性**，不是默认值：Laguna 用 softplus、Ling 用 sigmoid
+            _g = self.g_proj(x).float()
+            g = (torch.sigmoid(_g) if self.gate_act == "sigmoid"
+                 else F.softplus(_g)).to(o.dtype)
             if self.gate_per_head:
                 o = (o.view(b, n, self.q, self.hd) * g.unsqueeze(-1)).view(b, n, -1)
             else:
@@ -767,7 +899,8 @@ class GatedDeltaNet(nn.Module):
 
 
 BUILDERS = {"Norm": _mk_norm, "Attention": Attention,
-            "FFN": MLP, "MoE": MoE, "Linear": GatedDeltaNet}
+            "FFN": MLP, "MoE": MoE, "Linear": GatedDeltaNet,
+            "MLA": MLAttention}
 
 
 class LayerMod(nn.Module):

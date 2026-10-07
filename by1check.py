@@ -618,7 +618,8 @@ def expand_pattern(expr: str, named: Dict[str, List["Rec"]]) -> Optional[List["R
 # ════════════════════════════════════════════════════════════════════
 
 E, W, I = "E", "W", "i"
-TOKEN_MIXER = {"Attention", "Sparse", "Linear", "SSM", "Vision", "Recurrent"}
+TOKEN_MIXER = {"Attention", "Sparse", "Linear", "SSM", "Vision", "Recurrent",
+               "MLA"}
 BUILTIN_ATTRS = {
     "mode", "window", "sink", "kv_tie", "head_dim", "kv", "kv_heads",
     "q", "q_heads", "v", "v_heads", "qk", "gate", "act", "activation",

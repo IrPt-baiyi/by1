@@ -53,8 +53,8 @@ model Ling-3.0-tiny {
   # ── MLA：低秩压缩的注意力 ─────────────────────────────────────────
   # ⚠️ by1 里这是**新的机制**。这里只把它的**张量契约**写下来（能对拍），
   #    它的计算 by1 还没有 —— codegen 会明确拒绝，不会悄悄按普通注意力生成。
-  mech MLA : Attention {
-    heads      = { q = 16, kv = 16, head_dim = 192 }
+  mech MLA : MLA {
+    heads      = { q = 16, head_dim = 192 }
     q_lora     = 256
     kv_lora    = 512
     qk_head    = 192
@@ -62,6 +62,7 @@ model Ling-3.0-tiny {
     qk_rope    = 64
     v_dim      = 128
     head_gate  = per_head         # 实测 g_proj [16, 1536] —— 每头一个
+    gate_act   = sigmoid          # Ling 用 sigmoid；Laguna 的普通注意力用 softplus
   }
 
   mech Dense : FFN {

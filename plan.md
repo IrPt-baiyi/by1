@@ -251,3 +251,41 @@ P5  一个外部用户            ──  判卷人：**别人**
 **一个只在 Ling 上暴露的 bug**：`render_e` 的闭包晚绑定 ——
 `tpl` 被后面的 `global_name` 那段复用，而闭包是调用时才读它，
 于是逐专家名字**悄悄退化成裸的逻辑名**。Laguna 有逐专家但没有 `global_name`，所以一直没触发。
+
+---
+
+## MLA（Ling 压出来的新一族）—— ✅ 计算已实现并验证
+
+by1 里第一件**要新增一族**而不是加几个属性的东西。
+
+**判卷人**：transformers 的 `DeepseekV3Attention`。它和 Ling 的 MLA 结构同构 ——
+7 个张量形状逐个相同（`q_a_proj (256,1536)` · `q_b_proj (3072,256)` ·
+`kv_a_proj_with_mqa (576,1536)` · `kv_b_proj (4096,512)` · `o_proj (1536,2048)`）。
+**别人写的，不是我自己写的参考。**
+
+```
+python by1mla.py
+  pairing=interleaved  绝对差 0.000e+00   [一致]
+  pairing=half         绝对差 6.298e-02   [不一致]
+  [PASS] MLA 与参考逐位一致
+```
+
+**过程中抓到三个东西：**
+
+1. **`interleaved` 指的是输入交错，不是输出交错。** transformers 的
+   `apply_rotary_pos_emb_interleave` 是「奇偶进、**拼接**着出」；我写成了
+   「奇偶进、交错出」（`stack` 而不是 `cat`），随机输入下差 5.0。
+   实测三种写法：奇偶进+cat **0.0** · 奇偶进+stack 5.05 · 对半进+cat 5.56。
+   （只有 Ling 用这个值，其余全是 `half`，所以改它没动到任何护栏。）
+
+2. **`norm_eps` 写死 1e-5 —— 同一个 bug 第二次。** GDN 那边早就修过
+   （原来写死 1e-6，而 RMSNorm 是 1e-5），注释还在，我在新写的 MLA 分支里又犯了一遍。
+   DeepSeek 和 Ling 都是 **1e-6**。
+
+3. **门控激活同名不同义**：Laguna 的普通注意力用 `softplus`，Ling 的 MLA 用 `sigmoid`。
+   原来 `head_gate` 默认 softplus —— 对 Ling 会**悄悄算错**。现在 `gate_act`
+   是显式属性，默认值不再冒充。
+
+**还有一个不属于 by1 的坑（但值得记）**：transformers 的 `eager_attention_forward`
+在 `attention_mask=None` 时**不做因果掩码**，是双向注意力。第一轮对拍两边差 1.13，
+原因是我在拿因果实现和双向实现比。
