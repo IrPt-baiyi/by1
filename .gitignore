@@ -11,3 +11,6 @@ hello_model.py
 # 手工备份（git 接管之前的手段）
 *.bak
 !1.md.bak
+
+# 从 llama.cpp 拉的参照源码（可重新下载）
+llamacpp/

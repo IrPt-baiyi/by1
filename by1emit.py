@@ -35,8 +35,9 @@ GGML = {
     "Attention": ["ggml_mul_mat(qkv)", "ggml_rope_ext", "ggml_mul_mat(qk)",
                   "ggml_soft_max_ext(掩码, sink)", "ggml_mul_mat(av)",
                   "ggml_mul_mat(o)"],
-    "Linear": ["ggml_mul_mat(qkvz/ba)", "ggml_conv_1d(短卷积)", "ggml_silu",
-               "delta 规则（需要自定义 kernel）", "ggml_mul_mat(out)"],
+    "Linear": ["ggml_mul_mat(qkvz)", "ggml_mul_mat(ba)", "ggml_ssm_conv(短卷积)",
+               "ggml_silu", "build_delta_net_base(顺序递归)", "build_norm_gated",
+               "ggml_mul_mat(out)"],
 }
 # 这些不是「写几行」能解决的，得单独说清楚
 CUSTOM = {
