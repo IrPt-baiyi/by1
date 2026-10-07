@@ -35,14 +35,19 @@ GGML = {
     "Attention": ["ggml_mul_mat(qkv)", "ggml_rope_ext", "ggml_mul_mat(qk)",
                   "ggml_soft_max_ext(掩码, sink)", "ggml_mul_mat(av)",
                   "ggml_mul_mat(o)"],
+    # 来自 src/models/delta-net-base.cpp：delta 规则有三个实现
+    #   build_delta_net_chunking      分块（prefill）
+    #   build_delta_net_autoregressive 顺序（decode，显式 state）
+    #   build_delta_net_fused          融合 kernel
+    # 核心递推 state = state * g + kgdmulvnew，与 IR 一致；
+    # 分块版只用标准原语（cumsum / tri / exp / sub / pad）就能表达。
+    # 状态类型是 llama-memory-recurrent.h —— 正对应 IR 的 "recurrent" 声明。
     "Linear": ["ggml_mul_mat(qkvz)", "ggml_mul_mat(ba)", "ggml_ssm_conv(短卷积)",
-               "ggml_silu", "build_delta_net_base(顺序递归)", "build_norm_gated",
-               "ggml_mul_mat(out)"],
+               "ggml_silu", "delta 规则: cumsum/tri/exp/sub (分块) 或顺序 state",
+               "build_norm_gated", "ggml_mul_mat(out)"],
 }
 # 这些不是「写几行」能解决的，得单独说清楚
 CUSTOM = {
-    "Linear": "delta 规则是顺序递归，ggml 里没有现成原语；llama.cpp 用 "
-              "build_delta_net / 自定义 kernel 实现",
 }
 
 
