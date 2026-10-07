@@ -48,7 +48,15 @@ def check_config(info, tc, out):
     if not got:
         out.append("  (by1 里没有 transformers.config 的 field 映射，跳过)")
         return None
-    keys = sorted(set(got) | set(tc))
+    # 这些键描述的是「这份权重怎么被加载」，不是「这个模型的架构是什么」：
+    #   architectures / auto_map / transformers_version   HF 的加载元信息
+    #   torch_dtype / dtype                               权重存成什么精度
+    #   quantization_config                               导出决策（在 quant 块里声明）
+    # 不该由架构描述生成 —— 单列一类，**不算失败**，但要报出来而不是藏起来。
+    META = {"architectures", "auto_map", "transformers_version",
+            "torch_dtype", "dtype", "quantization_config"}
+    keys = sorted((set(got) | set(tc)) - META)
+    n_meta = len(set(tc) & META)
     same = diff = extra = missing = 0
     details = []
     for k in keys:
@@ -64,12 +72,15 @@ def check_config(info, tc, out):
         else:
             missing += 1
             details.append(f"{k}\n        by1 生成 不存在\n        官方     {tc[k]!r}")
-    out.append(f"  逐字段: 一致 {same}   值不同 {diff}   by1 多出 {extra}   官方多出 {missing}")
+    out.append(f"  逐字段: 一致 {same}   值不同 {diff}   by1 多出 {extra}   "
+               f"官方多出 {missing}   （元数据 {n_meta} 个不计）")
     if diff or missing or extra:
         out.append("  [FAIL] 前几处：")
         out.extend("      " + d for d in details[:14])
     else:
-        out.append(f"  [PASS] {same} 个字段与官方 config 逐项一致")
+        out.append(f"  [PASS] {same} 个字段与官方 config 逐项一致"
+                   + (f"（另有 {n_meta} 个 HF 元数据字段不属于架构描述）"
+                      if n_meta else ""))
     return (diff + missing + extra) == 0
 
 
@@ -89,7 +100,26 @@ def check_layer_types(info, tc, out):
         out.append("  (config 无 layer_types，跳过)")
         return None
     got = by1_layer_types(info)
-    out.append(f"  层数: by1 = {len(got)}   config = {len(want)}")
+    # 官方有些 config 的逐层数组**比模型长**：Step-3.7 是 48、模型 45 层
+    # （12 × 4 vs 11 × 4 + 1）。多出来的不是垃圾，是**周期的延续**。
+    # 但"允许更长"不能变成"随便放过" —— 这里验证多出来的确实是周期延续。
+    if len(want) > len(got) and got:
+        per = None
+        for cand in range(1, len(got) // 2 + 1):
+            if all(got[i] == got[i % cand] for i in range(len(got))):
+                per = cand
+                break
+        tail_ok = bool(per) and all(want[i] == got[i % per]
+                                    for i in range(len(got), len(want)))
+        out.append("  层数: by1 = %d   config = %d（多出 %d 项，%s）"
+                   % (len(got), len(want), len(want) - len(got),
+                      "是周期的延续" if tail_ok else "!! 对不上周期"))
+        if not tail_ok:
+            out.append("  [FAIL] config 多出来的项不是 by1 周期的延续")
+            return False
+        want = want[:len(got)]
+    else:
+        out.append(f"  层数: by1 = {len(got)}   config = {len(want)}")
     n = min(len(got), len(want))
     bad = [i for i in range(n) if got[i] != want[i]]
     if len(got) != len(want):
@@ -380,6 +410,15 @@ def main(argv):
     out.append("=" * 74)
 
     out.append("")
+    # `--sub` 默认是 text_config —— 多模态模型（Gemma）的架构嵌在里面。
+    # **但顶层那些键就完全不进比较了，而报告会写「官方多出 0」**，
+    # 读起来像"什么都没缺"。把丢掉的说出来。
+    if tc is not cfg:
+        _dropped = sorted(set(cfg) - set(tc))
+        out.append("  （只比 %s 那一层；顶层另有 %d 个键未参与比较：%s）"
+                   % (sub, len(_dropped),
+                      ', '.join(_dropped[:5]) + (' …' if len(_dropped) > 5 else '')))
+        out.append("")
     ok0 = None
     if "--config" in argv:
         out.append("[1] config 逐字段对拍   (由 .by1 生成，不继承任何字段)")

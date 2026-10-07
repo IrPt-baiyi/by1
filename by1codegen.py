@@ -790,7 +790,6 @@ class MLP(nn.Module):
         self.gate = a["gate"]
         self.style = a.get("act", "silu")
         self.limit = a.get("limit")
-        self.limit_shared = a.get("limit_shared")
         self.alpha = a.get("alpha", 1.702)
         self.w1 = nn.Linear(d, a["hidden"], bias=False)
         self.w2 = nn.Linear(a["hidden"], d, bias=False)
@@ -815,6 +814,10 @@ class MoE(nn.Module):
         self.routing = a.get("routing", "softmax_topk")
         self.style = a.get("act", "silu")
         self.limit = a.get("limit")
+        # 共享专家的夹取值是独立的（Step-3.7：路由专家 7、共享专家 16）。
+        # **这行原来被我加到了 MLP 类上** —— 锚点 self.limit 先匹配到那里，
+        # 于是 MoE.forward 用 self.limit_shared 时 AttributeError。
+        self.limit_shared = a.get("limit_shared")
         self.alpha = a.get("alpha", 1.702)
         self.router = nn.Linear(d, self.n_exp, bias=a["router_bias"])
         self.w1 = nn.Parameter(torch.randn(self.n_exp, hid, d) * 0.02)
