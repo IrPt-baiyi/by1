@@ -1121,9 +1121,16 @@ def check(path: str) -> Tuple[Report, dict]:
                     "expert_name": be.assigns.get("expert_name", "").strip().strip('"'),
                     "global_name": be.assigns.get("global_name", "").strip().strip('"'),
                     "scope": {}, "rename": {}, "fields": {},
-                    "line": be.line, "head": be.head.strip()}
+                    "quant": {}, "line": be.line, "head": be.head.strip()}
             for sub in be.children:
                 h = sub.head.strip()
+                if h == "quant":
+                    for k, v in sub.assigns.items():
+                        rule["quant"][k] = v.strip().strip('"')
+                    for sub2 in sub.children:
+                        if sub2.head.strip() == "fuse":
+                            rule["quant"]["fuse"] = dict(sub2.assigns)
+                    continue
                 tgt = {"scope": rule["scope"], "rename": rule["rename"],
                        "field": rule["fields"], "fields": rule["fields"]}.get(h)
                 if tgt is None:
@@ -1147,7 +1154,16 @@ def check(path: str) -> Tuple[Report, dict]:
                 if m not in ("layer", "global") and m not in mechs:
                     rep.add(E, rule["line"], "emit",
                             f"emit {key} 的 scope 引用了未声明的机制 '{m}'")
+            # quant 的 fuse 名（如 gate_up_proj）和它点名的张量，只在导出时才存在，
+            # 不是契约里的逻辑张量 —— 不该被当成拼写错误
+            _qnames = set(re.findall(
+                r"[A-Za-z_][\w.]*", (rule.get("quant") or {}).get("tensor", "")))
+            for _n, _v in ((rule.get("quant") or {}).get("fuse") or {}).items():
+                _qnames.add(_n)
+                _qnames |= set(re.findall(r"[A-Za-z_][\w.]*", _v))
             for ln in rule["rename"]:
+                if ln in _qnames:
+                    continue
                 if all_logical and ln not in all_logical:
                     rep.add(W, rule["line"], "emit",
                             f"emit {key} 的 rename 键 '{ln}' 不是任何契约里的逻辑张量")

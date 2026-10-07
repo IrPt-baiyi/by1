@@ -139,8 +139,23 @@ model GPT-OSS-120B {
         attn_norm.weight           = input_layernorm.weight,
         post_attention_norm.weight = post_attention_layernorm.weight,
         embed.weight               = model.embed_tokens.weight,
-        final_norm.weight          = model.norm.weight
+        final_norm.weight          = model.norm.weight,
+          gate_up_proj               = experts.gate_up_proj,
+          down_exps                  = experts.down_proj
       }
+
+        # ── 导出布局（不是架构！）────────────────────────────────
+        # HF 侧的专家是「gate/up 先融合、再按 MXFP4 打包」的，
+        # **权重本身根本不存在**，只有 blocks / scales / bias。
+        # 同一个模型换成 BF16 发布，这三个名字就变回正常的权重名 ——
+        # 所以它是导出参数，不该写进架构描述。
+        quant {
+          block  = 32
+          tensor = [gate_exps, up_exps, down_exps]
+          fuse {
+            gate_up_proj = [gate_exps, up_exps]
+          }
+        }
     }
     infer -> ggml {
       name        = "blk.{i}.{scope}{physical}"

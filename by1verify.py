@@ -202,20 +202,70 @@ def parse_shape(txt):
 
 def check_tensors(info, real, render, rule_desc, scope_map, out,
                   render_e=None, experts_of=None,
-                  render_g=None, global_rows=None):
+                  render_g=None, global_rows=None, quant=None):
     out.append(f"  命名规则来源: {rule_desc}")
     experts_of = experts_of or {}
     booll = lambda v: str(v).lower() in ("true", "1", "yes", "on")
+    # 量化导出：被点名的专家张量在 HF 侧不存在，取而代之的是
+    #   <名>_blocks / <名>_scales / <名>_bias
+    q_members, q_fuse, q_block = set(), {}, 32
+    if quant:
+        q_block = int(quant.get("block", 32))
+        q_members = set(re.findall(r"[A-Za-z_][\w.]*", quant.get("tensor", "")))
+        for _nm, _v in (quant.get("fuse") or {}).items():
+            _ms = re.findall(r"[A-Za-z_][\w.]*", _v)
+            for _m in _ms:
+                q_fuse[_m] = (_nm, _ms)
+
+    def q_shapes(fused, block, kind):
+        """weight 是 MXFP4 打包（blocks + scales）；bias 不量化，只是被融合。"""
+        if kind == "bias":
+            return [("_bias", list(fused))]
+        n = max(1, fused[-1] // block)
+        return [("_blocks", list(fused[:-1]) + [n, 16]),
+                ("_scales", list(fused[:-1]) + [n])]
     total = mismatch = missing = absent_but_present = symbolic = 0
     sup_total = sup_ok = unmapped = 0
     details, samples, generated = [], [], set()
+    qdone = set()
 
     for i, (stack, mech, attrs, rows) in enumerate(info["layer_out"]):
+        qdone = set()
         for owner, (lname, shape_txt, note, pe) in rows:
             if scope_map and owner not in scope_map:
                 unmapped += 1
                 continue
             use_e = booll(pe) and render_e is not None
+            _lb = lname.rsplit(".", 1)[0] if "." in lname else lname
+            _kd = lname.rsplit(".", 1)[1] if "." in lname else ""
+            if quant and _lb in q_members:
+                _fn, _ms = q_fuse.get(_lb, (_lb, [_lb]))
+                if (_fn, _kd) in qdone:
+                    continue
+                qdone.add((_fn, _kd))
+                _by = {r[1][0]: r[1][1] for r in rows}   # rows 是 (owner, (名, 形, 注, pe))
+                _num = [parse_shape(_by.get(m + "." + _kd, "")) for m in _ms]
+                if any(not v for v in _num):
+                    symbolic += 1
+                    continue
+                _f = list(_num[0])
+                if len(_num) > 1:
+                    _f[1] = sum(v[1] for v in _num)
+                _base = render(i, stack, owner, _fn)
+                for _sfx, _bs in q_shapes(_f, q_block, _kd):
+                    _nm = _base + _sfx
+                    generated.add(_nm)
+                    if len(samples) < 6:
+                        samples.append(f"      L{i:<3} 量化 {_fn:<10} -> {_nm}")
+                    total += 1
+                    if _nm not in real:
+                        missing += 1
+                        details.append(f"L{i:<3} {_nm}\n        契约 {tuple(_bs)}，实际不存在")
+                    elif real[_nm]["shape"] != _bs:
+                        mismatch += 1
+                        details.append(f"L{i:<3} {_nm}\n        契约 {tuple(_bs)}"
+                                       f"   实际 {real[_nm]['shape']}")
+                continue
             exps = range(experts_of.get(owner, 1)) if use_e else [None]
             for e in exps:
                 nm = (render_e(i, stack, owner, lname, e) if use_e
@@ -375,7 +425,8 @@ def main(argv):
                     experts_of[mn] = 0
             ok2 = check_tensors(info, real, render, rule_desc, scope_map, out,
                                 render_e=render_e, experts_of=experts_of,
-                                render_g=render_g, global_rows=info.get("global_rows"))
+                                render_g=render_g, global_rows=info.get("global_rows"),
+                                quant=_r.get("quant") or None)
 
     out.append("")
     out.append("  等价类")
