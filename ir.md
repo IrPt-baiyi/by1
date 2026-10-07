@@ -178,7 +178,7 @@ Block 0 + 1.1 做完，必须**同时**满足：
 | **Block 1.1** MoE | ✅ | `by1diff mixtral-shaped` = **4.172e-07** |
 | **Block 1.2** 注意力机制 + YaRN | ✅ | `by1diff gpt-oss-shaped` = **2.384e-07** |
 | Block 1.3 GDN | ✅ | `by1diff qwen3-next-shaped` = **1.788e-07**，对 `Qwen3NextForCausalLM`。3 层线性 + 1 层全量的混合栈，**第一个验证过端到端的带状态模型** |
-| Block 2 状态与内存 | ⬜ | |
+| Block 2 状态与内存 | ✅ | `by1mem.py` 从 IR 推逐层内存计划；`qwen3-next-shaped` **4/4 层推算 = 实测**。GPT-OSS-120B @128K = **4.6 GiB**，把滑窗当全量会高估 **2.00×** |
 | Block 3a 自建执行器 | ⬜ | 用来检验 IR 够不够，比 3b 便宜一个数量级 |
 | Block 3b 目标 llama.cpp | ⬜ | **1.md 说的"上千行"就是这里** |
 | Block 4 量化布局 | ⬜ | 导出参数：`--quant mxfp4` |
@@ -205,12 +205,29 @@ python by1diff.py qwen3-next-shaped.by1   # 1.788e-07   线性注意力 + 混合
 
 ### 已知待办
 
-1. **`swiglu_limit` 在 GPT-OSS 上还没验**（`gpt-oss-shaped` 里开了，但参考的 `limit` 是硬编码 7.0，
-   我没单独测过非默认值）。
-2. **反向没做**：1.md 说"前向与反向必须数值一致"，目前只对了前向。
-3. **多栈 / 跨栈投影**没有判卷人（本地没有 DeepSeek 参考实现）。
-4. **`block 2` 状态与内存**：GDN 的递归状态现在量出来了（256 个数，与序列长度无关），
-   但还没进 `by1oracle` 的对照。
+1. **反向没做**：1.md 说"前向与反向必须数值一致"，目前只对了前向。
+2. **多栈 / 跨栈投影**没有判卷人（本地没有 DeepSeek 参考实现）。
+3. **`swiglu_limit` 在 GPT-OSS 上还没验**（参考的 `limit` 是硬编码 7.0）。
+4. **`by1mem` 只接了 qwen3_next 的量测路径**，其它族只出计划不核对。
+5. **Block 3** 还没开始。3a（自建执行器）用来检验 IR 够不够，比 3b（llama.cpp）便宜一个数量级。
+
+### 内存计划（Block 2 的产出）
+
+```
+python by1mem.py qwen3-next-shaped.by1 --seq 4096 --seq2 16384 --measure
+python by1mem.py gpt-oss-120b.by1 --seq 131072
+```
+
+两种状态，两种增长方式：
+
+| | |
+|---|---|
+| `kv_cache` | 每 token 线性增长；滑窗时封顶在 `window-1` |
+| `recurrent` + `conv_history` | **固定大小，与序列长度无关** —— 线性注意力的全部含义 |
+
+**GDN 层有两个状态**，这是实测逼出来的：delta 规则的矩阵 **加上** 短卷积的历史
+（而且是按 `conv_kernel` 步分配，不是 `kernel-1` 步）。只算前者会少 64 个元素/层。
+
 
 ### 判卷人踩过的坑（写下来免得再踩）
 
