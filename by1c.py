@@ -86,23 +86,32 @@ static void rope(float *q, float *k, int n, int nh, int nkv, int hd,
                  float base, int pairing, float scale, int nrot,
                  int yon, float yfac, int yorig, float ybf, float ybs,
                  int ytrunc) {
+    /* 全程 float64 —— numpy 那边是 float64，用 float32 算会把 ramp 的
+       过渡带挪一点点，位置 0 上看不出来，多了就累积成 1e-3 量级。 */
+    const double PI2 = 6.283185307179586;
     int half = hd / 2;
     float *inv = (float *)malloc(sizeof(float) * half);
+    double dlo = 0.0, dhi = 1.0;
+    if (yon) {
+        dlo = ((double)hd * log((double)yorig / ((double)ybf * PI2)))
+              / (2.0 * log((double)base));
+        dhi = ((double)hd * log((double)yorig / ((double)ybs * PI2)))
+              / (2.0 * log((double)base));
+        if (ytrunc) { dlo = floor(dlo); dhi = ceil(dhi); }
+        if (dlo < 0.0) dlo = 0.0;
+        if (dhi > (double)(hd - 1)) dhi = (double)(hd - 1);
+        if (dlo == dhi) dhi += 0.001;
+    }
     for (int i = 0; i < half; i++) {
-        float p = powf(base, -2.0f * i / hd);
-        if (!yon) { inv[i] = p; continue; }
-        float lo = (hd * logf((float)yorig / (ybf * 2.0f * 3.14159265358979f)))
-                   / (2.0f * logf(base));
-        float hi = (hd * logf((float)yorig / (ybs * 2.0f * 3.14159265358979f)))
-                   / (2.0f * logf(base));
-        if (ytrunc) { lo = floorf(lo); hi = ceilf(hi); }
-        if (lo < 0.f) lo = 0.f;
-        if (hi > hd - 1) hi = (float)(hd - 1);
-        if (lo == hi) hi += 0.001f;
-        float r = (i - lo) / (hi - lo);
-        if (r < 0.f) r = 0.f;
-        if (r > 1.f) r = 1.f;
-        inv[i] = (1.0f / (yfac * p)) * r + (1.0f / p) * (1.f - r);
+        double p = pow((double)base, -2.0 * (double)i / (double)hd);
+        if (!yon) { inv[i] = (float)p; continue; }
+        double r = ((double)i - dlo) / (dhi - dlo);
+        if (r < 0.0) r = 0.0;
+        if (r > 1.0) r = 1.0;
+        /* p 已经是 1/pos（pos = base^(2i/hd)），所以插值项是 p/fac，
+           不是 1/(fac*p) —— 后者等于 pos/fac，整个反了。
+           非 YaRN 的情况恰好退化成 p，所以只有 YaRN 的模型才暴露这个错。 */
+        inv[i] = (float)((p / (double)yfac) * r + p * (1.0 - r));
     }
     int nhalf = nrot / 2;
     for (int pos = 0; pos < n; pos++) {

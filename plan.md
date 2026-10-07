@@ -51,10 +51,17 @@
 
 **验收**：`by1c.py qwen3-next-shaped.by1` 和 `by1c.py gpt-oss-shaped.by1` 都 PASS。
 
-**进度**：已加 MoE / sink / attn_bias / YaRN / partial。
-`llama-shaped` 2.241e-07 ✅、`mixtral-shaped` 1.744e-07 ✅、
-`gpt-oss-shaped` **3.546e-03 ❌**（从 0.758 降到这里，还差一个数量级到 1e-4）。
-`qwen3-next-shaped` 还没动（缺 GDN 的 delta 规则与 conv 状态）。
+**进度**：MoE / sink / attn_bias / YaRN / partial 都已加上。
+`llama-shaped` 2.241e-07 ✅、`mixtral-shaped` 1.744e-07 ✅、`gpt-oss-shaped` **7.407e-08 ✅**。
+**只剩 `qwen3-next-shaped`**（缺 GDN 的 delta 规则与 conv 状态）。
+
+**YaRN 那个 bug 值得记**：C 里我把 `1/(fac*pos)` 写成了 `1/(fac*p)`，而 `p` 已经是 `1/pos` ——
+于是插值项变成 `pos/fac` 而不是 `p/fac`，**整个反了**。
+非 YaRN 的情况恰好退化成 `p`，所以只有 YaRN 的模型才暴露它。
+定位方式：把 sink / YaRN 分别关掉做二分，`去 YaRN` 那一版直接 PASS。
+
+**教训**：同一个公式用两种语言各写一遍时，**变量名相同不代表含义相同**。
+numpy 里的 `pos` 和 C 里的 `p` 是倒数关系，我照着"看起来一样"抄了下来。
 
 **gpt-oss 剩下的 3.5e-3 嫌疑**（按可能性排）：
 1. YaRN 里 `lo/hi` 用 float32 的 `logf` 算，而 numpy 用 float64 —— 会移动 ramp 的过渡带
