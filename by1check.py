@@ -693,6 +693,9 @@ def check(path: str) -> Tuple[Report, dict]:
     stacks = scope.kids("stack")
     alias = {}
     expansion: Dict[str, List[Rec]] = {}
+    # (栈, 层号, 机制) -> {属性: 值}
+    overrides: Dict[Tuple[str, int, str], Dict[str, str]] = {}
+    pending_ov: List[tuple] = []
     total_layers = 0
     for st in stacks:
         if st.alias:
@@ -710,6 +713,37 @@ def check(path: str) -> Tuple[Report, dict]:
             continue
         expansion[st.name] = ex
         total_layers += len(ex)
+
+        # 逐层属性覆盖：`main[3..44] : MoE.experts = [255, 266, ...]`
+        # 值按被选中的层顺序分配。逐层变化的专家数、swiglu_limit 都靠它。
+        for _k, _v, _ln in st.entries:
+            _m = re.match(r"^([A-Za-z_]\w*)\s*\[\s*(.*?)\s*\]$", _k)
+            if not _m:
+                rep.add(W, _ln, "override",
+                        f"stack {st.name} 里的条目 '{_k}' 不是逐层覆盖"
+                        f"（要写成像 main[3..44] : MoE.experts = [...]）")
+                continue
+            _sn, _sel = _m.group(1), _m.group(2)
+            if alias.get(_sn, _sn) != st.name:
+                rep.add(E, _ln, "override",
+                        f"逐层覆盖 '{_k}' 指的是栈 '{_sn}'，但它写在 stack {st.name} 里")
+                continue
+            _mq = re.match(r"^([A-Za-z_]\w*)\.([A-Za-z_]\w*)\s*=\s*(.*)$", _v)
+            if not _mq:
+                rep.add(E, _ln, "override",
+                        f"逐层覆盖 '{_k}' 的值要写成 <机制>.<属性> = [...]")
+                continue
+            _mech, _attr, _vals = _mq.group(1), _mq.group(2), _mq.group(3).strip()
+            if not (_vals.startswith("[") and _vals.endswith("]")):
+                rep.add(E, _ln, "override",
+                        f"逐层覆盖 '{_k}' 的值必须是列表")
+                continue
+            if _mech not in mechs:
+                rep.add(E, _ln, "override", f"逐层覆盖引用了未声明的机制 '{_mech}'")
+                continue
+            _items = [x.strip() for x in split_top(_vals[1:-1]) if x.strip()]
+            # resolve_attrs 还没定义，先把原始的攒起来，等它可用再分配
+            pending_ov.append((st.name, _sel, _mech, _attr, _items, _ln, _k))
         if st.decl_len is not None and st.decl_len != len(ex):
             rep.add(E, st.line, "layers",
                     f"stack {st.name} 声明 {st.decl_len} 层，pattern 展开出 {len(ex)} 层")
@@ -941,6 +975,20 @@ def check(path: str) -> Tuple[Report, dict]:
         return [b for (sn, pred, b) in attach_rules
                 if sn == stack_name and pred(li, attrs)]
 
+    # 逐层覆盖的分配 —— 必须等 resolve_attrs 可用（它选择哪些层要按属性判断）
+    for _sn, _sel, _mech, _attr, _items, _ln, _k in pending_ov:
+        _ex = expansion.get(_sn, [])
+        _pred = make_layer_pred(_sel)
+        _hit = [i for i, r in enumerate(_ex)
+                if _pred(i, resolve_attrs(mechs[r.name], r.attrs)
+                         if r.name in mechs else {})]
+        if len(_hit) != len(_items):
+            rep.add(E, _ln, "override",
+                    f"逐层覆盖 '{_k}' 选中 {len(_hit)} 层，但给了 {len(_items)} 个值")
+            continue
+        for _i, _val in zip(_hit, _items):
+            overrides.setdefault((_sn, _i, _mech), {})[_attr] = _val
+
     classes: Dict[str, Dict[tuple, dict]] = {}
     layer_seq: List[tuple] = []
     for st in stacks:
@@ -949,6 +997,9 @@ def check(path: str) -> Tuple[Report, dict]:
             if m is None:
                 continue
             attrs = resolve_attrs(m, r.attrs)
+            _ov = overrides.get((st.name, li, r.name))
+            if _ov:
+                attrs.update(_ov)
             key = key_of(r.name, attrs)
             layer_seq.append((st.name, r.name, dict(attrs), key,
                               attached_at(st.name, li, attrs)))
@@ -961,14 +1012,17 @@ def check(path: str) -> Tuple[Report, dict]:
     for (sn, pred, base) in attach_rules:
         if base in classes or base not in mechs:
             continue
-        n = 0
+        buckets = {}
         for li, r in enumerate(expansion.get(sn, [])):
             a = resolve_attrs(mechs[r.name], r.attrs) if r.name in mechs else {}
-            if pred(li, a):
-                n += 1
-        attrs = resolve_attrs(mechs[base], {})
-        classes.setdefault(base, {})[key_of(base, attrs)] = {
-            "count": n, "attrs": attrs}
+            if not pred(li, a):
+                continue
+            at = dict(resolve_attrs(mechs[base], {}))
+            at.update(overrides.get((sn, li, base), {}))
+            kk = key_of(base, at)
+            buckets.setdefault(kk, {"count": 0, "attrs": at})
+            buckets[kk]["count"] += 1
+        classes.setdefault(base, {}).update(buckets)
 
     # 2) 读契约
     tb = scope.first("tensors")
@@ -1443,11 +1497,12 @@ def check(path: str) -> Tuple[Report, dict]:
         rep.add(I, 0, "todo", f"未填占位符 {nq} 处（?）—— 文件尚未完成")
 
     layer_out = []
-    for (s, m, a, k, atts) in layer_seq:
+    for _li, (s, m, a, k, atts) in enumerate(layer_seq):
         entry = [(m, r) for r in class_rows.get((m, k), [])]
         for am in atts:
-            entry += [(am, r) for r in
-                      class_rows.get((am, key_of(am, resolve_attrs(mechs[am], {}))), [])]
+            _at = dict(resolve_attrs(mechs[am], {}))
+            _at.update(overrides.get((s, _li, am), {}))
+            entry += [(am, r) for r in class_rows.get((am, key_of(am, _at)), [])]
         entry += [("layer", r) for r in layer_rows]
         layer_out.append((s, m, a, entry))
 
