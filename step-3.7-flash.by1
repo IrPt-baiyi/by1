@@ -21,6 +21,7 @@ model Step-3.7-Flash-180B-LynnStyle {
     n_layer = 45
     vocab   = 128896
     rms_eps = 1e-05
+    d_ff_shared = 1280
   }
 
   # 全量层 64 个头、滑窗层 96 个头 —— 同一族、不同结构属性。
@@ -107,13 +108,15 @@ model Step-3.7-Flash-180B-LynnStyle {
       gate_proj.weight  : (experts, hidden, d_model)
       up_proj.weight    : (experts, hidden, d_model)
       down_proj.weight  : (experts, d_model, hidden)
-      share_gate.weight : (shared_hidden, d_model)
-      share_up.weight   : (shared_hidden, d_model)
-      share_down.weight : (d_model, shared_hidden)
     }
     layer {
       input_layernorm.weight           : (d_model,)
       post_attention_layernorm.weight  : (d_model,)
+      # 共享专家在张量里是**层一级**的：model.layers.N.share_expert.*
+      # 不在 moe. 前缀下面。layer 作用域的前缀是空的，正好放得下。
+      share_expert.gate_proj.weight : (d_ff_shared, d_model) unless MoE
+      share_expert.up_proj.weight   : (d_ff_shared, d_model) unless MoE
+      share_expert.down_proj.weight : (d_model, d_ff_shared) unless MoE
     }
     global {
       embed.weight      : (vocab, d_model)
@@ -145,9 +148,6 @@ model Step-3.7-Flash-180B-LynnStyle {
         gate_proj.weight  = gate_proj.weight,
         up_proj.weight    = up_proj.weight,
         down_proj.weight  = down_proj.weight,
-        share_gate.weight = share_expert.gate_proj.weight,
-        share_up.weight   = share_expert.up_proj.weight,
-        share_down.weight = share_expert.down_proj.weight,
         embed.weight      = model.embed_tokens.weight,
         final_norm.weight = model.norm.weight
       }

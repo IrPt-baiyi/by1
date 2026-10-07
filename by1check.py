@@ -1078,7 +1078,8 @@ def check(path: str) -> Tuple[Report, dict]:
                         s2 = re.sub(r"\b" + re.escape(i) + r"\b", _fmt(sym0[i]), s2)
                 v = eval_num(s2)
                 comps.append(_fmt(v) if v is not None else s2.replace(" ", ""))
-            res.append((lname, "(" + ", ".join(comps) + ")", "", pe))
+            # guard 留着 —— layer 作用域用它做「只有挂了某机制才有这个张量」
+            res.append((lname, "(" + ", ".join(comps) + ")", guard, pe))
         return res
 
     layer_rows = _flat_rows(contracts.get("layer", []))
@@ -1503,7 +1504,12 @@ def check(path: str) -> Tuple[Report, dict]:
             _at = dict(resolve_attrs(mechs[am], {}))
             _at.update(overrides.get((s, _li, am), {}))
             entry += [(am, r) for r in class_rows.get((am, key_of(am, _at)), [])]
-        entry += [("layer", r) for r in layer_rows]
+        for _r in layer_rows:
+            _gd = _r[2]
+            if _gd is not None and _gd not in atts:
+                continue          # 这层没挂那个机制，就没有这个张量
+            entry.append(("layer", (_r[0], _r[1],
+                                    (f"仅当挂载 {_gd}" if _gd else ""), _r[3])))
         layer_out.append((s, m, a, entry))
 
     # ---- 汇报 -----------------------------------------------------
