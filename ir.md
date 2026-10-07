@@ -239,3 +239,121 @@ python by1mem.py gpt-oss-120b.by1 --seq 131072
 - **自己写的探针也会坏**：出现过"两个零在互相比"和"设了一边没设另一边"，两次都差点得出错误结论。
   **加可证伪检查：把被测的那条路径关掉，必须对不上。**
 
+
+---
+
+## 9. 三个后端（Block 3a / 3b 之后）
+
+> **"后端无关"这句话只有一个后端的时候是没被检验过的** —— 它可能只是恰好长得像 PyTorch。
+
+| 后端 | 判卷人 | 说明 |
+|---|---|---|
+| `by1codegen.py` | transformers 的参考实现 | 生成真 `nn.Module`，可 `.backward()` |
+| `by1exec.py` | 与 PyTorch 后端逐位对拍 | 纯 NumPy，没有框架 |
+| `by1c.py` | 与 NumPy 后端逐位对拍 | 生成 C → gcc 编译 → 运行 |
+
+**五个模型 × 三个后端：**
+
+| 模型 | C↔NumPy | NumPy↔PyTorch | PyTorch↔参考 |
+|---|---|---|---|
+| llama-shaped | 2.241e-07 | 2.505e-07 | 4.470e-07 |
+| mixtral-shaped | 1.744e-07 | 2.340e-07 | 4.172e-07 |
+| gpt-oss-shaped | 7.407e-08 | 1.028e-07 | 2.384e-07 |
+| qwen3-next-shaped | 2.990e-06 | 2.513e-06 | 1.788e-07 |
+| **mla-shaped** | **3.945e-07** | **4.992e-07** | **0.000e+00** |
+
+反向：四模型梯度全部在阈值内（39/39 · 35/35 · 31/31 · 62/62）。
+
+---
+
+## 10. 真实模型的产物对拍（`.by1` 只是描述，产物才算数）
+
+| 模型 | 产物 | 结果 |
+|---|---|---|
+| ling-3.0-tiny | HF 张量 | **9283 / 9283** |
+| laguna-xs-2.1 | HF 张量 | **30430 / 30430** |
+| gpt-oss-120b | GGUF + HF | **687 / 687** 两边 |
+| gemma-4-31b | config + GGUF | **36/36** · **530/530** |
+| instella-3b | config + HF 张量 | **21/21** · **399/399** |
+| step-3.7-flash | HF 张量 | **728 / 753**（缺的 25 个在坏分片里） |
+
+---
+
+## 11. MLA —— 第一族"要新增机制"而不是加属性的东西
+
+判卷人是 **transformers 的 `DeepseekV3Attention`**。它和 Ling 的 MLA 结构同构，
+7 个张量形状逐个相同。**别人写的，不是我自己写的参考。**
+
+```
+python by1mla.py
+  pairing=interleaved  绝对差 0.000e+00   [一致]
+  pairing=half         绝对差 6.298e-02   [不一致]
+```
+
+MLA 与 GQA 的根本区别：**`k_rot` 是单头的**，RoPE 只作用在解耦出来的
+`qk_rope` 维上，然后广播到所有头。cache 也是压缩的（`c_kv + k_rot`）。
+
+### 这一族压出来的三个 bug
+
+1. **C 的 `attention()` 假定 Q/K 头宽 = V 头宽。** MLA 是 48 vs 32，于是 V 被按
+   Q/K 的步长读 —— **堆越界，0xC0000005**。加了独立的 `vd` 参数。
+2. **`rope_rows` 拿行号当位置。** q 的行号是 `t*nh + h`，位置应该是 `t`（行号除以每位置行数）。
+3. **`rmsnorm` 把 eps 写死 1e-5**，而 mla-shaped 是 1e-6 —— 差 1.5e-04。
+
+### 还有一个不报错的
+
+**三个后端的层归一化全都无视 `.by1` 里的 `rms_eps`，各自写死 1e-5。**
+所以它们"一致地错"，互相对拍全绿。
+实测 llama/mixtral/gpt-oss/qwen3-next 恰好都是 1e-5，**而 gemma / laguna / ling 声明的是 1e-6**。
+现在 `Norm` op 带上 `eps`，三个后端都从描述里取。
+
+---
+
+## 12. 属性表在长（最该盯的一个数）
+
+```
+Attention  sink · kv_tie · head_gate · gate_act · q_gate · partial · qk_norm · rope_scale
+MoE        routing · expert_bias · router_bias · shared_gate · score_bias
+           n_group · topk_group（分组路由，只进契约）
+Linear     decay · shortconv · bounded_by · conv_kernel
+MLA        q_lora · kv_lora · qk_nope · qk_rope · v_dim
+```
+
+> **如果它不收敛，"族"就退化成"每个模型一套参数块"，只是换了个更好看的写法。**
+
+现在有六个真实模型的数据。**MLO 是第一个真的新增了一族、而不是加属性的。**
+
+---
+
+## 13. 明确拒绝的东西（绝不悄悄生成错的）
+
+```
+qk_norm = full       Instella 是整宽归一化 [2560]，不是按头 [80]
+KDA                  Ling 的线性注意力 —— 当成 Linear 会生成一个 GDN
+noaux_tc 分组路由     Ling 的 sigmoid 打分 + 分组 top-k
+MTP / NextN          Step-3.7 的三个多步预测头
+```
+
+**「名字一样含义不同」是今晚最反复出现的一类 bug：**
+
+| | 为什么一直没露 |
+|---|---|
+| YaRN 的插值项写成 `1/(fac·p)` | 非 YaRN 时恰好退化成 `p` |
+| GDN 的卷积就地覆写了还要读的缓冲 | 另一种写法也对 |
+| 部分 RoPE 的频率按 `head_dim` 算 | 非 partial 时两者相同 |
+| `interleaved` 指**输入**交错而非输出 | 只有 Ling 用这个值 |
+| 门控激活：Laguna `softplus` / Ling `sigmoid` | 都叫 `head_gate` |
+| `render_e` 的闭包晚绑定 | 只有同时声明 `expert_name` 和 `global_name` 才触发 |
+
+**共同点：全都是"看着对"，而且都能编译、能运行、能产出看起来正常的结果。**
+
+---
+
+## 14. `norm_eps` 这个 bug 出现了三次
+
+1. GDN 的 `norm_eps` 写死 1e-6，而 RMSNorm 那边是 1e-5 —— 修了，**注释还留着**
+2. MLA 的 compile_ir 分支又写死 1e-5 —— **在注释旁边重犯**
+3. C 的 `rmsnorm` 写死 1e-5
+
+> **知道一个 bug 存在、甚至把教训写成了注释，都不妨碍在新代码里重犯。**
+> 注释救不了，只有"从模型配置取值"这个结构性做法能救。
