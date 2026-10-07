@@ -409,14 +409,15 @@ def main(argv):
             _r = rules.get(backend) or {}
             render_e = None
             if _r.get("expert_name"):
-                tpl = _r["expert_name"]
-                render_e = lambda i, s, m, l, e: bc.render_name(
-                    dict(_r, name=tpl), i, s, m, l, e)
+                # tpl 必须绑成默认参数 —— 下面 global_name 那段会复用同一个变量名，
+                # 而闭包是调用时才读它的，会把专家名悄悄退化成裸的逻辑名。
+                render_e = (lambda i, s, m, l, e, _t=_r["expert_name"]:
+                            bc.render_name(dict(_r, name=_t), i, s, m, l, e))
             render_g = None
             if _r.get("global_name"):
-                tpl = _r["global_name"]
-                render_g = lambda l: bc.render_name(
-                    dict(_r, name=tpl), 0, "<global>", "global", l)
+                render_g = (lambda l, _t=_r["global_name"]:
+                            bc.render_name(dict(_r, name=_t), 0, "<global>",
+                                           "global", l))
             experts_of = {}
             for mn, a in (info.get("mech_attrs") or {}).items():
                 try:

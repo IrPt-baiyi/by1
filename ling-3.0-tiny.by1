@@ -1,0 +1,210 @@
+# ── ling-3.0-tiny.by1 ─────────────────────────────────────────────────
+# InclusionAI Ling-3.0-tiny（BailingMoeV3 / model_type = bailing_hybrid）。
+#
+# 这个案例压的是 by1 **完全没有**的东西：
+#   · MLA（低秩压缩的注意力）—— by1 里一样都没有
+#   · KDA（Kimi Delta Attention）—— 和 GDN 同族但张量集不同
+#   · noaux_tc 分组路由 + sigmoid 打分
+#
+# 事实来源：
+#   refs/inclusionAI_Ling-3.0-tiny.config.json
+#   refs/ling-3.0-tiny.index.json        9283 个权重的名字
+#   以及 2 个分片的头（层 0 / 层 3 / 层 23 的形状）
+#
+# 结构（全部从产物读出来，不是从 README）：
+#   24 层 = 6 × (3 KDA + 1 MLA)      ← layer_group_size = 4，MLA 在 3,7,11,15,19,23
+#   层 0 稠密（first_k_dense_replace = 1），层 1-23 MoE
+#   所有 MoE 层都是 128 个专家（384 = 128 × 3，逐专家存）
+
+model Ling-3.0-tiny {
+  arch    bailing_hybrid
+  ctx     131072
+
+  hparams {
+    d_model     = 1536
+    n_layer     = 24
+    vocab       = 157184
+    rms_eps     = 1e-06
+    d_ff        = 4608          # 层 0 的稠密 FFN
+    d_attn      = 2048          # KDA 的 q/k/v 宽度 = 16 × 128
+    k_heads     = 16
+    kv_lora     = 512
+    q_lora      = 256
+    qk_head     = 192           # = qk_nope 128 + qk_rope 64
+    qk_rope     = 64
+    v_dim       = 128
+    d_ff_moe    = 512
+    d_ff_shared = 512
+  }
+
+  # ── KDA：短卷积 + delta 规则。和 GDN 同族，但张量集更细 ────────────
+  # 三个卷积是分开的（q/k/v_conv1d），不是一条融合卷积；
+  # 比 GDN 多了 f_proj 和 o_norm。
+  mech KDA : Linear {
+    heads       = { q = 16, kv = 16, head_dim = 128 }
+    k_heads     = 16
+    v_heads     = 16
+    k_dim       = 128
+    v_dim       = 128
+    conv_kernel = 4
+    head_gate   = per_element     # 实测 g_proj [2048, 1536] —— 整宽，不是按头
+  }
+
+  # ── MLA：低秩压缩的注意力 ─────────────────────────────────────────
+  # ⚠️ by1 里这是**新的机制**。这里只把它的**张量契约**写下来（能对拍），
+  #    它的计算 by1 还没有 —— codegen 会明确拒绝，不会悄悄按普通注意力生成。
+  mech MLA : Attention {
+    heads      = { q = 16, kv = 16, head_dim = 192 }
+    q_lora     = 256
+    kv_lora    = 512
+    qk_head    = 192
+    qk_nope    = 128
+    qk_rope    = 64
+    v_dim      = 128
+    head_gate  = per_head         # 实测 g_proj [16, 1536] —— 每头一个
+  }
+
+  mech Dense : FFN {
+    hidden     = 4608
+    layer_kind = dense
+  }
+
+  # noaux_tc 分组路由：sigmoid 打分 + 分组 top-k + 无辅助损失
+  mech MoE : MoE {
+    experts       = 128
+    top_k         = 8
+    n_group       = 8
+    topk_group    = 4
+    hidden        = 512
+    shared        = 1
+    shared_hidden = 512
+    score_bias    = true          # 实测 mlp.gate.expert_bias
+    routing       = sigmoid_group_topk
+    routed_scale  = 2.5
+    layer_kind    = sparse
+    structural    = [ experts, hidden, shared_hidden, n_group, topk_group ]
+  }
+
+  schedule {
+    kda   = 3 * KDA
+    mla   = 1 * MLA
+    block = kda + mla
+  }
+
+  stack main {
+    pattern     = 6 * block
+    main[0]     >> Dense
+    main[1..23] >> MoE
+  }
+
+  position {
+    # partial_rotary_factor 0.5 · rope_interleave · 只对 MLA 层用
+    default = rope(base = 6000000, pairing = interleaved, partial = 0.5)
+  }
+
+  tensors {
+    KDA {
+      q_proj.weight   : (d_attn, d_model)
+      k_proj.weight   : (d_attn, d_model)
+      v_proj.weight   : (d_attn, d_model)
+      q_conv1d.weight : (d_attn, 1, conv_kernel)
+      k_conv1d.weight : (d_attn, 1, conv_kernel)
+      v_conv1d.weight : (d_attn, 1, conv_kernel)
+      A_log           : (k_heads,)
+      dt_bias         : (d_attn,)
+      b_proj.weight   : (k_heads, d_model)
+      f_proj.weight   : (d_attn, d_model)
+      g_proj.weight   : (d_attn, d_model)
+      o_norm.weight   : (v_dim,)
+      o_proj.weight   : (d_model, d_attn)
+    }
+    MLA {
+      q_a_proj.weight           : (q_lora, d_model)
+      q_a_layernorm.weight      : (q_lora,)
+      q_b_proj.weight           : (k_heads * qk_head, q_lora)
+      kv_a_proj_with_mqa.weight : (kv_lora + qk_rope, d_model)
+      kv_a_layernorm.weight     : (kv_lora,)
+      kv_b_proj.weight          : (k_heads * (qk_nope + v_dim), kv_lora)
+      dense.weight              : (d_model, k_heads * v_dim)
+      g_proj.weight             : (k_heads, d_model)
+    }
+    Dense {
+      gate_proj.weight : (hidden, d_model)
+      up_proj.weight   : (hidden, d_model)
+      down_proj.weight : (d_model, hidden)
+    }
+    MoE {
+      gate.weight       : (experts, d_model)
+      gate.expert_bias  : (experts,)
+      gate_proj.weight  : (experts, hidden, d_model) per_expert
+      up_proj.weight    : (experts, hidden, d_model) per_expert
+      down_proj.weight  : (experts, d_model, hidden) per_expert
+      shared_experts.gate_proj.weight : (shared_hidden, d_model)
+      shared_experts.up_proj.weight   : (shared_hidden, d_model)
+      shared_experts.down_proj.weight : (d_model, shared_hidden)
+    }
+    layer {
+      input_layernorm.weight          : (d_model,)
+      post_attention_layernorm.weight : (d_model,)
+    }
+    global {
+      embed.weight      : (vocab, d_model)
+      final_norm.weight : (d_model,)
+      lm_head.weight    : (vocab, d_model)
+    }
+  }
+
+  # ⚠️ 缺口：**MLA 的计算**。张量名字和形状写下来了，但 by1 没有这个机制 ——
+  #    低秩 Q 压缩（q_a → norm → q_b）、KV 压缩 + 解耦的 rope 维、
+  #    kv_b 一次投影出 k_nope 和 v。这不是"改几个属性"，是要新增一族。
+  #
+  # ⚠️ 缺口：`topk_method = "noaux_tc"` 的分组路由语义（先分组、组内取 top-k、
+  #    sigmoid 打分、无辅助损失）。by1 现在只有 softmax_topk 和 topk_softmax 两种。
+  #
+  # ⚠️ 缺口：`max_window_layers = 20` —— 滑窗只作用于前若干层，是**层区间**约束。
+  #    这个用现有的选择器能写出来（如果是连续的），但语义上还没有"只对前 N 层开窗"的说法。
+
+  emit {
+    train -> torch.module {
+      name        = "model.layers.{i}.{scope}{physical}"
+      expert_name = "model.layers.{i}.mlp.experts.{expert}.{physical}"
+      global_name = "{physical}"
+      scope { KDA = attention., MLA = attention., Dense = mlp., MoE = mlp., layer = "", global = "" }
+      rename {
+        q_proj.weight   = q_proj.weight,
+        k_proj.weight   = k_proj.weight,
+        v_proj.weight   = v_proj.weight,
+        q_conv1d.weight = q_conv1d.weight,
+        k_conv1d.weight = k_conv1d.weight,
+        v_conv1d.weight = v_conv1d.weight,
+        A_log           = A_log,
+        dt_bias         = dt_bias,
+        b_proj.weight   = b_proj.weight,
+        f_proj.weight   = f_proj.weight,
+        g_proj.weight   = g_proj.weight,
+        o_norm.weight   = o_norm.weight,
+        o_proj.weight   = o_proj.weight,
+        q_a_proj.weight           = q_a_proj.weight,
+        q_a_layernorm.weight      = q_a_layernorm.weight,
+        q_b_proj.weight           = q_b_proj.weight,
+        kv_a_proj_with_mqa.weight = kv_a_proj_with_mqa.weight,
+        kv_a_layernorm.weight     = kv_a_layernorm.weight,
+        kv_b_proj.weight          = kv_b_proj.weight,
+        dense.weight              = dense.weight,
+        gate.weight       = gate.weight,
+        gate.expert_bias  = gate.expert_bias,
+        gate_proj.weight  = gate_proj.weight,
+        up_proj.weight    = up_proj.weight,
+        down_proj.weight  = down_proj.weight,
+        shared_experts.gate_proj.weight = shared_experts.gate_proj.weight,
+        shared_experts.up_proj.weight   = shared_experts.up_proj.weight,
+        shared_experts.down_proj.weight = shared_experts.down_proj.weight,
+        embed.weight      = model.word_embeddings.weight,
+        final_norm.weight = model.norm.weight,
+        lm_head.weight    = lm_head.weight,
+        input_layernorm.weight          = input_layernorm.weight,
+        post_attention_layernorm.weight = post_attention_layernorm.weight
+      }
+    }
+  }
+}
