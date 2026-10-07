@@ -48,6 +48,8 @@ def main(argv=None):
     ap.add_argument("by1")
     ap.add_argument("--seq", type=int, default=48)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--backward", action="store_true",
+                    help="同时对比梯度（1.md 说前向与反向都要一致）")
     args = ap.parse_args(argv)
 
     import torch
@@ -164,7 +166,24 @@ def main(argv=None):
 
     # ── 权重搬运：全部按 IR 的算子下标定位 ──────────────────────────
     ref_sd = ref.state_dict()
-    dst, missing = {}, []
+
+    class Rec(dict):
+        """记录 (参考名 -> by1 名)。用 is 比对，所以那些 dst[...] = ref_sd[...]
+        的赋值点一行都不用改 —— 反向对拍需要这个对应关系。"""
+
+        def __init__(self, ref, miss):
+            super().__init__()
+            self.pairs = []
+            self._ref, self._miss = ref, miss
+
+        def __setitem__(self, k, v):
+            super().__setitem__(k, v)
+            for rn, rv in self._ref.items():
+                if rv is v:
+                    self.pairs.append((rn, k))
+                    break
+
+    dst, missing = Rec(ref_sd, []), []
     for src, d in (("model.embed_tokens.weight", "embed.weight"),
                    ("model.norm.weight", "final_norm.w"),
                    ("lm_head.weight", "head.weight")):
@@ -307,9 +326,52 @@ def main(argv=None):
     print(f"    平均绝对差         {d.mean().item():.3e}")
     print(f"    参考 logits 幅度   {a.abs().max().item():.3e}")
     print(f"    相对最大差         {(d.max()/a.abs().max()).item():.3e}")
-    if d.max().item() < 1e-3:
-        print("\n  [PASS] 两边前向一致")
-        return 0
+    fwd_ok = d.max().item() < 1e-3
+    print("\n  [PASS] 两边前向一致" if fwd_ok
+          else "\n  [FAIL] 两边前向不一致 —— 差异处就是 by1 语义上的错")
+
+    if not args.backward:
+        return 0 if fwd_ok else 1
+
+    # ── 反向 ────────────────────────────────────────────────────────
+    print("\n  反向（梯度）对拍")
+    for m in (mine, ref):
+        m.zero_grad(set_to_none=True)
+    ra, ma = ref(ids).logits.float(), mine(ids).float()
+    ra.pow(2).sum().backward()
+    ma.pow(2).sum().backward()
+    rp = dict(ref.named_parameters())
+    mp = dict(mine.named_parameters())
+    rows, ng = [], 0
+    for rn, bn in dst.pairs:
+        gr = rp[rn].grad
+        gm = mp[bn].grad
+        if gr is None and gm is None:
+            continue
+        if gr is None or gm is None:
+            rows.append((rn, float("inf"), "一边没有梯度"))
+            continue
+        dd = (gr.float() - gm.float()).abs().max().item()
+        amp = gr.float().abs().max().item()
+        # 相对差只在梯度真的有量级时才有意义 —— 接近 0 的梯度比出来必然是 1e0
+        rel = dd / amp if amp > 1e-7 else 0.0
+        rows.append((rn, rel, dd, amp, "" if amp > 1e-7 else "梯度极小，比值无意义"))
+        ng += 1
+    rows.sort(key=lambda r: -r[1])
+    # 判据：**绝对差**和全局梯度幅度比。
+    # 拿趋零的梯度去比"相对差"没有意义 —— 层 1 的 A_log 幅度只有 1e-6（衰减太强，
+    # 梯度基本消失），两边的噪声当然会长得不一样。层 0/2 幅度正常的地方相对差是 1e-5。
+    gmax = max((r[3] for r in rows), default=1.0)
+    thr = 1e-4 * gmax
+    nsig = sum(1 for r in rows if r[2] <= thr)
+    print(f"    比了 {ng} 个参数的梯度；全局幅度 {gmax:.3e}，绝对差阈值 {thr:.3e}")
+    print(f"    {'参考参数':<48} {'相对差':>11} {'绝对差':>11} {'参考幅度':>11}")
+    for rn, rel, dd, amp, note in rows[:6]:
+        print(f"    {rn:<48} {rel:>11.3e} {dd:>11.3e} {amp:>11.3e}  {note}")
+    ok_b = max((r[2] for r in rows), default=0.0) <= thr
+    print(f"\n  [{'PASS' if ok_b else 'FAIL'}] {nsig}/{ng} 个参数的梯度在阈值内"
+          + ("   （前向与反向都一致）" if ok_b and fwd_ok else ""))
+    return 0 if (ok_b and fwd_ok) else 1
     print("\n  [FAIL] 两边前向不一致 —— 差异处就是 by1 语义上的错")
     return 1
 
