@@ -80,18 +80,40 @@ def rope_tables(head_dim, n, base, yarn=None):
 
 
 def apply_rope(x, cos, sin, pairing="interleaved"):
+    """两种配对约定，**必须和 by1codegen 那份逐字一致**：
+
+      half         对半进（x[i] 配 x[i+d/2]）、拼接着出
+      interleaved  奇偶进（x[2i] 配 x[2i+1]）、**拼接着出**（不是交错回去）
+
+    曾经这里写成 np.stack（交错出）而 PyTorch 那边也写成 stack —— 两边"一致地错"，
+    所以四个模型的 NumPy↔PyTorch 对拍全是绿的。改了一边之后护栏立刻变红。
+    """
     if pairing == "half":
         h = x.shape[-1] // 2
         x1, x2 = x[..., :h], x[..., h:]
         return np.concatenate([x1 * cos - x2 * sin, x1 * sin + x2 * cos], -1)
     x1, x2 = x[..., 0::2], x[..., 1::2]
-    return np.stack([x1 * cos - x2 * sin, x1 * sin + x2 * cos], -1).reshape(x.shape)
+    return np.concatenate([x1 * cos - x2 * sin, x1 * sin + x2 * cos], -1)
+
+
+def _qk_on(v):
+    """qk_norm 的取值不只有真假：off / per_head / full。
+
+    "off" 是**真值字符串** —— 直接做真值判断会永远成立，于是给 q/k
+    悄悄加一层本不该有的 RMSNorm。PyTorch 那边写的是 not in (off, "", None)，
+    所以只有别的后端会错。实测 llama-shaped 的 NumPy↔PyTorch
+    从 2.505e-07 变成 3.362e-03。
+    """
+    if v is None or v is False:
+        return False
+    return str(v).strip().lower() not in ("off", "", "none", "false", "0")
 
 
 # ── 每个 op 一个函数：签名统一 (params, attrs, inputs, d_model) ────
 
 def op_norm(P, a, ins, d):
-    return rms_norm(ins[0], P["w"], one_plus=a.get("one_plus", False))
+    return rms_norm(ins[0], P["w"], a.get("eps", 1e-5),
+                    a.get("one_plus", False))
 
 
 def op_add(P, a, ins, d):
@@ -127,7 +149,7 @@ def op_attention(P, a, ins, d):
             v = v + P["wv.bias"]
         v = v.reshape(b, n, a["kv"], a["head_dim"]).transpose(0, 2, 1, 3)
     k = kraw
-    if a.get("qk_norm"):
+    if _qk_on(a.get("qk_norm")):
         q = rms_norm(q, P["qn.w"], one_plus=a.get("norm_one_plus", False))
         k = rms_norm(k, P["kn.w"], one_plus=a.get("norm_one_plus", False))
     hd, part = a["head_dim"], a.get("rope_partial", 1.0)
@@ -165,12 +187,61 @@ def op_attention(P, a, ins, d):
     if gate is not None:
         o = o * (1.0 / (1.0 + np.exp(-gate)))
     if a.get("head_gate", "off") != "off":
-        g = np.log1p(np.exp(P["g_proj"] @ x.reshape(-1, d).T)).T.reshape(b, n, -1)
+        # 激活是机制属性：Laguna 用 softplus、Ling 用 sigmoid
+        _gg = P["g_proj"] @ x.reshape(-1, d).T
+        g = ((1.0 / (1.0 + np.exp(-_gg))) if a.get("gate_act") == "sigmoid"
+             else np.log1p(np.exp(_gg))).T.reshape(b, n, -1)
         o = (o.reshape(b, n, a["q"], hd) * g[..., None]).reshape(b, n, -1) \
             if a["head_gate"] == "per_head" else o * g
     o = o @ P["wo"].T
     if "wo.bias" in P:
         o = o + P["wo.bias"]
+    return o
+
+
+def op_mla(P, a, ins, d):
+    """MLA：低秩压缩的注意力。和 PyTorch 后端逐行对应。"""
+    x = ins[0]
+    b, n, _ = x.shape
+    nh, nope, nr = a["q"], a["qk_nope"], a["qk_rope"]
+    vd, kvl = a["v_dim"], a["kv_lora"]
+    _op = a.get("norm_one_plus", False)
+    _eps = a.get("norm_eps", 1e-5)
+
+    q = rms_norm(x @ P["q_a_proj"].T, P["q_a_layernorm.w"], _eps, _op)
+    q = (q @ P["q_b_proj"].T).reshape(b, n, nh, nope + nr).transpose(0, 2, 1, 3)
+    q_pass, q_rot = q[..., :nope], q[..., nope:]
+
+    ckv = x @ P["kv_a_proj_with_mqa"].T
+    c_kv, k_rot = ckv[..., :kvl], ckv[..., kvl:]
+    kv = rms_norm(c_kv, P["kv_a_layernorm.w"], _eps, _op) @ P["kv_b_proj"].T
+    kv = kv.reshape(b, n, nh, nope + vd).transpose(0, 2, 1, 3)
+    k_pass, v = kv[..., :nope], kv[..., nope:]
+
+    # k_rot 是单头的：RoPE 只作用在这 nr 维上，然后广播到所有头
+    k_rot = k_rot.reshape(b, 1, n, nr)
+    c, s = rope_tables(nr, n, a["rope_base"])
+    q_rot = apply_rope(q_rot, c, s, a.get("pairing", "interleaved"))
+    k_rot = apply_rope(k_rot, c, s, a.get("pairing", "interleaved"))
+    k_rot = np.broadcast_to(k_rot, k_pass.shape[:-1] + (nr,))
+
+    qq = np.concatenate([q_pass, q_rot], -1)
+    kk = np.concatenate([k_pass, k_rot], -1)
+    att = (qq @ kk.transpose(0, 1, 3, 2)) * (1.0 / np.sqrt(nope + nr))
+    idx = np.arange(n)
+    att = softmax(np.where(idx[None, :] <= idx[:, None], att, -np.inf), -1)
+    o = (att @ v).transpose(0, 2, 1, 3).reshape(b, n, nh * vd)
+
+    if a.get("head_gate", "off") != "off":
+        g = P["g_proj"] @ x.reshape(-1, d).T
+        g = (1.0 / (1.0 + np.exp(-g))) if a.get("gate_act") == "sigmoid" \
+            else np.log1p(np.exp(g))
+        o = o.reshape(b, n, nh, vd) * g.T.reshape(b, n, nh, 1)
+        o = o.reshape(b, n, nh * vd)
+
+    o = o @ P["dense"].T
+    if a.get("bias") and "dense.bias" in P:
+        o = o + P["dense.bias"]
     return o
 
 
@@ -302,7 +373,7 @@ def op_linear(P, a, ins, d):
 
 
 OPS = {"Norm": op_norm, "Add": op_add, "Attention": op_attention,
-       "FFN": op_ffn, "MoE": op_moe, "Linear": op_linear}
+       "FFN": op_ffn, "MoE": op_moe, "Linear": op_linear, "MLA": op_mla}
 
 
 # ── 执行器：按 IR 求值，不认机制名，只认 kind ──────────────────────
@@ -330,7 +401,7 @@ def shapes_of(ir):
                     if not a.get("kv_tie"):
                         out[pre + "wv.bias"] = (kv * hd,)
                     out[pre + "wo.bias"] = (d,)
-                if a.get("qk_norm"):
+                if _qk_on(a.get("qk_norm")):
                     out[pre + "qn.w"] = (hd,)
                     out[pre + "kn.w"] = (hd,)
                 if a.get("sink"):
@@ -338,6 +409,19 @@ def shapes_of(ir):
                 if a.get("head_gate", "off") != "off":
                     out[pre + "g_proj"] = ((q if a["head_gate"] == "per_head"
                                               else q * hd), d)
+            elif k == "MLA":
+                out[pre + "q_a_proj"] = (a["q_lora"], d)
+                out[pre + "q_a_layernorm.w"] = (a["q_lora"],)
+                out[pre + "q_b_proj"] = (a["q"] * a["head_dim"], a["q_lora"])
+                out[pre + "kv_a_proj_with_mqa"] = (a["kv_lora"] + a["qk_rope"], d)
+                out[pre + "kv_a_layernorm.w"] = (a["kv_lora"],)
+                out[pre + "kv_b_proj"] = (
+                    a["q"] * (a["qk_nope"] + a["v_dim"]), a["kv_lora"])
+                out[pre + "dense"] = (d, a["out_dim"])
+                if a["bias"]:
+                    out[pre + "dense.bias"] = (d,)
+                if a.get("head_gate", "off") != "off":
+                    out[pre + "g_proj"] = (a["q"], d)
             elif k == "FFN":
                 out[pre + "w1"] = (a["hidden"], d)
                 out[pre + "w2"] = (d, a["hidden"])

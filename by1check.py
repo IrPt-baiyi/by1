@@ -619,7 +619,11 @@ def expand_pattern(expr: str, named: Dict[str, List["Rec"]]) -> Optional[List["R
 
 E, W, I = "E", "W", "i"
 TOKEN_MIXER = {"Attention", "Sparse", "Linear", "SSM", "Vision", "Recurrent",
-               "MLA"}
+               "MLA",
+               # KDA（Kimi Delta Attention）：和 GDN 同族但**不是同一个东西** ——
+               # 三个独立卷积、f_proj、o_norm。当成 Linear 会生成一个 GDN，
+               # 那是个"看起来对但算错"的模型，所以给它自己的种类。
+               "KDA"}
 BUILTIN_ATTRS = {
     "mode", "window", "sink", "kv_tie", "head_dim", "kv", "kv_heads",
     "q", "q_heads", "v", "v_heads", "qk", "gate", "act", "activation",

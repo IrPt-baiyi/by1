@@ -1,0 +1,90 @@
+# ── mla-shaped.by1 ────────────────────────────────────────────────────
+# MLA 的最小可跑模型。
+#
+# 存在理由：Ling-3.0-tiny 里 MLA 和 KDA 混在一起，而 KDA 的计算 by1 还没有
+# （codegen 会明确拒绝，不会按 GDN 生成）。所以要把 MLA 单独拎出来，
+# 让它走完三个后端：PyTorch / NumPy / C。
+#
+#   python by1mla.py                对 DeepseekV3Attention 逐位对拍
+#   python by1exec.py mla-shaped.by1 --compare
+#   python by1c.py mla-shaped.by1 --gcc <gcc> --seq 16
+#
+# 维度取小值即可 —— 验的是语义，不是规模。
+
+model MLA-shaped {
+  arch  mla_shaped
+  ctx   1024
+
+  hparams {
+    d_model = 256
+    n_layer = 4
+    vocab   = 512
+    rms_eps = 1e-06          # MLA 的两个 latent norm 跟着它走
+  }
+
+  # 低秩压缩：q 走 96 维瓶颈、kv 压到 128；k_rot 单头共享（8 维）
+  mech MLA_ : MLA {
+    heads     = { q = 4, head_dim = 48 }
+    q_lora    = 96
+    kv_lora   = 128
+    qk_nope   = 40
+    qk_rope   = 8
+    v_dim     = 32
+    head_gate = per_head
+    gate_act  = sigmoid       # Ling 用 sigmoid；Laguna 的普通注意力用 softplus
+    structural = [ q, q_lora, kv_lora, qk_nope, qk_rope, v_dim, head_gate ]
+  }
+
+  mech MLP_ : FFN { hidden = 512 }
+
+  stack main {
+    pattern = 4 * MLA_
+    main[:] >> MLP_
+  }
+
+  position {
+    # MLA 的 rope 只作用在 qk_rope 那一段（8 维），是**奇偶进、拼接着出**
+    default = rope(base = 10000, pairing = interleaved)
+  }
+
+  tensors {
+    MLA_ {
+      q_a_proj.weight           : (q_lora, d_model)
+      q_a_layernorm.weight      : (q_lora,)
+      q_b_proj.weight           : (q * head_dim, q_lora)
+      kv_a_proj_with_mqa.weight : (kv_lora + qk_rope, d_model)
+      kv_a_layernorm.weight     : (kv_lora,)
+      kv_b_proj.weight          : (q * (qk_nope + v_dim), kv_lora)
+      dense.weight              : (d_model, q * v_dim)
+      g_proj.weight             : (q, d_model)
+    }
+    MLP_ {
+      gate_proj.weight : (hidden, d_model)
+      up_proj.weight   : (hidden, d_model)
+      down_proj.weight : (d_model, hidden)
+    }
+    layer {
+      attn_norm.weight : (d_model,)
+      mlp_norm.weight  : (d_model,)
+    }
+    global {
+      embed.weight      : (vocab, d_model)
+      final_norm.weight : (d_model,)
+      lm_head.weight    : (vocab, d_model)
+    }
+  }
+
+  emit {
+    train -> torch.module {
+      name        = "model.layers.{i}.{scope}{physical}"
+      global_name = "{physical}"
+      scope { MLA_ = self_attn., MLP_ = mlp., layer = "", global = "" }
+      rename {
+        attn_norm.weight = input_layernorm.weight,
+        mlp_norm.weight  = post_attention_layernorm.weight,
+        embed.weight      = model.embed_tokens.weight,
+        final_norm.weight = model.norm.weight
+      }
+    }
+  }
+}

@@ -40,14 +40,13 @@ model Ling-3.0-tiny {
   # ── KDA：短卷积 + delta 规则。和 GDN 同族，但张量集更细 ────────────
   # 三个卷积是分开的（q/k/v_conv1d），不是一条融合卷积；
   # 比 GDN 多了 f_proj 和 o_norm。
-  mech KDA : Linear {
-    heads       = { q = 16, kv = 16, head_dim = 128 }
+  # ⚠️ KDA 的计算 by1 还没有 —— codegen 会明确拒绝，不会按 GDN 生成。
+  mech KDA : KDA {
     k_heads     = 16
     v_heads     = 16
     k_dim       = 128
     v_dim       = 128
     conv_kernel = 4
-    head_gate   = per_element     # 实测 g_proj [2048, 1536] —— 整宽，不是按头
   }
 
   # ── MLA：低秩压缩的注意力 ─────────────────────────────────────────
@@ -155,9 +154,9 @@ model Ling-3.0-tiny {
     }
   }
 
-  # ⚠️ 缺口：**MLA 的计算**。张量名字和形状写下来了，但 by1 没有这个机制 ——
+  # ✅ MLA 的计算已实现（见 by1mla.py，对 DeepseekV3Attention 逐位一致）。
   #    低秩 Q 压缩（q_a → norm → q_b）、KV 压缩 + 解耦的 rope 维、
-  #    kv_b 一次投影出 k_nope 和 v。这不是"改几个属性"，是要新增一族。
+  #    kv_b 一次投影出 k_nope 和 v —— 这是 by1 的第一族新机制。
   #
   # ⚠️ 缺口：`topk_method = "noaux_tc"` 的分组路由语义（先分组、组内取 top-k、
   #    sigmoid 打分、无辅助损失）。by1 现在只有 softmax_topk 和 topk_softmax 两种。

@@ -38,7 +38,7 @@ def load_checker():
 
 # ── 支持矩阵 ────────────────────────────────────────────────────────
 
-SUPPORTED_KINDS = {"Attention", "FFN", "MoE", "Linear"}
+SUPPORTED_KINDS = {"Attention", "FFN", "MoE", "Linear", "MLA"}
 
 ATTRS = {
     "Attention": {"heads", "q", "kv", "head_dim", "v", "qk",
@@ -58,7 +58,10 @@ ATTRS = {
             "layer_kind", "structural",
             # Block 1.2：MoE 侧的机制属性
             "routing", "act", "swiglu_limit", "alpha", "expert_bias",
-            "shared_gate"},
+            "shared_gate",
+            # 分组路由（noaux_tc）的结构属性：只决定契约的等价类划分，
+            # 计算还没实现 —— 但声明出来不该报错
+            "n_group", "topk_group"},
     # MLA：低秩压缩的注意力（DeepSeek 提出）。
     # kv 被压到 c_kv，k_rot 是**单头**共享的 —— 这是它和 GQA 的根本区别。
     "MLA": {"heads", "q", "head_dim", "q_lora", "kv_lora",
@@ -383,7 +386,12 @@ def compile_ir(info: Dict[str, Any]) -> Dict[str, Any]:
             return out
 
         if mixer is not None:
-            n = {"mech": "RMSNorm", "kind": "Norm", "attrs": {"one_plus": norm_1p}}
+            n = {"mech": "RMSNorm", "kind": "Norm",
+     "attrs": {"one_plus": norm_1p,
+               # 层归一化的 eps **必须跟着模型的 rms_eps 走**。
+               # 三个后端原来各自写死 1e-5 —— 于是它们"一致地错"，
+               # 互相对拍全绿，却都不符合 .by1 里写的值。
+               "eps": float(_num(hp.get("rms_eps"), 1e-5))}}
             v = emit(n, [env])
             a = emit(mixer, [v])
             j = len(ops)
@@ -391,7 +399,12 @@ def compile_ir(info: Dict[str, Any]) -> Dict[str, Any]:
                         "inputs": [env, a], "outputs": [f"op{j}.out"]})
             env = f"op{j}.out"
         for am in attached:
-            n = {"mech": "RMSNorm", "kind": "Norm", "attrs": {"one_plus": norm_1p}}
+            n = {"mech": "RMSNorm", "kind": "Norm",
+     "attrs": {"one_plus": norm_1p,
+               # 层归一化的 eps **必须跟着模型的 rms_eps 走**。
+               # 三个后端原来各自写死 1e-5 —— 于是它们"一致地错"，
+               # 互相对拍全绿，却都不符合 .by1 里写的值。
+               "eps": float(_num(hp.get("rms_eps"), 1e-5))}}
             v = emit(n, [env])
             m = emit(am, [v])
             j = len(ops)
@@ -405,11 +418,19 @@ def compile_ir(info: Dict[str, Any]) -> Dict[str, Any]:
         mixer = one_mech(m, a, li)
         attached = [one_mech(am, defaults.get(am, {}), li) for am in atts]
         attached = [x for x in attached if x]
-        if mixer is None or mixer["kind"] not in ("Attention", "Linear"):
+        if mixer is None or mixer["kind"] not in ("Attention", "Linear", "MLA"):
             err(f"第 {li} 层没有可用的 token 混合器 —— 生成不出来")
             continue
         state = []
-        if mixer["kind"] == "Linear":
+        if mixer["kind"] == "MLA":
+            # MLA 的 cache 是**压缩的**：每个 token 只存 c_kv + k_rot，
+            # 不随头数增长 —— 这正是 MLA 存在的理由。
+            a = mixer["attrs"]
+            state.append({"kind": "kv_cache", "bounded_by": None,
+                          "dtype": "bf16", "reuse": "prefix",
+                          "shape": [a["kv_lora"] + a["qk_rope"]],
+                          "note": "压缩潜伏"})
+        elif mixer["kind"] == "Linear":
             # 第一个**真的带状态**的机制。而且它有**两个**状态：
             #   recurrent     delta 规则维护的矩阵 (k_dim, v_dim)
             #   conv_history  短卷积的滑动历史（kernel-1 步）
@@ -803,7 +824,8 @@ class MoE(nn.Module):
 
 
 def _mk_norm(attrs, d):
-    return RMSNorm(d, one_plus=attrs.get("one_plus", False))
+    return RMSNorm(d, eps=attrs.get("eps", 1e-5),
+                   one_plus=attrs.get("one_plus", False))
 
 
 def l2norm(x, dim=-1, eps=1e-6):

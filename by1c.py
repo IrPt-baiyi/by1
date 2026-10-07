@@ -25,6 +25,19 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 MANGLE = re.compile(r"[^0-9A-Za-z]")
 
 
+
+def _qk_on(v):
+    """qk_norm 的取值不只有真假：off / per_head / full。
+
+    "off" 是**真值字符串** —— 直接做真值判断会永远成立，于是给 q/k
+    悄悄加一层本不该有的 RMSNorm。PyTorch 那边写的是 not in (off, "", None)，
+    所以只有别的后端会错。实测 llama-shaped 的 NumPy↔PyTorch
+    从 2.505e-07 变成 3.362e-03。
+    """
+    if v is None or v is False:
+        return False
+    return str(v).strip().lower() not in ("off", "", "none", "false", "0")
+
 def load(name):
     spec = importlib.util.spec_from_file_location(
         name, os.path.join(HERE, name + ".py"))
@@ -44,12 +57,15 @@ static float *W;                 /* 所有权重，扁平存放 */
 #define P(nm) (W + OFF_##nm)
 #define N(nm) (LEN_##nm)
 
-static void rmsnorm(float *o, const float *x, const float *w, int n, int d, int op) {
+/* eps 必须由调用方传进来 —— 原来写死 1e-5，而 mla-shaped 的 rms_eps 是 1e-6。
+   误差 1.5e-04，而其它四个模型恰好都是 1e-5 所以一直没露。 */
+static void rmsnorm(float *o, const float *x, const float *w, int n, int d,
+                    int op, float eps) {
     for (int i = 0; i < n; i++) {
         const float *r = x + (size_t)i * d;
         float s = 0.f;
         for (int j = 0; j < d; j++) s += r[j] * r[j];
-        s = 1.0f / sqrtf(s / d + 1e-5f);
+        s = 1.0f / sqrtf(s / d + eps);
         float *q = o + (size_t)i * d;
         for (int j = 0; j < d; j++) q[j] = r[j] * s * (op ? (1.f + w[j]) : w[j]);
     }
@@ -430,13 +446,132 @@ static void qk_norm(float *q, float *k, const float *qn, const float *kn,
     }
 }
 
+
+/* mla() 会用到 attention()，而它定义在后面 —— 前置声明。 */
 static void attention(float *o, float *q, const float *k, const float *v,
-                      int n, int nh, int nkv, int hd, int od, int window,
+                      int n, int nh, int nkv, int hd, int vd, int window,
+                      const float *sink);
+
+/* 把 [rows, len] 的每一行做 RoPE。MLA 的 rope 只作用在解耦出来的那一段。 */
+static void rope_rows(float *x, int rows, int per, int len, float base,
+                      int interleaved) {
+    /* per = 每个位置占几行：q 是 [n, nh, nr] 所以 per=nh；k_rot 单头 per=1。
+       位置是**行号除以 per**，不是行号本身。
+       频率用 double 算 —— 主 rope() 也是这么做的，用 float 会差到 1e-4。 */
+    int half = len / 2;
+    double *inv = (double *)malloc(sizeof(double) * half);
+    for (int i = 0; i < half; i++)
+        inv[i] = 1.0 / pow((double)base, 2.0 * (double)i / (double)len);
+    for (int r = 0; r < rows; r++) {
+        float *v = x + (size_t)r * len;
+        float *tmp = (float *)malloc(sizeof(float) * len);
+        int pos = r / per;
+        for (int i = 0; i < half; i++) {
+            double ang = (double)pos * inv[i];
+            float ci = (float)cos(ang), si = (float)sin(ang);
+            /* interleaved：奇偶成对；否则前半配后半。两种都是串接着写回。 */
+            float x0 = interleaved ? v[2 * i] : v[i];
+            float x1 = interleaved ? v[2 * i + 1] : v[i + half];
+            tmp[i] = x0 * ci - x1 * si;
+            tmp[half + i] = x0 * si + x1 * ci;
+        }
+        memcpy(v, tmp, sizeof(float) * len);
+        free(tmp);
+    }
+    free(inv);
+}
+
+/* MLA：低秩压缩的注意力。k_rot 是**单头**的，转完广播到所有头。 */
+static void mla(float *o, const float *x, int n, int d,
+                int nh, int ql, int kl, int nope, int nr, int vd,
+                const float *wqa, const float *nqa, const float *wqb,
+                const float *wkva, const float *nkva, const float *wkvb,
+                const float *wd, const float *wg,
+                float neps, int one_plus, float base, int interleaved,
+                int sigmoid_gate) {
+    int qk = nope + nr;
+    float *qa  = (float *)malloc(sizeof(float) * n * ql);
+    float *qb  = (float *)malloc(sizeof(float) * n * nh * qk);
+    float *kva = (float *)malloc(sizeof(float) * n * (kl + nr));
+    float *ckv = (float *)malloc(sizeof(float) * n * kl);
+    float *kb  = (float *)malloc(sizeof(float) * n * nh * (nope + vd));
+    float *qr  = (float *)malloc(sizeof(float) * n * nh * nr);   /* 每个头一个 rope 段 */
+    float *kr  = (float *)malloc(sizeof(float) * n * nr);
+    float *qq  = (float *)malloc(sizeof(float) * n * nh * qk);
+    float *kk  = (float *)malloc(sizeof(float) * n * nh * qk);
+    float *vv  = (float *)malloc(sizeof(float) * n * nh * vd);
+
+    linear(qa, x, wqa, n, d, ql);
+    rmsnorm(qa, qa, nqa, n, ql, one_plus, neps);
+    linear(qb, qa, wqb, n, ql, nh * qk);
+
+    linear(kva, x, wkva, n, d, kl + nr);
+    for (int t = 0; t < n; t++) {
+        const float *r = kva + (size_t)t * (kl + nr);
+        memcpy(ckv + (size_t)t * kl, r, sizeof(float) * kl);
+        memcpy(kr + (size_t)t * nr, r + kl, sizeof(float) * nr);
+    }
+    rmsnorm(ckv, ckv, nkva, n, kl, one_plus, neps);
+    linear(kb, ckv, wkvb, n, kl, nh * (nope + vd));
+
+    /* 抠出 q 的 rope 段（k_rot 本来就是单头，不用抠） */
+    for (int t = 0; t < n; t++)
+        for (int h = 0; h < nh; h++)
+            memcpy(qr + ((size_t)t * nh + h) * nr,
+                   qb + ((size_t)t * nh + h) * qk + nope, sizeof(float) * nr);
+    rope_rows(qr, n * nh, nh, nr, base, interleaved);
+    rope_rows(kr, n, 1, nr, base, interleaved);
+
+    /* 拼 q=[nope|rope]、k=[nope|rope]，k_rot 广播到所有头 */
+    for (int t = 0; t < n; t++)
+        for (int h = 0; h < nh; h++) {
+            const float *pb = qb + ((size_t)t * nh + h) * qk;
+            float *qd = qq + ((size_t)t * nh + h) * qk;
+            memcpy(qd, pb, sizeof(float) * nope);
+            memcpy(qd + nope, qr + ((size_t)t * nh + h) * nr, sizeof(float) * nr);
+            const float *kb2 = kb + ((size_t)t * nh + h) * (nope + vd);
+            float *kd = kk + ((size_t)t * nh + h) * qk;
+            memcpy(kd, kb2, sizeof(float) * nope);
+            memcpy(kd + nope, kr + (size_t)t * nr, sizeof(float) * nr);
+            memcpy(vv + ((size_t)t * nh + h) * vd, kb2 + nope,
+                   sizeof(float) * vd);
+        }
+
+    attention(o, qq, kk, vv, n, nh, nh, qk, vd, 0, NULL);
+
+    if (wg) {
+        float *g = (float *)malloc(sizeof(float) * n * nh);
+        linear(g, x, wg, n, d, nh);
+        for (int t = 0; t < n; t++)
+            for (int h = 0; h < nh; h++) {
+                float z = g[(size_t)t * nh + h];
+                float gv = sigmoid_gate ? 1.f / (1.f + expf(-z)) : log1pf(expf(z));
+                for (int c = 0; c < vd; c++)
+                    o[(size_t)t * nh * vd + h * vd + c] *= gv;
+            }
+        free(g);
+    }
+
+    {
+        float *tmp = (float *)malloc(sizeof(float) * n * nh * vd);
+        memcpy(tmp, o, sizeof(float) * n * nh * vd);
+        linear(o, tmp, wd, n, nh * vd, d);
+        free(tmp);
+    }
+    free(qa); free(qb); free(kva); free(ckv); free(kb);
+    free(qr); free(kr); free(qq); free(kk); free(vv);
+}
+
+/* hd 是 Q/K 的头宽，vd 是 V 的头宽。
+   **两者不一定相同** —— MLA 就是 qk_head=48 而 v_dim=32。
+   原来只有一个 hd，于是 V 被按 Q/K 的步长读，堆越界（0xC0000005）。 */
+static void attention(float *o, float *q, const float *k, const float *v,
+                      int n, int nh, int nkv, int hd, int vd, int window,
                       const float *sink) {
     int rep = nh / nkv;
     float sc = 1.0f / sqrtf((float)hd);
     float *att = (float *)malloc(sizeof(float) * n);
-    float *vb = (float *)malloc(sizeof(float) * hd);
+    float *vb = (float *)malloc(sizeof(float) * vd);
     for (int h = 0; h < nh; h++) {
         int kh = h / rep;
         for (int i = 0; i < n; i++) {
@@ -461,15 +596,15 @@ static void attention(float *o, float *q, const float *k, const float *v,
             /* sink：一列额外的 logit 参与 softmax，之后丢掉 ——
                剩下的概率和小于 1，它专门用来吸收质量 */
             if (sink) sum += expf(sink[h] - mx);
-            float *oi = o + ((size_t)i * nh + h) * hd;
-            for (int t = 0; t < hd; t++) vb[t] = 0.f;
+            float *oi = o + ((size_t)i * nh + h) * vd;
+            for (int t = 0; t < vd; t++) vb[t] = 0.f;
             for (int j = 0; j <= i; j++) {
                 if (window && j <= i - window) continue;
                 float a = att[j] / sum;
-                const float *vj = v + ((size_t)j * nkv + kh) * hd;
-                for (int t = 0; t < hd; t++) vb[t] += a * vj[t];
+                const float *vj = v + ((size_t)j * nkv + kh) * vd;
+                for (int t = 0; t < vd; t++) vb[t] += a * vj[t];
             }
-            memcpy(oi, vb, sizeof(float) * hd);
+            memcpy(oi, vb, sizeof(float) * vd);
         }
     }
     free(att);
@@ -517,7 +652,7 @@ int main(int argc, char **argv) {
         LAYER_BODY(L)
     }
 
-    rmsnorm(xn, x, P(FINAL_NORM), n, D, NORM_ONE_PLUS);
+    rmsnorm(xn, x, P(FINAL_NORM), n, D, NORM_ONE_PLUS, RMS_EPS);
     float *logits = (float *)calloc((size_t)n * V, sizeof(float));
     for (int i = 0; i < n; i++) {
         const float *r = xn + (size_t)i * D;
@@ -544,8 +679,14 @@ def emit_c(ir, info, params):
     lines, need = [], {}
     att = next((o["attrs"] for L in ir["layers"] for o in L["ops"]
                 if o["kind"] == "Attention"), None)
+    mla_att = next((o["attrs"] for L in ir["layers"] for o in L["ops"]
+                    if o["kind"] == "MLA"), None)
+    if att is None and mla_att is None:
+        raise SystemExit("  这个后端目前只支持带全量注意力或 MLA 的模型")
     if att is None:
-        raise SystemExit("  这个后端目前只支持带全量注意力的模型")
+        # 纯 MLA 模型：Q_DIM / KV_DIM 这些宏按 MLA 的宽度来
+        att = {"q": mla_att["q"], "kv": mla_att["q"],
+               "head_dim": mla_att["head_dim"]}
 
     def key(i, j, nm):
         return f"L{i}_OP{j}_{MANGLE.sub('_', nm).upper()}"
@@ -572,7 +713,7 @@ def emit_c(ir, info, params):
                         order.append((key(i, j, nm), pre + nm))
                 if a["sink"]:
                     order.append((key(i, j, "sink"), pre + "sink"))
-                if a["qk_norm"]:
+                if _qk_on(a.get("qk_norm")):
                     for nm in ("qn.w", "kn.w"):
                         order.append((key(i, j, nm), pre + nm))
                 body.append((i, j, "Attention", a))
@@ -587,6 +728,14 @@ def emit_c(ir, info, params):
                            "A_log", "norm.w", "out_proj"):
                     order.append((key(i, j, nm), pre + nm))
                 body.append((i, j, "Linear", a))
+            elif k == "MLA":
+                for nm in ("q_a_proj", "q_a_layernorm.w", "q_b_proj",
+                           "kv_a_proj_with_mqa", "kv_a_layernorm.w",
+                           "kv_b_proj", "dense"):
+                    order.append((key(i, j, nm), pre + nm))
+                if a.get("head_gate", "off") != "off":
+                    order.append((key(i, j, "g_proj"), pre + "g_proj"))
+                body.append((i, j, "MLA", a))
             elif k == "MoE":
                 for nm in ("router", "w1", "w3", "w2"):
                     order.append((key(i, j, nm), pre + nm))
@@ -612,6 +761,7 @@ def emit_c(ir, info, params):
     lines.append("#define Q_DIM %d" % (att["q"] * att["head_dim"]))
     lines.append("#define KV_DIM %d" % (att["kv"] * att["head_dim"]))
     lines.append("#define NORM_ONE_PLUS %d" % (1 if ir.get("norm_one_plus") else 0))
+    lines.append("#define RMS_EPS %sf" % float(ir.get("rms_eps", 1e-5)))
     _hids = [o["attrs"]["hidden"] for L in ir["layers"] for o in L["ops"]
              if o["kind"] in ("FFN", "MoE")]
     lines.append("#define HID_MAX %d" % (max(_hids) if _hids else 1))
@@ -619,6 +769,12 @@ def emit_c(ir, info, params):
         for o in L["ops"]:
             if o["kind"] == "Linear":
                 _hids.append(o["attrs"]["v_heads"] * o["attrs"]["v_dim"])
+    for L in ir["layers"]:
+        for o in L["ops"]:
+            if o["kind"] == "MLA":
+                # kv_b 的输出 nh*(nope+v_dim) 是最宽的中间缓冲
+                _hids.append(o["attrs"]["q"] * (o["attrs"]["qk_nope"]
+                                                + o["attrs"]["v_dim"]))
     lines.append("#define OB_MAX %d" % max(att["q"] * att["head_dim"], max(_hids) if _hids else 1))
     lines.append("#define N_OPS %d" % (len(ir["layers"][0]["ops"]) if ir["layers"] else 0))
     off = 0
@@ -646,7 +802,8 @@ def emit_c(ir, info, params):
             dst = R(o["outputs"][0])
             if k == "Norm":
                 lb.append(f" rmsnorm({dst}, {src[0]}, P({key(i,j,'w')}), n, D,"
-                          f" {1 if a.get('one_plus') else 0});")
+                          f" {1 if a.get('one_plus') else 0},"
+                          f" {float(a.get('eps', 1e-5))}f);")
             elif k == "Attention":
                 hd, nh, nkv = a["head_dim"], a["q"], a["kv"]
                 B = "linear_b" if a["bias"] else "linear"
@@ -660,7 +817,7 @@ def emit_c(ir, info, params):
                     lb.append(f" split_qg(q, gt, qf, n, {nh}, {hd});")
                 lb.append(f" {B}(kk, {src[0]}, P({key(i,j,'wk')}){BA('wk')}, n, D, {nkv*hd});")
                 lb.append(f" {B}(vv, {src[0]}, P({key(i,j,'wv')}){BA('wv')}, n, D, {nkv*hd});")
-                if a["qk_norm"]:
+                if _qk_on(a.get("qk_norm")):
                     lb.append(f" qk_norm(q, kk, P({key(i,j,'qn.w')}),"
                               f" P({key(i,j,'kn.w')}), n, {nh}, {nkv}, {hd},"
                               f" {1 if a.get('norm_one_plus') else 0});")
@@ -675,8 +832,8 @@ def emit_c(ir, info, params):
                           f" {float(_y.get('beta_fast',32))}f,"
                           f" {float(_y.get('beta_slow',1))}f,"
                           f" {1 if _y.get('truncate',True) else 0});")
-                lb.append(f" attention(ob, q, kk, vv, n, {nh}, {nkv}, {hd},"
-                          f" {nh*hd}, {a['window'] if a['window'] else 0},"
+                lb.append(f" attention(ob, q, kk, vv, n, {nh}, {nkv}, {hd}, {hd},"
+                          f" {a['window'] if a['window'] else 0},"
                           f" {'P(' + key(i,j,'sink') + ')' if a['sink'] else 'NULL'});")
                 if a["q_gate"]:
                     lb.append(f" apply_qg(ob, gt, n, {nh*hd});")
@@ -698,6 +855,23 @@ def emit_c(ir, info, params):
                     f" P({key(i,j,'A_log')}), P({key(i,j,'norm.w')}),"
                     f" P({key(i,j,'out_proj')}),"
                     f" {float(a['l2_eps'])}f, {float(a['norm_eps'])}f);")
+            elif k == "MLA":
+                hg = a.get("head_gate", "off") != "off"
+                lb.append(
+                    f" mla({dst}, {src[0]}, n, D, {a['q']}, {a['q_lora']},"
+                    f" {a['kv_lora']}, {a['qk_nope']}, {a['qk_rope']},"
+                    f" {a['v_dim']},"
+                    f" P({key(i,j,'q_a_proj')}), P({key(i,j,'q_a_layernorm.w')}),"
+                    f" P({key(i,j,'q_b_proj')}),"
+                    f" P({key(i,j,'kv_a_proj_with_mqa')}),"
+                    f" P({key(i,j,'kv_a_layernorm.w')}),"
+                    f" P({key(i,j,'kv_b_proj')}), P({key(i,j,'dense')}),"
+                    f" {'P(' + key(i,j,'g_proj') + ')' if hg else 'NULL'},"
+                    f" {float(a.get('norm_eps', 1e-5))}f,"
+                    f" {1 if a.get('norm_one_plus') else 0},"
+                    f" {float(a['rope_base'])}f,"
+                    f" {0 if a.get('pairing') == 'half' else 1},"
+                    f" {1 if a.get('gate_act') == 'sigmoid' else 0});")
             elif k == "MoE":
                 E, K, hid = a["experts"], a["top_k"], a["hidden"]
                 sh = a["shared"]
