@@ -354,11 +354,19 @@ def compile_ir(info: Dict[str, Any]) -> Dict[str, Any]:
             continue
         state = []
         if mixer["kind"] == "Linear":
-            # 第一个**真的带状态**的机制：递归状态随序列增长而固定大小
+            # 第一个**真的带状态**的机制。而且它有**两个**状态：
+            #   recurrent     delta 规则维护的矩阵 (k_dim, v_dim)
+            #   conv_history  短卷积的滑动历史（kernel-1 步）
+            # 只算 delta 矩阵会漏掉后者 —— 实测才发现的。
+            a = mixer["attrs"]
             state.append({"kind": "recurrent", "bounded_by": None,
-                          "shape": [mixer["attrs"]["v_heads"],
-                                    mixer["attrs"]["k_dim"],
-                                    mixer["attrs"]["v_dim"]],
+                          "shape": [a["v_heads"], a["k_dim"], a["v_dim"]],
+                          "dtype": "fp32", "reuse": "none"})
+            conv_dim = 2 * a["k_heads"] * a["k_dim"] + a["v_heads"] * a["v_dim"]
+            # 逻辑上因果卷积只需要 kernel-1 步历史，但实现按 kernel 步分配 —— 实测为准
+            state.append({"kind": "conv_history",
+                          "bounded_by": a["conv_kernel"],
+                          "shape": [conv_dim, a["conv_kernel"]],
                           "dtype": "fp32", "reuse": "none"})
         elif mixer["attrs"]["window"]:
             state.append({"kind": "kv_cache",
