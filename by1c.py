@@ -89,21 +89,22 @@ static void rope(float *q, float *k, int n, int nh, int nkv, int hd,
     /* 全程 float64 —— numpy 那边是 float64，用 float32 算会把 ramp 的
        过渡带挪一点点，位置 0 上看不出来，多了就累积成 1e-3 量级。 */
     const double PI2 = 6.283185307179586;
-    int half = hd / 2;
+    int rdim = nrot;                 /* 频率按实际旋转的那一段算 */
+    int half = rdim / 2;
     float *inv = (float *)malloc(sizeof(float) * half);
     double dlo = 0.0, dhi = 1.0;
     if (yon) {
-        dlo = ((double)hd * log((double)yorig / ((double)ybf * PI2)))
+        dlo = ((double)rdim * log((double)yorig / ((double)ybf * PI2)))
               / (2.0 * log((double)base));
-        dhi = ((double)hd * log((double)yorig / ((double)ybs * PI2)))
+        dhi = ((double)rdim * log((double)yorig / ((double)ybs * PI2)))
               / (2.0 * log((double)base));
         if (ytrunc) { dlo = floor(dlo); dhi = ceil(dhi); }
         if (dlo < 0.0) dlo = 0.0;
-        if (dhi > (double)(hd - 1)) dhi = (double)(hd - 1);
+        if (dhi > (double)(rdim - 1)) dhi = (double)(rdim - 1);
         if (dlo == dhi) dhi += 0.001;
     }
     for (int i = 0; i < half; i++) {
-        double p = pow((double)base, -2.0 * (double)i / (double)hd);
+        double p = pow((double)base, -2.0 * (double)i / (double)rdim);
         if (!yon) { inv[i] = (float)p; continue; }
         double r = ((double)i - dlo) / (dhi - dlo);
         if (r < 0.0) r = 0.0;
@@ -113,7 +114,7 @@ static void rope(float *q, float *k, int n, int nh, int nkv, int hd,
            非 YaRN 的情况恰好退化成 p，所以只有 YaRN 的模型才暴露这个错。 */
         inv[i] = (float)((p / (double)yfac) * r + p * (1.0 - r));
     }
-    int nhalf = nrot / 2;
+    int nhalf = half;
     for (int pos = 0; pos < n; pos++) {
         for (int h = 0; h < nh + nkv; h++) {
             int isq = h < nh;
@@ -244,6 +245,191 @@ static void moe(float *o, const float *x, int n, int d, int E, int K, int H,
     free(idx); free(wts); free(lg); free(gu); free(uu); free(hh);
 }
 
+
+/* GDN：短卷积 + delta 规则 + 门控归一化。带一个大小固定的递归状态。
+   两个状态：delta 规则的矩阵，和短卷积的滑动历史。 */
+static void gdn(float *o, const float *x, int n, int d,
+                int nk, int nv, int dk, int dv, int ck,
+                const float *wqkvz, const float *wba, const float *convw,
+                const float *dtb, const float *alog, const float *nw,
+                const float *wout, float l2eps, float neps) {
+    int rep = nv / nk, kd = nk * dk, vd = nv * dv, cd = 2 * kd + vd;
+    int zz = 2 * dk + 2 * dv * rep;          /* 每个 k 头在 qkvz 里的宽度 */
+    float *qz = (float *)malloc(sizeof(float) * n * (2 * kd + 2 * vd));
+    float *ba = (float *)malloc(sizeof(float) * n * 2 * nv);
+    float *mix = (float *)malloc(sizeof(float) * n * cd);
+    float *cnv = (float *)malloc(sizeof(float) * n * cd);
+    float *Q = (float *)malloc(sizeof(float) * n * nv * dk);
+    float *K = (float *)malloc(sizeof(float) * n * nv * dk);
+    float *V = (float *)malloc(sizeof(float) * n * nv * dv);
+    float *Z = (float *)malloc(sizeof(float) * n * nv * dv);
+    float *B = (float *)malloc(sizeof(float) * n * nv);
+    float *A = (float *)malloc(sizeof(float) * n * nv);
+    float *G = (float *)malloc(sizeof(float) * n * nv);
+    float *st = (float *)calloc((size_t)nv * dk * dv, sizeof(float));
+    float *kvi = (float *)malloc(sizeof(float) * dv);
+    float *dl = (float *)malloc(sizeof(float) * dv);
+    float *hd = (float *)malloc(sizeof(float) * dv);
+
+    linear(qz, x, wqkvz, n, d, 2 * kd + 2 * vd);
+    linear(ba, x, wba, n, d, 2 * nv);
+    for (int t = 0; t < n; t++) {
+        const float *r = qz + (size_t)t * (2 * kd + 2 * vd);
+        const float *b2 = ba + (size_t)t * 2 * nv;
+        for (int h = 0; h < nk; h++) {
+            const float *rh = r + (size_t)h * zz;
+            for (int i = 0; i < dk; i++) {
+                Q[((size_t)t * nv + h * rep) * dk + i] = rh[i];
+                for (int u = 0; u < rep; u++)
+                    Q[((size_t)t * nv + h * rep + u) * dk + i] = rh[i];
+                for (int u = 0; u < rep; u++)
+                    K[((size_t)t * nv + h * rep + u) * dk + i] = rh[dk + i];
+            }
+            for (int u = 0; u < rep; u++) {
+                for (int i = 0; i < dv; i++) {
+                    V[((size_t)t * nv + h * rep + u) * dv + i] =
+                        rh[2 * dk + u * dv + i];
+                    Z[((size_t)t * nv + h * rep + u) * dv + i] =
+                        rh[2 * dk + dv * rep + u * dv + i];
+                }
+                B[(size_t)t * nv + h * rep + u] = b2[h * 2 * rep + u];
+                A[(size_t)t * nv + h * rep + u] = b2[h * 2 * rep + rep + u];
+            }
+        }
+        /* 拼成 q|k|v 做深度可分离因果卷积 */
+        for (int h = 0; h < nk; h++) {
+            for (int i = 0; i < dk; i++) {
+                mix[(size_t)t * cd + h * dk + i] =
+                    Q[((size_t)t * nv + h * rep) * dk + i];
+                mix[(size_t)t * cd + kd + h * dk + i] = K[((size_t)t * nv + h * rep) * dk + i];
+            }
+        }
+        for (int h = 0; h < nv; h++)
+            for (int i = 0; i < dv; i++)
+                mix[(size_t)t * cd + 2 * kd + h * dv + i] =
+                    V[((size_t)t * nv + h) * dv + i];
+    }
+    /* 因果卷积：左边补 ck-1 个零 */
+    for (int t = 0; t < n; t++) {
+        for (int c = 0; c < cd; c++) {
+            float s = 0.f;
+            for (int j = 0; j < ck; j++) {
+                int tt = t - (ck - 1) + j;
+                if (tt < 0) continue;
+                s += mix[(size_t)tt * cd + c] * convw[(size_t)c * ck + j];
+            }
+            cnv[(size_t)t * cd + c] = s / (1.f + expf(-s));
+        }
+    }
+    for (int t = 0; t < n; t++) {
+        for (int h = 0; h < nv; h++) {
+            for (int i = 0; i < dk; i++) {
+                Q[((size_t)t * nv + h) * dk + i] = cnv[(size_t)t * cd + (h / rep) * dk + i];
+                K[((size_t)t * nv + h) * dk + i] = cnv[(size_t)t * cd + kd + (h / rep) * dk + i];
+            }
+            for (int i = 0; i < dv; i++)
+                V[((size_t)t * nv + h) * dv + i] = cnv[(size_t)t * cd + 2 * kd + h * dv + i];
+        }
+    }
+    for (int t = 0; t < n; t++) {
+        for (int h = 0; h < nv; h++) {
+            const float *qh = Q + ((size_t)t * nv + h) * dk;
+            const float *kh = K + ((size_t)t * nv + h) * dk;
+            float nq = 0.f, nkv = 0.f;
+            for (int i = 0; i < dk; i++) { nq += qh[i] * qh[i]; nkv += kh[i] * kh[i]; }
+            nq = 1.f / sqrtf(nq + l2eps); nkv = 1.f / sqrtf(nkv + l2eps);
+            for (int i = 0; i < dk; i++) {
+                ((float *)Q)[((size_t)t * nv + h) * dk + i] = qh[i] * nq;
+                ((float *)K)[((size_t)t * nv + h) * dk + i] = kh[i] * nkv;
+            }
+            float bb = 1.f / (1.f + expf(-B[(size_t)t * nv + h]));
+            B[(size_t)t * nv + h] = bb;
+            G[(size_t)t * nv + h] = -expf(alog[h]) *
+                log1pf(expf(A[(size_t)t * nv + h] + dtb[h]));
+        }
+    }
+    for (int t = 0; t < n; t++) {
+        for (int h = 0; h < nv; h++) {
+            float *S = st + ((size_t)h * dk) * dv;
+            float gt = expf(G[(size_t)t * nv + h]);
+            const float *kh = K + ((size_t)t * nv + h) * dk;
+            const float *vh = V + ((size_t)t * nv + h) * dv;
+            for (int i = 0; i < dk * dv; i++) S[i] *= gt;
+            for (int j = 0; j < dv; j++) {
+                float s = 0.f;
+                for (int i = 0; i < dk; i++) s += S[i * dv + j] * kh[i];
+                kvi[j] = s;
+            }
+            for (int j = 0; j < dv; j++)
+                dl[j] = (vh[j] - kvi[j]) * B[(size_t)t * nv + h];
+            for (int i = 0; i < dk; i++)
+                for (int j = 0; j < dv; j++) S[i * dv + j] += kh[i] * dl[j];
+            const float *qh = Q + ((size_t)t * nv + h) * dk;
+            float sc = 1.f / sqrtf((float)dk);
+            for (int j = 0; j < dv; j++) {
+                float s = 0.f;
+                for (int i = 0; i < dk; i++) s += S[i * dv + j] * qh[i];
+                hd[j] = s * sc;
+            }
+            /* 门控 RMSNorm：先归一化，再乘 silu(z) */
+            float vv = 0.f;
+            for (int j = 0; j < dv; j++) vv += hd[j] * hd[j];
+            vv = 1.f / sqrtf(vv / dv + neps);
+            for (int j = 0; j < dv; j++) {
+                float z = Z[((size_t)t * nv + h) * dv + j];
+                hd[j] = (nw[j] * hd[j] * vv) * (z / (1.f + expf(-z)));
+            }
+            memcpy(o + (size_t)t * vd + h * dv, hd, sizeof(float) * dv);
+        }
+    }
+    /* out_proj 就地覆盖前先把结果搬到临时区 */
+    {
+        float *tmp = (float *)malloc(sizeof(float) * n * vd);
+        memcpy(tmp, o, sizeof(float) * n * vd);
+        linear(o, tmp, wout, n, vd, d);
+        free(tmp);
+    }
+    free(qz); free(ba); free(mix); free(cnv); free(Q); free(K); free(V); free(Z);
+    free(B); free(A); free(G); free(st); free(kvi); free(dl); free(hd);
+}
+
+
+/* q_gate：wq 的输出是 2 倍，前半是 query，后半是门 */
+static void split_qg(float *q, float *gt, const float *qf, int n, int nh, int hd) {
+    for (int t = 0; t < n; t++)
+        for (int h = 0; h < nh; h++) {
+            memcpy(q + ((size_t)t * nh + h) * hd,
+                   qf + ((size_t)t * nh + h) * 2 * hd, sizeof(float) * hd);
+            memcpy(gt + ((size_t)t * nh + h) * hd,
+                   qf + ((size_t)t * nh + h) * 2 * hd + hd, sizeof(float) * hd);
+        }
+}
+static void apply_qg(float *o, const float *gt, int n, int nq) {
+    for (size_t i = 0; i < (size_t)n * nq; i++)
+        o[i] *= 1.f / (1.f + expf(-gt[i]));
+}
+
+/* qk_norm：按头做 RMSNorm，在 RoPE 之前 */
+static void qk_norm(float *q, float *k, const float *qn, const float *kn,
+                    int n, int nh, int nkv, int hd, int one_plus) {
+    for (int t = 0; t < n; t++) {
+        for (int h = 0; h < nh; h++) {
+            float *v = q + ((size_t)t * nh + h) * hd;
+            float s = 0.f;
+            for (int i = 0; i < hd; i++) s += v[i] * v[i];
+            s = 1.f / sqrtf(s / hd + 1e-5f);
+            for (int i = 0; i < hd; i++) v[i] *= s * (one_plus ? (1.f + qn[i]) : qn[i]);
+        }
+        for (int h = 0; h < nkv; h++) {
+            float *v = k + ((size_t)t * nkv + h) * hd;
+            float s = 0.f;
+            for (int i = 0; i < hd; i++) s += v[i] * v[i];
+            s = 1.f / sqrtf(s / hd + 1e-5f);
+            for (int i = 0; i < hd; i++) v[i] *= s * (one_plus ? (1.f + kn[i]) : kn[i]);
+        }
+    }
+}
+
 static void attention(float *o, float *q, const float *k, const float *v,
                       int n, int nh, int nkv, int hd, int od, int window,
                       const float *sink) {
@@ -316,6 +502,8 @@ int main(int argc, char **argv) {
     float *vv = (float *)calloc((size_t)n * KV_DIM, sizeof(float));
     float *ob = (float *)calloc((size_t)n * OB_MAX, sizeof(float));   /* FFN 也会用到它，得按最宽的那个分配 */
     float *hb = (float *)calloc((size_t)n * HID_MAX, sizeof(float));   /* FFN 中间层比 D 宽 */
+    float *qf = (float *)calloc((size_t)n * 2 * OB_MAX, sizeof(float));   /* q_gate 时 wq 输出 2 倍 */
+    float *gt = (float *)calloc((size_t)n * OB_MAX, sizeof(float));
     /* 每个算子一个输出缓冲 —— 严格对应 IR 的 ValueRef，不做别名优化 */
     float *tb[64];
     for (int z = 0; z < N_OPS; z++) tb[z] = (float *)calloc((size_t)n * D, sizeof(float));
@@ -373,11 +561,10 @@ def emit_c(ir, info, params):
             if k == "Norm":
                 order.append((key(i, j, "w"), pre + "w"))
             elif k == "Attention":
-                if a["q_gate"] or a["kv_tie"] or a["qk_norm"] \
-                        or a["head_gate"] != "off":
+                if a["kv_tie"] or a["head_gate"] != "off":
                     raise SystemExit(
-                        f"  [不支持] 第 {i} 层的注意力用了 q_gate/kv_tie/"
-                        f"qk_norm/head_gate —— C 后端还没实现")
+                        f"  [不支持] 第 {i} 层的注意力用了 kv_tie/"
+                        f"head_gate —— C 后端还没实现")
                 for nm in ("wq", "wk", "wv", "wo"):
                     order.append((key(i, j, nm), pre + nm))
                 if a["bias"]:
@@ -385,6 +572,9 @@ def emit_c(ir, info, params):
                         order.append((key(i, j, nm), pre + nm))
                 if a["sink"]:
                     order.append((key(i, j, "sink"), pre + "sink"))
+                if a["qk_norm"]:
+                    for nm in ("qn.w", "kn.w"):
+                        order.append((key(i, j, nm), pre + nm))
                 body.append((i, j, "Attention", a))
             elif k == "FFN":
                 if not a.get("gate", True) or a.get("act") == "gptoss":
@@ -392,6 +582,11 @@ def emit_c(ir, info, params):
                 for nm in ("w1", "w2", "w3"):
                     order.append((key(i, j, nm), pre + nm))
                 body.append((i, j, "FFN", a))
+            elif k == "Linear":
+                for nm in ("in_proj_qkvz", "in_proj_ba", "conv", "dt_bias",
+                           "A_log", "norm.w", "out_proj"):
+                    order.append((key(i, j, nm), pre + nm))
+                body.append((i, j, "Linear", a))
             elif k == "MoE":
                 for nm in ("router", "w1", "w3", "w2"):
                     order.append((key(i, j, nm), pre + nm))
@@ -420,6 +615,10 @@ def emit_c(ir, info, params):
     _hids = [o["attrs"]["hidden"] for L in ir["layers"] for o in L["ops"]
              if o["kind"] in ("FFN", "MoE")]
     lines.append("#define HID_MAX %d" % (max(_hids) if _hids else 1))
+    for L in ir["layers"]:
+        for o in L["ops"]:
+            if o["kind"] == "Linear":
+                _hids.append(o["attrs"]["v_heads"] * o["attrs"]["v_dim"])
     lines.append("#define OB_MAX %d" % max(att["q"] * att["head_dim"], max(_hids) if _hids else 1))
     lines.append("#define N_OPS %d" % (len(ir["layers"][0]["ops"]) if ir["layers"] else 0))
     off = 0
@@ -454,9 +653,17 @@ def emit_c(ir, info, params):
                 def BA(nm):
                     # key() 会把点也换成下划线，所以整个 "wq.bias" 一起传进去
                     return (f", P({key(i,j, nm + '.bias')})" if a["bias"] else "")
-                lb.append(f" {B}(q, {src[0]}, P({key(i,j,'wq')}){BA('wq')}, n, D, {nh*hd});")
+                qw = nh * hd * (2 if a["q_gate"] else 1)
+                lb.append(f" {B}({'qf' if a['q_gate'] else 'q'}, {src[0]},"
+                          f" P({key(i,j,'wq')}){BA('wq')}, n, D, {qw});")
+                if a["q_gate"]:
+                    lb.append(f" split_qg(q, gt, qf, n, {nh}, {hd});")
                 lb.append(f" {B}(kk, {src[0]}, P({key(i,j,'wk')}){BA('wk')}, n, D, {nkv*hd});")
                 lb.append(f" {B}(vv, {src[0]}, P({key(i,j,'wv')}){BA('wv')}, n, D, {nkv*hd});")
+                if a["qk_norm"]:
+                    lb.append(f" qk_norm(q, kk, P({key(i,j,'qn.w')}),"
+                              f" P({key(i,j,'kn.w')}), n, {nh}, {nkv}, {hd},"
+                              f" {1 if a.get('norm_one_plus') else 0});")
                 _y = a.get("yarn") or {}
                 _nrot = int(hd * a.get("rope_partial", 1.0))
                 lb.append(f" rope(q, kk, n, {nh}, {nkv}, {hd},"
@@ -471,6 +678,8 @@ def emit_c(ir, info, params):
                 lb.append(f" attention(ob, q, kk, vv, n, {nh}, {nkv}, {hd},"
                           f" {nh*hd}, {a['window'] if a['window'] else 0},"
                           f" {'P(' + key(i,j,'sink') + ')' if a['sink'] else 'NULL'});")
+                if a["q_gate"]:
+                    lb.append(f" apply_qg(ob, gt, n, {nh*hd});")
                 lb.append(f" {B}({dst}, ob, P({key(i,j,'wo')}){BA('wo')}, n, {nh*hd}, D);")
             elif k == "FFN":
                 hid = a["hidden"]
@@ -480,6 +689,15 @@ def emit_c(ir, info, params):
                 lb.append(f" for (size_t z = 0; z < (size_t)n * {hid}; z++)"
                           f" hb[z] *= ob[z];")
                 lb.append(f" linear({dst}, hb, P({key(i,j,'w2')}), n, {hid}, D);")
+            elif k == "Linear":
+                lb.append(
+                    f" gdn({dst}, {src[0]}, n, D, {a['k_heads']}, {a['v_heads']},"
+                    f" {a['k_dim']}, {a['v_dim']}, {a['conv_kernel']},"
+                    f" P({key(i,j,'in_proj_qkvz')}), P({key(i,j,'in_proj_ba')}),"
+                    f" P({key(i,j,'conv')}), P({key(i,j,'dt_bias')}),"
+                    f" P({key(i,j,'A_log')}), P({key(i,j,'norm.w')}),"
+                    f" P({key(i,j,'out_proj')}),"
+                    f" {float(a['l2_eps'])}f, {float(a['norm_eps'])}f);")
             elif k == "MoE":
                 E, K, hid = a["experts"], a["top_k"], a["hidden"]
                 sh = a["shared"]

@@ -51,9 +51,25 @@
 
 **验收**：`by1c.py qwen3-next-shaped.by1` 和 `by1c.py gpt-oss-shaped.by1` 都 PASS。
 
-**进度**：MoE / sink / attn_bias / YaRN / partial 都已加上。
-`llama-shaped` 2.241e-07 ✅、`mixtral-shaped` 1.744e-07 ✅、`gpt-oss-shaped` **7.407e-08 ✅**。
-**只剩 `qwen3-next-shaped`**（缺 GDN 的 delta 规则与 conv 状态）。
+**P1 完成**。四个模型，三个后端，全部一致：
+
+| 模型 | C↔NumPy | NumPy↔PyTorch | PyTorch↔参考 |
+|---|---|---|---|
+| llama-shaped | 2.241e-07 | 2.505e-07 | 4.470e-07 |
+| mixtral-shaped | 1.744e-07 | 2.340e-07 | 4.172e-07 |
+| gpt-oss-shaped | 7.407e-08 | 1.028e-07 | 2.384e-07 |
+| qwen3-next-shaped | 2.990e-06 | 2.513e-06 | 1.788e-07 |
+
+C 后端现在支持：MoE（两种路由/共享专家/专家偏置/gptoss 激活）、sink、attn_bias、
+YaRN、partial、q_gate、qk_norm、GDN（delta 规则 + 递归状态 + 卷积历史）。
+
+**三个只在 C 里出现、且都被"看起来一样"掩盖的 bug**：
+1. YaRN 的插值项写成 `1/(fac*p)`，而 `p = 1/pos` → 整项反了（非 YaRN 恰好退化成 `p`）
+2. GDN 的卷积就地覆写 `mix`，而后面还要读它
+3. 部分 RoPE 的频率按 `head_dim` 算而不是按 `nrot`（非 partial 时两者相同）
+
+**共同点：三个都是"另一种写法下恰好也对"，所以只有少数模型能暴露。**
+**这就是为什么要四个模型全都跑，而不是挑一个。**
 
 **YaRN 那个 bug 值得记**：C 里我把 `1/(fac*pos)` 写成了 `1/(fac*p)`，而 `p` 已经是 `1/pos` ——
 于是插值项变成 `pos/fac` 而不是 `p/fac`，**整个反了**。
