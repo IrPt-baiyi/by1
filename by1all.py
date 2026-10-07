@@ -44,7 +44,9 @@ SHAPED = ['llama-shaped.by1', 'mixtral-shaped.by1', 'gpt-oss-shaped.by1',
           'qwen3-next-shaped.by1', 'mla-shaped.by1', 'llama3-shaped.by1']
 
 # 三个判卷人脚本
-JUDGES = ['by1mla.py', 'by1moe.py', 'by1rope.py']
+JUDGES = ['by1mla.py', 'by1moe.py', 'by1rope.py',
+          # 前向，**真实维度**（六个真实模型里唯一在这台机器上跑得动的）
+          'by1instella.py']
 
 fails, rows = [], []
 

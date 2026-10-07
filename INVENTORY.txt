@@ -1,0 +1,48 @@
+====================================================================================================
+  by1 验证清单  ——  每个模型验到了什么，判卷人是谁
+====================================================================================================
+
+【A】真实模型 · config 与张量名，对着**官方产物**
+
+  模型                           config         张量               来源
+  ------------------------------------------------------------------------------------------------
+  gpt-oss-120b（HF 侧）           29 中 / 0 不同    687 中 / 0 不符     gpt-oss-120b
+  gpt-oss-120b（GGUF 侧）         29 中 / 0 不同    687 中 / 0 不符     gpt-oss-120b
+  gemma-4-31b（GGUF 侧）          35 中 / 0 不同    530 中 / 0 不符     gemma-4-31B
+  laguna-xs-2.1                34 中 / 0 不同    30430 中 / 0 不符   poolside_Laguna-XS-2_1
+  instella-3b                  20 中 / 0 不同    399 中 / 0 不符     amd_Instella-3B
+  step-3.7 文本主干（剪枝微调）          46 中 / 0 不同    728 中 / 0 不符 / 缺 25 nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL
+  ling-3.0-tiny                71 中 / 0 不同    9283 中 / 0 不符    inclusionAI_Ling-3.0-tiny
+
+【B】合成模型 · **前向数值**，对着 transformers 的参考实现
+
+  模型                     C↔NumPy       NumPy↔Torch   判卷人
+  ------------------------------------------------------------------------------------------------
+  llama-shaped           2.241e-07     2.505e-07     transformers LlamaForCausalLM
+                                                       （对参考的前向: 4.470e-07）
+  mixtral-shaped         1.744e-07     2.340e-07     transformers MixtralForCausalLM
+                                                       （对参考的前向: 4.172e-07）
+  gpt-oss-shaped         7.407e-08     1.028e-07     transformers GptOssForCausalLM
+                                                       （对参考的前向: 2.384e-07）
+  qwen3-next-shaped      2.990e-06     2.513e-06     transformers Qwen3NextForCausalLM
+                                                       （对参考的前向: 1.788e-07）
+  mla-shaped             3.945e-07     4.992e-07     transformers DeepseekV3Attention（MLA 单层）
+                                                       （对参考的前向: —）
+  llama3-shaped          5.114e-07     4.462e-07     transformers _compute_llama3_parameters（只验 rope）
+                                                       （对参考的前向: —）
+
+【C】单机制判卷人脚本
+  脚本           机制               判卷人                                          结果
+  ------------------------------------------------------------------------------------------------
+  by1mla.py    MLA              transformers DeepseekV3Attention             PASS
+  by1moe.py    noaux_tc 分组路由    transformers DeepseekV3TopkRouter            PASS
+  by1rope.py   llama3 RoPE      transformers _compute_llama3_parameters      PASS
+
+【D】反向梯度 · 四个合成模型，对 transformers 参考
+  llama 39/39 · mixtral 35/35 · gpt-oss 31/31 · qwen3-next 62/62  —— 全在阈值内
+
+【E】没验到的
+  · 六个真实模型的**前向**：一个都没跑过（130B / 31B，这台机器跑不动）
+  · KDA 的计算：fla 要 Triton，没有 CUDA
+  · llama.cpp 本身：图核对过，但没生成过一行 ggml 并跑起来
+  · 多模态部分（Gemma 的 vision/audio、Step-3.7 的视觉塔）：完全没建模

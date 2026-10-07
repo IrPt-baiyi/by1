@@ -652,3 +652,82 @@ gpt-oss-120b 的 130B 参数、gemma 31B，这台机器（16GB 内存、无 CUDA
 它们的 **config 和命名** 全中，**数值行为**只在合成的维度上验过。
 
 这不是失败，是**没做到的那一半**，应该写在任何人看得到的地方。
+
+---
+
+## 24. Instella-3B 的前向 —— **真实维度**，逐位一致
+
+```
+python by1instella.py
+  维度: d=2560  q=32  kv=32  head_dim=80  FFN=6912  层数=4（真实 36）  seq=16
+  权重搬运: 47 / 47 成功
+  最大绝对差 0.000e+00   相对 0.000e+00
+  [PASS] Instella-3B 的前向与官方实现一致
+```
+
+**这是第一个在真实维度上被验过前向的真实模型。**
+
+在此之前，"六个真实模型全中"的准确版本是「**config 与命名**全中，
+**数值行为**只在合成维度上验过」。Instella 是六个里唯一在这台机器上也跑得动的
+（稠密、3B），所以它第一个把后半句去掉了。
+
+**做法**：只把**层数**从 36 降到 4（36 层 = 12GB fp32，加上参考模型装不下），
+**其余维度全真**。临时生成一份 4 层的 `.by1`，跑完删掉 —— 不改工具。
+
+### 它逼出来的东西：`qk_norm = full`
+
+Instella 的 QK-norm 是**整宽**的：
+
+```python
+self.q_norm = InstellaRMSNorm(num_heads * head_dim, rms_norm_eps)   # [2560]
+query_states = self.q_norm(self.q_proj(hidden_states))              # 拆头**之前**
+query_states = query_states.view(bsz, q_len, num_heads, head_dim)
+```
+
+而 by1 在此之前是**明确拒绝**它的（"按 per_head 生成会得到一个看起来对但算错的模型"）。
+
+**这是同一个名字下的第二个东西**：Qwen3-Next 也是 QK-norm，但按 `head_dim`、
+作用在拆头**之后**。名字一样，位置和宽度都不同。
+
+### 判卷人自己坏了
+
+`modeling_instella.py` 是按 transformers **4.48** 写的，这台装的是 **5.15** ——
+`DynamicCache.to_legacy_cache()` 没了，走缓存那条路直接 AttributeError。
+
+传 `use_cache=False` 绕开。**这是判卷人的版本问题，不是被测代码的** ——
+但不记下来，下次还会撞。
+
+---
+
+## 25. 打包：要上传到云端的东西
+
+```
+python by1pack.py
+  → by1-upload-20261008.tar.gz   0.38 MB   65 个文件
+```
+
+**装**：11 个工具 + 13 份验证过的 `.by1` + `refs/`（25 个官方产物）+
+文档 + `gpu/`（runbook、依赖、KDA 脚本）。
+
+**不装**：模型权重（云端从 HF 下）· `llamacpp/`（可重下）· `drafts/`（没有判卷人的草稿）。
+
+### `gpu/` 里是什么
+
+| 文件 | 干什么 |
+|---|---|
+| `README.md` | runbook：跑什么、按什么顺序、期望什么 |
+| `requirements.txt` | 依赖（torch 要点明装 CUDA 版） |
+| `run.sh` | 一键，顺序**从便宜到贵** |
+| `by1kda.py` | **把 KDA 的判卷人立起来并 dump 中间量** |
+
+### `by1kda.py` 为什么不是"把 KDA 实现写出来"
+
+KDA 的核心是 `fla.ops.kda.chunk_kda`，要 Triton。**我在没有 CUDA 的机器上
+看不到它的源码** —— 也就是说：张量集我知道（Ling 9283/9283 已经对上），
+但**门控语义我看不到**（`g` 怎么进 delta 规则、`safe_gate` 和 `lower_bound`
+各管什么）。
+
+**凭空写一个就是在猜。** 猜错的代价不是"改一行"，是"分不清是实现错了还是语义猜错了"。
+
+所以那个脚本把顺序倒过来：**先立判卷人、dump 中间量，再对着 dump 写实现**。
+租卡是为了**拿到判卷人**，不是为了跑得久。

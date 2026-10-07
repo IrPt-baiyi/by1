@@ -1,0 +1,23 @@
+# 云端依赖。
+#
+# 注意 torch 要装 **CUDA 版** —— 默认的 pip 源给的是 CPU 版。
+# 装完用 `python -c "import torch; print(torch.cuda.is_available())"` 确认是 True。
+
+# 核心（版本按本地验过的那套，装完先跑 by1all.py --quick 确认没退化）
+torch>=2.13
+transformers>=5.15
+numpy
+safetensors
+einops
+
+# ── 只有 CUDA 机器上装得上 ────────────────────────────────────────
+# fla 要 Triton，Triton 要 CUDA。它提供 KDA 的参考实现
+# （fla.ops.kda.chunk_kda / fused_recurrent_kda），
+# 也是 gpu/by1kda.py 的判卷人。
+flash-linear-attention
+
+# 下模型用
+huggingface_hub
+
+# ── 本地跑 by1all.py 里 C 后端要的 ────────────────────────────────
+# gcc（Linux 上通常自带）。Windows 上是 MinGW-w64。

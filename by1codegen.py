@@ -272,6 +272,9 @@ def compile_ir(info: Dict[str, Any]) -> Dict[str, Any]:
                 # Instella 是 full —— 名字一样但含义不同。
                 "qk_norm": (str(attrs.get("qk_norm", "")).strip().lower()
                             if attrs.get("qk_norm") is not None else "off"),
+                # 归一化的 eps 跟着模型的 rms_norm_eps 走（这个 bug 犯过三次）
+                "norm_eps": float(_num(attrs.get("norm_eps"),
+                                       _num(hp.get("rms_eps"), 1e-5))),
                 "bias": _flag(attrs.get("bias", attrs.get("attn_bias"))),
                 "rope_base": int(_num(attrs.get("rope_base"), rs["base"])),
                 "rope_pairing": rs["pairing"],
@@ -693,14 +696,19 @@ class Attention(nn.Module):
         self.yarn = a.get("yarn")
         self.rope_partial = a.get("rope_partial", 1.0)
         self.qk_norm = a["qk_norm"]
-        if self.qk_norm == "full":
-            raise CodegenError(
-                "qk_norm = full（整宽归一化，如 Instella）codegen 还没实现 —— "
-                "按 per_head 生成会得到一个**看起来对但算错**的模型，所以这里直接拒绝")
         if self.qk_norm not in ("off", "", None):
             _op = a.get("norm_one_plus", False)
-            self.qn = RMSNorm(self.hd, one_plus=_op)
-            self.kn = RMSNorm(self.hd, one_plus=_op)
+            _eps = a.get("norm_eps", 1e-5)
+            # **两种 qk_norm 的区别是"在哪一步归一化"**：
+            #   per_head  拆头之后，按 head_dim（多数模型）
+            #   full      拆头**之前**，按 q*head_dim 整宽（Instella 是 [2560] 而不是 [80]）
+            # 名字一样、位置不同、宽度也不同。
+            if self.qk_norm == "full":
+                self.qn = RMSNorm(self.q * self.hd, one_plus=_op, eps=_eps)
+                self.kn = RMSNorm(self.kv * self.hd, one_plus=_op, eps=_eps)
+            else:
+                self.qn = RMSNorm(self.hd, one_plus=_op, eps=_eps)
+                self.kn = RMSNorm(self.hd, one_plus=_op, eps=_eps)
         # sink: 每个头一个可学标量，作为**额外一列 logit** 参与 softmax，之后丢掉
         self.sink = nn.Parameter(torch.zeros(self.q)) if a.get("sink") else None
         self.head_gate = a.get("head_gate", "off")
@@ -712,18 +720,24 @@ class Attention(nn.Module):
     def forward(self, x):
         b, n, _ = x.shape
         w = self.hd * (2 if self.q_gate else 1)
-        qq = self.wq(x).view(b, n, self.q, w)
+        qflat = self.wq(x)
+        kflat = self.wk(x)
+        if self.qk_norm == "full":
+            # 整宽：作用在**扁平化之后、拆头之前**的输出上
+            qflat = self.qn(qflat)
+            kflat = self.kn(kflat)
+        qq = qflat.view(b, n, self.q, w)
         gate = None
         if self.q_gate:
             q, gate = torch.chunk(qq, 2, dim=-1)
         else:
             q = qq
         q = q.transpose(1, 2)
-        kraw = self.wk(x).view(b, n, self.kv, self.hd).transpose(1, 2)
+        kraw = kflat.view(b, n, self.kv, self.hd).transpose(1, 2)
         v = kraw if self.kv_tie else \
             self.wv(x).view(b, n, self.kv, self.hd).transpose(1, 2)
         k = kraw
-        if self.qk_norm not in ("off", "", None):
+        if self.qk_norm not in ("off", "", None) and self.qk_norm != "full":
             q, k = self.qn(q), self.kn(k)
         # partial：只转前一段维度，剩下的原样带走
         np_ = int(self.hd * self.rope_partial)
