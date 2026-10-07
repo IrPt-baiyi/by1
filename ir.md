@@ -177,7 +177,7 @@ Block 0 + 1.1 做完，必须**同时**满足：
 | **Block 0** 显式 IR | ✅ | `by1diff llama-shaped` = **4.470e-07**，IR 重构前后**同一个数** |
 | **Block 1.1** MoE | ✅ | `by1diff mixtral-shaped` = **4.172e-07** |
 | **Block 1.2** 注意力机制 + YaRN | ✅ | `by1diff gpt-oss-shaped` = **2.384e-07** |
-| Block 1.3 GDN | 🟡 | **机制本身 ✅**：对 `Qwen3NextGatedDeltaNet` 精确到 **2.384e-07**，去掉 delta 项偏差 3.12e-02（测试非空过）。**整模型 ❌ 见下** |
+| Block 1.3 GDN | ✅ | `by1diff qwen3-next-shaped` = **1.788e-07**，对 `Qwen3NextForCausalLM`。3 层线性 + 1 层全量的混合栈，**第一个验证过端到端的带状态模型** |
 | Block 2 状态与内存 | ⬜ | |
 | Block 3a 自建执行器 | ⬜ | 用来检验 IR 够不够，比 3b 便宜一个数量级 |
 | Block 3b 目标 llama.cpp | ⬜ | **1.md 说的"上千行"就是这里** |
@@ -192,30 +192,25 @@ FFN / MoE  swiglu_limit · alpha · act(silu|gptoss) · routing(softmax_topk|top
            expert_bias · router_bias · score_bias · routed_scale · shared
 ```
 
-### 三条前向对拍（护栏）
+### 四条前向对拍（护栏）
 
-**任何重构之后这三条必须全绿，否则回退。**
+**任何重构之后这四条必须全绿，否则回退。**
 
 ```
-python by1diff.py llama-shaped.by1        # 4.470e-07
-python by1diff.py mixtral-shaped.by1      # 4.172e-07
-python by1diff.py gpt-oss-shaped.by1      # 2.384e-07
+python by1diff.py llama-shaped.by1        # 4.470e-07   稠密
+python by1diff.py mixtral-shaped.by1      # 4.172e-07   MoE
+python by1diff.py gpt-oss-shaped.by1      # 2.384e-07   sink + YaRN + topk_softmax
+python by1diff.py qwen3-next-shaped.by1   # 1.788e-07   线性注意力 + 混合栈（带状态）
 ```
 
 ### 已知待办
 
-0. **⚑ 卡住的地方：`qwen3-next-shaped.by1` 的整模型对拍不通过。**
-   - 权重现在 **70/70 全部搬到**（加了覆盖面护栏之后），名字与形状全对
-   - 但前向**输出几乎为零**，相对差恰好 1.000；而且补上共享专家映射后**数值一模一样**，
-     说明共享专家那条路径根本没参与计算
-   - 已经实现但**未验证**：`partial`（部分 RoPE）、`q_gate`（查询门控）、`shared_gate`
-   - **下一步**：查 `own` 里到底有没有 `sw1/sw3/sw2/shared_gate`（如果 MoE 的 `shared` 属性没解析成 1，
-     这些模块根本不会建，而覆盖面检查会**平凡通过**）。然后抓每层 hidden state 看第几层塌。
-   - 机制本身已经隔离验证过（`Qwen3NextGatedDeltaNet` 2.384e-07），所以**差异在组装层，不在机制里**。
-1. **Block 1.3 GDN 的整模型验证**（见上）。
-2. **`swiglu_limit` 在 GPT-OSS 上还没验**（`gpt-oss-shaped` 里开了，但参考的 `limit` 是硬编码 7.0）。
-3. **反向没做**：1.md 说"前向与反向必须数值一致"，目前只对了前向。
-4. **多栈 / 跨栈投影**没有判卷人（本地没有 DeepSeek 参考实现）。
+1. **`swiglu_limit` 在 GPT-OSS 上还没验**（`gpt-oss-shaped` 里开了，但参考的 `limit` 是硬编码 7.0，
+   我没单独测过非默认值）。
+2. **反向没做**：1.md 说"前向与反向必须数值一致"，目前只对了前向。
+3. **多栈 / 跨栈投影**没有判卷人（本地没有 DeepSeek 参考实现）。
+4. **`block 2` 状态与内存**：GDN 的递归状态现在量出来了（256 个数，与序列长度无关），
+   但还没进 `by1oracle` 的对照。
 
 ### 判卷人踩过的坑（写下来免得再踩）
 
