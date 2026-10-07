@@ -186,7 +186,6 @@ model Ling-3.0-tiny {
         use_cache               = true
         tie_word_embeddings     = false
         torch_dtype             = "bfloat16"
-        bos_token_id            = 0
         eos_token_id            = 156895
         pad_token_id            = 156892
         # MLA 那一半
