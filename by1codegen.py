@@ -235,7 +235,10 @@ def compile_ir(info: Dict[str, Any]) -> Dict[str, Any]:
                 "q": q, "kv": kv, "head_dim": hd,
                 "out_dim": int(_num(attrs.get("out_dim")) or q * hd),
                 "window": window,
-                "qk_norm": _flag(attrs.get("qk_norm")),
+                # 取值不只有真假：per_head（按头，默认）与 full（整宽）。
+                # Instella 是 full —— 名字一样但含义不同。
+                "qk_norm": (str(attrs.get("qk_norm", "")).strip().lower()
+                            if attrs.get("qk_norm") is not None else "off"),
                 "bias": _flag(attrs.get("bias", attrs.get("attn_bias"))),
                 "rope_base": int(_num(attrs.get("rope_base"), rs["base"])),
                 "rope_pairing": rs["pairing"],
@@ -486,7 +489,11 @@ class Attention(nn.Module):
         self.yarn = a.get("yarn")
         self.rope_partial = a.get("rope_partial", 1.0)
         self.qk_norm = a["qk_norm"]
-        if self.qk_norm:
+        if self.qk_norm == "full":
+            raise CodegenError(
+                "qk_norm = full（整宽归一化，如 Instella）codegen 还没实现 —— "
+                "按 per_head 生成会得到一个**看起来对但算错**的模型，所以这里直接拒绝")
+        if self.qk_norm not in ("off", "", None):
             _op = a.get("norm_one_plus", False)
             self.qn = RMSNorm(self.hd, one_plus=_op)
             self.kn = RMSNorm(self.hd, one_plus=_op)
@@ -512,7 +519,7 @@ class Attention(nn.Module):
         v = kraw if self.kv_tie else \
             self.wv(x).view(b, n, self.kv, self.hd).transpose(1, 2)
         k = kraw
-        if self.qk_norm:
+        if self.qk_norm not in ("off", "", None):
             q, k = self.qn(q), self.kn(k)
         # partial：只转前一段维度，剩下的原样带走
         np_ = int(self.hd * self.rope_partial)

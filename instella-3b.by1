@@ -1,0 +1,136 @@
+# ── instella-3b.by1 ───────────────────────────────────────────────────
+# AMD Instella-3B。
+#
+# 选它是因为它是那个问题的最干净的例子：
+#   · llama.cpp 的 arch 表里**没有** instella（src/models/ 下 160 个文件里没有）
+#   · transformers 里**没有** InstellaForCausalLM —— 它靠 auto_map 加载远程代码
+#
+# 也就是说：今天要跑这个模型，得在一个没有它的运行时里从头加一遍。
+#
+# 事实来源（全部来自产物，不是技术报告的印象）：
+#   refs/amd_Instella-3B.config.json   官方 config
+#   refs/instella-3b.index.json        399 个权重的名字
+#
+#   python by1verify.py instella-3b.by1 refs/amd_Instella-3B.config.json --config
+
+model Instella-3B {
+  arch    instella
+  license amd
+  ctx     4096
+
+  hparams {
+    d_model = 2560
+    n_layer = 36
+    vocab   = 50304
+    rms_eps = 1e-05
+  }
+
+  # 32 个 q 头配 32 个 kv 头 —— 没有 GQA。加 QK-norm。
+  mech Attn : Attention {
+    heads      = { q = 32, kv = 32, head_dim = 80 }
+    # 注意：Instella 的 QK-norm 是**整宽**的（[2560]），不是按 head_dim ——
+    # 实测 self_attn.q_norm.weight 是 [2560] 而不是 [80]。
+    # 名字一样、含义不同，靠产物才看得出来。
+    qk_norm    = full
+    structural = [ head_dim, qk_norm ]
+  }
+
+  mech FFN_ : FFN { hidden = 6912 }
+
+  stack main {
+    pattern = 36 * Attn
+    main[:] >> FFN_
+  }
+
+  position {
+    default = rope(base = 10000, pairing = half)
+  }
+
+  # 逻辑张量：和后端无关。QK-norm 额外带出两个按头归一化的张量。
+  tensors {
+    Attn {
+      q_proj.weight : (q * head_dim, d_model)
+      k_proj.weight : (kv * head_dim, d_model)
+      v_proj.weight : (kv * head_dim, d_model)
+      o_proj.weight : (d_model, q * head_dim)
+      q_norm.weight : (q * head_dim,)
+      k_norm.weight : (kv * head_dim,)
+    }
+    FFN_ {
+      gate_proj.weight : (hidden, d_model)
+      up_proj.weight   : (hidden, d_model)
+      down_proj.weight : (d_model, hidden)
+    }
+    layer {
+      pre_attention_layernorm.weight   : (d_model,)
+      pre_feedforward_layernorm.weight : (d_model,)
+    }
+    global {
+      embed.weight      : (vocab, d_model)
+      final_norm.weight : (d_model,)
+      lm_head.weight    : (vocab, d_model)
+    }
+  }
+
+  emit {
+    # 产物一：transformers config，从描述生成，零继承
+    train -> transformers.config {
+      field {
+        model_type              = "instella"
+        vocab_size              = vocab
+        hidden_size             = d_model
+        intermediate_size       = FFN_.hidden
+        num_hidden_layers       = n_layer
+        num_attention_heads     = Attn.q
+        num_key_value_heads     = Attn.kv
+        max_position_embeddings = ctx
+        rms_norm_eps            = rms_eps
+        hidden_act              = "silu"
+        attention_bias          = false
+        attention_dropout       = 0.0
+        initializer_range       = 0.02
+        rope_scaling            = null
+        rope_theta              = 10000.0
+        tie_word_embeddings     = false
+        torch_dtype             = "bfloat16"
+        use_cache               = true
+        bos_token_id            = 0
+        eos_token_id            = 0
+        pad_token_id            = 1
+      }
+    }
+
+    # 产物二：HF 侧的张量名
+    train -> torch.module {
+      name        = "model.layers.{i}.{scope}{physical}"
+      global_name = "{physical}"
+      scope { Attn = self_attn., FFN_ = mlp., layer = "", global = "" }
+      rename {
+        pre_attention_layernorm.weight   = pre_attention_layernorm.weight,
+        pre_feedforward_layernorm.weight = pre_feedforward_layernorm.weight,
+        embed.weight      = model.embed_tokens.weight,
+        final_norm.weight = model.norm.weight
+      }
+    }
+
+    # 产物三：GGUF 侧的张量名 —— 同一个模型，另一套命名
+    infer -> ggml {
+      name        = "blk.{i}.{scope}{physical}"
+      global_name = "{physical}"
+      scope { Attn = attn_, FFN_ = ffn_, layer = "", global = "" }
+      rename {
+        q_proj.weight = q.weight,      k_proj.weight = k.weight,
+        v_proj.weight = v.weight,      o_proj.weight = output.weight,
+        q_norm.weight = q_norm.weight, k_norm.weight = k_norm.weight,
+        gate_proj.weight = gate.weight,
+        up_proj.weight   = up.weight,
+        down_proj.weight = down.weight,
+        pre_attention_layernorm.weight   = attn_norm.weight,
+        pre_feedforward_layernorm.weight = ffn_norm.weight,
+        embed.weight      = token_embd.weight,
+        final_norm.weight = output_norm.weight,
+        lm_head.weight    = output.weight
+      }
+    }
+  }
+}
