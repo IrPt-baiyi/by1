@@ -179,7 +179,7 @@ Block 0 + 1.1 做完，必须**同时**满足：
 | **Block 1.2** 注意力机制 + YaRN | ✅ | `by1diff gpt-oss-shaped` = **2.384e-07** |
 | Block 1.3 GDN | ✅ | `by1diff qwen3-next-shaped` = **1.788e-07**，对 `Qwen3NextForCausalLM`。3 层线性 + 1 层全量的混合栈，**第一个验证过端到端的带状态模型** |
 | Block 2 状态与内存 | ✅ | `by1mem.py` 从 IR 推逐层内存计划；`qwen3-next-shaped` **4/4 层推算 = 实测**。GPT-OSS-120B @128K = **4.6 GiB**，把滑窗当全量会高估 **2.00×** |
-| Block 3a 自建执行器 | ⬜ | 用来检验 IR 够不够，比 3b 便宜一个数量级 |
+| Block 3a 第二个后端（NumPy） | ✅ | `by1exec.py` 纯 NumPy、不共享一行代码，**四个模型与 PyTorch 后端全一致**（2.5e-07 / 2.3e-07 / 1.0e-07 / 2.5e-06）。IR 的"后端无关"第一次被真正检验 |
 | Block 3b 目标 llama.cpp | ⬜ | **1.md 说的"上千行"就是这里** |
 | Block 4 量化布局 | ⬜ | 导出参数：`--quant mxfp4` |
 
@@ -209,7 +209,7 @@ python by1diff.py qwen3-next-shaped.by1   # 1.788e-07   线性注意力 + 混合
 2. **多栈 / 跨栈投影**没有判卷人（本地没有 DeepSeek 参考实现）。
 3. **`swiglu_limit` 在 GPT-OSS 上还没验**（参考的 `limit` 是硬编码 7.0）。
 4. **`by1mem` 只接了 qwen3_next 的量测路径**，其它族只出计划不核对。
-5. **Block 3** 还没开始。3a（自建执行器）用来检验 IR 够不够，比 3b（llama.cpp）便宜一个数量级。
+5. **Block 3b（目标 llama.cpp）还没开始** —— 3a 已经证明 IR 装得下第二个后端。
 
 ### 内存计划（Block 2 的产出）
 
