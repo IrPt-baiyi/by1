@@ -68,13 +68,43 @@ static void linear(float *o, const float *x, const float *w, int n, int di, int 
     }
 }
 
+static void linear_b(float *o, const float *x, const float *w, const float *b,
+                     int n, int di, int dout) {
+    linear(o, x, w, n, di, dout);
+    if (b) for (int i = 0; i < n; i++)
+        for (int j = 0; j < dout; j++) o[(size_t)i * dout + j] += b[j];
+}
+
 static void silu_(float *x, size_t n) {
     for (size_t i = 0; i < n; i++) x[i] = x[i] / (1.0f + expf(-x[i]));
 }
 
-/* pairing: 0 = half, 1 = interleaved */
+/* pairing: 0 = half, 1 = interleaved
+   YaRN 不只是缩放：它改的是**频率本身**（低频插值、高频外推、中间 ramp）。
+   truncate=0 时校正区间不取整 —— 过渡带的位置会因此不同。 */
 static void rope(float *q, float *k, int n, int nh, int nkv, int hd,
-                 float base, int pairing, float scale) {
+                 float base, int pairing, float scale, int nrot,
+                 int yon, float yfac, int yorig, float ybf, float ybs,
+                 int ytrunc) {
+    int half = hd / 2;
+    float *inv = (float *)malloc(sizeof(float) * half);
+    for (int i = 0; i < half; i++) {
+        float p = powf(base, -2.0f * i / hd);
+        if (!yon) { inv[i] = p; continue; }
+        float lo = (hd * logf((float)yorig / (ybf * 2.0f * 3.14159265358979f)))
+                   / (2.0f * logf(base));
+        float hi = (hd * logf((float)yorig / (ybs * 2.0f * 3.14159265358979f)))
+                   / (2.0f * logf(base));
+        if (ytrunc) { lo = floorf(lo); hi = ceilf(hi); }
+        if (lo < 0.f) lo = 0.f;
+        if (hi > hd - 1) hi = (float)(hd - 1);
+        if (lo == hi) hi += 0.001f;
+        float r = (i - lo) / (hi - lo);
+        if (r < 0.f) r = 0.f;
+        if (r > 1.f) r = 1.f;
+        inv[i] = (1.0f / (yfac * p)) * r + (1.0f / p) * (1.f - r);
+    }
+    int nhalf = nrot / 2;
     for (int pos = 0; pos < n; pos++) {
         for (int h = 0; h < nh + nkv; h++) {
             int isq = h < nh;
@@ -82,17 +112,16 @@ static void rope(float *q, float *k, int n, int nh, int nkv, int hd,
             float *v = isq ? q + ((size_t)pos * nh + h) * hd
                            : k + ((size_t)pos * nkv + (h - nh)) * hd;
             if (pairing == 0) {
-                int half = hd / 2;
-                for (int i = 0; i < half; i++) {
-                    float f = powf(base, -2.0f * i / hd) * pos;
+                for (int i = 0; i < nhalf; i++) {
+                    float f = inv[i] * pos;
                     float c = cosf(f) * scale, s = sinf(f) * scale;
-                    float a = v[i], b = v[i + half];
+                    float a = v[i], b = v[i + nrot / 2];
                     v[i] = a * c - b * s;
-                    v[i + half] = a * s + b * c;
+                    v[i + nrot / 2] = a * s + b * c;
                 }
             } else {
-                for (int i = 0; i < hd / 2; i++) {
-                    float f = powf(base, -2.0f * i / hd) * pos;
+                for (int i = 0; i < nhalf; i++) {
+                    float f = inv[i] * pos;
                     float c = cosf(f) * scale, s = sinf(f) * scale;
                     float a = v[2 * i], b = v[2 * i + 1];
                     v[2 * i] = a * c - b * s;
@@ -101,10 +130,113 @@ static void rope(float *q, float *k, int n, int nh, int nkv, int hd,
             }
         }
     }
+    free(inv);
+}
+
+
+/* ── MoE：一个算子 + 一组 attrs ─────────────────────────────────── */
+static float dot_(const float *a, const float *b, int n) {
+    float s = 0.f;
+    for (int i = 0; i < n; i++) s += a[i] * b[i];
+    return s;
+}
+static float act_gate_(float g, float u, int gptoss, float lim, float alpha) {
+    if (gptoss) {
+        if (lim > 0.f) { if (g > lim) g = lim; if (u > lim) u = lim; if (u < -lim) u = -lim; }
+        return (u + 1.f) * (g / (1.f + expf(-alpha * g)));
+    }
+    return (g / (1.f + expf(-g))) * u;
+}
+
+static void moe(float *o, const float *x, int n, int d, int E, int K, int H,
+                const float *router, const float *w1, const float *w3,
+                const float *w2, const float *b1, const float *b2,
+                const float *b3, int sh, int shh, const float *sw1,
+                const float *sw3, const float *sw2, const float *sg,
+                int routing, int gptoss, float lim, float alpha, float scale) {
+    int *idx = (int *)malloc(sizeof(int) * n * K);
+    float *wts = (float *)malloc(sizeof(float) * n * K);
+    float *lg = (float *)malloc(sizeof(float) * E);
+    float *gu = (float *)malloc(sizeof(float) * H);
+    float *uu = (float *)malloc(sizeof(float) * H);
+    float *hh = (float *)malloc(sizeof(float) * H);
+    for (int i = 0; i < n; i++) {
+        const float *xi = x + (size_t)i * d;
+        for (int e = 0; e < E; e++) lg[e] = dot_(xi, router + (size_t)e * d, d);
+        if (routing == 1) {
+            for (int k = 0; k < K; k++) {
+                int best = -1; float bv = -INFINITY;
+                for (int e = 0; e < E; e++) {
+                    int used = 0;
+                    for (int q = 0; q < k; q++) if (idx[i * K + q] == e) used = 1;
+                    if (!used && lg[e] > bv) { bv = lg[e]; best = e; }
+                }
+                idx[i * K + k] = best;
+                wts[i * K + k] = bv;
+            }
+            float mx = -INFINITY;
+            for (int k = 0; k < K; k++) if (wts[i * K + k] > mx) mx = wts[i * K + k];
+            float s = 0.f;
+            for (int k = 0; k < K; k++) { wts[i * K + k] = expf(wts[i * K + k] - mx); s += wts[i * K + k]; }
+            for (int k = 0; k < K; k++) wts[i * K + k] = wts[i * K + k] / s * scale;
+        } else {
+            float mx = -INFINITY;
+            for (int e = 0; e < E; e++) if (lg[e] > mx) mx = lg[e];
+            float s = 0.f;
+            for (int e = 0; e < E; e++) { lg[e] = expf(lg[e] - mx); s += lg[e]; }
+            for (int k = 0; k < K; k++) {
+                int best = -1; float bv = -INFINITY;
+                for (int e = 0; e < E; e++) {
+                    int used = 0;
+                    for (int q = 0; q < k; q++) if (idx[i * K + q] == e) used = 1;
+                    if (!used && lg[e] > bv) { bv = lg[e]; best = e; }
+                }
+                idx[i * K + k] = best;
+                wts[i * K + k] = bv / s;
+            }
+            float ss = 0.f;
+            for (int k = 0; k < K; k++) ss += wts[i * K + k];
+            for (int k = 0; k < K; k++) wts[i * K + k] = wts[i * K + k] / ss * scale;
+        }
+    }
+    for (int i = 0; i < n; i++) {
+        const float *xi = x + (size_t)i * d;
+        float *oi = o + (size_t)i * d;
+        for (int j = 0; j < d; j++) oi[j] = 0.f;
+        for (int k = 0; k < K; k++) {
+            int e = idx[i * K + k];
+            const float *W1 = w1 + (size_t)e * H * d;
+            const float *W3 = w3 + (size_t)e * H * d;
+            const float *W2 = w2 + (size_t)e * d * H;
+            for (int h = 0; h < H; h++) {
+                gu[h] = dot_(xi, W1 + (size_t)h * d, d) + (b1 ? b1[(size_t)e * H + h] : 0.f);
+                uu[h] = dot_(xi, W3 + (size_t)h * d, d) + (b3 ? b3[(size_t)e * H + h] : 0.f);
+                hh[h] = act_gate_(gu[h], uu[h], gptoss, lim, alpha);
+            }
+            for (int j = 0; j < d; j++) {
+                float s = dot_(hh, W2 + (size_t)j * H, H);
+                if (b2) s += b2[(size_t)e * d + j];
+                oi[j] += wts[i * K + k] * s;
+            }
+        }
+        if (sh) {
+            float *sh1 = (float *)malloc(sizeof(float) * shh);
+            float *sh3 = (float *)malloc(sizeof(float) * shh);
+            for (int h = 0; h < shh; h++) sh1[h] = dot_(xi, sw1 + (size_t)h * d, d);
+            for (int h = 0; h < shh; h++) sh3[h] = dot_(xi, sw3 + (size_t)h * d, d);
+            for (int h = 0; h < shh; h++) sh1[h] = (sh1[h] / (1.f + expf(-sh1[h]))) * sh3[h];
+            float g = 1.f;
+            if (sg) g = 1.f / (1.f + expf(-dot_(xi, sg, d)));
+            for (int j = 0; j < d; j++) oi[j] += g * dot_(sh1, sw2 + (size_t)j * shh, shh);
+            free(sh1); free(sh3);
+        }
+    }
+    free(idx); free(wts); free(lg); free(gu); free(uu); free(hh);
 }
 
 static void attention(float *o, float *q, const float *k, const float *v,
-                      int n, int nh, int nkv, int hd, int od, int window) {
+                      int n, int nh, int nkv, int hd, int od, int window,
+                      const float *sink) {
     int rep = nh / nkv;
     float sc = 1.0f / sqrtf((float)hd);
     float *att = (float *)malloc(sizeof(float) * n);
@@ -123,12 +255,16 @@ static void attention(float *o, float *q, const float *k, const float *v,
                 att[j] = s;
                 if (s > mx) mx = s;
             }
+            if (sink && sink[h] > mx) mx = sink[h];
             float sum = 0.f;
             for (int j = 0; j <= i; j++) {
                 if (window && j <= i - window) continue;
                 att[j] = expf(att[j] - mx);
                 sum += att[j];
             }
+            /* sink：一列额外的 logit 参与 softmax，之后丢掉 ——
+               剩下的概率和小于 1，它专门用来吸收质量 */
+            if (sink) sum += expf(sink[h] - mx);
             float *oi = o + ((size_t)i * nh + h) * hd;
             for (int t = 0; t < hd; t++) vb[t] = 0.f;
             for (int j = 0; j <= i; j++) {
@@ -227,14 +363,18 @@ def emit_c(ir, info, params):
             if k == "Norm":
                 order.append((key(i, j, "w"), pre + "w"))
             elif k == "Attention":
-                if a["q_gate"] or a["kv_tie"] or a["sink"] or a["bias"] \
-                        or a["qk_norm"] or a["head_gate"] != "off" \
-                        or a.get("yarn") or a.get("rope_partial", 1.0) != 1.0:
+                if a["q_gate"] or a["kv_tie"] or a["qk_norm"] \
+                        or a["head_gate"] != "off":
                     raise SystemExit(
-                        f"  [不支持] 第 {i} 层的注意力用了 q_gate/kv_tie/sink/"
-                        f"bias/qk_norm/head_gate/yarn/partial —— C 后端还没实现")
+                        f"  [不支持] 第 {i} 层的注意力用了 q_gate/kv_tie/"
+                        f"qk_norm/head_gate —— C 后端还没实现")
                 for nm in ("wq", "wk", "wv", "wo"):
                     order.append((key(i, j, nm), pre + nm))
+                if a["bias"]:
+                    for nm in ("wq.bias", "wk.bias", "wv.bias", "wo.bias"):
+                        order.append((key(i, j, nm), pre + nm))
+                if a["sink"]:
+                    order.append((key(i, j, "sink"), pre + "sink"))
                 body.append((i, j, "Attention", a))
             elif k == "FFN":
                 if not a.get("gate", True) or a.get("act") == "gptoss":
@@ -242,6 +382,18 @@ def emit_c(ir, info, params):
                 for nm in ("w1", "w2", "w3"):
                     order.append((key(i, j, nm), pre + nm))
                 body.append((i, j, "FFN", a))
+            elif k == "MoE":
+                for nm in ("router", "w1", "w3", "w2"):
+                    order.append((key(i, j, nm), pre + nm))
+                if a["expert_bias"]:
+                    for nm in ("b1", "b3", "b2"):
+                        order.append((key(i, j, nm), pre + nm))
+                if a["shared"]:
+                    for nm in ("sw1", "sw3", "sw2"):
+                        order.append((key(i, j, nm), pre + nm))
+                    if a["shared_gate"]:
+                        order.append((key(i, j, "shared_gate"), pre + "shared_gate"))
+                body.append((i, j, "MoE", a))
             elif k == "Add":
                 body.append((i, j, "Add", a))
             else:
@@ -286,16 +438,28 @@ def emit_c(ir, info, params):
                           f" {1 if a.get('one_plus') else 0});")
             elif k == "Attention":
                 hd, nh, nkv = a["head_dim"], a["q"], a["kv"]
-                lb.append(f" linear(q, {src[0]}, P({key(i,j,'wq')}), n, D, {nh*hd});")
-                lb.append(f" linear(kk, {src[0]}, P({key(i,j,'wk')}), n, D, {nkv*hd});")
-                lb.append(f" linear(vv, {src[0]}, P({key(i,j,'wv')}), n, D, {nkv*hd});")
+                B = "linear_b" if a["bias"] else "linear"
+                def BA(nm):
+                    # key() 会把点也换成下划线，所以整个 "wq.bias" 一起传进去
+                    return (f", P({key(i,j, nm + '.bias')})" if a["bias"] else "")
+                lb.append(f" {B}(q, {src[0]}, P({key(i,j,'wq')}){BA('wq')}, n, D, {nh*hd});")
+                lb.append(f" {B}(kk, {src[0]}, P({key(i,j,'wk')}){BA('wk')}, n, D, {nkv*hd});")
+                lb.append(f" {B}(vv, {src[0]}, P({key(i,j,'wv')}){BA('wv')}, n, D, {nkv*hd});")
+                _y = a.get("yarn") or {}
+                _nrot = int(hd * a.get("rope_partial", 1.0))
                 lb.append(f" rope(q, kk, n, {nh}, {nkv}, {hd},"
                           f" {float(a['rope_base'])}f,"
                           f" {0 if a['rope_pairing']=='half' else 1},"
-                          f" {float(a['rope_scale'])}f);")
+                          f" {float(a['rope_scale'])}f, {_nrot},"
+                          f" {1 if _y else 0}, {float(_y.get('factor',1))}f,"
+                          f" {int(_y.get('original',4096))},"
+                          f" {float(_y.get('beta_fast',32))}f,"
+                          f" {float(_y.get('beta_slow',1))}f,"
+                          f" {1 if _y.get('truncate',True) else 0});")
                 lb.append(f" attention(ob, q, kk, vv, n, {nh}, {nkv}, {hd},"
-                          f" {nh*hd}, {a['window'] if a['window'] else 0});")
-                lb.append(f" linear({dst}, ob, P({key(i,j,'wo')}), n, {nh*hd}, D);")
+                          f" {nh*hd}, {a['window'] if a['window'] else 0},"
+                          f" {'P(' + key(i,j,'sink') + ')' if a['sink'] else 'NULL'});")
+                lb.append(f" {B}({dst}, ob, P({key(i,j,'wo')}){BA('wo')}, n, {nh*hd}, D);")
             elif k == "FFN":
                 hid = a["hidden"]
                 lb.append(f" linear(hb, {src[0]}, P({key(i,j,'w1')}), n, D, {hid});")
@@ -304,6 +468,25 @@ def emit_c(ir, info, params):
                 lb.append(f" for (size_t z = 0; z < (size_t)n * {hid}; z++)"
                           f" hb[z] *= ob[z];")
                 lb.append(f" linear({dst}, hb, P({key(i,j,'w2')}), n, {hid}, D);")
+            elif k == "MoE":
+                E, K, hid = a["experts"], a["top_k"], a["hidden"]
+                sh = a["shared"]
+                lb.append(
+                    f" moe({dst}, {src[0]}, n, D, {E}, {K}, {hid},"
+                    f" P({key(i,j,'router')}), P({key(i,j,'w1')}),"
+                    f" P({key(i,j,'w3')}), P({key(i,j,'w2')}),"
+                    f" {'P(' + key(i,j,'b1') + ')' if a['expert_bias'] else 'NULL'},"
+                    f" {'P(' + key(i,j,'b2') + ')' if a['expert_bias'] else 'NULL'},"
+                    f" {'P(' + key(i,j,'b3') + ')' if a['expert_bias'] else 'NULL'},"
+                    f" {sh}, {a['shared_hidden'] if sh else 0},"
+                    f" {'P(' + key(i,j,'sw1') + ')' if sh else 'NULL'},"
+                    f" {'P(' + key(i,j,'sw3') + ')' if sh else 'NULL'},"
+                    f" {'P(' + key(i,j,'sw2') + ')' if sh else 'NULL'},"
+                    f" {'P(' + key(i,j,'shared_gate') + ')' if a['shared_gate'] else 'NULL'},"
+                    f" {1 if a['routing'] == 'topk_softmax' else 0},"
+                    f" {1 if a['act'] == 'gptoss' else 0},"
+                    f" {float(a['limit']) if a['limit'] else 0.0}f,"
+                    f" {float(a['alpha'])}f, {float(a['routed_scale'])}f);")
             elif k == "Add":
                 lb.append(f" for (size_t z = 0; z < (size_t)n * D; z++)"
                           f" {dst}[z] = {src[0]}[z] + {src[1]}[z];")
