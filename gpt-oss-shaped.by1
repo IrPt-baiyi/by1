@@ -1,0 +1,52 @@
+# ── gpt-oss-shaped.by1 ────────────────────────────────────────────────
+# Block 1.2 的第二个判卷对象：GPT-OSS 的注意力 + MoE。
+#
+# 和 Mixtral 那条的区别（都是「MoE」，但只有长在一起才看得出是两个机制）：
+#   routing      Mixtral 全体 softmax→top-k→归一   /   GPT-OSS 先 top-k 再 softmax
+#   act          silu(gate)*up                      /   gate*sigmoid(1.702*gate)*(up+1)
+#   expert_bias  无                                  /   每个专家的三个投影都带 bias
+#   sink         无                                  /   每个头一个可学标量
+#   rope         普通 RoPE                           /   YaRN（改频率 + 缩放 cos）
+#
+#   python by1diff.py gpt-oss-shaped.by1
+
+model GptOssShaped {
+  ctx 512
+
+  hparams {
+    d_model = 64
+    n_layer = 2
+    vocab   = 256
+  }
+
+  mech GQA : Attention {
+    heads      = { q = 4, kv = 2, head_dim = 16 }
+    attn_bias  = true
+    sink       = per_head
+    structural = [ head_dim, out_dim, attn_bias, sink ]
+  }
+
+  mech Experts : MoE {
+    experts      = 8
+    top_k        = 2
+    hidden       = 32
+    router_bias  = true
+    expert_bias  = true
+    routing      = topk_softmax
+    act          = gptoss
+    swiglu_limit = 7.0
+    structural   = [ experts, hidden ]
+  }
+
+  stack main {
+    pattern = 2 * GQA
+    main[:] >> Experts
+  }
+
+  # YaRN 不只是缩放：它改频率本身。truncate=false 时校正区间不做取整。
+  position {
+    default = yarn(rope(base = 150000, pairing = half), factor = 32,
+                   original = 4096, beta_fast = 32, beta_slow = 1,
+                   truncate = false)
+  }
+}

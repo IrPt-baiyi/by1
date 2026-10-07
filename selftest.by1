@@ -1,0 +1,50 @@
+# ── selftest.by1 ────────────────────────────────────────────────────
+# 检查器自检。这个文件里每一处都是故意的错，用来证明检查不是空过。
+# 期望: 9 错误 / 4 警告
+
+model Selftest {
+  ctx 8192
+
+  hparams {
+    d_model = 1024
+    n_layer = 10
+  }
+
+  mech Local  : Attention { window = 128, heads = { q = 8, kv = 2, head_dim = 128 } }
+  mech Global : Attention { heads = { q = 8, kv = 2, head_dim = 128 } }
+  mech FFN    : MoE { experts = 8, top_k = 2 }
+
+  state {
+    Global  : kv_cache(grows_with_seq)
+    Missing : recurrent(fixed, per_seq)
+  }
+
+  residual Wrap { streams = 2 }
+
+  stack main[8] {
+    pattern = 4 x [ Local + Global ] + 1 x FFN + 1 x Ghost
+    main[:] >> NoSuchThing
+    main[:] :: NoSuchResidual
+    main[:] :: Wrap
+  }
+
+  position {
+    default = rope(base = 1e4, mrope = [16, 16, 8], yarn = 2)
+  }
+
+  memory Table {
+    key    = local_ngram(2..3)
+    table  = 1_000 entries
+    params = 5e9
+  }
+
+  tensors {
+    layer(i) { w : "blk.{i}.w" }
+    Local {
+      q_proj : (q, head_dim)
+      v_proj : (kv, head_dim) unless nosuchattr
+    }
+  }
+
+  optimizer AdamW { except(embedding, lm_head) : SGD }
+}

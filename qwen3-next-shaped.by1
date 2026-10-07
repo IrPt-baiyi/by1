@@ -1,0 +1,68 @@
+# ── qwen3-next-shaped.by1 ─────────────────────────────────────────────
+# Block 1.3 的判卷对象：**混合栈 + 递归状态**。
+#
+# 这是第一个既不是纯注意力、也不是纯前馈的模型：
+#   3 层 GDN（线性注意力，带固定大小的递归状态） + 1 层全量注意力，循环
+#
+# 三个新东西：
+#   Linear    —— 递归状态。KV cache 随序列线性增长，它不增长。这是「线性注意力」的全部含义。
+#   q_gate    —— q_proj 输出是 2 倍，一半当 query、一半当门（sigmoid 乘在输出上）
+#   partial   —— 部分 RoPE，只转前 1/4 的 head_dim
+#
+#   python by1diff.py qwen3-next-shaped.by1
+
+model Qwen3NextShaped {
+  ctx 512
+
+  hparams {
+    d_model = 64
+    n_layer = 4
+    vocab   = 256
+    # Qwen3-Next 的 RMSNorm 是 zero-centered：w 初值为 0，算的是 (1+w)。
+    # 注意它的 RMSNormGated（GDN 里面那个）**不是** —— 同一个模型里两种并存。
+    norm    = zero_centered
+  }
+
+  # ── 线性注意力：短卷积 + delta 规则 + 门控归一化 ──────────────────
+  mech GDN : Linear {
+    k_heads     = 2
+    v_heads     = 4          # ≠ k_heads，所以 q/k 要按 v 的头数复制
+    k_dim       = 8
+    v_dim       = 8
+    conv_kernel = 4
+    act         = silu
+  }
+
+  # ── 每四层一次的全量注意力 ────────────────────────────────────────
+  mech GQA : Attention {
+    heads      = { q = 4, kv = 2, head_dim = 16 }
+    qk_norm    = true
+    q_gate     = true
+    partial    = 0.25
+    structural = [ head_dim, q_gate, partial ]
+  }
+
+  # ── 两种层共用同一个 MoE ──────────────────────────────────────────
+  mech MoE : MoE {
+    experts       = 8
+    top_k         = 2
+    shared        = 1
+    hidden        = 16
+    shared_hidden = 16
+    shared_gate   = true     # 共享专家还要再乘一个 sigmoid 门
+    structural    = [ experts, hidden, shared_hidden ]
+  }
+
+  schedule {
+    block = 3 * GDN + 1 * GQA
+  }
+
+  stack main {
+    pattern = 1 * block
+    main[:] >> MoE
+  }
+
+  position {
+    default = rope(base = 10000, pairing = half, partial = 0.25)
+  }
+}

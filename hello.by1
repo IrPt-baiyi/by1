@@ -1,0 +1,39 @@
+# ── hello.by1 ───────────────────────────────────────────────────────
+# 一个最小的语言模型。改数字就能改大小 —— 改完重新跑一次就行。
+#
+#   d_model   模型有多宽。越大越"聪明"，也越慢
+#   n_layer   有多少层
+#   vocab     词表大小。这里按字节切分，所以是 256
+#   hidden    FFN 的中间层宽度，通常是 d_model 的 4 倍
+#   ctx       一次最多看多少个字节
+#
+# 训练 + 生成：
+#   python by1train.py hello.by1 --text 1.md
+
+model Hello {
+  ctx 256
+
+  hparams {
+    d_model = 128
+    n_layer = 4
+    vocab   = 256
+  }
+
+  # 注意力：每个位置去看前面若干位置
+  #   q / kv    查询头数 / 键值头数（kv 比 q 少 = 多个查询头共享一份键值，省内存）
+  #   head_dim  每个头的宽度
+  mech Attention : Attention {
+    heads = { q = 4, kv = 2, head_dim = 32 }
+  }
+
+  # 前馈层：每个位置各自过一次小网络
+  mech MLP : FFN {
+    hidden = 512
+  }
+
+  # 排布：4 层注意力，每层后面接一个前馈层
+  stack main {
+    pattern = 4 * Attention
+    main[:] >> MLP
+  }
+}

@@ -1,0 +1,151 @@
+# ── deepseek-v4.1-flash.by1 ─────────────────────────────────────────
+# 验收 #5（最难的一个）。写它的目的就是逼出语法缺口，所以每一处当前草案
+# 无法表达的地方都标了「⚠️ 缺口 N」，不做静默发明。标「待核」的数字是公开
+# 摘要里没有的，需要补。
+#
+# 事实来源：CED / CSA2 / SWA Bounded Replay / Engram / mHC 的公开技术摘要。
+
+model DeepSeek-V4.1-Flash {
+  arch    deepseek4_exp
+  license mit
+  ctx     1000000                  # 原生 1M，无需外推
+
+  hparams {
+    d_model = ?                    # 待核
+    n_layer = 40                   # 20 encoder + 20 decoder
+    vocab   = ?                    # 待核
+  }
+
+  # ⚠️ 缺口 1：激活参数按执行阶段不同（prefill ≈ 8B，decode ≈ 16B）。
+  #    hparams 没有阶段维度，emit 也没有。这说明「阶段」改变了模型实际走
+  #    哪些层，它不是运行时旋钮。
+  active { prefill = 8e9, decode = 16e9 }
+
+  # ── 机制库 ────────────────────────────────────────────────────────
+  mech GQA : Attention {
+    heads    = { q = ?, kv = ?, head_dim = ? }   # 待核
+    kv_space = real
+    mode     = full
+  }
+
+  mech CSA2 : Sparse {
+    granularity = ?                # 待核：压缩块大小
+    top_k       = ?                # 待核
+    kv_space    = real
+    indexer     = hierarchical(depth = ?)
+    # ⚠️ 缺口 3：索引器的候选集继承自前一个稀疏层。这是层间中间产物，不是
+    #    hidden state；现有 >> 与 :: 只能接「模块」，接不了「中间值」。
+  }
+
+  mech SWA : Sparse {
+    window   = ?                   # 待核
+    kv_space = real
+  }
+
+  mech MoE : MoE {
+    experts = 384
+    top_k   = 6
+    shared  = 1
+  }
+
+  mech ViT : Vision {
+    patch     = 16
+    unshuffle = 3 x 3              # 3×3 pixel-unshuffle 降采样
+  }
+
+  mech Projector : MLP { layers = 2 }
+
+  # ── 残差流：Single-Pass mHC ──────────────────────────────────────
+  # ⚠️ 缺口 5：mHC 与 Gated Residual 同轴不同族，但 residual 在草案里是单例。
+  residual mHC {
+    single_pass = true
+  }
+
+  # ── 状态策略：这个模型几乎全部难点都在这里 ──────────────────────
+  state {
+    e[*].GQA.kv_cache : kv_cache(grows_with_seq)
+
+    # ⚠️ 缺口 6：decoder 的 global KV 不自己算，而是从 encoder 末层 hidden
+    #    state 投影而来。现有 state 按「机制名」键控，只能给某个机制的全部
+    #    实例一条策略，说不出「这份状态的来源是另一个 stack」。
+    d[*].GQA.global_kv : projected(
+      from     = encoder.last.hidden,
+      proj     = linear,
+      heads    = ?,                # 待核
+      head_dim = ?                 # 待核
+    )
+
+    # ⚠️ 缺口 7：Reuse 模式要引用「另一层的」KV，需要实例级引用。现在键是
+    #    机制名，无法区分「第 15 层复用第 9 层」。
+    d[mode = reuse].CSA2.kv_cache : shared_from(d[mode = reindex].CSA2.kv_cache)
+
+    # ⚠️ 缺口 8：分层索引器沿层向前传递候选集
+    d[mode = reindex].CSA2.index : inherit(candidates_from = prev_sparse)
+
+    # ⚠️ 缺口 9：SWA 的持久化与恢复策略，现有谓词（recurrent / kv_cache）
+    #    表达不了「不落盘 + miss 时只重放一个窗口」。
+    *.SWA.local_kv : sliding_window(persist = none, recovery = replay(last_window))
+
+    # ⚠️ 缺口 10：精度是按状态的，不是全局 dtype
+    d[*].*.kv_cache : dtype = fp4  # 公开摘要：global KV ≈ 890 B/token
+  }
+
+  # ── 稀疏条件记忆：Engram ─────────────────────────────────────────
+  # ⚠️ 缺口 11：这是「权重」+「请求级小状态」两件事。草案把 lookup 表整体放在
+  #    state 里（Qwen3.8 那份已经暴露过一次：51.2B 是固定权重，不是 KV）。
+  memory Engram {
+    kind   = sparse_conditional
+    params = 196e9
+    state  : per_seq(small)
+  }
+
+  # ── 调度 ──────────────────────────────────────────────────────────
+  # ⚠️ 缺口 12：stack 只能有一段，且名字写死为 l。两段栈 + 全局层编号
+  #    （张量命名要用 blk.{i}）都需要新语法。
+  stack encoder e[20] {
+    pattern = 20 x GQA(mode = full)     # 待核：encoder 内部是否纯全注意力
+    e[:] >> MoE
+    e[:] :: mHC
+  }
+
+  stack decoder d[20] {
+    pattern = 20 x CSA2                 # 待核
+    d[:] >> MoE
+    d[:] :: mHC
+
+    # ⚠️ 缺口 2（最关键的一条）：这里的 mode 不是「机制类型」。20 层全是
+    #    CSA2，变的是层上的一个枚举属性。现在 pattern 只能换机制，不能给
+    #    同一机制逐层打属性——而 1.md 自己说「真正新的东西是这些机制怎么
+    #    组合、按什么比例排列」，按比例排列恰恰要求「同机制 + 不同属性」。
+    mode(d[0..5])   = full
+    mode(d[6..13])  = reindex
+    mode(d[14..19]) = reuse
+  }
+
+  # ⚠️ 缺口 13：跨栈接线。接的不是「一个模块的输出」，是「一个 stack 的末层
+  #    hidden」，而且中间带投影。
+  interop {
+    encoder.last.hidden -> linear -> decoder[*].global_kv
+  }
+
+  # ── 位置：按模态分区 ─────────────────────────────────────────────
+  # ⚠️ 缺口 14：草案的 position 是按「机制」覆盖，这里是按「模态」分区。
+  #    这是两个正交维度，现在的语法只有前一个。
+  position {
+    text   = rope(base = ?, partial = ?, yarn = ?)   # 待核
+    vision = rope_2d(...)                            # ViT 用 2D-RoPE
+  }
+
+  # ── 张量契约 ──────────────────────────────────────────────────────
+  # ⚠️ 缺口 15：两段栈需要 stack-local i 到全局 blk.{i} 的映射；且现在写的是
+  #    GGUF 原名，同一份文件还要生成 torch。
+  tensors {
+    GQA.layer(i)  { ... }
+    CSA2.layer(i) { ... }
+  }
+
+  # ── 附属 ──────────────────────────────────────────────────────────
+  head DSpark { kind = speculative }
+
+  # ⚠️ 缺口 16：optimizer 在 1.md 的非目标里被明确排除，但确实需要声明。
+}

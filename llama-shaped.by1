@@ -1,0 +1,33 @@
+# ── llama-shaped.by1 ────────────────────────────────────────────────
+# 与 transformers 的 LlamaForCausalLM 结构完全一致的最小模型：
+#   pre-norm · 每层两个 RMSNorm · GQA · RoPE · SwiGLU MLP · 因果掩码
+#
+# 这份文件存在的唯一目的：给 by1 生成的前向找一个**外部判卷人**。
+# 同一份权重装进两边，同一条输入，比 logits。
+#
+#   python by1diff.py llama-shaped.by1
+
+model LlamaShaped {
+  ctx 512
+
+  hparams {
+    d_model = 128
+    n_layer = 4
+    vocab   = 256
+  }
+
+  mech Attention : Attention {
+    heads = { q = 4, kv = 2, head_dim = 32 }
+  }
+
+  mech MLP : FFN { hidden = 512 }
+
+  stack main {
+    pattern = 4 * Attention
+    main[:] >> MLP
+  }
+
+  position {
+    default = rope(base = 10000, pairing = half)
+  }
+}

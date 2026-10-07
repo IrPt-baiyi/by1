@@ -1,0 +1,89 @@
+# ── qwen3.8-flash-next.by1 ──────────────────────────────────────────
+model Qwen3.8-Flash-Next {
+  arch    qwen4_exp
+  license apache-2.0
+  ctx     262144                    # 原生；YaRN(x4) 外推至 1M
+
+  hparams {
+    d_model = 2560
+    n_layer = 48
+    vocab   = 151936
+  }
+
+  # ── 机制库：声明一次，调度时按名引用 ──────────────────────────
+  mech GDN : Linear {
+    gate      = channel_wise
+    decay     = bounded(2^-5 .. 1)
+    shortconv = 4
+    heads     = { v = 48, qk = 16, head_dim = 128 }
+  }
+
+  mech QSA : Sparse {
+    granularity = micro_block(128)
+    share       = layer
+    kv_space    = real
+    top_k       = 2048
+    indexer     = compressed
+  }
+
+  mech MoE : MoE {
+    experts = 512
+    top_k   = 10
+    shared  = 1
+  }
+
+  # ── 状态策略：这里决定内存布局、能否复用 prefix、能否连续批处理 ──
+  state {
+    GDN   : recurrent(fixed, per_seq)
+    QSA   : kv_cache(grows_with_seq) + index_cache(shared_over = 4)
+    NGram : lookup(offload = host_ram, prefetch = async)
+  }
+
+  # ── 残差流 ──────────────────────────────────────────────────
+  residual GatedResidual {
+    streams = 4
+    read    = gate(elementwise)
+    write   = gate(elementwise)
+  }
+
+  # ── 调度 ────────────────────────────────────────────────────
+  stack l[48] {
+    pattern = 12 × [ 3 × GDN  +  1 × QSA ]
+    l[:] >> MoE                     # 每层后接 MoE
+    l[:] :: GatedResidual           # 整体包裹在 4 分支残差里
+  }
+
+  # ── 位置：正交轴，可逐机制覆盖 ──────────────────────────────
+  position {
+    default = rope(base = 1e7, partial = 0.25,
+                   mrope = [11, 11, 10], yarn = 4.0)
+    GDN     = none                  # 递归自身携带顺序
+  }
+
+  # ── 稀疏查表 ────────────────────────────────────────────────
+  memory NGram {
+    key    = local_ngram(2..3)
+    table  = 20_000_000 entries
+    params = 51e9
+  }
+
+  # ── 张量契约：唯一真相源，双向生成 ──────────────────────────
+  tensors {
+    layer(i) {
+      qkvz : "blk.{i}.in_proj_qkvz.weight"
+      ba   : "blk.{i}.in_proj_ba.weight"
+      conv : "blk.{i}.conv1d.weight"
+      # ...
+    }
+  }
+
+  # ── 附属 ────────────────────────────────────────────────────
+  head      MTP { n = 1, params = 4e9 }
+  optimizer Muon { except(embed, head, norm) : AdamW }
+
+  # ── 后端 ────────────────────────────────────────────────────
+  emit {
+    infer -> runtime.ggml(target = cpu | cuda | metal | vulkan)
+    train -> torch.module(dtype = bf16)
+  }
+}

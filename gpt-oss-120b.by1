@@ -1,0 +1,162 @@
+# ── gpt-oss-120b.by1 ────────────────────────────────────────────────
+# 验收 #1。这是一次 hold-out：语法与检查器在此前已冻结，写这份文件的过程中
+# 不改任何代码。撞到墙的地方如实记在注释里，不做规避式改写。
+#
+# 事实来源（逐项核对）：
+#   refs/gpt-oss-120b.config.json     官方 config
+#   refs/gpt-oss-120b.tensors.json    687 个权重的 dtype/shape
+#   refs/gpt-oss-120b.gguf-*.json     GGUF 侧的同名表
+#
+# 与 Gemma 4 相比，这个模型压的是另一条轴：它的两类层（滑窗 / 全量）
+# **结构属性完全相同**，差异纯粹是行为属性（window）。所以它没有等价类，
+# 只有一类 —— 这是对「行为属性 / 结构属性」切分的一次反向检验。
+
+model GPT-OSS-120B {
+  arch    gpt_oss
+  license apache-2.0
+  ctx     131072                    # 原生 4096，YaRN(x32) 外推
+
+  hparams {
+    d_model   = 2880
+    n_layer   = 36
+    vocab     = 201088
+    native_ctx = 4096
+    act       = silu
+  }
+
+  # ── 机制库 ────────────────────────────────────────────────────────
+  # 注意这里只有一个 GQA。滑窗层与全量层不是两个机制，
+  # 是同一个机制的两个 window 取值 —— pattern-design Q1 的断言在此受检。
+  mech GQA : Attention {
+    heads      = { q = 64, kv = 8, head_dim = 64 }
+    out_dim    = 4096                 # = q * head_dim，不是 d_model
+    attn_bias  = true                 # 实测：q/k/v/o 全部带 bias
+    sink       = per_head             # 实测：每层都有 self_attn.sinks，长度 = q 头数
+    structural = [ head_dim, out_dim, attn_bias, sink ]
+  }
+
+  mech MoE : MoE {
+    experts    = 128
+    top_k      = 4
+    shared     = 0
+    hidden     = 2880
+    router_bias  = true               # 实测：mlp.router.bias
+    expert_bias  = true               # 实测：每个专家都有 gate_up/down 的 bias
+    routing      = topk_softmax       # 先 top-k，再对这 k 个 logits 做 softmax
+    act          = gptoss             # gate*sigmoid(1.702*gate)*(up+1)，两侧 clamp
+    swiglu_limit = 7.0
+    structural = [ experts, hidden ]
+  }
+
+  # ── 调度：严格交替，没有前缀/后缀例外 ────────────────────────────
+  schedule {
+    local  = 1 * GQA(window = 128)
+    global = 1 * GQA(window = none)
+    block  = local + global
+  }
+
+  stack main {
+    pattern = 18 * block           # 36 层 = 18 滑窗 + 18 全量
+    main[:] >> MoE
+  }
+
+  # ── 位置：YaRN 全局生效 ───────────────────────────────────────────
+  position {
+    default = yarn(rope(base = 150000), factor = 32, original = 4096,
+                   beta_fast = 32, beta_slow = 1)
+  }
+
+  # ── 状态策略 ──────────────────────────────────────────────────────
+  # 同一个 GQA 机制的两类层，状态**不同构**：
+  #   全量层：cache 随序列增长
+  #   滑窗层：cache 有界，实测上界 = window - 1
+  # 所以 state 的键必须能带选择器，谓词也必须能说「有界」。
+  # 这两条都是执行神谕（by1oracle.py）逼出来的，不是设计出来的。
+  state {
+    GQA[window = none]  : kv_cache(grows_with_seq)
+    GQA[window != none] : kv_cache(bounded_by = window - 1)
+    MoE                 : weights(fixed, shared)
+  }
+
+  # ── 张量契约：纯逻辑，形状即权重矩阵形状 ──────────────────────────
+  # 逻辑名带后缀（.weight / .bias），因为物理名的后缀在两个后端之间不同：
+  #   HF   : self_attn.sinks          （无后缀）
+  #   GGUF : attn_sinks.weight        （有后缀）
+  # 冻结的 emit 模板只能有一个固定后缀，所以把后缀放进逻辑名。
+  # ⚠️ 缺口：物理名后缀应当能由契约声明，而不是靠命名技巧绕开。
+  tensors {
+    GQA {
+      q_proj.weight : (q * head_dim, d_model)
+      q_proj.bias   : (q * head_dim,)
+      k_proj.weight : (kv * head_dim, d_model)
+      k_proj.bias   : (kv * head_dim,)
+      v_proj.weight : (kv * head_dim, d_model)
+      v_proj.bias   : (kv * head_dim,)
+      o_proj.weight : (d_model, q * head_dim)
+      o_proj.bias   : (d_model,)
+      sinks         : (q,)
+    }
+    MoE {
+      router.weight : (experts, d_model)
+      router.bias   : (experts,)
+      gate_exps.weight : (experts, hidden, d_model)
+      gate_exps.bias   : (experts, hidden)
+      up_exps.weight   : (experts, hidden, d_model)
+      up_exps.bias     : (experts, hidden)
+      down_exps.weight : (experts, d_model, hidden)
+      down_exps.bias   : (experts, d_model)
+    }
+    # 层级：不属于任何机制，每一层都有 —— 这就是之前对不上的那 72 个
+    layer {
+      attn_norm.weight           : (d_model,)
+      post_attention_norm.weight : (d_model,)
+    }
+    # 全局：不属于任何层，名字里没有层号
+    global {
+      embed.weight      : (vocab, d_model)
+      final_norm.weight : (d_model,)
+      lm_head.weight    : (vocab, d_model)
+    }
+  }
+  # ⚠️ 缺口：上面 6 个专家张量在 GGUF 侧能对上（分开存放），
+  #    但在 HF 侧对不上 —— HF 把 gate/up 融合成 gate_up_proj，再按 MXFP4
+  #    打成 _blocks / _scales。融合与量化布局都无法用 emit 表达。
+
+  # ── 附属 ──────────────────────────────────────────────────────────
+  head LmHead { tie_embedding = false }
+
+  # ⚠️ 缺口：层内归一化（input_layernorm / post_attention_layernorm）与
+  #    模型级张量（token_embd / output_norm / output）不属于任何机制，
+  #    tensors 只有「按机制」一个作用域，写不进去。
+
+  # ── 后端 ──────────────────────────────────────────────────────────
+  emit {
+    train -> torch.module {
+      name        = "model.layers.{i}.{scope}{physical}"
+      global_name = "{physical}"
+      scope { GQA = self_attn., MoE = mlp., layer = "", global = "" }
+      rename {
+        attn_norm.weight           = input_layernorm.weight,
+        post_attention_norm.weight = post_attention_layernorm.weight,
+        embed.weight               = model.embed_tokens.weight,
+        final_norm.weight          = model.norm.weight
+      }
+    }
+    infer -> ggml {
+      name        = "blk.{i}.{scope}{physical}"
+      global_name = "{physical}"
+      scope { GQA = attn_, MoE = ffn_, layer = "", global = "" }
+      rename {
+        q_proj.weight = q.weight,       q_proj.bias = q.bias,
+        k_proj.weight = k.weight,       k_proj.bias = k.bias,
+        v_proj.weight = v.weight,       v_proj.bias = v.bias,
+        o_proj.weight = output.weight,  o_proj.bias = output.bias,
+        sinks         = sinks.weight,
+        router.weight = gate_inp.weight, router.bias = gate_inp.bias,
+        embed.weight      = token_embd.weight,
+        final_norm.weight = output_norm.weight,
+        lm_head.weight    = output.weight
+      }
+    }
+  }
+}

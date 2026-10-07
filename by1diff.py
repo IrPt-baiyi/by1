@@ -1,0 +1,318 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+by1 diff -- 把 by1 生成的前向 与 transformers 的参考实现**逐位对拍**。
+
+    python by1diff.py llama-shaped.by1      # 稠密：对 LlamaForCausalLM
+    python by1diff.py mixtral-shaped.by1    # MoE：对 MixtralForCausalLM
+
+参考实现是**别人写的**。同一份权重分别装进两边，同一条输入，比 logits。
+不一致的地方，就是 by1 在**语义**上的错——不是命名，不是形状，是算错了。
+
+Block 0 之后，权重是按 **IR 里的算子下标** 搬运的：
+  逻辑名 model.layers.N.self_attn.q_proj.weight  →  layers.N.op<j>.wq.weight
+其中 j 由 IR 自己算出来，不是写死的。
+"""
+
+import argparse
+import importlib.util
+import os
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def load(name):
+    spec = importlib.util.spec_from_file_location(
+        name, os.path.join(HERE, name + ".py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def op_index(layer, kinds, nth=0):
+    """找第 nth 个 kind 属于 kinds 的算子的下标 —— 不靠写死的顺序。"""
+    if isinstance(kinds, str):
+        kinds = (kinds,)
+    c = 0
+    for j, op in enumerate(layer["ops"]):
+        if op["kind"] in kinds:
+            if c == nth:
+                return j
+            c += 1
+    return None
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(description="by1 前向对拍")
+    ap.add_argument("by1")
+    ap.add_argument("--seq", type=int, default=48)
+    ap.add_argument("--seed", type=int, default=0)
+    args = ap.parse_args(argv)
+
+    import torch
+    import transformers as T
+
+    torch.manual_seed(args.seed)
+
+    bc, cg = load("by1check"), load("by1codegen")
+    name = os.path.basename(args.by1)
+    print(f"\n  读取 {name}")
+    _rep, info = bc.check(args.by1)
+    try:
+        ir = cg.compile_ir(info)
+    except cg.CodegenError as ex:
+        print(f"\n  [不支持]\n{ex}\n")
+        return 1
+
+    # 逐层的算子下标 —— 混合栈（线性层 + 全量层）每层的布局本来就不同
+    ATT = ("Attention", "Linear")
+    layouts = [(op_index(L, ATT), op_index(L, "Norm", 0),
+                op_index(L, "Norm", 1), op_index(L, ("FFN", "MoE")))
+               for L in ir["layers"]]
+    if any(None in t for t in layouts):
+        print("  有层的算子形状目前不支持对拍")
+        return 2
+    has_linear = any(op_index(L, "Linear") is not None for L in ir["layers"])
+    attn_layer = next((i for i, L in enumerate(ir["layers"])
+                       if op_index(L, "Attention") is not None), None)
+    if attn_layer is None:
+        print("  [跳过] 没有全量注意力层，本脚本的对拍路径还不支持")
+        return 2
+    L0 = ir["layers"][attn_layer]
+    j_attn, j_norm0, j_norm1, j_ffn = layouts[attn_layer]
+    attn = L0["ops"][j_attn]["attrs"]
+    ffn_op = L0["ops"][j_ffn]
+
+    is_moe = ffn_op["kind"] == "MoE"
+    is_gptoss = bool(is_moe and ffn_op["attrs"].get("routing") == "topk_softmax"
+                     and ffn_op["attrs"].get("expert_bias"))
+    common = dict(vocab_size=ir["vocab"], hidden_size=ir["d_model"],
+                  num_hidden_layers=len(ir["layers"]),
+                  num_attention_heads=attn["q"], num_key_value_heads=attn["kv"],
+                  head_dim=attn["head_dim"],
+                  max_position_embeddings=max(ir["ctx"], args.seq + 8),
+                  rms_norm_eps=1e-5, tie_word_embeddings=False,
+                  attention_bias=attn["bias"],
+                  # 基值必须从 .by1 传过来：各有各的默认（Llama 1e4 / Mixtral 1e6），
+                  # 不传就是两边在转不同角度 —— 这个坑 Oracle 第一次就抓到了
+                  rope_theta=float(attn["rope_base"]))
+    if has_linear:
+        lin = next(o["attrs"] for L in ir["layers"] for o in L["ops"]
+                   if o["kind"] == "Linear")
+        ma = ffn_op["attrs"]
+        lt = ["linear_attention" if op_index(L, "Linear") is not None
+              else "full_attention" for L in ir["layers"]]
+        common.pop("rope_theta", None)
+        common.pop("attention_bias", None)
+        cfg = T.Qwen3NextConfig(
+            intermediate_size=ma["hidden"],
+            num_experts=ma["experts"],
+            num_experts_per_tok=ma["top_k"],
+            moe_intermediate_size=ma["hidden"],
+            shared_expert_intermediate_size=ma["shared_hidden"] or ma["hidden"],
+            linear_num_key_heads=lin["k_heads"],
+            linear_num_value_heads=lin["v_heads"],
+            linear_key_head_dim=lin["k_dim"],
+            linear_value_head_dim=lin["v_dim"],
+            linear_conv_kernel_dim=lin["conv_kernel"],
+            layer_types=lt,
+            partial_rotary_factor=float(attn["rope_partial"]),
+            **common)
+        ref = T.Qwen3NextForCausalLM(cfg).eval()
+        fam = "Qwen3NextForCausalLM"
+    elif is_gptoss:
+        ma = ffn_op["attrs"]
+        y = attn.get("yarn") or {}
+        rs = {"rope_type": "yarn", "rope_theta": float(attn["rope_base"]),
+              "factor": float(y.get("factor", 1)),
+              "original_max_position_embeddings": int(y.get("original", 4096)),
+              "beta_fast": float(y.get("beta_fast", 32)),
+              "beta_slow": float(y.get("beta_slow", 1)),
+              "truncate": bool(y.get("truncate", True)),
+              "attention_factor": float(attn.get("rope_scale", 1.0))}
+        win = attn["window"] or ir["ctx"]
+        common.pop("rope_theta")
+        cfg = T.GptOssConfig(intermediate_size=ma["hidden"],
+                             num_experts=ma["experts"],
+                             num_experts_per_tok=ma["top_k"],
+                             layer_types=["sliding_attention"] * len(ir["layers"]),
+                             sliding_window=win, rope_scaling=rs, **common)
+        ref = T.GptOssForCausalLM(cfg).eval()
+        fam = "GptOssForCausalLM"
+    elif is_moe:
+        ma = ffn_op["attrs"]
+        cfg = T.MixtralConfig(intermediate_size=ma["hidden"],
+                              num_experts=ma["experts"],
+                              num_experts_per_tok=ma["top_k"], **common)
+        ref = T.MixtralForCausalLM(cfg).eval()
+        fam = "MixtralForCausalLM"
+    else:
+        fa = ffn_op["attrs"]
+        cfg = T.LlamaConfig(intermediate_size=fa["hidden"], **common)
+        ref = T.LlamaForCausalLM(cfg).eval()
+        fam = "LlamaForCausalLM"
+
+    ns = {}
+    exec(compile(cg.render(info, name), "<by1-generated>", "exec"), ns)
+    mine = ns["build"]().eval()
+
+    print(f"  参考实现 transformers.{fam}")
+    print(f"    {len(ir['layers'])} 层 · hidden {ir['d_model']} · "
+          f"q {attn['q']} / kv {attn['kv']} / head_dim {attn['head_dim']} · "
+          f"FFN {'MoE ' + str(ffn_op['attrs']) if is_moe else ffn_op['attrs']['hidden']}")
+
+    # ── 权重搬运：全部按 IR 的算子下标定位 ──────────────────────────
+    ref_sd = ref.state_dict()
+    dst, missing = {}, []
+    for src, d in (("model.embed_tokens.weight", "embed.weight"),
+                   ("model.norm.weight", "final_norm.w"),
+                   ("lm_head.weight", "head.weight")):
+        (dst.__setitem__(d, ref_sd[src]) if src in ref_sd else missing.append(src))
+
+    LIN_NAMES = [("in_proj_qkvz.weight", "in_proj_qkvz.weight"),
+                 ("in_proj_ba.weight", "in_proj_ba.weight"),
+                 ("conv1d.weight", "conv.weight"),
+                 ("dt_bias", "dt_bias"), ("A_log", "A_log"),
+                 ("norm.weight", "norm.w"),
+                 ("out_proj.weight", "out_proj.weight")]
+    for i in range(len(ir["layers"])):
+        p = f"model.layers.{i}."
+        ja, jn0, jn1, jf = layouts[i]
+        is_lin = op_index(ir["layers"][i], "Linear") is not None
+        pairs = [
+            (p + "input_layernorm.weight", f"layers.{i}.op{jn0}.w"),
+            (p + "post_attention_layernorm.weight", f"layers.{i}.op{jn1}.w"),
+        ]
+        if is_lin:
+            for s_, d_ in LIN_NAMES:
+                pairs.append((p + "linear_attn." + s_,
+                              f"layers.{i}.op{ja}." + d_))
+        else:
+            pairs += [
+                (p + "self_attn.q_proj.weight", f"layers.{i}.op{ja}.wq.weight"),
+                (p + "self_attn.k_proj.weight", f"layers.{i}.op{ja}.wk.weight"),
+                (p + "self_attn.v_proj.weight", f"layers.{i}.op{ja}.wv.weight"),
+                (p + "self_attn.o_proj.weight", f"layers.{i}.op{ja}.wo.weight"),
+            ]
+            if attn.get("qk_norm"):
+                pairs += [
+                    (p + "self_attn.q_norm.weight", f"layers.{i}.op{ja}.qn.w"),
+                    (p + "self_attn.k_norm.weight", f"layers.{i}.op{ja}.kn.w"),
+                ]
+        for src, d in pairs:
+            (dst.__setitem__(d, ref_sd[src]) if src in ref_sd else missing.append(src))
+        if is_gptoss:
+            p2 = f"layers.{i}.op{jf}."
+            for a_, b_ in ((p + "self_attn.q_proj.bias", f"layers.{i}.op{ja}.wq.bias"),
+                           (p + "self_attn.k_proj.bias", f"layers.{i}.op{ja}.wk.bias"),
+                           (p + "self_attn.v_proj.bias", f"layers.{i}.op{ja}.wv.bias"),
+                           (p + "self_attn.o_proj.bias", f"layers.{i}.op{ja}.wo.bias"),
+                           (p + "self_attn.sinks", f"layers.{i}.op{ja}.sink"),
+                           (p + "mlp.router.weight", p2 + "router.weight"),
+                           (p + "mlp.router.bias", p2 + "router.bias")):
+                (dst.__setitem__(b_, ref_sd[a_]) if a_ in ref_sd else missing.append(a_))
+            gu = ref_sd.get(p + "mlp.experts.gate_up_proj")     # [E, d, 2H] 交错
+            gb = ref_sd.get(p + "mlp.experts.gate_up_proj_bias")  # [E, 2H]
+            dn = ref_sd.get(p + "mlp.experts.down_proj")        # [E, H, d]
+            db = ref_sd.get(p + "mlp.experts.down_proj_bias")   # [E, d]
+            if gu is not None:
+                dst[p2 + "w1"] = gu[:, :, 0::2].transpose(1, 2)
+                dst[p2 + "w3"] = gu[:, :, 1::2].transpose(1, 2)
+            if gb is not None:
+                dst[p2 + "b1"] = gb[:, 0::2]
+                dst[p2 + "b3"] = gb[:, 1::2]
+            if dn is not None:
+                dst[p2 + "w2"] = dn.transpose(1, 2)
+            if db is not None:
+                dst[p2 + "b2"] = db
+        elif is_moe:
+            # transformers 这一版把专家融合了：
+            #   mlp.gate.weight            [E, d]
+            #   mlp.experts.gate_up_proj   [E, 2H, d]   ← gate 与 up 各占一半
+            #   mlp.experts.down_proj      [E, d, H]
+            # 逐专家存储的那个版本也有，两种都认。
+            gw = p + "mlp.gate.weight"
+            gu = p + "mlp.experts.gate_up_proj"
+            dn = p + "mlp.experts.down_proj"
+            if gw in ref_sd:
+                dst[f"layers.{i}.op{jf}.router.weight"] = ref_sd[gw]
+            else:
+                missing.append(gw)
+            n_e = ffn_op["attrs"]["experts"]
+            if gu in ref_sd and dn in ref_sd:
+                half = ref_sd[gu].shape[1] // 2
+                dst[f"layers.{i}.op{jf}.w1"] = ref_sd[gu][:, :half]
+                dst[f"layers.{i}.op{jf}.w3"] = ref_sd[gu][:, half:]
+                dst[f"layers.{i}.op{jf}.w2"] = ref_sd[dn]
+            else:
+                import torch as _t
+                for w in ("w1", "w2", "w3"):
+                    keys = [f"{p}mlp.experts.{e}.{w}.weight" for e in range(n_e)]
+                    if all(k in ref_sd for k in keys):
+                        dst[f"layers.{i}.op{jf}.{w}"] = _t.stack(
+                            [ref_sd[k] for k in keys])
+                    else:
+                        missing.extend(keys[:2])
+            # 共享专家 —— 之前漏了这几个。模型照样建出来，只是它们停在随机初始化上，
+            # 而"只检查搬过去的那些对不对"完全看不出来。
+            for s_, d_ in (("shared_expert.gate_proj.weight", "sw1.weight"),
+                           ("shared_expert.up_proj.weight", "sw3.weight"),
+                           ("shared_expert.down_proj.weight", "sw2.weight"),
+                           ("shared_expert_gate.weight", "shared_gate.weight")):
+                src, tgt = p + "mlp." + s_, f"layers.{i}.op{jf}.{d_}"
+                if src in ref_sd:
+                    dst[tgt] = ref_sd[src]
+        else:
+            for src, d in ((p + "mlp.gate_proj.weight", f"layers.{i}.op{jf}.w1.weight"),
+                           (p + "mlp.up_proj.weight", f"layers.{i}.op{jf}.w3.weight"),
+                           (p + "mlp.down_proj.weight", f"layers.{i}.op{jf}.w2.weight")):
+                (dst.__setitem__(d, ref_sd[src]) if src in ref_sd else missing.append(src))
+    if missing:
+        print(f"  [注意] 参考实现里少了 {len(missing)} 个张量，例如 {missing[:3]}")
+
+    own = mine.state_dict()
+    # 先查覆盖面：by1 侧有参数没被搬到，说明映射漏了 —— 它会**静默地**停在随机初始化上，
+    # 而只检查"搬过去的那些对不对"是看不出来的。这条护栏今晚才补上。
+    miss_keys = sorted(k for k in own if k not in dst)
+    if miss_keys:
+        print(f"  [FAIL] by1 侧有 {len(miss_keys)} 个参数没搬到（映射漏了）：")
+        for k in miss_keys[:8]:
+            print(f"      {k}  {tuple(own[k].shape)}")
+        return 1
+    bad = []
+    for k, v in dst.items():
+        if k not in own:
+            bad.append(f"{k}: by1 侧没有")
+        elif tuple(own[k].shape) != tuple(v.shape):
+            bad.append(f"{k}: 形状 {tuple(own[k].shape)} vs {tuple(v.shape)}")
+    if bad:
+        print("  [FAIL] 权重对不上：")
+        for b in bad[:10]:
+            print("      " + b)
+        return 1
+    print(f"  权重搬运 {len(dst)} 个张量，逐一同名同形 ✓")
+    mine.load_state_dict(dst, strict=False)
+
+    # ── 前向 ────────────────────────────────────────────────────────
+    ids = torch.randint(0, ir["vocab"], (1, args.seq))
+    with torch.no_grad():
+        a = ref(ids).logits.float()
+        b = mine(ids).float()
+    d = (a - b).abs()
+    print(f"\n  前向对比（seq={args.seq}）")
+    print(f"    logits 形状        {tuple(a.shape)}  vs  {tuple(b.shape)}")
+    print(f"    我的 logits 幅度   {b.abs().max().item():.3e}")
+    print(f"    最大绝对差         {d.max().item():.3e}")
+    print(f"    平均绝对差         {d.mean().item():.3e}")
+    print(f"    参考 logits 幅度   {a.abs().max().item():.3e}")
+    print(f"    相对最大差         {(d.max()/a.abs().max()).item():.3e}")
+    if d.max().item() < 1e-3:
+        print("\n  [PASS] 两边前向一致")
+        return 0
+    print("\n  [FAIL] 两边前向不一致 —— 差异处就是 by1 语义上的错")
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

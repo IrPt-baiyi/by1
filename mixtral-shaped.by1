@@ -1,0 +1,42 @@
+# ── mixtral-shaped.by1 ────────────────────────────────────────────────
+# Block 1.1 的判卷对象：MoE。
+#
+# 选 Mixtral 是因为它的专家**逐个存储**——和 IR 里的 `w1[e] / w2[e] / w3[e]` 一一对应。
+# GPT-OSS 的专家是融合 + MXFP4 打包的，那是导出布局的问题（Block 4），
+# 不适合拿来测「MoE 这个机制算得对不对」。
+#
+# 结构上和 llama-shaped 完全相同，只把 FFN 换成 MoE：
+#   pre-norm · GQA · RoPE · MoE（路由 + top-k + 逐专家 SwiGLU）
+#
+#   python by1diff.py mixtral-shaped.by1
+
+model MixtralShaped {
+  ctx 512
+
+  hparams {
+    d_model = 128
+    n_layer = 4
+    vocab   = 256
+  }
+
+  mech Attention : Attention {
+    heads = { q = 4, kv = 2, head_dim = 32 }
+  }
+
+  # 路由、top-k、专家宽度 —— 全是参数，不是三种机制
+  mech Experts : MoE {
+    experts = 8
+    top_k   = 2
+    hidden  = 256
+    shared  = 0
+  }
+
+  stack main {
+    pattern = 4 * Attention
+    main[:] >> Experts
+  }
+
+  position {
+    default = rope(base = 10000, pairing = half)
+  }
+}
