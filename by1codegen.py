@@ -345,7 +345,11 @@ def compile_ir(info: Dict[str, Any]) -> Dict[str, Any]:
                 "limit": _num(attrs.get("swiglu_limit")),
                 "alpha": float(_num(attrs.get("alpha"), 1.702)),
                 "expert_bias": _flag(attrs.get("expert_bias")),
-                "shared_gate": _flag(attrs.get("shared_gate"))}}
+                "shared_gate": _flag(attrs.get("shared_gate")),
+                # noaux_tc 的分组路由：每组取前 2 之和排名，选 topk_group 个组，
+                # 再在组内取 top_k。（Ling / DeepSeek V3 同一套）
+                "n_group": int(_num(attrs.get("n_group"), 0) or 0),
+                "topk_group": int(_num(attrs.get("topk_group"), 0) or 0)}}
 
         if kind == "Linear":
             nk = _num(attrs.get("k_heads"))
@@ -774,6 +778,8 @@ class MoE(nn.Module):
         self.score_bias = (nn.Parameter(torch.zeros(self.n_exp))
                            if a["score_bias"] else None)
         self.routed_scale = a["routed_scale"]
+        self.n_group = a.get("n_group", 0)
+        self.topk_group = a.get("topk_group", 0)
         self.n_shared = a["shared"]
         if self.n_shared:
             sh = a["shared_hidden"]
@@ -787,7 +793,26 @@ class MoE(nn.Module):
         b, n, d = x.shape
         xf = x.reshape(-1, d)
         logits = self.router(xf)
-        if self.routing == "topk_softmax":
+        if self.routing == "sigmoid_group_topk":
+            # noaux_tc（Ling / DeepSeek V3）：sigmoid 打分 + 分组 top-k。
+            # 关键：expert_bias **只影响选择**，权重用未加偏置的 scores。
+            ng, tg = self.n_group, self.topk_group
+            if not ng or not tg:
+                raise CodegenError(
+                    "routing = sigmoid_group_topk 需要 n_group 与 topk_group")
+            sc = logits.sigmoid()
+            choice = sc + self.score_bias if self.score_bias is not None else sc
+            gs = choice.view(-1, ng, self.n_exp // ng).topk(2, dim=-1)[0].sum(-1)
+            gi = gs.topk(tg, dim=-1, sorted=False)[1]
+            gm = torch.zeros_like(gs).scatter_(1, gi, 1)
+            mask = (gm.unsqueeze(-1)
+                    .expand(-1, ng, self.n_exp // ng)
+                    .reshape(-1, self.n_exp))
+            choice = choice.masked_fill(~mask.bool(), float("-inf"))
+            topi = choice.topk(self.k, dim=-1, sorted=False)[1]
+            tv = sc.gather(1, topi)
+            topv = tv / (tv.sum(-1, keepdim=True) + 1e-20)
+        elif self.routing == "topk_softmax":
             # 先 top-k，再只对这 k 个 logits 做 softmax（GPT-OSS）
             tv, topi = logits.topk(self.k, dim=-1)
             topv = tv.softmax(-1)

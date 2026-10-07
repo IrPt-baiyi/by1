@@ -357,3 +357,46 @@ MTP / NextN          Step-3.7 的三个多步预测头
 
 > **知道一个 bug 存在、甚至把教训写成了注释，都不妨碍在新代码里重犯。**
 > 注释救不了，只有"从模型配置取值"这个结构性做法能救。
+
+---
+
+## 15. `noaux_tc` 分组路由（Ling 压出来的第二个缺口）—— ✅ 已实现并验证
+
+```
+python by1moe.py
+  选中的专家集合一致: 是
+  权重（按专家对齐后）最大绝对差: 0.000e+00
+  去掉偏置后有 12/12 行的选择变了  （偏置确实在起作用）
+  [PASS] noaux_tc 与参考一致
+```
+
+**判卷人**：transformers 的 `DeepseekV3TopkRouter`。它和 Ling 的 `BailingMoeV3Gate`
+语义逐行相同（sigmoid 打分、偏置只影响选择、每组前 2 之和选组、组内 top-k、
+权重归一化 × routed_scaling_factor），**但是两个团队写的**。
+
+**语义里最容易写错的一条**：`expert_bias` **只参与选择，不参与权重**。
+选择用 `scores + bias`，权重用原始 `scores`。写成两者都用 bias 的话，
+前向看不出明显异常，只有对拍才抓得到。
+
+**可证伪控制**：把偏置设成非零并检查"去掉它之后选择必须变"。
+否则偏置是全零的话，这个测试会**空过** —— 那是今晚第 N 次遇到
+"一个不报错的检查被当成通过的检查"。
+
+---
+
+## 16. KDA —— 明确不做，原因是没有判卷人
+
+Ling 那 18 层 KDA 的核心不在 `modeling_bailing_moe_v3.py` 里：
+
+```python
+from fla.ops.kda import chunk_kda, fused_recurrent_kda    # flash-linear-attention
+```
+
+`fla` 要 **Triton**，而这台机器只有 Iris Xe、没有 CUDA（实测装上后 import 就失败）。
+
+**按项目原则：没有能跑的判卷人的块一律不写。** KDA 归到和 Kimi K3、
+DeepSeek V4.1 同一类。codegen 对它**明确拒绝**，不会按 GDN 生成一个
+"看起来对的错模型"。
+
+**如果想做，需要的东西是明确的**：一台有 CUDA 的机器，或者 llama.cpp 的
+`bailingmoe3.cpp` 能在本地跑起来当判卷人。
