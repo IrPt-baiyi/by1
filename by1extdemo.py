@@ -85,11 +85,26 @@ def main():
     if '--gcc' in sys.argv:
         gcc = sys.argv[sys.argv.index('--gcc') + 1]
     if not gcc:
-        import glob as _g
-        hits = _g.glob(os.path.expandvars(
-            r'%LOCALAPPDATA%\Microsoft\WinGet\Packages'
-            r'\BrechtSanders*\mingw64\bin\gcc.exe'))
-        gcc = hits[0] if hits else None
+        # **找 gcc 的写法要和 by1all 一致。**
+        # 原来这里只写死了 Windows 的 WinGet 路径 —— Linux 上明明
+        # `/usr/bin/gcc` 在，它也说"找不到"。而这个"找不到"的症状是
+        # **静默跳过整步验证**，不是报错。
+        #
+        # 另外：裸名字要用 `shutil.which` 搜 PATH，`glob.glob('gcc')`
+        # 只找当前目录 —— by1all 那边已经踩过一次了。
+        import shutil as _sh
+        for cand in ('gcc', 'cc', '/usr/bin/gcc', '/usr/local/bin/gcc'):
+            hit = _sh.which(cand) if os.sep not in cand else (
+                cand if os.path.exists(cand) else None)
+            if hit:
+                gcc = hit
+                break
+        if not gcc:
+            import glob as _g
+            hits = _g.glob(os.path.expandvars(
+                r'%LOCALAPPDATA%\Microsoft\WinGet\Packages'
+                r'\BrechtSanders*\mingw64\bin\gcc.exe'))
+            gcc = hits[0] if hits else None
 
     print('=' * 78)
     print('  逃生舱第二层：IR 引用一个外部符号（.so + ABI）')
