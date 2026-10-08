@@ -1,0 +1,66 @@
+# ── raw-escape.by1 ────────────────────────────────────────────────────
+# 逃生舱的**可证伪对照**。
+#
+# 它用一个语言表达不了的机制，而计算写在 `raw.py` 里。
+# 三件事必须同时成立：
+#
+#   ① 有 raw.py       -> 能建、能跑、**张力契约照样生效**
+#   ② 没有 raw.py     -> **必须拒绝**（不能静默给个恒等）
+#   ③ Raw 没写 impl    -> **必须拒绝**
+#
+# 第三条尤其重要：一个"看起来对但什么都没算"的模型，比一个报错糟得多。
+
+model raw-escape {
+  arch  probe
+  ctx   256
+
+  hparams {
+    d_model = 64
+    n_layer = 2
+    vocab   = 256
+    rms_eps = 1e-05
+  }
+
+  # 这个机制语言里没有 —— 所以走逃生舱。
+  # **但它仍然要有张量契约**，三个后端仍然要对拍。
+  mech Weird : Raw {
+    impl       = "scale_mix"
+    structural = [ d_model ]
+  }
+
+  mech FFN_ : FFN { hidden = 128 }
+
+  schedule {
+    blk   = 1 * Weird
+    block = blk
+  }
+
+  stack model {
+    pattern = 2 * block
+    model[:] >> FFN_
+  }
+
+  position {
+    default = rope(base = 10000, pairing = half)
+  }
+
+  tensors {
+    Weird {
+      scale.weight : (d_model,)
+    }
+    FFN_ {
+      gate_proj.weight : (hidden, d_model)
+      up_proj.weight   : (hidden, d_model)
+      down_proj.weight : (d_model, hidden)
+    }
+    layer {
+      input_layernorm.weight          : (d_model,)
+      post_attention_layernorm.weight : (d_model,)
+    }
+    global {
+      embed.weight      : (vocab, d_model)
+      final_norm.weight : (d_model,)
+      lm_head.weight    : (vocab, d_model)
+    }
+  }
+}

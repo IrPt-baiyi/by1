@@ -82,7 +82,9 @@ JUDGES = ['by1mla.py', 'by1moe.py', 'by1rope.py',
           'by1instella.py',
           # 真实维度、官方 config 的前向 —— **另一代**
           # （LayerNorm / 学习式位置 / 无门控 GELU）
-          'by1gpt2.py']
+          'by1gpt2.py',
+          # 逃生舱：三条断言（能建 / 缺 raw.py 必须拒 / 缺 impl 必须拒）
+          'by1raw.py']
 
 fails, rows = [], []
 

@@ -38,9 +38,15 @@ def load_checker():
 
 # ── 支持矩阵 ────────────────────────────────────────────────────────
 
-SUPPORTED_KINDS = {"Attention", "FFN", "MoE", "Linear", "MLA"}
+SUPPORTED_KINDS = {"Attention", "FFN", "MoE", "Linear", "MLA",
+                    # 逃生舱 —— 计算在 raw.py 里，契约和验证照旧。
+                    "Raw"}
 
 ATTRS = {
+    # **逃生舱。** 只认一个属性：impl（raw.py 里的工厂函数名）。
+    # 别的都不该有 —— 逃生舱只该有一条路。
+    "Raw": {"impl", "structural"},
+
     "Attention": {"heads", "q", "kv", "head_dim", "v", "qk",
                   "out_dim", "window", "qk_norm", "bias",
                   "attn_bias", "rope", "rope_base", "structural",
@@ -449,6 +455,16 @@ def compile_ir(info: Dict[str, Any]) -> Dict[str, Any]:
                 "n_group": int(_num(attrs.get("n_group"), 0) or 0),
                 "topk_group": int(_num(attrs.get("topk_group"), 0) or 0)}}
 
+        if kind == "Raw":
+            # **逃生舱。** impl 指向 raw.py 里的工厂函数 raw_<impl>。
+            # 别的什么都不认 —— 逃生舱只该有一条路。
+            impl = str(attrs.get("impl", "")).strip().strip('"')
+            if not impl:
+                err("机制 '%s' 是 Raw（逃生舱），必须写 impl = <工厂函数名>" % name)
+                return None
+            return {"kind": "Raw", "mech": name,
+                    "attrs": {"impl": impl}}
+
         if kind == "Linear":
             nk = _num(attrs.get("k_heads"))
             nv = _num(attrs.get("v_heads"))
@@ -556,7 +572,11 @@ def compile_ir(info: Dict[str, Any]) -> Dict[str, Any]:
 
         attached = [one_mech(am, _with_ov(am), li) for am in atts]
         attached = [x for x in attached if x]
-        if mixer is None or mixer["kind"] not in ("Attention", "Linear", "MLA"):
+        # **逃生舱也算 token 混合器。** 这里原来只认 Attention / Linear / MLA
+        # —— 于是 `Raw` 会被判成"没有混合器"，而理由是错的
+        # （看起来像"这层没写混合器"，实际是"codegen 不认这个种类"）。
+        if mixer is None or mixer["kind"] not in ("Attention", "Linear", "MLA",
+                                                  "Raw"):
             err(f"第 {li} 层没有可用的 token 混合器 —— 生成不出来")
             continue
         state = []
@@ -583,7 +603,14 @@ def compile_ir(info: Dict[str, Any]) -> Dict[str, Any]:
                           "bounded_by": a["conv_kernel"],
                           "shape": [conv_dim, a["conv_kernel"]],
                           "dtype": "fp32", "reuse": "none"})
-        elif mixer["attrs"]["window"]:
+        elif mixer["kind"] == "Raw":
+            # **逃生舱的状态由实现方声明，codegen 推不出来。**
+            # 这里原来是 `mixer["attrs"]["window"]` —— 无条件假设每个混合器
+            # 都有 window，于是 Raw 直接 KeyError，而报错长得像"这层缺属性"。
+            # 说"不知道"比崩掉诚实。
+            state.append({"kind": "declared_by_impl", "bounded_by": None,
+                          "shape": None, "dtype": None, "reuse": "unknown"})
+        elif mixer["attrs"].get("window"):
             state.append({"kind": "kv_cache",
                           "bounded_by": mixer["attrs"]["window"] - 1,
                           "dtype": "bf16", "reuse": "prefix"})
@@ -955,6 +982,61 @@ def _swiglu(gate, up, style, limit, alpha):
     return F.silu(gate) * up
 
 
+def _load_raw(impl):
+    """从 raw.py 里取工厂函数 raw_<impl>。
+
+    **找不到就报错，不静默给个恒等。** 一个"看起来对但什么都没算"的模型
+    比一个报错糟得多。
+    """
+    import importlib.util as _ilu
+    import os as _os
+    # **`__file__` 在 exec 出来的代码里不存在** —— 生成的模块是被 exec 的，
+    # 不是从磁盘 import 的。所以这里不能直接用它，否则会 NameError，
+    # 而那会伪装成"找不到 raw.py"（我第一次就是被这个骗过去的：
+    # 反例测试"通过"了，其实是因为崩在别处）。
+    cands = ["raw.py"]
+    try:
+        cands.append(_os.path.join(_os.path.dirname(__file__), "raw.py"))
+    except NameError:
+        pass
+    cands.append(_os.path.join(_os.getcwd(), "raw.py"))
+    for cand in cands:
+        if not _os.path.exists(cand):
+            continue
+        spec = _ilu.spec_from_file_location("by1raw", cand)
+        mod = _ilu.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        fn = getattr(mod, "raw_" + impl, None)
+        if fn is None:
+            # 用 RuntimeError，不用 CodegenError —— 这段是**生成出去的代码**，
+            # 在那边 CodegenError 根本不存在。第一版就是栽在这儿：
+            # 报错变成了 NameError，而 NameError 看起来像别的问题。
+            raise RuntimeError(
+                "raw.py 里没有 raw_%s —— 逃生舱的工厂函数必须叫这个名字"
+                % impl)
+        return fn
+    raise RuntimeError(
+        "机制用了逃生舱（impl = %s），但找不到 raw.py（找过：%s）"
+        % (impl, ", ".join(cands)))
+
+
+class RawMech(nn.Module):
+    """**逃生舱。**
+
+    它和别的机制**受同样的约束**：张量契约要声明、三个后端要对拍、
+    取值门要过。区别只是"这一段计算不在这门语言能表达的范围内"，
+    所以写在 raw.py 里。
+
+    所以它下去之后**照样被验** —— 这是它和"绕过检查"的区别。
+    """
+    def __init__(self, a, d):
+        super().__init__()
+        self.inner = _load_raw(a["impl"])(d, dict(a))
+
+    def forward(self, x):
+        return self.inner(x)
+
+
 class MLP(nn.Module):
     def __init__(self, a, d):
         super().__init__()
@@ -1198,7 +1280,7 @@ class GatedDeltaNet(nn.Module):
 
 BUILDERS = {"Norm": _mk_norm, "Attention": Attention,
             "FFN": MLP, "MoE": MoE, "Linear": GatedDeltaNet,
-            "MLA": MLAttention}
+            "MLA": MLAttention, "Raw": RawMech}
 
 
 class LayerMod(nn.Module):

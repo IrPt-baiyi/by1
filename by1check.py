@@ -641,6 +641,12 @@ def expand_pattern(expr: str, named: Dict[str, List["Rec"]]) -> Optional[List["R
 E, W, I = "E", "W", "i"
 TOKEN_MIXER = {"Attention", "Sparse", "Linear", "SSM", "Vision", "Recurrent",
                "MLA",
+               # **逃生舱。** 计算在声明层之外实现（raw.py 里的一个工厂函数），
+               # 但**张量契约、三个后端对拍、取值门全都照旧生效** ——
+               # 它不是"绕过检查"，是"这个机制不在这门语言能表达的范围内"。
+               # 接 ggml 时最先需要的就是它：没有这个口子，
+               # 一个新机制只能等整个后端做完才能试。
+               "Raw",
                # KDA（Kimi Delta Attention）：和 GDN 同族但**不是同一个东西** ——
                # 三个独立卷积、f_proj、o_norm。当成 Linear 会生成一个 GDN，
                # 那是个"看起来对但算错"的模型，所以给它自己的种类。
@@ -652,6 +658,8 @@ BUILTIN_ATTRS = {
     # 下面这些是检查器自己会算/会推荐的，写出来不应该被当成拼写错误
     "out_dim", "qk_norm", "kv_space", "rope_base", "pairing", "partial",
     "head_gate", "score_bias", "shared_hidden", "routed_scale",
+    # 逃生舱的工厂函数名（`mech X : Raw { impl = "foo" }`）
+    "impl",
 }
 
 
