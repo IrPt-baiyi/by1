@@ -146,11 +146,21 @@ def load(model, info, fetch, stack='main'):
 
     done, missing, skipped = 0, [], []
     for key, tensor in sd.items():
-        # layers.{i}.op{j}.{short...}
+        # 内部名形如 `layers.{i}.op{j}.{名字}`
+        #
+        # **`parts[2]` 是 `"op0"` 不是 `"0"`。** 第一版直接 `int(parts[2])`
+        # —— 27B 那个模型跑到"装权重"才炸，报的是
+        # `invalid literal for int() with base 10: 'op0'`。
+        # 本地那些小模型没露出来，因为…… 它们走的是同一段代码 ——
+        # **是我的测试里没有真权重，根本没走到这里。**
         parts = key.split('.')
-        if len(parts) < 3 or parts[0] != 'layers':
+        if len(parts) < 4 or parts[0] != 'layers' or not parts[2].startswith('op'):
             continue                     # 全局的下面单独处理
-        i, opj = int(parts[1]), int(parts[2])
+        try:
+            i, opj = int(parts[1]), int(parts[2][2:])
+        except ValueError:
+            skipped.append(key)
+            continue
         short = '.'.join(parts[3:]).replace('.weight', '')
         cands = by_short.get((i, short))
         if not cands:
