@@ -39,13 +39,19 @@ def load_checker():
 # ── 支持矩阵 ────────────────────────────────────────────────────────
 
 SUPPORTED_KINDS = {"Attention", "FFN", "MoE", "Linear", "MLA",
-                    # 逃生舱 —— 计算在 raw.py 里，契约和验证照旧。
-                    "Raw"}
+                    # 逃生舱第一层 —— 计算在 raw.py 里，契约照旧。
+                    # **这一层要改编译器。**
+                    "Raw",
+                    # 逃生舱第二层 —— 引用外部符号。
+                    # **这一层不用改编译器**，只要有一个 .so。
+                    "External"}
 
 ATTRS = {
     # **逃生舱。** 只认一个属性：impl（raw.py 里的工厂函数名）。
     # 别的都不该有 —— 逃生舱只该有一条路。
     "Raw": {"impl", "structural"},
+    "External": {"lib", "symbol", "weights", "io", "note",
+                 "structural"},
 
     "Attention": {"heads", "q", "kv", "head_dim", "v", "qk",
                   "out_dim", "window", "qk_norm", "bias",
@@ -463,6 +469,26 @@ def compile_ir(info: Dict[str, Any]) -> Dict[str, Any]:
                 "n_group": int(_num(attrs.get("n_group"), 0) or 0),
                 "topk_group": int(_num(attrs.get("topk_group"), 0) or 0)}}
 
+        if kind == "External":
+            # **逃生舱第二层。** 编译器不认识这个机制 —— 只校验 ABI 要的东西
+            # 齐不齐。所以加一个新机制不用动这里。
+            lib = str(attrs.get("lib", "")).strip().strip('"')
+            sym = str(attrs.get("symbol", "")).strip().strip('"')
+            wts = attrs.get("weights")
+            if not lib or not sym:
+                err("机制 '%s' 是 External（外部符号），必须写 lib 和 symbol" % name)
+                return None
+            if not isinstance(wts, dict) or not wts:
+                err("机制 '%s' 是 External —— **必须声明自己的张量**。"
+                    "契约不松：下沉一层只是计算不在语言里，"
+                    "张量照样要对产物查" % name)
+                return None
+            return {"kind": "External", "mech": name,
+                    "attrs": {"lib": lib, "symbol": sym,
+                              "weights": wts,
+                              "io": str(attrs.get("io", "same")).strip(),
+                              "note": str(attrs.get("note", ""))}}
+
         if kind == "Raw":
             # **逃生舱。** impl 指向 raw.py 里的工厂函数 raw_<impl>。
             # 别的什么都不认 —— 逃生舱只该有一条路。
@@ -584,7 +610,7 @@ def compile_ir(info: Dict[str, Any]) -> Dict[str, Any]:
         # —— 于是 `Raw` 会被判成"没有混合器"，而理由是错的
         # （看起来像"这层没写混合器"，实际是"codegen 不认这个种类"）。
         if mixer is None or mixer["kind"] not in ("Attention", "Linear", "MLA",
-                                                  "Raw"):
+                                                  "Raw", "External"):
             err(f"第 {li} 层没有可用的 token 混合器 —— 生成不出来")
             continue
         state = []
@@ -1036,6 +1062,53 @@ def _load_raw(impl):
         % (impl, ", ".join(cands)))
 
 
+class ExternalMech(nn.Module):
+    """**逃生舱第二层：引用一个外部符号。**
+
+    和 RawMech 的差别是**编译器不认识这个机制** —— 它只认识 ABI
+    （见 by1ext.py）。所以加一个新机制不需要动编译器，
+    只要有一个 .so 和一份 IR。
+
+    契约没松：这个算子的张量照样声明、照样被 by1verify 对产物查。
+    """
+    def __init__(self, a, d):
+        super().__init__()
+        import by1ext as _ext
+        self._ext = _ext
+        self._lib_path = a["lib"]
+        self._symbol = a["symbol"]
+        names = _ext.sorted_weight_names(a["weights"].keys())
+        self._names = names
+        # 参数挂成**和契约一样的路径**（`scale.weight` -> 子模块 scale 的 weight）
+        for nm in names:
+            parts = nm.split(".")
+            mod = self
+            for q in parts[:-1]:
+                if not hasattr(mod, q):
+                    setattr(mod, q, nn.Module())
+                mod = getattr(mod, q)
+            setattr(mod, parts[-1],
+                    nn.Parameter(torch.zeros(*a["weights"][nm])))
+
+    def forward(self, x):
+        import numpy as _np
+        fn = self._ext.bind(self._ext.load_lib(self._lib_path), self._symbol)
+        B, T, D = x.shape
+        # **ABI 是 float*，所以这边必须给 NumPy 数组。**
+        # 第一版直接把 torch.Tensor 传过去 —— 而 Tensor 没有 .ctypes，
+        # 报的是 AttributeError，长得像别的问题。
+        xn = _np.ascontiguousarray(x.detach().float().numpy())
+        yn = _np.zeros_like(xn)
+        ws = []
+        for nm in self._names:
+            v = self
+            for q in nm.split("."):
+                v = getattr(v, q)
+            ws.append(_np.ascontiguousarray(v.detach().float().numpy()))
+        self._ext.call(fn, xn, yn, int(B), int(T), int(D), ws)
+        return torch.from_numpy(yn).to(x.dtype)
+
+
 class RawMech(nn.Module):
     """**逃生舱。**
 
@@ -1296,7 +1369,7 @@ class GatedDeltaNet(nn.Module):
 
 BUILDERS = {"Norm": _mk_norm, "Attention": Attention,
             "FFN": MLP, "MoE": MoE, "Linear": GatedDeltaNet,
-            "MLA": MLAttention, "Raw": RawMech}
+            "MLA": MLAttention, "Raw": RawMech, "External": ExternalMech}
 
 
 class LayerMod(nn.Module):

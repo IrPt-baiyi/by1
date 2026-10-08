@@ -1,52 +1,4 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-by1 c -- 第三个后端：从 IR 生成 **C 代码**，编译，跑起来，和 NumPy 后端对拍。
 
-这是 Block 3b 的最后一公里。和 llama.cpp 的区别只剩「用 ggml 的原语还是手写循环」——
-图的结构、张量的绑定、状态的形状，都是同一套（已经和 qwen3next.cpp 的源码核过）。
-
-纪律：**能生成的才生成，不支持就明确报错**。绝不悄悄生成一个算错的 C。
-
-用法:
-  python by1c.py llama-shaped.by1 --gcc <gcc.exe> [--seq 16]
-"""
-
-import argparse
-import importlib.util
-import os
-import re
-import subprocess
-import sys
-
-import numpy as np
-
-HERE = os.path.dirname(os.path.abspath(__file__))
-MANGLE = re.compile(r"[^0-9A-Za-z]")
-
-
-
-def _qk_on(v):
-    """qk_norm 的取值不只有真假：off / per_head / full。
-
-    "off" 是**真值字符串** —— 直接做真值判断会永远成立，于是给 q/k
-    悄悄加一层本不该有的 RMSNorm。PyTorch 那边写的是 not in (off, "", None)，
-    所以只有别的后端会错。实测 llama-shaped 的 NumPy↔PyTorch
-    从 2.505e-07 变成 3.362e-03。
-    """
-    if v is None or v is False:
-        return False
-    return str(v).strip().lower() not in ("off", "", "none", "false", "0")
-
-def load(name):
-    spec = importlib.util.spec_from_file_location(
-        name, os.path.join(HERE, name + ".py"))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-C_HEAD = r'''
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -629,9 +581,40 @@ static void attention(float *o, float *q, const float *k, const float *v,
     free(att);
     free(vb);
 }
-'''
 
-C_MAIN = r'''
+extern void weird_fwd(const float *x, float *y, int B, int T, int D, const float *const *w, int nw);
+extern void weird_fwd(const float *x, float *y, int B, int T, int D, const float *const *w, int nw);
+#define D_MODEL 16
+#define VOCAB 64
+#define N_LAYER 2
+#define Q_DIM 1
+#define KV_DIM 1
+#define NORM_ONE_PLUS 0
+#define RMS_EPS 1e-05f
+#define HID_MAX 1
+#define OB_MAX 1
+#define N_OPS 3
+#define OFF_EMBED 0
+#define LEN_EMBED 1024
+#define OFF_FINAL_NORM 1024
+#define LEN_FINAL_NORM 16
+#define OFF_HEAD 1040
+#define LEN_HEAD 1024
+#define OFF_L0_OP0_W 2064
+#define LEN_L0_OP0_W 16
+#define OFF_L0_OP1_EXT_BIAS 2080
+#define LEN_L0_OP1_EXT_BIAS 16
+#define OFF_L0_OP1_EXT_SCALE 2096
+#define LEN_L0_OP1_EXT_SCALE 16
+#define OFF_L1_OP0_W 2112
+#define LEN_L1_OP0_W 16
+#define OFF_L1_OP1_EXT_BIAS 2128
+#define LEN_L1_OP1_EXT_BIAS 16
+#define OFF_L1_OP1_EXT_SCALE 2144
+#define LEN_L1_OP1_EXT_SCALE 16
+#define TOTAL_W 2160
+#define LAYER_BODY(L) switch (L) { case 0: {  rmsnorm(t0, x, P(L0_OP0_W), n, D, 0, 1e-05f);  { const float *w_[2] = {P(L0_OP1_EXT_BIAS), P(L0_OP1_EXT_SCALE)}; weird_fwd(t0, t1, (int)n, 1, (int)D, w_, 2); }  for (size_t z = 0; z < (size_t)n * D; z++) t2[z] = x[z] + t1[z];  memcpy(x, t2, sizeof(float) * (size_t)n * D); break; } case 1: {  rmsnorm(t0, x, P(L1_OP0_W), n, D, 0, 1e-05f);  { const float *w_[2] = {P(L1_OP1_EXT_BIAS), P(L1_OP1_EXT_SCALE)}; weird_fwd(t0, t1, (int)n, 1, (int)D, w_, 2); }  for (size_t z = 0; z < (size_t)n * D; z++) t2[z] = x[z] + t1[z];  memcpy(x, t2, sizeof(float) * (size_t)n * D); break; } default: break; }
+
 int main(int argc, char **argv) {
     int n = atoi(argv[1]);
     FILE *f = fopen(argv[2], "rb");
@@ -689,387 +672,3 @@ int main(int argc, char **argv) {
     printf("ok %d x %d\n", n, V);
     return 0;
 }
-'''
-
-
-def emit_c_ir(ir, params):
-    """**只吃 IR 的入口。** `info` 那个参数在这个后端里**从头到尾没被用过** ——
-    它是历史遗留。去掉它，"从 IR 入口跑"就是真的。"""
-    import by1ir as _ir
-    _errs = _ir.validate(ir)
-    if _errs:
-        raise SystemExit("IR 不合法：\n  " + "\n  ".join(_errs[:10]))
-    return _emit_c_body(ir, params)
-
-
-def emit_c(ir, info, params):
-    """旧入口，保留。**info 没用。**"""
-    return _emit_c_body(ir, params)
-
-
-def _emit_c_body(ir, params):
-    """把 IR 展开成 C。**不支持就报错，绝不悄悄生成错的。**"""
-    d = ir["d_model"]
-    lines, need = [], {}
-    att = next((o["attrs"] for L in ir["layers"] for o in L["ops"]
-                if o["kind"] == "Attention"), None)
-    mla_att = next((o["attrs"] for L in ir["layers"] for o in L["ops"]
-                    if o["kind"] == "MLA"), None)
-    if att is None and mla_att is None:
-        # **没有注意力的模型也是模型。**
-        # 这里原来是硬拒绝 —— 于是"纯 Linear / 纯外部算子"的模型
-        # 根本建不了。而 Mamba 那一类**正是没有注意力的**：
-        # 覆盖率缺口里最该能跑的那些，被这一行挡在门外。
-        #
-        # 改成：没有注意力就不发 Q_DIM / KV_DIM —— 那些宏只在
-        # 注意力那一段用得到，没有注意力就没人引用它们。
-        att = {"q": 1, "kv": 1, "head_dim": 1}
-        _no_att = True
-    else:
-        _no_att = False
-    if att is None:
-        # 纯 MLA 模型：Q_DIM / KV_DIM 这些宏按 MLA 的宽度来
-        att = {"q": mla_att["q"], "kv": mla_att["q"],
-               "head_dim": mla_att["head_dim"]}
-
-    def key(i, j, nm):
-        return f"L{i}_OP{j}_{MANGLE.sub('_', nm).upper()}"
-
-    # 收集参数（顺序确定，C 与 Python 用同一份）
-    order = [("EMBED", "embed.weight"), ("FINAL_NORM", "final_norm.w"),
-             ("HEAD", "head.weight")]
-    body = []
-    for L in ir["layers"]:
-        i = L["index"]
-        for j, o in enumerate(L["ops"]):
-            k, a, pre = o["kind"], o["attrs"], f"layers.{i}.op{j}."
-            if k == "Norm":
-                order.append((key(i, j, "w"), pre + "w"))
-            elif k == "Attention":
-                if a["kv_tie"] or a["head_gate"] != "off":
-                    raise SystemExit(
-                        f"  [不支持] 第 {i} 层的注意力用了 kv_tie/"
-                        f"head_gate —— C 后端还没实现")
-                for nm in ("wq", "wk", "wv", "wo"):
-                    order.append((key(i, j, nm), pre + nm))
-                if a["bias"]:
-                    for nm in ("wq.bias", "wk.bias", "wv.bias", "wo.bias"):
-                        order.append((key(i, j, nm), pre + nm))
-                if a["sink"]:
-                    order.append((key(i, j, "sink"), pre + "sink"))
-                if _qk_on(a.get("qk_norm")):
-                    for nm in ("qn.w", "kn.w"):
-                        order.append((key(i, j, nm), pre + nm))
-                body.append((i, j, "Attention", a))
-            elif k == "FFN":
-                if not a.get("gate", True) or a.get("act") == "gptoss":
-                    raise SystemExit(f"  [不支持] 第 {i} 层的 FFN 形态")
-                for nm in ("w1", "w2", "w3"):
-                    order.append((key(i, j, nm), pre + nm))
-                body.append((i, j, "FFN", a))
-            elif k == "Linear":
-                for nm in ("in_proj_qkvz", "in_proj_ba", "conv", "dt_bias",
-                           "A_log", "norm.w", "out_proj"):
-                    order.append((key(i, j, nm), pre + nm))
-                body.append((i, j, "Linear", a))
-            elif k == "MLA":
-                for nm in ("q_a_proj", "q_a_layernorm.w", "q_b_proj",
-                           "kv_a_proj_with_mqa", "kv_a_layernorm.w",
-                           "kv_b_proj", "dense"):
-                    order.append((key(i, j, nm), pre + nm))
-                if a.get("head_gate", "off") != "off":
-                    order.append((key(i, j, "g_proj"), pre + "g_proj"))
-                body.append((i, j, "MLA", a))
-            elif k == "MoE":
-                for nm in ("router", "w1", "w3", "w2"):
-                    order.append((key(i, j, nm), pre + nm))
-                if a["router_bias"]:
-                    order.append((key(i, j, "router.bias"), pre + "router.bias"))
-                if a["expert_bias"]:
-                    for nm in ("b1", "b3", "b2"):
-                        order.append((key(i, j, nm), pre + nm))
-                if a["shared"]:
-                    for nm in ("sw1", "sw3", "sw2"):
-                        order.append((key(i, j, nm), pre + nm))
-                    if a["shared_gate"]:
-                        order.append((key(i, j, "shared_gate"), pre + "shared_gate"))
-                body.append((i, j, "MoE", a))
-            elif k == "External":
-                # **逃生舱第二层：C 后端链接一个外部符号。**
-                # 编译器不认识这个机制 —— 只认 ABI（见 by1ext.py）。
-                # 所以加一个新机制不用动这个文件。
-                # 参数名要带 `ext:` 前缀 —— `shapes_of` 就是这么命名的，
-                # 名字对不上会在后面 `params[pname]` 那里 KeyError。
-                for nm in sorted(a["weights"]):
-                    # 第二个元素是**完整的参数键**（`pre` = `layers.N.opM.`），
-                    # 不是短名 —— 少了前缀会在后面 `params[pname]` 那里 KeyError，
-                    # 而那个报错长得像"这个张量没声明"。
-                    order.append((key(i, j, "ext:" + nm), pre + "ext:" + nm))
-                body.append((i, j, "External", a))
-            elif k == "Add":
-                body.append((i, j, "Add", a))
-            else:
-                raise SystemExit(f"  [不支持] C 后端还没有 {k}")
-
-    # **外部符号的声明。** ABI 见 by1ext.py —— 编译器不认识机制，
-    # 只认识这个签名。所以加一个新机制不用动这个文件。
-    _extsyms = []
-    for L in ir["layers"]:
-        for o in L["ops"]:
-            if o["kind"] == "External":
-                _extsyms.append(o["attrs"])
-    for a in _extsyms:
-        lines.append("extern void %s(const float *x, float *y, int B, int T,"
-                     " int D, const float *const *w, int nw);" % a["symbol"])
-
-    lines.append("#define D_MODEL %d" % d)
-    lines.append("#define VOCAB %d" % ir["vocab"])
-    lines.append("#define N_LAYER %d" % len(ir["layers"]))
-    lines.append("#define Q_DIM %d" % (att["q"] * att["head_dim"]))
-    lines.append("#define KV_DIM %d" % (att["kv"] * att["head_dim"]))
-    lines.append("#define NORM_ONE_PLUS %d" % (1 if ir.get("norm_one_plus") else 0))
-    lines.append("#define RMS_EPS %sf" % float(ir.get("rms_eps", 1e-5)))
-    _hids = [o["attrs"]["hidden"] for L in ir["layers"] for o in L["ops"]
-             if o["kind"] in ("FFN", "MoE")]
-    lines.append("#define HID_MAX %d" % (max(_hids) if _hids else 1))
-    for L in ir["layers"]:
-        for o in L["ops"]:
-            if o["kind"] == "Linear":
-                _hids.append(o["attrs"]["v_heads"] * o["attrs"]["v_dim"])
-    for L in ir["layers"]:
-        for o in L["ops"]:
-            if o["kind"] == "MLA":
-                # kv_b 的输出 nh*(nope+v_dim) 是最宽的中间缓冲
-                _hids.append(o["attrs"]["q"] * (o["attrs"]["qk_nope"]
-                                                + o["attrs"]["v_dim"]))
-    lines.append("#define OB_MAX %d" % max(att["q"] * att["head_dim"], max(_hids) if _hids else 1))
-    lines.append("#define N_OPS %d" % (len(ir["layers"][0]["ops"]) if ir["layers"] else 0))
-    off = 0
-    for macro, pname in order:
-        n = int(np.prod(params[pname]))   # shapes_of 返回的是形状元组
-        lines.append(f"#define OFF_{macro} {off}")
-        lines.append(f"#define LEN_{macro} {n}")
-        off += n
-    lines.append(f"#define TOTAL_W {off}")
-
-    # 逐层的 C 语句
-    # 严格按 IR 的 ValueRef 生成：每个算子一个独立缓冲，读谁写谁。
-    # 之前图省事把残差写成"加 xn"，结果加的是归一化后的值；层输出也没写回 x。
-    n_ops = len(ir["layers"][0]["ops"]) if ir["layers"] else 0
-    lb = []
-    for L in ir["layers"]:
-        i = L["index"]
-        lb.append(f"case {i}: {{")
-        for j, o in enumerate(L["ops"]):
-            k, a = o["kind"], o["attrs"]
-            def R(r):
-                # "op1.out" -> "t1"；序号在下标 2，不是 3
-                return "x" if r == "hidden" else "t" + r[2:r.index(".")]
-            src = [R(r) for r in o["inputs"]]
-            dst = R(o["outputs"][0])
-            if k == "Norm":
-                lb.append(f" rmsnorm({dst}, {src[0]}, P({key(i,j,'w')}), n, D,"
-                          f" {1 if a.get('one_plus') else 0},"
-                          f" {float(a.get('eps', 1e-5))}f);")
-            elif k == "Attention":
-                hd, nh, nkv = a["head_dim"], a["q"], a["kv"]
-                B = "linear_b" if a["bias"] else "linear"
-                def BA(nm):
-                    # key() 会把点也换成下划线，所以整个 "wq.bias" 一起传进去
-                    return (f", P({key(i,j, nm + '.bias')})" if a["bias"] else "")
-                qw = nh * hd * (2 if a["q_gate"] else 1)
-                lb.append(f" {B}({'qf' if a['q_gate'] else 'q'}, {src[0]},"
-                          f" P({key(i,j,'wq')}){BA('wq')}, n, D, {qw});")
-                if a["q_gate"]:
-                    lb.append(f" split_qg(q, gt, qf, n, {nh}, {hd});")
-                lb.append(f" {B}(kk, {src[0]}, P({key(i,j,'wk')}){BA('wk')}, n, D, {nkv*hd});")
-                lb.append(f" {B}(vv, {src[0]}, P({key(i,j,'wv')}){BA('wv')}, n, D, {nkv*hd});")
-                if _qk_on(a.get("qk_norm")):
-                    lb.append(f" qk_norm(q, kk, P({key(i,j,'qn.w')}),"
-                              f" P({key(i,j,'kn.w')}), n, {nh}, {nkv}, {hd},"
-                              f" {1 if a.get('norm_one_plus') else 0});")
-                _y = a.get("yarn") or {}
-                _ty = _y.get("type") or "yarn"
-                # llama3 的 attention_factor 恒为 1.0，别跟着 YaRN 的公式算
-                _sc = a["rope_scale"] if (not _y or _ty == "yarn") else 1.0
-                _rt = 0 if not _y else (2 if _ty == "llama3" else 1)
-                _nrot = int(hd * a.get("rope_partial", 1.0))
-                lb.append(f" rope(q, kk, n, {nh}, {nkv}, {hd},"
-                          f" {float(a['rope_base'])}f,"
-                          f" {0 if a['rope_pairing']=='half' else 1},"
-                          f" {float(_sc)}f, {_nrot},"
-                          f" {_rt}, {float(_y.get('factor',1))}f,"
-                          f" {int(_y.get('original',4096))},"
-                          f" {float(_y.get('beta_fast',32))}f,"
-                          f" {float(_y.get('beta_slow',1))}f,"
-                          f" {1 if _y.get('truncate',True) else 0},"
-                          f" {float(_y.get('high_freq',4))}f,"
-                          f" {float(_y.get('low_freq',1))}f);")
-                lb.append(f" attention(ob, q, kk, vv, n, {nh}, {nkv}, {hd}, {hd},"
-                          f" {a['window'] if a['window'] else 0},"
-                          f" {'P(' + key(i,j,'sink') + ')' if a['sink'] else 'NULL'});")
-                if a["q_gate"]:
-                    lb.append(f" apply_qg(ob, gt, n, {nh*hd});")
-                lb.append(f" {B}({dst}, ob, P({key(i,j,'wo')}){BA('wo')}, n, {nh*hd}, D);")
-            elif k == "FFN":
-                hid = a["hidden"]
-                lb.append(f" linear(hb, {src[0]}, P({key(i,j,'w1')}), n, D, {hid});")
-                lb.append(f" silu_(hb, (size_t)n * {hid});")
-                lb.append(f" linear(ob, {src[0]}, P({key(i,j,'w3')}), n, D, {hid});")
-                lb.append(f" for (size_t z = 0; z < (size_t)n * {hid}; z++)"
-                          f" hb[z] *= ob[z];")
-                lb.append(f" linear({dst}, hb, P({key(i,j,'w2')}), n, {hid}, D);")
-            elif k == "Linear":
-                lb.append(
-                    f" gdn({dst}, {src[0]}, n, D, {a['k_heads']}, {a['v_heads']},"
-                    f" {a['k_dim']}, {a['v_dim']}, {a['conv_kernel']},"
-                    f" P({key(i,j,'in_proj_qkvz')}), P({key(i,j,'in_proj_ba')}),"
-                    f" P({key(i,j,'conv')}), P({key(i,j,'dt_bias')}),"
-                    f" P({key(i,j,'A_log')}), P({key(i,j,'norm.w')}),"
-                    f" P({key(i,j,'out_proj')}),"
-                    f" {float(a['l2_eps'])}f, {float(a['norm_eps'])}f);")
-            elif k == "MLA":
-                hg = a.get("head_gate", "off") != "off"
-                lb.append(
-                    f" mla({dst}, {src[0]}, n, D, {a['q']}, {a['q_lora']},"
-                    f" {a['kv_lora']}, {a['qk_nope']}, {a['qk_rope']},"
-                    f" {a['v_dim']},"
-                    f" P({key(i,j,'q_a_proj')}), P({key(i,j,'q_a_layernorm.w')}),"
-                    f" P({key(i,j,'q_b_proj')}),"
-                    f" P({key(i,j,'kv_a_proj_with_mqa')}),"
-                    f" P({key(i,j,'kv_a_layernorm.w')}),"
-                    f" P({key(i,j,'kv_b_proj')}), P({key(i,j,'dense')}),"
-                    f" {'P(' + key(i,j,'g_proj') + ')' if hg else 'NULL'},"
-                    f" {float(a.get('norm_eps', 1e-5))}f,"
-                    f" {1 if a.get('norm_one_plus') else 0},"
-                    f" {float(a['rope_base'])}f,"
-                    f" {0 if a.get('pairing') == 'half' else 1},"
-                    f" {1 if a.get('gate_act') == 'sigmoid' else 0});")
-            elif k == "MoE":
-                E, K, hid = a["experts"], a["top_k"], a["hidden"]
-                sh = a["shared"]
-                lb.append(
-                    f" moe({dst}, {src[0]}, n, D, {E}, {K}, {hid},"
-                    f" P({key(i,j,'router')}),"
-                    f" {'P(' + key(i,j,'router.bias') + ')' if a['router_bias'] else 'NULL'},"
-                    f" P({key(i,j,'w1')}),"
-                    f" P({key(i,j,'w3')}), P({key(i,j,'w2')}),"
-                    f" {'P(' + key(i,j,'b1') + ')' if a['expert_bias'] else 'NULL'},"
-                    f" {'P(' + key(i,j,'b2') + ')' if a['expert_bias'] else 'NULL'},"
-                    f" {'P(' + key(i,j,'b3') + ')' if a['expert_bias'] else 'NULL'},"
-                    f" {sh}, {a['shared_hidden'] if sh else 0},"
-                    f" {'P(' + key(i,j,'sw1') + ')' if sh else 'NULL'},"
-                    f" {'P(' + key(i,j,'sw3') + ')' if sh else 'NULL'},"
-                    f" {'P(' + key(i,j,'sw2') + ')' if sh else 'NULL'},"
-                    f" {'P(' + key(i,j,'shared_gate') + ')' if a['shared_gate'] else 'NULL'},"
-                    f" {1 if a['routing'] == 'topk_softmax' else 0},"
-                    f" {1 if a['act'] == 'gptoss' else 0},"
-                    f" {float(a['limit']) if a['limit'] else 0.0}f,"
-                    f" {float(a['alpha'])}f, {float(a['routed_scale'])}f);")
-            elif k == "External":
-                # **逃生舱第二层：C 这边直接调外部符号。**
-                # ABI 和 Python 那边一模一样（见 by1ext.py）：
-                #     void sym(const float *x, float *y, int B, int T, int D,
-                #              const float *const *w, int nw);
-                # 权重按**名字字典序**传 —— 排序规则是 ABI 的一部分，
-                # 两边都得自己算出来。
-                _ws = "{" + ", ".join("P(%s)" % key(i, j, "ext:" + nm)
-                                      for nm in sorted(a["weights"])) + "}"
-                lb.append(f" {{ const float *w_[{max(len(a['weights']), 1)}] = "
-                          f"{_ws}; {a['symbol']}({src[0]}, {dst}, (int)n, 1, "
-                          f"(int)D, w_, {len(a['weights'])}); }}")
-            elif k == "Add":
-                lb.append(f" for (size_t z = 0; z < (size_t)n * D; z++)"
-                          f" {dst}[z] = {src[0]}[z] + {src[1]}[z];")
-        _lo = L["ops"][-1]["outputs"][0]
-        last = "t" + _lo[2:_lo.index(".")]
-        lb.append(f" memcpy(x, {last}, sizeof(float) * (size_t)n * D); break; }}")
-    # 宏必须是**一行** —— 没有续行符的话预处理器只吃第一行
-    lines.append("#define LAYER_BODY(L) switch (L) { "
-                 + " ".join(lb) + " default: break; }")
-    return "\n".join(lines), order, off
-
-
-def main(argv=None):
-    ap = argparse.ArgumentParser(description="by1 C 后端")
-    ap.add_argument("by1")
-    ap.add_argument("--gcc", required=True)
-    ap.add_argument("--seq", type=int, default=16)
-    ap.add_argument("--workdir", default="cgen")
-    args = ap.parse_args(argv)
-
-    bc, cg = load("by1check"), load("by1codegen")
-    ex_mod = load("by1exec")
-    name = os.path.basename(args.by1)
-    _r, info = bc.check(args.by1)
-    ir = cg.compile_ir(info)
-
-    print(f"\n{'='*72}\n  {name}  ->  C\n{'='*72}")
-    try:
-        decls, order, total = emit_c(ir, info, ex_mod.shapes_of(ir))
-    except SystemExit as e:
-        print(str(e))
-        return 1
-
-    os.makedirs(args.workdir, exist_ok=True)
-    rng = np.random.default_rng(0)
-    params = {k: rng.normal(0, 0.1, s).astype(np.float32)
-              for k, s in ex_mod.shapes_of(ir).items()}
-    flat = np.concatenate([params[p].ravel() for _m, p in order])
-    print(f"  权重 {total:,} 个 float = {total*4/1024:.1f} KiB，"
-          f"{len(order)} 个张量")
-    open(os.path.join(args.workdir, "w.bin"), "wb").write(flat.tobytes())
-    ids = rng.integers(0, ir["vocab"], args.seq).astype(np.int32)
-    open(os.path.join(args.workdir, "ids.bin"), "wb").write(ids.tobytes())
-
-    src = C_HEAD + "\n" + decls + "\n" + C_MAIN
-    cpath = os.path.join(args.workdir, "model.c")
-    open(cpath, "w", encoding="utf-8").write(src)
-    print(f"  生成 {cpath}  （{len(src.splitlines())} 行）")
-
-    exe = os.path.join(args.workdir, "model.exe")
-    # **外部符号要链接进去。** 路径按 IR 的说法解析（相对当前目录），
-    # 而 `-Wl,-rpath` 让运行的时候也找得到 —— 否则编译过了跑不起来，
-    # 而那个报错长得像别的问题。
-    _link = []
-    for L in ir["layers"]:
-        for o in L["ops"]:
-            if o["kind"] == "External":
-                _lib = os.path.abspath(o["attrs"]["lib"])
-                _link += [_lib, "-Wl,-rpath,%s" % os.path.dirname(_lib)]
-    p = subprocess.run([args.gcc, "-O2", "-o", exe, cpath, "-lm"] + _link,
-                       capture_output=True, text=True)
-    if p.returncode != 0:
-        print("  [编译失败]")
-        print((p.stderr or "")[:1600])
-        return 1
-    print("  [编译成功]")
-
-    r = subprocess.run([exe, str(args.seq),
-                        os.path.join(args.workdir, "w.bin"),
-                        os.path.join(args.workdir, "ids.bin"),
-                        os.path.join(args.workdir, "logits.bin")],
-                       capture_output=True, text=True)
-    if r.returncode != 0:
-        print(f"  [运行失败] {r.stdout} {r.stderr}")
-        return 1
-    print(f"  [运行成功] {r.stdout.strip()}")
-    got = np.fromfile(os.path.join(args.workdir, "logits.bin"), dtype=np.float32)
-    got = got.reshape(args.seq, ir["vocab"])
-
-    ex = ex_mod.Exec(ir, params)
-    ex.P["_g"] = {k: params[k] for k in
-                  ("embed.weight", "final_norm.w", "head.weight")}
-    want = ex(ids[None, :])[0]
-    dd = np.abs(got - want).max()
-    amp = max(np.abs(want).max(), 1e-9)
-    print(f"\n  C 后端 vs NumPy 后端")
-    print(f"    幅度 C {np.abs(got).max():.4e}   NumPy {np.abs(want).max():.4e}")
-    print(f"    最大绝对差 {dd:.3e}   相对 {dd/amp:.3e}   "
-          + ("[PASS] 三个后端一致" if dd / amp < 1e-4 else "[FAIL] 不一致"))
-    print()
-    return 0 if dd / amp < 1e-4 else 1
-
-
-if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))

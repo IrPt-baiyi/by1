@@ -164,8 +164,42 @@ KIND_ATTRS = {
     },
     "Raw": {
         "impl": ("str", True,
-                 "逃生舱：raw.py 里的工厂函数名。**它下去之后照样被验** —— "
-                 "契约、三个后端、取值门都不松"),
+                 "逃生舱第一层：raw.py 里的工厂函数名。"
+                 "**这一层要改编译器** —— 加一个机制就得动 by1codegen.py。"
+                 "第二层见 External"),
+    },
+    # ── 逃生舱第二层：引用一个**外部符号** ────────────────────────
+    # 编译器不认识这个机制，只认识**调用约定**。
+    # 所以加一个新机制**不需要动编译器** —— 只要有一个 .so 和一个 IR。
+    #
+    # ## ABI（固定，不自由发挥）
+    #
+    #     void <symbol>(const float *x, float *y,
+    #                   int B, int T, int D,
+    #                   const float *const *w, int nw);
+    #
+    #     x    输入，行主序 [B, T, D]
+    #     y    输出，行主序 [B, T, D]（io = "same" 时形状和 x 一样）
+    #     w    权重指针数组，**按名字字典序排列**
+    #     nw   w 的个数
+    #
+    # ## 为什么权重是"指针数组"而不是拼成一块
+    #
+    # 因为 C 那边权重本来就是分开的缓冲区。拼成一块要么多一次拷贝，
+    # 要么要求布局一致 —— 而那是**约定**，不是**语义**。
+    # 指针数组 + 排序规则，两边都能自己算出来，不需要额外通道。
+    "External": {
+        "lib": ("str", True,
+                "动态库路径（.so / .dylib / .dll / .o）。"
+                "**相对路径按 IR 文件所在目录解析** —— 否则换个目录就跑不了"),
+        "symbol": ("str", True, "符号名。找不到就拒绝，**不静默给个恒等**"),
+        "weights": ("dict", True,
+                    "这个算子自己的张量：{逻辑名: 形状}。"
+                    "**契约照样查** —— 这就是「下沉一层」没有放松的地方"),
+        "io": ("enum:same", True,
+               "输出和输入同形。先只支持这一种 —— "
+               "多一种就要多一条约定，而约定越多越像糊"),
+        "note": ("str?", False, "给人看的说明"),
     },
 }
 
@@ -257,6 +291,17 @@ def validate(ir):
 def _check_op(where, op, errs):
     _check_fields(where, OP, op, errs)
     k = op.get("kind")
+    # **跨字段的约束也要在这里查。** IR 现在是入口了 —— 有人可以直接写 IR，
+    # 不经过 .by1。所以"编译器会拦"不再是理由：
+    # `compile_ir` 里那些检查，走 IR 这条路根本跑不到。
+    # 这一条就是这么漏的：External 声明空 weights 竟然通过了。
+    if k == "External":
+        w = (op.get("attrs") or {}).get("weights")
+        if isinstance(w, dict) and not w:
+            errs.append(
+                "%s (External): weights 不能是空的 —— "
+                "**契约不松**：外部算子照样要声明自己的张量，"
+                "否则它算的东西没人查" % where)
     if k not in KIND_ATTRS:
         errs.append("%s: kind = <%s> 不在闭集 %s 里" % (where, k, KINDS))
         return

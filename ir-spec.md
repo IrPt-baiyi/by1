@@ -59,7 +59,7 @@ python by1irentry.py                    # 三个后端只从 IR 跑
 | `inputs` | `list[str]` | 是 | 输入的值引用（`hidden` 或 `opN.out`） |
 | `outputs` | `list[str]` | 是 | 输出的值引用 |
 
-`kind` 是**闭集**：`Add`, `Attention`, `Embed`, `FFN`, `Head`, `Linear`, `MLA`, `MoE`, `Norm`, `Raw`
+`kind` 是**闭集**：`Add`, `Attention`, `Embed`, `External`, `FFN`, `Head`, `Linear`, `MLA`, `MoE`, `Norm`, `Raw`
 
 ## 状态
 
@@ -108,6 +108,16 @@ python by1irentry.py                    # 三个后端只从 IR 跑
 ### `Embed`
 
 （没有属性）
+
+### `External`
+
+| 属性 | 类型 | 必填 | 语义 |
+|---|---|---|---|
+| `lib` | `str` | 是 | 动态库路径（.so / .dylib / .dll / .o）。**相对路径按 IR 文件所在目录解析** —— 否则换个目录就跑不了 |
+| `symbol` | `str` | 是 | 符号名。找不到就拒绝，**不静默给个恒等** |
+| `weights` | `dict` | 是 | 这个算子自己的张量：{逻辑名: 形状}。**契约照样查** —— 这就是「下沉一层」没有放松的地方 |
+| `io` | `enum:same` | 是 | 输出和输入同形。先只支持这一种 —— 多一种就要多一条约定，而约定越多越像糊 |
+| `note` | `str?` | 否 | 给人看的说明 |
 
 ### `FFN`
 
@@ -192,7 +202,7 @@ python by1irentry.py                    # 三个后端只从 IR 跑
 
 | 属性 | 类型 | 必填 | 语义 |
 |---|---|---|---|
-| `impl` | `str` | 是 | 逃生舱：raw.py 里的工厂函数名。**它下去之后照样被验** —— 契约、三个后端、取值门都不松 |
+| `impl` | `str` | 是 | 逃生舱第一层：raw.py 里的工厂函数名。**这一层要改编译器** —— 加一个机制就得动 by1codegen.py。第二层见 External |
 
 ---
 

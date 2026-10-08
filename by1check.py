@@ -647,6 +647,8 @@ TOKEN_MIXER = {"Attention", "Sparse", "Linear", "SSM", "Vision", "Recurrent",
                # 接 ggml 时最先需要的就是它：没有这个口子，
                # 一个新机制只能等整个后端做完才能试。
                "Raw",
+               # 逃生舱第二层：引用外部符号（.so + ABI）。
+               "External",
                # KDA（Kimi Delta Attention）：和 GDN 同族但**不是同一个东西** ——
                # 三个独立卷积、f_proj、o_norm。当成 Linear 会生成一个 GDN，
                # 那是个"看起来对但算错"的模型，所以给它自己的种类。
@@ -660,6 +662,8 @@ BUILTIN_ATTRS = {
     "head_gate", "score_bias", "shared_hidden", "routed_scale",
     # 逃生舱的工厂函数名（`mech X : Raw { impl = "foo" }`）
     "impl",
+    # 逃生舱第二层（`mech X : External { lib = ... symbol = ... }`）
+    "lib", "symbol", "weights", "io",
 }
 
 

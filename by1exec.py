@@ -386,8 +386,31 @@ def op_linear(P, a, ins, d):
     return y.reshape(b, s, vd) @ P["out_proj"].T
 
 
+def op_external(P, a, ins, d):
+    """**逃生舱第二层：调外部符号。**
+
+    和别的算子**受同样的约束** —— 它的张量照样从 P 里取（`by1verify`
+    已经对着产物查过了），输入输出照旧接进数据流。
+    区别只是这段计算不在这门语言里。
+    """
+    import by1ext
+    # **`ins` 已经是数组了**，不是引用 —— 别的算子都这么收。
+    # 第一版写成 `P["_v"][ins[0]]`，于是永远拿不到输入。
+    x = np.asarray(ins[0], dtype=np.float32)
+    names = by1ext.sorted_weight_names(a["weights"].keys())
+    fn = by1ext.bind(by1ext.load_lib(a["lib"], P.get("_base")), a["symbol"])
+    B, T, D = x.shape
+    y = np.zeros_like(x, dtype=np.float32)
+    ws = [np.ascontiguousarray(P["ext:" + nm], dtype=np.float32)
+          for nm in names]
+    by1ext.call(fn, np.ascontiguousarray(x, dtype=np.float32), y,
+                int(B), int(T), int(D), ws)
+    return y
+
+
 OPS = {"Norm": op_norm, "Add": op_add, "Attention": op_attention,
-       "FFN": op_ffn, "MoE": op_moe, "Linear": op_linear, "MLA": op_mla}
+       "FFN": op_ffn, "MoE": op_moe, "Linear": op_linear, "MLA": op_mla,
+       "External": op_external}
 
 
 # ── 执行器：按 IR 求值，不认机制名，只认 kind ──────────────────────
@@ -423,6 +446,12 @@ def shapes_of(ir):
                 if a.get("head_gate", "off") != "off":
                     out[pre + "g_proj"] = ((q if a["head_gate"] == "per_head"
                                               else q * hd), d)
+            elif k == "External":
+                # **外部算子照样贡献张量形状。** 契约不松 ——
+                # 它的权重和别的机制一样进参数表、一样被 by1verify 对产物查。
+                # 前缀 `ext:` 是为了在 C 那边和内部名区分开。
+                for nm, shp in (a.get("weights") or {}).items():
+                    out[pre + "ext:" + nm] = tuple(shp)
             elif k == "MLA":
                 out[pre + "q_a_proj"] = (a["q_lora"], d)
                 out[pre + "q_a_layernorm.w"] = (a["q_lora"],)

@@ -89,7 +89,10 @@ JUDGES = ['by1mla.py', 'by1moe.py', 'by1rope.py',
           # 不经过 .by1 也能跑。它还带 JSON 往返。
           'by1irentry.py',
           # **两条路的 IR 对拍**：.by1 出来的 vs 从产物反推出来的
-          'by1bootir.py']
+          'by1bootir.py',
+          # 逃生舱第二层：IR 引用外部符号（.so + ABI）。
+          # 它证的正是「加一个新机制不用改编译器」。
+          'by1extdemo.py']
 
 fails, rows = [], []
 
