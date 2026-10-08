@@ -104,7 +104,10 @@ JUDGES = ['by1mla.py', 'by1moe.py', 'by1rope.py',
           'by1opdiff.py',
           # **端到端：真产物 -> IR -> 三个后端 -> 对官方实现**
           # 没下载过 gpt2 的话它自己会跳过（返回 2）。
-          'by1e2e.py']
+          'by1e2e.py',
+          # 设备无关性：前向期间不带 device 的张量创建。
+          # 这台机器没有显卡，所以验的是「显卡上能跑」的必要条件。
+          'by1dev.py']
 
 fails, rows = [], []
 
@@ -136,6 +139,26 @@ def find_gcc():
         if hits:
             return hits[0]
     return None
+
+
+def run_many(pairs, jobs=None):
+    """**并行跑一批独立命令。**
+
+    量过：`--quick` 123 秒里，绝大部分是 **55 条子进程各自
+    `import torch + transformers`**（4.7 秒/条）。
+    计算本身不慢 —— 慢的是启动。
+
+    判据一个字没改：还是**退出码 + 输出**。
+    并行不放松任何一条规则，只是不再排队等 import。
+    """
+    import os as _os
+    from concurrent.futures import ThreadPoolExecutor
+    if jobs is None:
+        jobs = int(_os.environ.get('BY1_JOBS', '0')) or min(6, (_os.cpu_count() or 2))
+    if jobs <= 1 or len(pairs) <= 1:
+        return [run(c, tag) for c, tag in pairs]
+    with ThreadPoolExecutor(max_workers=jobs) as ex:
+        return list(ex.map(lambda pt: run(pt[0], pt[1]), pairs))
 
 
 def main():
@@ -201,15 +224,13 @@ def main():
             fails.append('tensors %s %s' % (backend, f))
 
     # ---- 4. 前向：参考实现 ----
-    for f in SHAPED:
-        # mla-shaped 的参考在 by1mla.py 里；llama3-shaped 是合成的，没有
-        # transformers 对应物（它的验证靠 by1rope.py + 两个跨后端对拍）。
-        # gpt2-tiny 的参考在 by1gpt2.py 里（对 HF 官方实现）；
-        # 它没有对应的 transformers 配置可生成，所以这里跳过。
-        if f in ('mla-shaped.by1', 'llama3-shaped.by1', 'clef-tiny.by1',
-                 'gpt2-tiny.by1'):
-            continue
-        ok, out = run(['by1diff.py', f], 'diff ' + f)
+    # **先收集，再并行，最后按顺序解析。**
+    # 判据没变 —— 顺序只影响打印，不影响判定。
+    _todo = [f for f in SHAPED
+             if f not in ('mla-shaped.by1', 'llama3-shaped.by1',
+                          'clef-tiny.by1', 'gpt2-tiny.by1')]
+    for f, (ok, out) in zip(_todo, run_many(
+            [(['by1diff.py', f], 'diff ' + f) for f in _todo])):
         line = [l.strip() for l in out.splitlines() if '最大绝对差' in l]
         rows.append(('前向 ' + f, ok,
                      (line[-1] if line else '').replace('   ', ' ')))
@@ -217,8 +238,9 @@ def main():
             fails.append('diff ' + f)
 
     # ---- 5. 三后端 ----
-    for f in SHAPED:
-        ok, out = run(['by1exec.py', f, '--compare'], 'exec ' + f)
+    for f, (ok, out) in zip(SHAPED, run_many(
+            [(['by1exec.py', f, '--compare'], 'exec ' + f)
+             for f in SHAPED])):
         line = [l.strip() for l in out.splitlines() if '最大绝对差' in l]
         # **除了退出码，也看输出里有没有 FAIL。**
         # 只信退出码的话，一个"打印了 FAIL 却 return 0"的脚本
@@ -241,9 +263,10 @@ def main():
         rows.append(('C 后端', False, '找不到 gcc'))
         fails.append('gcc')
     else:
-        for f in SHAPED:
-            ok, out = run(['by1c.py', f, '--gcc', gcc, '--seq', '16'],
-                          'C ' + f)
+        for f, (ok, out) in zip(SHAPED, run_many(
+                [(['by1c.py', f, '--gcc', gcc, '--seq', '16'], 'C ' + f)
+                 for f in SHAPED])):
+
             line = [l.strip() for l in out.splitlines() if '最大绝对差' in l]
             # **分清「没实现」和「算错了」。**
             # 前者是覆盖率缺口（已知、可数），后者是 bug。
@@ -277,8 +300,8 @@ def main():
         fails.append('gate')
 
     # ---- 8. 判卷人脚本 ----
-    for s in JUDGES:
-        ok, out = run([s], s)
+    # **13 条判卷人，74 秒 —— 最重的一段。** 它们互不依赖，并行。
+    for s, (ok, out) in zip(JUDGES, run_many([([s], s) for s in JUDGES])):
         line = [l.strip() for l in out.splitlines() if '[PASS]' in l
                 or '[FAIL]' in l]
         rows.append((s, ok, line[-1] if line else '（没有判定行）'))
