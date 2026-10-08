@@ -58,6 +58,11 @@ def main():
         return 2
 
     dev = torch.device('cuda')
+    total_gb = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
+    # **留 10% 给 CUDA context、cuDNN workspace、框架自己。**
+    free_gb = total_gb * 0.9
+    skipped = []
+    print('  显存 %.1f GB（按 %.1f GB 挑模型）' % (total_gb, free_gb))
     print('=' * 78)
     print('  显卡验证')
     print('=' * 78)
@@ -83,8 +88,15 @@ def main():
             m = ns['build']().eval()
         except Exception:
             continue
+        # **按显存选模型，不写死阈值。**
+        # 原来是 `if n > 2e8: continue` —— 那是照着 T4 的 16 GB 定的，
+        # 于是在 A800-80G 上，**最该跑的那几个真模型恰好被跳过**：
+        # clef(26.9B) / qwen38(27.3B) / gemma(32.1B) / laguna(33.4B) /
+        # qwen36(35.5B) —— 它们的契约早就验过，却从来没跑过前向。
         n = sum(p.numel() for p in m.parameters())
-        if n > 2e8:
+        need = n * 2 / (1024 ** 3) + 2.0      # bf16 + 2GB 余量
+        if need > free_gb:
+            skipped.append((f, need))
             continue
 
         ids = torch.randint(0, ir['vocab'], (1, seq))
@@ -115,6 +127,12 @@ def main():
         if rel >= 1e-4:
             bad.append(f)
 
+    if skipped:
+        print()
+        print('  显存不够、跳过的（**不是失败，是这张卡装不下**）：')
+        for f, need in sorted(skipped, key=lambda x: x[1]):
+            print('    %-24s 约 %.1f GB bf16' % (f, need))
+        print('    想跑这些要更大的卡 —— 见 README 里那张表。')
     print()
     print('  [%s] 显卡验证 %s'
           % ('PASS' if not bad else 'FAIL',
