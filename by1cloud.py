@@ -46,9 +46,14 @@ PKG = os.path.join(os.path.dirname(HERE), 'by1-cloud.tar.gz')
 #   BatchMode       没有地方输密码，失败要立刻失败，不要挂在那儿等
 #   StrictHostKey   第一次连的机器没进 known_hosts，非交互会卡住
 #   ConnectTimeout  连不上要报错，不要等
+# **空设备：两个平台写法不同。** 见 SSH_COMMON 里的注释。
+NULL_DEV = 'NUL' if os.name == 'nt' else '/dev/null'
+
 SSH_COMMON = ['-o', 'BatchMode=yes',
               '-o', 'StrictHostKeyChecking=no',
-              '-o', 'UserKnownHostsFile=/dev/null',
+              # **空设备要在两边都对。** 这个脚本从 Windows 上跑，
+              # 而 /dev/null 是 Linux 的写法 —— Windows 的 ssh 认不出来。
+              '-o', 'UserKnownHostsFile=' + NULL_DEV,
               '-o', 'ConnectTimeout=15',
               '-o', 'LogLevel=ERROR']
 
@@ -64,6 +69,71 @@ SSH_COMMON = ['-o', 'BatchMode=yes',
 # 所以：**判卷人换了就不是同一个判卷人。**
 # 版本不一致的话，改的可能是参考，不是 by1。
 DEPS = 'numpy transformers==5.15.1 safetensors'
+
+
+def ssh_password(host, port, user, password, cmd, timeout=600):
+    """**用密码连一次 —— 只为了把公钥装进去。**
+
+    ## 为什么不能一直用密码
+
+    这个脚本从非交互的 shell 里调 `ssh` —— **没有 TTY，密码没地方输**。
+    `sshpass` 这台机器上也没有。所以密码只能用来做一件事：
+
+        把公钥写进 ~/.ssh/authorized_keys
+
+    之后所有命令都走密钥。**密码只用一次。**
+
+    ## 用完请改密码
+
+    密码会进会话记录。实例是临时的、用完就释放，所以风险有界 ——
+    但改一下更省心。
+
+    用 paramiko 而不是 `ssh` 是因为：**它能在代码里收密码**，
+    而 `ssh` 只会去读 TTY。
+    """
+    import paramiko
+    c = paramiko.SSHClient()
+    c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    c.connect(host, port=port, username=user, password=password,
+              timeout=20, allow_agent=False, look_for_keys=False)
+    _in, out, err = c.exec_command(cmd, timeout=timeout)
+    o = out.read().decode('utf-8', 'replace')
+    e = err.read().decode('utf-8', 'replace')
+    rc = out.channel.recv_exit_status()
+    c.close()
+    return rc, o + e
+
+
+def bootstrap_key(args):
+    """把公钥装到远端 —— **密码唯一该做的事。**"""
+    pub = args.key + '.pub'
+    if not os.path.exists(pub):
+        print('  [FAIL] 没有公钥 %s —— 先跑 python by1cloud.py key' % pub)
+        return 1
+    pubtext = open(pub, encoding='utf-8').read().strip()
+    print('  ── 用密码连一次，把公钥装进去 ──')
+    cmd = ('mkdir -p ~/.ssh && chmod 700 ~/.ssh && '
+           'grep -qF "%s" ~/.ssh/authorized_keys 2>/dev/null || '
+           'echo "%s" >> ~/.ssh/authorized_keys; '
+           'chmod 600 ~/.ssh/authorized_keys; echo INSTALLED; '
+           'nvidia-smi --query-gpu=name,memory.total --format=csv,noheader'
+           % (pubtext, pubtext))
+    try:
+        rc, out = ssh_password(args.host, args.port, args.user,
+                               args.password, cmd)
+    except Exception as e:
+        print('  [FAIL] 密码登录失败：%s' % str(e)[:90])
+        return 1
+    for line in out.splitlines():
+        print('    ' + line)
+    if 'INSTALLED' not in out:
+        print('  [FAIL] 公钥没装进去')
+        return 1
+    print()
+    print('  [OK] 公钥装好了 —— **以后不用密码了**')
+    # 立刻用密钥验一次，确认真的通了
+    print('  ── 用密钥验一次 ──')
+    return cmd_check(args)
 
 
 def ssh(args, cmd, timeout=600, quiet=False):
@@ -127,6 +197,18 @@ def cmd_push(args):
 
 def cmd_setup(args):
     print('  ── 装依赖 ──')
+
+    # **C 后端要 gcc。** Ubuntu 22.04 的镜像一般有，但精简镜像没有。
+    # 少它的话，`by1all` 会「找不到 gcc」而整段 C 的检查都跳过 ——
+    # 那不是失败，是**静默少了一半验证**。
+    rc, out = ssh(args, 'which gcc || echo NOGCC', quiet=True)
+    if 'NOGCC' in out or 'no gcc' in out.lower():
+        print('    没有 gcc —— 装一个（C 后端要它）')
+        ssh(args, 'apt-get update -qq && apt-get install -y -qq build-essential '
+                  '2>&1 | tail -2', timeout=900)
+    else:
+        print('    gcc %s' % out.strip().splitlines()[-1][:60])
+
     # AutoDL 的 PyTorch 镜像一般自带 torch+cu，所以先看有没有
     rc, out = ssh(args, 'python -c "import torch;print(torch.cuda.is_available())"'
                         ' 2>&1 || echo MISSING', quiet=True)
@@ -171,11 +253,14 @@ def cmd_run(args):
 def main():
     ap = argparse.ArgumentParser(description='驱动一台租来的显卡机器')
     ap.add_argument('action',
-                    choices=['check', 'push', 'setup', 'run', 'all', 'key'])
+                    choices=['check', 'push', 'setup', 'run', 'all', 'key',
+                             'bootstrap'])
     ap.add_argument('--host')
     ap.add_argument('--port', type=int)
     ap.add_argument('--user', default='root')
     ap.add_argument('--key', default=KEY)
+    ap.add_argument('--password', help='**只用一次**，装公钥用的。'
+                                       '装完就改掉它。')
     args = ap.parse_args()
 
     if args.action == 'key':
@@ -188,6 +273,12 @@ def main():
         print('  没有公钥 —— 先生成： ssh-keygen -t ed25519 -f %s -N ""' % args.key)
         return 1
 
+    if args.action == 'bootstrap':
+        if not (args.host and args.port and args.password):
+            print('  bootstrap 要 --host / --port / --password')
+            return 2
+        return bootstrap_key(args)
+
     if not args.host or not args.port:
         print('  要 --host 和 --port。')
         print('  AutoDL 控制台上写的是： ssh -p <port> root@<host>')
@@ -199,6 +290,10 @@ def main():
 
     t0 = time.time()
     if args.action == 'all':
+        # **给了密码就先装公钥** —— 之后全走密钥，密码只用这一次。
+        if args.password:
+            if bootstrap_key(args) != 0:
+                return 1
         for step in (cmd_check, cmd_push, cmd_setup, cmd_run):
             rc = step(args)
             if rc != 0:

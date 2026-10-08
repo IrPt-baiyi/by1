@@ -1182,7 +1182,11 @@ def main(argv=None):
     open(cpath, "w", encoding="utf-8").write(src)
     print(f"  生成 {cpath}  （{len(src.splitlines())} 行）")
 
-    exe = os.path.join(args.workdir, "model.exe")
+    # **绝对路径，不是相对路径。**
+    # POSIX 上 `subprocess.run(["cgen/model.exe"])` 会 FileNotFoundError ——
+    # 相对路径没有 `/` 开头，系统不去当前目录找（Windows 会找）。
+    # 这个后端只在 Windows/mingw 上跑过，所以一直没露。
+    exe = os.path.abspath(os.path.join(args.workdir, "model.exe"))
     # **外部符号要链接进去。** 路径按 IR 的说法解析（相对当前目录），
     # 而 `-Wl,-rpath` 让运行的时候也找得到 —— 否则编译过了跑不起来，
     # 而那个报错长得像别的问题。
