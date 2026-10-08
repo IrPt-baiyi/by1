@@ -70,6 +70,10 @@ SSH_COMMON = ['-o', 'BatchMode=yes',
 # 版本不一致的话，改的可能是参考，不是 by1。
 DEPS = 'numpy transformers==5.15.1 safetensors'
 
+# **镜像里 `python` 不在 PATH 上。** AutoDL 用 conda，
+# 解释器在 /root/miniconda3/bin/。所有远程命令都用这个全路径。
+PY = '/root/miniconda3/bin/python'
+
 
 def ssh_password(host, port, user, password, cmd, timeout=600):
     """**用密码连一次 —— 只为了把公钥装进去。**
@@ -137,34 +141,98 @@ def bootstrap_key(args):
 
 
 def ssh(args, cmd, timeout=600, quiet=False):
-    full = (['ssh'] + SSH_COMMON
-            + ['-i', args.key, '-p', str(args.port),
-               '%s@%s' % (args.user, args.host), cmd])
-    r = subprocess.run(full, capture_output=True, text=True,
-                       timeout=timeout, encoding='utf-8', errors='replace')
+    """跑一条远程命令。**走 paramiko，不走 OpenSSH。**
+
+    ## 为什么不用系统的 ssh
+
+    实测过：AutoDL 那个网关（`connect.*.seetacloud.com`）的 sshd
+    **不认 `publickey-hostbound-v00@openssh.com`** —— 那是 OpenSSH 8.2+
+    的客户端扩展。现象很误导：
+
+        debug1: Server accepts key: ...        <- 服务端说接受
+        debug3: sign_and_send_pubkey: using publickey-hostbound-v00
+        Permission denied (publickey,password) <- 然后拒了
+
+    公钥在 authorized_keys 里、权限 700/600、`pubkeyauthentication yes`
+    —— **全都对**，但就是不通。
+
+    paramiko 不发那个扩展，所以它通。**这里不是图省事，是 OpenSSH
+    那条路走不通。**
+
+    顺带：镜像里 `python` 不在 PATH 上，要 `/root/miniconda3/bin/python`。
+    """
+    import paramiko
+    c = paramiko.SSHClient()
+    c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    kw = dict(hostname=args.host, port=args.port, username=args.user,
+              timeout=25, allow_agent=False, look_for_keys=False)
+    # 密钥有口令就用口令；没口令就只用密钥。
+    if getattr(args, 'password', None):
+        kw['password'] = args.password
+    if os.path.exists(args.key):
+        kw['key_filename'] = args.key
+    # **重试** —— 网关偶发拒绝连接（"连太快了"）。
+    import time as _t
+    last = None
+    for attempt in range(4):
+        try:
+            c.connect(**kw)
+            last = None
+            break
+        except Exception as ex:
+            last = ex
+            _t.sleep(3 + attempt * 4)
+    if last is not None:
+        raise last
+    # **PATH 要自己补。**
+    # 非交互 SSH 的 PATH 是极简的 —— 于是 python / pip / gcc
+    # **全都找不到**。一个原因，三个症状，我一开始当成三件事查。
+    _PATH = ('export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:'
+             '/usr/bin:/sbin:/bin:/root/miniconda3/bin:; ')
+    _i, o, e = c.exec_command(_PATH + cmd, timeout=timeout)
+    out = o.read().decode('utf-8', 'replace')
+    err = e.read().decode('utf-8', 'replace')
+    rc = o.channel.recv_exit_status()
+    c.close()
     if not quiet:
-        out = (r.stdout or '') + (r.stderr or '')
-        for line in out.splitlines():
+        for line in (out + err).splitlines():
             print('    ' + line)
-    return r.returncode, (r.stdout or '') + (r.stderr or '')
+    return rc, out + err
 
 
 def scp_up(args, local, remote):
-    r = subprocess.run(['scp'] + SSH_COMMON
-                       + ['-i', args.key, '-P', str(args.port), '-r',
-                          local, '%s@%s:%s' % (args.user, args.host, remote)],
-                       capture_output=True, text=True, encoding='utf-8',
-                       errors='replace')
-    return r.returncode
+    """传文件。**同样走 paramiko**（SFTP），理由和上面一样。"""
+    import paramiko
+    c = paramiko.SSHClient()
+    c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    kw = dict(hostname=args.host, port=args.port, username=args.user,
+              timeout=25, allow_agent=False, look_for_keys=False)
+    if getattr(args, 'password', None):
+        kw['password'] = args.password
+    if os.path.exists(args.key):
+        kw['key_filename'] = args.key
+    c.connect(**kw)
+    sftp = c.open_sftp()
+    try:
+        sftp.put(local, remote)
+        rc = 0
+    except Exception as e:
+        print('    !! SFTP 失败：%s' % str(e)[:80])
+        rc = 1
+    sftp.close()
+    c.close()
+    return rc
 
 
 def cmd_check(args):
     print('  ── 连得上吗，卡是什么 ──')
     rc, out = ssh(args, 'nvidia-smi --query-gpu=name,memory.total,'
-                        'driver_version --format=csv,noheader; '
-                        'python -c "import torch;print(\'torch\','
+                        'driver_version,compute_cap --format=csv,noheader; '
+                        '%s -c "import torch;print(\'torch\','
                         'torch.__version__,\'cuda\',torch.version.cuda,'
-                        '\'avail\',torch.cuda.is_available())"')
+                        '\'avail\',torch.cuda.is_available())" 2>&1 | tail -1; '
+                        'which gcc || echo "没有 gcc"; '
+                        'df -h / | tail -1' % PY)
     if rc != 0:
         print()
         print('  [FAIL] 连不上（退出码 %d）' % rc)
@@ -210,44 +278,59 @@ def cmd_setup(args):
         print('    gcc %s' % out.strip().splitlines()[-1][:60])
 
     # AutoDL 的 PyTorch 镜像一般自带 torch+cu，所以先看有没有
-    rc, out = ssh(args, 'python -c "import torch;print(torch.cuda.is_available())"'
-                        ' 2>&1 || echo MISSING', quiet=True)
+    rc, out = ssh(args, '%s -c "import torch;print(torch.cuda.is_available())"'
+                        ' 2>&1 || echo MISSING' % PY, quiet=True)
     if 'True' in out:
         print('    镜像自带 torch 且认得出显卡 —— 只补判卷人要的')
-        ssh(args, 'pip install -q %s 2>&1 | tail -2' % DEPS)
+        ssh(args, '%s -m pip install -q %s 2>&1 | tail -2' % (PY, DEPS))
     else:
         print('    没有可用的 torch+cu —— 装一套（这一步慢，几分钟）')
-        ssh(args, 'pip install -q torch --index-url '
+        ssh(args, '%s -m pip install -q torch --index-url ' % PY +
                   'https://download.pytorch.org/whl/cu124 2>&1 | tail -2',
             timeout=2400)
-        ssh(args, 'pip install -q %s 2>&1 | tail -2' % DEPS, timeout=1200)
+        ssh(args, '%s -m pip install -q %s 2>&1 | tail -2' % (PY, DEPS), timeout=1200)
     print('  [OK]')
     return 0
 
 
 def cmd_run(args):
+    """跑验证。
+
+    ## 为什么合成**一条**远程命令
+
+    实测：AutoDL 的网关**限制连接频率**。一步一步各开一个连接的话，
+    第二条就报 `Error reading SSH protocol banner` ——
+    而那个报错长得像网络问题，其实是"你连太快了"。
+
+    合起来也更快：开一次连接的开销省掉三次。
+    """
     print('  ── 逐层跑验证 ──')
     steps = [
-        ('设备无关性（本地也能跑，这里再跑一遍）',
-         'python by1dev.py 2>&1 | tail -4'),
-        ('**显卡**：搬得过去吗、两边数一致吗',
-         'python by1gpu.py 2>&1 | tail -22'),
-        ('端到端：真产物 -> IR -> 三后端 -> 官方实现',
-         'python by1e2e.py 2>&1 | tail -12'),
-        ('全量（含 C 后端）',
-         'python by1all.py 2>&1 | tail -8'),
+        ('① 设备无关性（本地也能跑，这里再跑一遍）',
+         '%s by1dev.py 2>&1 | tail -4' % PY),
+        ('② **显卡**：搬得过去吗、两边数一致吗',
+         '%s by1gpu.py 2>&1 | tail -30' % PY),
+        ('③ 端到端：真产物 -> IR -> 三后端 -> 官方实现',
+         '%s by1e2e.py 2>&1 | tail -14' % PY),
+        ('④ 全量（含 C 后端）',
+         '%s by1all.py 2>&1 | tail -10' % PY),
     ]
-    bad = 0
-    for label, cmd in steps:
-        print()
-        print('  ── %s' % label)
-        rc, out = ssh(args, 'cd %s && %s' % (REMOTE, cmd), timeout=3600)
-        if rc != 0:
-            bad += 1
+    # **一条命令里串起来，中间加分隔符** —— 这样输出还能分辨是哪一步。
+    script = ' ; '.join(
+        'echo "===STEP===%s" ; cd %s && (%s) ; echo "===RC=$?==="'
+        % (label.replace('"', ''), REMOTE, cmd)
+        for label, cmd in steps)
+    rc, out = ssh(args, script, timeout=7200)
     print()
-    print('  [%s] 显卡上的验证 %s' % ('PASS' if not bad else 'FAIL',
-                                      '全过' if not bad else '%d 步非零退出' % bad))
-    return 0 if not bad else 1
+    print('  ── 汇总 ──')
+    for line in out.splitlines():
+        if line.startswith('===STEP==='):
+            print()
+            print('  ── ' + line.replace('===STEP===', ''))
+    bad = out.count('[FAIL]') + out.count('项失败')
+    print()
+    print('  输出里出现 [FAIL] / 失败 %d 处' % bad)
+    return 0 if bad == 0 else 1
 
 
 def main():

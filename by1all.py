@@ -17,8 +17,18 @@ import subprocess
 import sys
 
 PY = sys.executable
-GCC_GLOBS = [os.path.expandvars(
-    r'%LOCALAPPDATA%\Microsoft\WinGet\Packages\BrechtSanders*\mingw64\bin\gcc.exe')]
+# **找 gcc：原来只写了 Windows 的路径，Linux 上找不到。**
+# 实测在 A800 那台 Ubuntu 上，`/usr/bin/gcc` 明明在，by1all 却报
+# 「失败: gcc」—— 于是整段 C 的检查被跳过。
+# **那不是失败，是静默少了一半验证。**
+GCC_GLOBS = [
+    'gcc', 'cc',                                   # PATH 上先找，两个平台都对
+    os.path.expandvars(                            # Windows：WinGet 的 mingw
+        r'%LOCALAPPDATA%\Microsoft\WinGet\Packages'
+        r'\BrechtSanders*\mingw64\bin\gcc.exe'),
+    '/usr/bin/gcc', '/usr/local/bin/gcc',          # Linux
+    '/usr/bin/cc', '/opt/homebrew/bin/gcc',        # cc / macOS
+]
 
 # 六个真实模型：(by1, config, tensors, backend, 额外参数)
 REAL = [
@@ -134,7 +144,19 @@ KNOWN = [
 
 
 def find_gcc():
+    # **裸名字要用 shutil.which 搜 PATH，不能用 glob.glob。**
+    # 我第一版把 'gcc' 加进 GCC_GLOBS 就以为修好了 ——
+    # 而 `glob.glob('gcc')` 只找**当前目录**下的同名文件，
+    # 它不搜 PATH。于是远端还是"找不到 gcc"，而我以为改了。
+    #
+    # **一个看起来加了、其实没生效的修复，比没加更坏。**
+    import shutil as _sh
     for g in GCC_GLOBS:
+        if os.sep not in g and '/' not in g:
+            hit = _sh.which(g)
+            if hit:
+                return hit
+            continue
         hits = glob.glob(g)
         if hits:
             return hits[0]
