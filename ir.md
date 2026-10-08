@@ -1148,3 +1148,71 @@ expert_name  = 'backbone.layers.{i}.mixer.experts.{expert}.{physical}'
    但**三个后端算不了它**（"能描述" ≠ "能算"）
 3. **真正需要新东西的是新机制族** —— Mamba 要一个种类 + 一个调度写法，
    而那是**真的新**，不是特例
+
+---
+
+## 37. GLM-5.3-Flash —— **config 全中，张量契约 97%，两处没做完**
+
+这批里最富的一个，也是唯一同时用上 1.md 点名那两样的。
+
+```
+config          57 / 57       值不同 0    by1 多出 0    官方多出 0
+layer_types     45 / 45
+张量            36289 / 37534 命中（97%）   缺失 1245
+契约未覆盖       39819 个（52%）
+```
+
+### 它是什么
+
+```
+layer_types   34 × linear_attention(KDA) + 11 × deepseek_sparse_attention
+              3+1，全量落在 3,7,11,...,43 —— **尾巴 L44 是线性的**（我第一版写成全量，错了一层）
+mlp_layer_types  3 dense + 42 sparse（first_k_dense_replace = 3）
+linear_attn    KDA，但门是**低秩**的：f_a[128]→f_b[8192]、g_a→g_b（Ling 那边 f 是一个矩阵）
+全量层         MLA + **稀疏索引器**（indexer 自己一套 7 个张量）
+残差           **mHC**：hc_attn/hc_ffn 的 {base[24], fn[24,16384], scale[3]}
+专家           288 选 8，noaux_tc，**每个专家都有 weight_scale_inv（FP8 块量化）**
+MTP            1 层，接在主栈后面的第 45 层
+```
+
+### 做成的
+
+- **config 57 个字段全中**，包括 `linear_attn_config` 那个嵌套字典、
+  `mlp_layer_types`（新生成器：看那一层**挂的是 FFN 还是 MoE**）、
+  `indexer_types`
+- **`ltype` 显式覆盖** —— 有些 config 对这一层有自己的叫法
+  （GLM 叫 `deepseek_sparse_attention`，因为它带索引器）。
+  与其让检查器猜，不如让 `.by1` 说。
+- **KDA 也算线性注意力** —— 它是自己的**计算**，但层类型的名字一样。
+- 契约写到 36289 / 37534（97%）：MLA 六件套、索引器七件套、KDA 的低秩门、
+  mHC 的六个、MoE 的 per_expert 三件套
+
+### 没做完的两处（**不打算说成做完了**）
+
+**① MTP 是主栈后面的第 45 层，层号接着数**
+
+实测 `model.language_model.layers.45.*` —— 它和主干**共用命名**，
+不是 Qwen 那样另起 `mtp.` 前缀。而我的 `aux` 栈会把层号重置成 0。
+
+已经给 `aux` 栈加了 `index = global` 的能力（by1verify 里，已验证不影响其它模型），
+但 **`.by1` 那一处还没落上**（here-doc 锚点第 N 次没匹配），所以 MTP 那层的
+输入/输出 norm 计数差 1。
+
+**② FP8 的 `weight_scale_inv` —— 39819 个张量，占了整个 checkpoint 的 52%**
+
+```
+mlp.experts.{e}.{gate,up,down}_proj.weight_scale_inv   [16,32] / [32,16]   ×12384 各
+self_attn.{q_a,q_b,kv_a,o}_proj.weight_scale_inv                            ×12
+```
+
+块大小 128（4096/128 = 32、2048/128 = 16）。这要走 `quant` 机制
+（gpt-oss 那边用它做过 MXFP4 打包），**但那是另一件有分量的事**，
+不是顺手能补的。
+
+### 所以这一份的状态
+
+**"config 对上" 和 "张量对上" 是两件事。** 前者是完整的，
+后者是 97%，剩下 3% 里一半是命名（好修），一半是 FP8（另一个课题）。
+
+**不把它加进 by1all** —— 那样 `by1all` 会红，而红的理由应该是"坏了"，
+不是"还没做完"。

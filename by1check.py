@@ -1329,7 +1329,16 @@ def check(path: str) -> Tuple[Report, dict]:
         # layer_seq 里第 2 项是**机制名**（不是种类）。
         # 种类在 Blk.mtype（Blk.kind 是"块"的种类，恒为 "mech"）。
         _m = mechs.get(mech_name) if mech_name else None
-        if _m is not None and (_m.mtype or "").strip() in ("Linear", "SSM", "Recurrent"):
+        # **显式指定优先。** 有些 config 对这一层有自己的叫法
+        # （GLM-5.3 的全量层叫 `deepseek_sparse_attention`，
+        #   因为它带一个稀疏索引器，不叫 full_attention）。
+        _ex = (_m.assigns.get("ltype") if _m is not None else None) or ""
+        if _ex.strip():
+            return _ex.strip().strip('"')
+        # KDA 也是线性注意力 —— 它是自己的**计算**（三个独立卷积 + o_norm），
+        # 但层类型的名字是一样的。
+        if _m is not None and (_m.mtype or "").strip() in (
+                "Linear", "SSM", "Recurrent", "KDA"):
             return "linear_attention"
         w = (a.get("window") or "").strip().lower()
         return "full_attention" if w in ("none", "null", "0", "") else "sliding_attention"
@@ -1622,6 +1631,27 @@ def check(path: str) -> Tuple[Report, dict]:
             return gen_rope_parameters_flat()
         if v == "sliding_window":
             return gen_sliding_window()
+        if v in ("mlp_layer_types", "indexer_types"):
+            # 同一份描述在不同 config 里叫不同名字、取不同粒度：
+            #   mlp_layer_types   dense / sparse  —— 看那一层挂的是 FFN 还是 MoE
+            #   indexer_types     full           —— GLM-5.3 全是 full
+            _out = []
+            for (_s, _m, _a, _k, _att) in layer_seq:
+                if _s not in _main_stack_names:
+                    continue
+                if v == "indexer_types":
+                    _out.append("full")
+                    continue
+                # **看挂上去的那个**（元组第 5 项），不是混合器本身 ——
+                # `model[3..44] >> MoE` 的意思就是"这些层挂 MoE"。
+                _names = _att if isinstance(_att, (list, tuple)) else [_att]
+                _kind = ""
+                for _n in _names:
+                    _mm = mechs.get(_n)
+                    if _mm is not None and (_mm.mtype or "") == "MoE":
+                        _kind = "MoE"
+                _out.append("sparse" if _kind == "MoE" else "dense")
+            return _out
         if v == "layers_block_type":
             # Nemotron-H 的 `layers_block_type` 用的词和 HF 通用的
             # `layer_types` **不一样**：它写 mamba / moe / attention，

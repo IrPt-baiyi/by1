@@ -272,11 +272,24 @@ def check_tensors(info, real, render, rule_desc, scope_map, out,
     # 而物理名字里的层号是**各栈从 0 起**：主干 model.layers.0..63、
     # MTP mtp.layers.0。传全局层号会给 MTP 拼出 `mtp.layers.64.` ——
     # 名字全都对不上，而形状是对的，所以只看"形状不符 0"会以为没事。
+    # 层号用**栈内序号**还是**全局序号**，取决于那一栈的命名：
+    #   Qwen3.5  主干 model.language_model.layers.0..63、MTP mtp.layers.0
+    #            —— 各自从 0 起（栈内序号）
+    #   GLM-5.3  **都在 model.language_model.layers.{i}.** 里，
+    #            MTP 是第 45 层 —— 层号接着数（全局序号）
+    # 两种都有，所以在 .by1 里显式声明 `index = global`，不猜。
+    _glob = set()
+    for _st in (info.get("stacks") or []):
+        _as = getattr(_st, "assigns", None) or {}
+        if (_as.get("index") or "").strip().lower() == "global":
+            _glob.add(getattr(_st, "name", ""))
     _loc = {}
     for i, (stack, mech, attrs, rows) in enumerate(info["layer_out"]):
-        k = (stack, i)
-        _li = _loc.get(stack, 0)
-        _loc[stack] = _li + 1
+        if stack in _glob:
+            _li = i                      # 接着主栈数
+        else:
+            _li = _loc.get(stack, 0)
+            _loc[stack] = _li + 1
         qdone = set()
         for owner, (lname, shape_txt, note, pe) in rows:
             if scope_map and owner not in scope_map:
