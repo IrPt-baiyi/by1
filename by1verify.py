@@ -267,7 +267,16 @@ def check_tensors(info, real, render, rule_desc, scope_map, out,
     details, samples, generated = [], [], set()
     qdone = set()
 
+    # **传"栈内序号"，不是全局层号。**
+    # 一个模型可以有多个栈（Qwen3.5 有主干 64 层 + MTP 1 层），
+    # 而物理名字里的层号是**各栈从 0 起**：主干 model.layers.0..63、
+    # MTP mtp.layers.0。传全局层号会给 MTP 拼出 `mtp.layers.64.` ——
+    # 名字全都对不上，而形状是对的，所以只看"形状不符 0"会以为没事。
+    _loc = {}
     for i, (stack, mech, attrs, rows) in enumerate(info["layer_out"]):
+        k = (stack, i)
+        _li = _loc.get(stack, 0)
+        _loc[stack] = _li + 1
         qdone = set()
         for owner, (lname, shape_txt, note, pe) in rows:
             if scope_map and owner not in scope_map:
@@ -289,7 +298,7 @@ def check_tensors(info, real, render, rule_desc, scope_map, out,
                 _f = list(_num[0])
                 if len(_num) > 1:
                     _f[1] = sum(v[1] for v in _num)
-                _base = render(i, stack, owner, _fn)
+                _base = render(_li, stack, owner, _fn)
                 for _sfx, _bs in q_shapes(_f, q_block, _kd):
                     _nm = _base + _sfx
                     generated.add(_nm)
@@ -306,8 +315,8 @@ def check_tensors(info, real, render, rule_desc, scope_map, out,
                 continue
             exps = range(experts_of.get(owner, 1)) if use_e else [None]
             for e in exps:
-                nm = (render_e(i, stack, owner, lname, e) if use_e
-                      else render(i, stack, owner, lname))
+                nm = (render_e(_li, stack, owner, lname, e) if use_e
+                      else render(_li, stack, owner, lname))
                 generated.add(nm)
                 if len(samples) < 5 and shape_txt != "--":
                     samples.append(f"      L{i:<3} {owner}.{lname:<10} -> {nm}")

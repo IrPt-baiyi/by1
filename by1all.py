@@ -45,6 +45,11 @@ REAL = [
     # 而这一整套 Qwen3-Next 时代就有了（GDN + 3+1 混合 + q_gate + qk_norm）。
     ('clef.by1', 'refs/Cloudflare__clef.config.json',
      'refs/clef.tensors.json', 'torch.module', []),
+    # clef + MTP。MTP 是这一族里唯一的新东西，它逼出了三个语言改动：
+    # `aux = true`（辅助栈不算解码层）、`name_<栈名>`（各栈物理前缀不同）、
+    # 以及**栈内序号**（传全局层号会拼出 mtp.layers.64. 这种名字）。
+    ('qwen38.by1', 'refs/Qwen__Qwen3.8-27B.config.json',
+     'refs/qwen38.tensors.json', 'torch.module', []),
 ]
 
 # 六个合成模型：三后端

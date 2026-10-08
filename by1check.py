@@ -122,7 +122,11 @@ def render_name(rule: dict, i: int, stack: str, mech: str, logical: str,
     """按后端 lowering 规则生成物理张量名。张量契约保持纯逻辑。"""
     scope = rule.get("scope", {}).get(mech, "")
     physical = rule.get("rename", {}).get(logical, logical)
-    s = rule.get("name", "")
+    # **一个模型可以有多个栈，而各栈的物理前缀往往不同。**
+    # 例：Qwen3.5 的文本主干是 `model.language_model.layers.{i}.…`，
+    # 而 MTP 那几层是 `mtp.layers.{i}.…` —— 同一个 checkpoint 里两套前缀。
+    # 所以名字模板允许**按栈各写一份**：`name_<栈名>` 优先，`name` 兜底。
+    s = rule.get("name_" + stack) or rule.get("name", "")
     for k, v in (("i", i), ("local_i", i), ("global_i", i), ("stack", stack),
                  ("mech", mech), ("logical", logical), ("expert", expert),
                  ("scope", scope), ("physical", physical)):
@@ -775,10 +779,28 @@ def check(path: str) -> Tuple[Report, dict]:
                                 f"{r.name}({a} = ...) 的属性 '{a}' 既未在 mech "
                                 f"{r.name} 声明，也不在已知属性表里")
 
+    def _is_aux(st):
+        """栈是不是辅助栈（MTP / 投机解码头之类）。
+        **显式声明，不靠栈名猜。** 定义必须在使用之前 ——
+        闭包在运行时才解析名字，放后面会 NameError。
+        """
+        v = (st.assigns.get("aux") or "").strip().lower()
+        return v in ("true", "1", "yes", "on")
+
+    _main_stack_names = {st.name for st in stacks if not _is_aux(st)}
+
+    # **辅助栈不算解码层。** MTP（多 token 预测）是训练时的辅助头，
+    # 它在权重里、但不在 num_hidden_layers 里 —— 主干的层数才是那个数。
+    # 靠栈名判断是魔法，所以让 .by1 显式写 ux = true。
+    _main_layers = sum(len(expansion.get(st.name, []))
+                       for st in stacks
+                       if not _is_aux(st))
     if nlayer_decl is not None and stacks:
-        if nlayer_decl != total_layers:
+        if nlayer_decl != _main_layers:
             rep.add(E, hb.line, "layers",
-                    f"hparams.n_layer = {int(nlayer_decl)}，但各 stack 合计 {total_layers} 层")
+                    f"hparams.n_layer = {int(nlayer_decl)}，但主栈合计 {_main_layers} 层"
+                    + (f"（另有辅助栈 {total_layers - _main_layers} 层）"
+                       if total_layers != _main_layers else ""))
 
     # ---- 双真相源: ctx vs yarn ------------------------------------
     ctx = eval_num(scope.assigns.get("ctx"))
@@ -995,6 +1017,7 @@ def check(path: str) -> Tuple[Report, dict]:
             overrides.setdefault((_sn, _i, _mech), {})[_attr] = _val
 
     classes: Dict[str, Dict[tuple, dict]] = {}
+
     layer_seq: List[tuple] = []
     for st in stacks:
         for li, r in enumerate(expansion.get(st.name, [])):
@@ -1188,6 +1211,14 @@ def check(path: str) -> Tuple[Report, dict]:
                     "global_name": be.assigns.get("global_name", "").strip().strip('"'),
                     "scope": {}, "rename": {}, "fields": {},
                     "quant": {}, "line": be.line, "head": be.head.strip()}
+            # **按栈各写一份名字模板**：`name_<栈名>`。
+            # 一个 checkpoint 里可以有多个栈、各套前缀
+            # （Qwen3.5 主干是 model.language_model.layers.{i}.…，
+            #   MTP 那层是 mtp.layers.{i}.…），一个模板装不下。
+            # render_name 里 name_<栈名> 优先、name 兜底。
+            for _k, _v in be.assigns.items():
+                if _k.startswith("name_") and _k != "name_":
+                    rule[_k] = _v.strip().strip('"')
             for sub in be.children:
                 h = sub.head.strip()
                 if h == "quant":
@@ -1286,7 +1317,10 @@ def check(path: str) -> Tuple[Report, dict]:
         return "full_attention" if w in ("none", "null", "0", "") else "sliding_attention"
 
     def gen_layer_types():
-        return [_ltype_of_attrs(a, m) for (_s, m, a, _k, _t) in layer_seq]
+        # 只取主栈 —— layer_types 的长度等于 num_hidden_layers，
+        # 辅助栈（MTP）不在里面。
+        return [_ltype_of_attrs(a, m) for (_s, m, a, _k, _t) in layer_seq
+                if _s in _main_stack_names]
 
     def name_layer_type(nm):
         recs = named.get(nm)
