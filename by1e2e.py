@@ -53,30 +53,52 @@ def find_cached():
         cfg = safet = None
         for p in glob.glob(os.path.join(r, '**', 'config.json'), recursive=True):
             cfg = p
-        for p in glob.glob(os.path.join(r, '**', 'model.safetensors'),
-                           recursive=True):
-            if os.path.getsize(p) > 0:      # 有些 revision 是 0 字节的占位
-                safet = p
+        # **两种格式都要认。**
+        # 原来只找 `model.safetensors` —— 而 `sshleifer/tiny-gpt2`
+        # 那个 repo 里只有 `pytorch_model.bin`（safetensors 在另一个
+        # revision，而且是 0 字节的占位）。于是脚本说"缓存里没有"，
+        # 而**缓存里明明有**，只是格式不同。
+        for pat in ('model.safetensors', 'pytorch_model.bin'):
+            for p in glob.glob(os.path.join(r, '**', pat), recursive=True):
+                if os.path.getsize(p) > 0:
+                    safet = p
+            if safet:
+                break
         if cfg and safet:
             return r, cfg, safet
     return None, None, None
 
 
 def read_header(path):
-    """只读 safetensors 的头 —— **不加载权重**。"""
-    with open(path, 'rb') as f:
-        n = int.from_bytes(f.read(8), 'little')
-        hdr = json.loads(f.read(n))
-    return {k: {'shape': v['shape'], 'dtype': v['dtype'],
-                'offsets': v['data_offsets']}
-            for k, v in hdr.items() if k != '__metadata__'}
+    """读张量头：safetensors 直接读头，`.bin` 只能整个 load 再取形状。
+
+    **两种都要支持** —— HF 的缓存里两种格式都可能出现，
+    只认一种的话，脚本会说"缓存里没有"，而缓存里明明有。
+    """
+    if path.endswith('.safetensors'):
+        with open(path, 'rb') as f:
+            n = int.from_bytes(f.read(8), 'little')
+            hdr = json.loads(f.read(n))
+        return {k: {'shape': v['shape'], 'dtype': v['dtype'],
+                    'offsets': v['data_offsets']}
+                for k, v in hdr.items() if k != '__metadata__'}
+    import torch
+    sd = torch.load(path, map_location='cpu', weights_only=True)
+    return {k: {'shape': list(v.shape), 'dtype': str(v.dtype)}
+            for k, v in sd.items()}
 
 
 def load_real(path, header, keys):
     """**真权重。** 只取需要的那几个，其余不读。"""
     import torch
-    from safetensors import safe_open
     out = {}
+    if path.endswith('.bin'):
+        sd = torch.load(path, map_location='cpu', weights_only=True)
+        for k in keys:
+            if k in sd:
+                out[k] = sd[k].float()
+        return out
+    from safetensors import safe_open
     with safe_open(path, framework='pt') as f:
         for k in keys:
             if k in header:
