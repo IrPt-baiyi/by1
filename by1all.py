@@ -101,7 +101,10 @@ JUDGES = ['by1mla.py', 'by1moe.py', 'by1rope.py',
           # 它证的正是「加一个新机制不用改编译器」。
           'by1extdemo.py',
           # **逐算子**比 NumPy 和 PyTorch —— 整模型差的时候用它定位
-          'by1opdiff.py']
+          'by1opdiff.py',
+          # **端到端：真产物 -> IR -> 三个后端 -> 对官方实现**
+          # 没下载过 gpt2 的话它自己会跳过（返回 2）。
+          'by1e2e.py']
 
 fails, rows = [], []
 
