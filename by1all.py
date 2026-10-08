@@ -99,7 +99,9 @@ JUDGES = ['by1mla.py', 'by1moe.py', 'by1rope.py',
           'by1bootir.py',
           # 逃生舱第二层：IR 引用外部符号（.so + ABI）。
           # 它证的正是「加一个新机制不用改编译器」。
-          'by1extdemo.py']
+          'by1extdemo.py',
+          # **逐算子**比 NumPy 和 PyTorch —— 整模型差的时候用它定位
+          'by1opdiff.py']
 
 fails, rows = [], []
 

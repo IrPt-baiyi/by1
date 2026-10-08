@@ -48,6 +48,8 @@ WANT = [
     ('by1bootir.py', '', '两条路的 IR 对拍（.by1 vs 产物）'),
     ('by1ext.py', '', '逃生舱第二层：外部符号的加载与 ABI'),
     ('by1extdemo.py', '', '逃生舱第二层的判卷人'),
+    ('by1opdiff.py', '', '逐算子比 NumPy 和 PyTorch'),
+    ('gpt2-tiny.by1', '', '上一代的缩小版（无门控 FFN + LayerNorm + 查表位置）'),
     ('ext-demo.c', '', '示例外部机制：两个符号，证「不用改编译器」'),
     ('ir-spec.md', '', 'IR 规格（从 by1ir.py 生成）'),
     ('raw.py', '', '逃生舱的示例实现（配 raw-escape.by1）'),
