@@ -70,7 +70,11 @@ REAL = [
 
 # 六个合成模型：三后端
 SHAPED = ['llama-shaped.by1', 'mixtral-shaped.by1', 'gpt-oss-shaped.by1',
-          'qwen3-next-shaped.by1', 'mla-shaped.by1', 'llama3-shaped.by1']
+          'qwen3-next-shaped.by1', 'mla-shaped.by1', 'llama3-shaped.by1',
+          # **由 clef.by1 机械缩小维度得来，结构一个字没改。**
+          # 它证明"对着真 checkpoint 验过的那份描述"**同时是能跑的** ——
+          # 不是两套东西。
+          'clef-tiny.by1']
 
 # 三个判卷人脚本
 JUDGES = ['by1mla.py', 'by1moe.py', 'by1rope.py',
@@ -163,7 +167,7 @@ def main():
     for f in SHAPED:
         # mla-shaped 的参考在 by1mla.py 里；llama3-shaped 是合成的，没有
         # transformers 对应物（它的验证靠 by1rope.py + 两个跨后端对拍）。
-        if f in ('mla-shaped.by1', 'llama3-shaped.by1'):
+        if f in ('mla-shaped.by1', 'llama3-shaped.by1', 'clef-tiny.by1'):
             continue
         ok, out = run(['by1diff.py', f], 'diff ' + f)
         line = [l.strip() for l in out.splitlines() if '最大绝对差' in l]

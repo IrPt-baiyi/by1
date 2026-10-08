@@ -1216,3 +1216,67 @@ self_attn.{q_a,q_b,kv_a,o}_proj.weight_scale_inv                            ×12
 
 **不把它加进 by1all** —— 那样 `by1all` 会红，而红的理由应该是"坏了"，
 不是"还没做完"。
+
+---
+
+## 38. 这玩意现在能干什么
+
+不是问"设计上能干什么"，是**今天敲命令就能干什么**。
+
+### ① 把一份已发布的 checkpoint 描述出来，并**证明**描述是对的
+
+```bash
+python by1verify.py clef.by1 refs/Cloudflare__clef.config.json --config \
+                    --tensors refs/clef.tensors.json --backend torch.module
+```
+
+13 个真实模型，config 逐字段 + 张量逐名字逐形状。判卷人是**官方产物**。
+
+**它抓到过真东西**：
+- 剪枝版那 25 个"缺失"其实是**镜像的坏分片**（同一批张量在官方仓库里全在）
+- gemma 的"530/530"其实是 **833 个里的 530 个** —— 36% 从来没被提过
+
+### ② 同一份描述**同时是能跑的**（这一条以前没被摆出来过）
+
+```bash
+python by1exec.py clef-tiny.by1 --compare      # NumPy vs PyTorch
+python by1c.py    clef-tiny.by1 --gcc <gcc>    # 生成 C、编译、跑
+```
+
+```
+clef-tiny   8 层 · d_model 256 · 0 错误
+NumPy-Torch 6.135e-07   PASS
+C-NumPy     4.244e-07   PASS
+非数字行的差异 —— 只有注释和 model 名字
+```
+
+**`clef-tiny.by1` 是 `clef.by1` 机械缩小维度得来的，结构一个字没改。**
+所以这不是两个例子 —— **是同一份描述**：既能对着 Cloudflare 的真 checkpoint 验，
+又能三个独立实现各跑一遍、结果一致。
+
+### ③ 比架构（这个别人没有）
+
+```
+clef      vs  qwen38          差一层 MTP
+剪枝版    vs  官方 Step-3.7   差四行
+nemotron  attention 间隔      7, 7, 7, 7, **9**
+```
+
+config.json 是**平的 JSON** —— 做不了这件事。差一层 MTP 在 JSON 里
+是"15 个键的增删"，在 `.by1` 里是 `aux = true` 一行。
+
+---
+
+### 差一步的
+
+- **改一行换架构**：把 clef 的 3+1 改成 1+1、把 qwen36 的专家数改掉，
+  重新生成再跑 —— 机制都在，**但没做过**。这是 ablation / 架构搜索的路。
+- **llama.cpp**：`by1emit.py` 能出图，**但一行 ggml 都没生成过、没跑过**。
+
+### 不能做的（诚实）
+
+- **快**：C 后端是手写循环，不是 ggml 原语。它是**正确性参照**，不是运行时。
+- **覆盖全**：Mamba / KDA / 稀疏索引器 / mHC 只有契约，**算不了**；
+  GPT-2 的 LayerNorm / 学习式位置 / GELU 也算不了。
+  **"能描述" ≠ "能算"** —— 这个区分是 GPT-2 逼出来的。
+- **给别人用**：四万个对上的张量名，**没有一行是"有人用它做成了什么"**。
