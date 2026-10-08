@@ -38,10 +38,29 @@ EPS = 1e-5
 
 
 def load_reference():
-    """把官方 modeling_instella.py 当作判卷人拉起来。"""
+    """把官方 modeling_instella.py 当作判卷人拉起来。
+
+    判卷人是**模型的官方代码**，不在 by1 的包里（`llamacpp/` 是 .gitignore 的，
+    它是可重新下载的参照源码）。所以这里**缺了就自己下** ——
+    否则在云端一跑就挂，白花租金。
+    """
     path = os.path.join(HERE, 'llamacpp', 'modeling_instella.py')
     if not os.path.exists(path):
-        return None, 'llamacpp/modeling_instella.py 不在（gpu/README 说了怎么拿）'
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        url = ('https://hf-mirror.com/amd/Instella-3B/raw/main/'
+               'modeling_instella.py')
+        print('  本地没有判卷人，去下: %s' % url)
+        try:
+            import urllib.request
+            # hf-mirror 会拒没有 User-Agent 的请求（403）
+            req = urllib.request.Request(
+                url, headers={'User-Agent': 'Mozilla/5.0 (by1)'})
+            with urllib.request.urlopen(req, timeout=60) as r, \
+                    open(path, 'wb') as f:
+                f.write(r.read())
+            print('  下好了（%d KB）' % (os.path.getsize(path) // 1024))
+        except Exception as e:
+            return None, '下载失败 %s: %s' % (type(e).__name__, str(e)[:160])
     try:
         spec = importlib.util.spec_from_file_location('mi', path)
         m = importlib.util.module_from_spec(spec)
