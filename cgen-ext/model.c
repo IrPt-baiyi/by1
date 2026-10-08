@@ -23,6 +23,36 @@ static void rmsnorm(float *o, const float *x, const float *w, int n, int d,
     }
 }
 
+/* **LayerNorm 和 RMSNorm 不是一个东西。**
+ *
+ * 这里原来只有 rmsnorm —— 而 C 后端对每个 Norm 都发 rmsnorm()，
+ * 也就是**把 LayerNorm 当 RMSNorm 算**（少了减均值和 bias）。
+ * 那会生成一个看起来对但算错的模型，所以上一轮先让它**拒绝**。
+ * 现在补上。
+ *
+ * 三个东西顶着相近的名字，算的不是一回事：
+ *     rmsnorm    只除均方根
+ *     layernorm  减均值、除标准差、还有一个 bias
+ *     one_plus   权重是乘 w 还是乘 (1+w) —— 这是第三个约定
+ */
+static void layernorm(float *o, const float *x, const float *w,
+                      const float *b, int n, int d, int op, float eps) {
+    for (int i = 0; i < n; i++) {
+        const float *r = x + (size_t)i * d;
+        float mu = 0.f;
+        for (int j = 0; j < d; j++) mu += r[j];
+        mu /= d;
+        float var = 0.f;
+        for (int j = 0; j < d; j++) { float u = r[j] - mu; var += u * u; }
+        var /= d;
+        float s = 1.0f / sqrtf(var + eps);
+        float *q = o + (size_t)i * d;
+        for (int j = 0; j < d; j++)
+            q[j] = (r[j] - mu) * s * (op ? (1.f + w[j]) : w[j])
+                   + (b ? b[j] : 0.f);
+    }
+}
+
 static void linear(float *o, const float *x, const float *w, int n, int di, int dout) {
     for (int i = 0; i < n; i++) {
         const float *r = x + (size_t)i * di;
@@ -615,6 +645,8 @@ extern void weird_fwd(const float *x, float *y, int B, int T, int D, const float
 #define Q_DIM 1
 #define KV_DIM 1
 #define NORM_ONE_PLUS 0
+#define NORM_KIND_LAYER 0
+#define POS_LEARNED 0
 #define RMS_EPS 1e-05f
 #define HID_MAX 1
 #define OB_MAX 1
@@ -673,13 +705,32 @@ int main(int argc, char **argv) {
 
     for (int i = 0; i < n; i++)
         memcpy(x + (size_t)i * D, P(EMBED) + (size_t)ids[i] * D, sizeof(float) * D);
+    /* **学习式位置表：整张加在嵌入上。**
+       以前这一段不存在 —— 于是 GPT-2 的位置信息整个丢了，
+       而输出形状完全正常。 */
+    /* **用 `#if` 不用 `if`。**
+       写成运行时的 `if (POS_LEARNED)` 时，那个分支**照样要编译** ——
+       而 `P(POS)` 展开成 `OFF_POS`，在不需要位置表的模型里
+       这个宏根本不存在，于是编译失败。
+       **一个"运行时判断"会让死分支活到编译期。** */
+#if POS_LEARNED
+    for (int i = 0; i < n; i++)
+        for (int j = 0; j < D; j++)
+            x[(size_t)i * D + j] += P(POS)[(size_t)i * D + j];
+#endif
 
     for (int L = 0; L < N_LAYER; L++) {
         /* 每个 op 一个作用域：OFF_/LEN_ 宏按层号拼出来 */
         LAYER_BODY(L)
     }
 
+    /* **最终归一化也要按 kind 分派。** */
+#if NORM_KIND_LAYER
+    layernorm(xn, x, P(FINAL_NORM), P(FINAL_NORM_B), n, D,
+              NORM_ONE_PLUS, RMS_EPS);
+#else
     rmsnorm(xn, x, P(FINAL_NORM), n, D, NORM_ONE_PLUS, RMS_EPS);
+#endif
     float *logits = (float *)calloc((size_t)n * V, sizeof(float));
     for (int i = 0; i < n; i++) {
         const float *r = xn + (size_t)i * D;
