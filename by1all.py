@@ -50,6 +50,13 @@ REAL = [
     # 以及**栈内序号**（传全局层号会拼出 mtp.layers.64. 这种名字）。
     ('qwen38.by1', 'refs/Qwen__Qwen3.8-27B.config.json',
      'refs/qwen38.tensors.json', 'torch.module', []),
+    # 同一个 Qwen3.5 形状换成 MoE。**零个新属性** —— MoE、共享专家、
+    # 共享专家门控、MTP、线性注意力、3+1 混合，全是现成的。
+    ('qwen36.by1', 'refs/Qwen__Qwen3.6-35B-A3B.config.json',
+     'refs/qwen36.tensors.json', 'torch.module', []),
+    # 官方 Step-3.7（未剪枝）—— 和剪枝版的差别就是被删掉的那几行。
+    ('step37-official.by1', 'refs/stepfun-ai__Step-3.7-Flash.config.json',
+     'refs/step37-official.tensors.json', 'torch.module', []),
 ]
 
 # 六个合成模型：三后端

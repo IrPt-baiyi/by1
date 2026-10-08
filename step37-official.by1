@@ -1,0 +1,230 @@
+# ── step37-official.by1  （由 step-3.7-flash.by1 派生）
+#
+# 和剪枝版的差别**只有被删掉的那三行**：
+#   ① main[3..44] : MoE.experts = [...]    逐层专家数
+#   ② moe_num_experts_by_layer = ...       它在 config 里的对应物
+#   ③ step37_dynamic_prune_plan = "..."    剪枝计划本身
+#
+# 官方那只用 moe_num_experts = 288，**每一层都一样**。
+# 所以"逐层覆盖"这套机制不是为某个特例加的 ——
+# 它是为一整类**剪枝 / 稀疏化之后的已发布 checkpoint** 加的，
+# 而这类东西会越来越多。
+#
+# 事实来源：refs/stepfun-ai__Step-3.7-Flash.config.json 的 text_config
+#           refs/step37-official.tensors.json
+# ── step-3.7-flash.by1 ────────────────────────────────────────────────
+# StepFun Step-3.7-Flash 的社区微调版（180B，LynnStyle / GLM52-SFT / GPT55-RL）。
+#
+# 这个案例和前几个不同：**llama.cpp 可能已经有它了**（src/models/step35.cpp，551 行，
+# 支持 MoE 专家、路由器偏置、MTP 的 NextN 张量）。所以它压的不是"有没有"，
+# 而是"够不够"。
+#
+# 事实来源：
+#   refs/nerkyor_Step-3.7-...config.json   官方 config
+#   refs/step37.index.json                 753 个权重的名字
+#   以及 5 个分片的头（形状）
+#
+# ⚠️ 这份文件里标了 ⚠️ 的地方，是**当前语言说不出来的**。
+
+model Step-3.7-Flash-180B-LynnStyle {
+  arch    step3p5
+  ctx     262144
+
+  hparams {
+    d_model = 4096
+    n_layer = 45
+    vocab   = 128896
+    rms_eps = 1e-05
+    d_ff_shared = 1280
+  }
+
+  # 全量层 64 个头、滑窗层 96 个头 —— 同一族、不同结构属性。
+  # 实测：层 3（滑窗）q_proj = [12288, 4096] → 96 × 128
+  mech Attn : Attention {
+    heads      = { kv = 8, head_dim = 128 }
+    qk_norm    = true
+    head_gate  = per_head          # 实测：每层都有 self_attn.g_proj.weight
+    structural = [ q, head_dim, qk_norm, head_gate, out_dim ]
+  }
+
+  # 层 0-2 是稠密
+  mech Dense : FFN {
+    hidden     = 11264
+    layer_kind = dense
+  }
+
+  # 层 3-44 是 MoE：288 专家选 8、sigmoid 路由、带路由器偏置、有共享专家
+  mech MoE : MoE {
+    experts       = 288
+    top_k         = 8
+    hidden        = 1280
+    shared        = 1
+    shared_hidden = 1280
+    router_bias   = true
+    routing       = sigmoid_topk
+    routed_scale  = 3.0
+    layer_kind    = sparse
+    structural    = [ experts, hidden, shared_hidden ]
+  }
+
+  schedule {
+    full  = 1 * Attn(q = 64,  window = none, out_dim = 8192)
+    slide = 3 * Attn(q = 96,  window = 512,  out_dim = 12288)
+    block = full + slide
+  }
+
+  stack main {
+    # 45 层 = 11 × 4 + 1（最后那层又是全量）
+    pattern = 11 * block + 1 * full
+    main[0..2]   >> Dense
+    main[3..44]  >> MoE
+
+    # 逐层覆盖：**每一层的专家数都不一样**（实测 249~288）。
+    # 张量形状里也是真的：层 3 的 moe.gate_proj.weight 是 [255,1280,4096]，
+    # 层 4 的是 [266,1280,4096]。值按被选中的层顺序分配。
+
+    # 逐层 swiglu_limit：只有 43/44 层夹 7 —— 官方 config 里
+    # swiglu_limits 的 48 个值中只有这两个非零。
+    # 同一个逐层覆盖语法的**第二个用例**（第一个是专家数）。
+    main[43..44] : MoE.swiglu_limit = [7, 7]
+    # 共享专家的夹取值**独立**：路由专家夹 7、共享专家夹 16。
+    main[43..44] : MoE.swiglu_limit_shared = [16, 16]
+  }
+
+  position {
+    # 实测：rope_theta 是数组 —— 全量层 5e6、滑窗层 1e4
+    #      partial_rotary_factors 也是数组 —— 全量层 0.5、滑窗层 1.0
+    # 参数名跟官方 config 的键一致（high_freq_factor / low_freq_factor），
+    # 这样 config 生成是直通，也不需要第二套名字。
+    full  = llama3(rope(base = 5000000, pairing = half), factor = 2.0,
+                   original_max_position_embeddings = 131072,
+                   high_freq_factor = 32, low_freq_factor = 1,
+                   partial_rotary_factor = 0.5)
+    slide = rope(base = 10000, pairing = half, partial = 1.0)
+  }
+
+  # ── 张量契约 ──────────────────────────────────────────────────────
+  # 实测形状（层 3 = 滑窗 + MoE）：
+  #   q_proj [12288,4096]  k/v_proj [1024,4096]  o_proj [4096,12288]
+  #   g_proj [96,4096]     q_norm/k_norm [128]
+  #   moe.gate [255,4096]  moe.gate_proj [255,1280,4096]
+  #   share_expert.gate_proj [1280,4096]
+  tensors {
+    Attn {
+      q_proj.weight : (q * head_dim, d_model)
+      k_proj.weight : (kv * head_dim, d_model)
+      v_proj.weight : (kv * head_dim, d_model)
+      o_proj.weight : (d_model, q * head_dim)
+      g_proj.weight : (q, d_model)
+      q_norm.weight : (head_dim,)
+      k_norm.weight : (head_dim,)
+    }
+    Dense {
+      gate_proj.weight : (hidden, d_model)
+      up_proj.weight   : (hidden, d_model)
+      down_proj.weight : (d_model, hidden)
+    }
+    MoE {
+      gate.weight       : (experts, d_model)
+      router_bias       : (experts,)
+      gate_proj.weight  : (experts, hidden, d_model)
+      up_proj.weight    : (experts, hidden, d_model)
+      down_proj.weight  : (experts, d_model, hidden)
+    }
+    layer {
+      input_layernorm.weight           : (d_model,)
+      post_attention_layernorm.weight  : (d_model,)
+      # 共享专家在张量里是**层一级**的：model.layers.N.share_expert.*
+      # 不在 moe. 前缀下面。layer 作用域的前缀是空的，正好放得下。
+      share_expert.gate_proj.weight : (d_ff_shared, d_model) unless MoE
+      share_expert.up_proj.weight   : (d_ff_shared, d_model) unless MoE
+      share_expert.down_proj.weight : (d_model, d_ff_shared) unless MoE
+    }
+    global {
+      embed.weight      : (vocab, d_model)
+      final_norm.weight : (d_model,)
+      lm_head.weight    : (vocab, d_model)
+    }
+  }
+
+  # ⚠️ 缺口 2：`swiglu_limits` 是逐层数组（只有 43/44 层是 7，共享专家是 16）。
+  #    同样是逐层覆盖。
+
+  # ⚠️ 缺口 3：`num_nextn_predict_layers = 3` —— MTP 头（NextN）。
+  #    llama.cpp 有对应的张量类型，但 by1 里还没有"额外的预测头"这个概念。
+
+  # ⚠️ 缺口 4：`rope_type = "llama3"` —— Llama-3 式频率缩放（high/low_freq_factor），
+  #    和 YaRN 不是一回事。我这里有 yarn(...) 的包装，没有 llama3(...) 的。
+
+  #    "哪些专家被剪掉了"属于**权重**，不属于架构，但它改变了张量形状。
+
+  emit {
+    # 产物：官方 config，从描述生成，零继承。
+    # 判卷人是官方 config.json —— 现成的。
+    train -> transformers.config {
+      field {
+        model_type                  = "step3p5"
+        att_impl_type               = "GQA"
+        hidden_size                 = d_model
+        num_hidden_layers           = n_layer
+        intermediate_size           = Dense.hidden
+        max_position_embeddings     = ctx
+        max_seq_len                 = ctx
+        bos_token_id                = 0
+        eos_token_id                = [1, 2, 128007]
+        vocab_size                  = vocab
+        # 注意力：两套（全量 64 头 / 滑窗 96 头）
+        num_attention_heads         = Attn.q
+        num_attention_groups        = Attn.kv
+        head_dim                    = Attn.head_dim
+        sliding_window              = sliding_window
+        use_head_wise_attn_gate     = true
+        use_mfa                     = false
+        attention_other_setting     = attention_other_setting
+        torch_dtype                 = "bfloat16"
+        use_moe_router_bias         = true
+        use_rope_layers             = []
+        yarn_only_types             = ["full_attention"]
+        sink                        = false
+        # 位置
+        layer_types                 = pad_cycle(layer_types, 48)
+        rope_scaling                = rope_scaling
+        rope_theta                  = pad_cycle(per_layer_rope(rope_theta), 48)
+        partial_rotary_factors      = pad_cycle(per_layer_rope(partial_rotary_factor), 48)
+        # MoE
+        use_moe                     = true
+        moe_num_experts             = MoE.experts
+        moe_top_k                   = MoE.top_k
+        moe_intermediate_size       = MoE.hidden
+        share_expert_dim            = MoE.shared_hidden
+        moe_router_activation       = "sigmoid"
+        moe_router_scaling_factor   = MoE.routed_scale
+        need_fp32_gate              = true
+        norm_expert_weight          = true
+        moe_every_n_layer           = 1
+        moe_layer_offset            = 0
+        moe_layers_enum             = join(indices_where(attach.layer_kind = sparse), ",")
+        swiglu_limits               = pad(per_layer(attach.swiglu_limit, 0), 48)
+        swiglu_limits_shared        = pad(per_layer(attach.swiglu_limit_shared, 0), 48)
+        num_nextn_predict_layers    = 3
+        # 这个版本是按层剪枝过的 —— 剪枝计划属于**权重**，不属于架构，
+        # 但它改变了张量形状，所以写在这里。
+      }
+    }
+
+    train -> torch.module {
+      name        = "model.layers.{i}.{scope}{physical}"
+      global_name = "{physical}"
+      scope { Attn = self_attn., Dense = mlp., MoE = moe., layer = "", global = "" }
+      rename {
+        gate.weight       = gate.weight,
+        router_bias       = router_bias,
+        gate_proj.weight  = gate_proj.weight,
+        up_proj.weight    = up_proj.weight,
+        down_proj.weight  = down_proj.weight,
+        embed.weight      = model.embed_tokens.weight,
+        final_norm.weight = model.norm.weight
+      }
+    }
+  }
+}
