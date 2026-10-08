@@ -1,0 +1,267 @@
+# ── nemotron-h.by1 ────────────────────────────────────────────────────
+# nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16
+#
+# **这是这批里唯一真正的新机制族：Mamba（选择性状态空间）。**
+# 前面十二个模型全是注意力系（含 GDN/KDA 那种线性注意力），
+# 而 Mamba 不是它们的变体 —— 它的状态是 `A_log`/`D`/`dt_bias` 驱动的，
+# 没有 q/k/v，也没有 delta 规则。
+#
+# 三样新的：
+#   ① Mamba 层本身
+#   ② **显式的逐层序列** —— attention 落在 5,12,19,26,33,42，
+#      间隔 7,7,7,7,**9**，不是纯周期。凑周期表达式是推导，不是描述。
+#   ③ 专家是**两个矩阵**（up/down，没有 gate_proj），激活 relu2
+#
+# 事实来源：
+#   refs/nvidia__NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16.config.json
+#   refs/nemotron.tensors.json（6513 个张量，14 个分片全读）
+
+model nemotron-h {
+  arch  nemotron_h
+  ctx   262144
+
+  hparams {
+    d_model = 2688
+    n_layer = 52
+    vocab   = 131072
+    rms_eps = 1e-05
+  }
+
+  # ── ① Mamba ───────────────────────────────────────────────────────
+  # 实测算得 in_proj [10304, 2688]：
+  #   2*d_inner + 2*n_groups*ssm_state + n_heads
+  #   = 2*4096 + 2*8*128 + 64 = 8192 + 2048 + 64 = 10304 ✓
+  # conv1d [6144, 1, 4] = d_inner + 2*n_groups*ssm_state = 4096 + 2048 ✓
+  # **没有 q/k/v** —— 它不是注意力。
+  mech Mamba : SSM {
+    heads        = 64
+    head_dim     = 64
+    ssm_state    = 128
+    n_groups     = 8
+    conv_kernel  = 4
+    expand       = 2
+    chunk_size   = 128
+    conv_bias    = true
+    proj_bias    = false
+    act          = silu
+    structural   = [ heads, head_dim, ssm_state, n_groups, conv_kernel ]
+  }
+
+  # ── ② 专家：**两个矩阵**，没有门 ──────────────────────────────────
+  # 实测 experts.N.up_proj [1856, 2688]、down_proj [2688, 1856] ——
+  # 没有 gate_proj。激活是 relu2（mlp_hidden_act）。
+  # 所以这里 gate = none，和 GPT-2 的 MLP 是同一类东西。
+  mech MoE : MoE {
+    experts       = 128
+    top_k         = 6
+    hidden        = 1856
+    shared        = 1
+    shared_hidden = 3712
+    n_group       = 8
+    topk_group    = 1
+    score_bias    = true          # 实测 mixer.gate.e_score_correction_bias
+    routing       = sigmoid_group_topk
+    act           = relu2
+    gate          = none          # ← 专家没有门控
+    layer_kind    = sparse
+    structural    = [ experts, hidden, shared_hidden, n_group, topk_group, gate ]
+  }
+
+  mech Attn : Attention {
+    heads      = { q = 32, kv = 2, head_dim = 128 }
+    out_dim    = 4096
+    qk_norm    = off
+    structural = [ head_dim, out_dim ]
+  }
+
+  # MTP 是两层：attention + moe（config 的 mtp_layers_block_type）
+  mech MTPAttn : Attention {
+    heads      = { q = 32, kv = 2, head_dim = 128 }
+    out_dim    = 4096
+    qk_norm    = off
+    structural = [ head_dim, out_dim ]
+  }
+  mech MTPMoe : MoE {
+    experts       = 128
+    top_k         = 6
+    hidden        = 1856
+    shared        = 1
+    shared_hidden = 3712
+    n_group       = 8
+    topk_group    = 1
+    score_bias    = true
+    routing       = sigmoid_group_topk
+    act           = relu2
+    gate          = none
+    structural    = [ experts, hidden, shared_hidden, n_group, topk_group, gate ]
+  }
+
+  # ── ② 显式逐层序列（52 项，照抄 config 的 layers_block_type）──────
+  stack model {
+    pattern = [Mamba, MoE, Mamba, MoE, Mamba, Attn, MoE, Mamba, MoE, Mamba, MoE, Mamba, Attn, MoE, Mamba, MoE, Mamba, MoE, Mamba, Attn, MoE, Mamba, MoE, Mamba, MoE, Mamba, Attn, MoE, Mamba, MoE, Mamba, MoE, Mamba, Attn, MoE, Mamba, MoE, Mamba, MoE, Mamba, MoE, Mamba, Attn, MoE, Mamba, MoE, Mamba, MoE, Mamba, MoE, Mamba, MoE]
+  }
+
+  stack mtp {
+    aux     = true
+    pattern = [MTPAttn, MTPMoe]
+  }
+
+  position {
+    # 只用在那 6 层全量注意力上；Mamba 层不用位置编码
+    default = rope(base = 10000, pairing = half)
+  }
+
+  tensors {
+    # **写死数字，不引用机制属性。** 机制属性里的符号不参与形状求值
+    # （这是第二次撞上，第一次是 clef 的 Lin）。
+    # 自检：2*4096 + 2*8*128 + 64 = 10304 ✓ conv1d 4096 + 2048 = 6144 ✓
+    Mamba {
+      in_proj.weight  : (10304, 2688)
+      conv1d.weight   : (6144, 1, 4)
+      conv1d.bias     : (6144,)
+      A_log           : (64,)
+      D               : (64,)
+      dt_bias         : (64,)
+      norm.weight     : (4096,)
+      out_proj.weight : (2688, 4096)
+    }
+    Attn {
+      q_proj.weight : (q * head_dim, d_model)
+      k_proj.weight : (kv * head_dim, d_model)
+      v_proj.weight : (kv * head_dim, d_model)
+      o_proj.weight : (d_model, q * head_dim)
+    }
+    MTPAttn {
+      q_proj.weight : (q * head_dim, d_model)
+      k_proj.weight : (kv * head_dim, d_model)
+      v_proj.weight : (kv * head_dim, d_model)
+      o_proj.weight : (d_model, q * head_dim)
+    }
+    MoE {
+      # **专家是一个专家一个张量**（实测 2944 + 2944 + MTP 的 256 个）。
+      # 契约写打包形状 + `per_expert` 标记，名字按专家逐个渲染 ——
+      # 这是 ling / laguna 已经用过的写法。
+      gate.weight                  : (experts, d_model)
+      gate.e_score_correction_bias : (experts,)
+      up_proj.weight               : (experts, hidden, d_model) per_expert
+      down_proj.weight             : (experts, d_model, hidden) per_expert
+      shared_experts.up_proj.weight   : (shared_hidden, d_model)
+      shared_experts.down_proj.weight : (d_model, shared_hidden)
+    }
+    MTPMoe {
+      # **专家是一个专家一个张量**（实测 2944 + 2944 + MTP 的 256 个）。
+      # 契约写打包形状 + `per_expert` 标记，名字按专家逐个渲染 ——
+      # 这是 ling / laguna 已经用过的写法。
+      gate.weight                  : (experts, d_model)
+      gate.e_score_correction_bias : (experts,)
+      up_proj.weight               : (experts, hidden, d_model) per_expert
+      down_proj.weight             : (experts, d_model, hidden) per_expert
+      shared_experts.up_proj.weight   : (shared_hidden, d_model)
+      shared_experts.down_proj.weight : (d_model, shared_hidden)
+    }
+    # 每一层都有这个 —— 不属于任何机制
+    layer {
+      norm.weight : (d_model,)
+    }
+    global {
+      embed.weight      : (vocab, d_model)
+      final_norm.weight : (d_model,)
+      lm_head.weight    : (vocab, d_model)
+      # MTP 自己的：eh_proj [2688, 5376] = (d, 2d) —— 把 enorm 过的输入
+      # 和 hnorm 过的 hidden 拼起来再降回去
+      mtp_eh.weight          : (d_model, 2 * d_model)
+      mtp_enorm.weight       : (d_model,)
+      mtp_hnorm.weight       : (d_model,)
+      mtp_final_norm.weight  : (d_model,)
+    }
+  }
+
+  emit {
+    train -> transformers.config {
+      field {
+        model_type                  = "nemotron_h"
+        vocab_size                  = vocab
+        hidden_size                 = d_model
+        num_hidden_layers           = n_layer
+        num_attention_heads         = Attn.q
+        num_key_value_heads         = Attn.kv
+        head_dim                    = Attn.head_dim
+        max_position_embeddings     = ctx
+        norm_eps                    = rms_eps
+        layer_norm_epsilon          = 1e-05
+        intermediate_size           = MoE.hidden
+        moe_intermediate_size       = MoE.hidden
+        mamba_num_heads             = Mamba.heads
+        mamba_head_dim              = Mamba.head_dim
+        ssm_state_size              = Mamba.ssm_state
+        conv_kernel                 = Mamba.conv_kernel
+        expand                      = Mamba.expand
+        chunk_size                  = Mamba.chunk_size
+        n_groups                    = Mamba.n_groups
+        n_routed_experts            = MoE.experts
+        n_shared_experts            = MoE.shared
+        num_experts_per_tok         = MoE.top_k
+        topk_group                  = MoE.topk_group
+        mlp_hidden_act              = "relu2"
+        mamba_hidden_act            = "silu"
+        use_conv_bias               = true
+        mamba_proj_bias             = false
+        time_step_min               = 0.001
+        time_step_max               = 0.1
+        time_step_floor             = 0.0001
+        rescale_prenorm_residual    = true
+        residual_in_fp32            = false
+        moe_latent_size             = null
+        moe_shared_expert_overlap   = true
+        rope_theta                  = 10000
+        hidden_dropout              = 0.0
+        mamba_ssm_cache_dtype       = "float32"
+        use_mamba_kernels           = true
+        num_logits_to_keep          = 1
+        layers_block_type           = layers_block_type
+        mamba_num_heads             = 64
+        moe_latent_size             = null
+        moe_shared_expert_intermediate_size = MoE.shared_hidden
+        n_group                     = 1
+        norm_topk_prob              = true
+        routed_scaling_factor       = 2.5
+        num_nextn_predict_layers    = 1
+        partial_rotary_factor       = 1.0
+        attention_bias              = false
+        attention_dropout           = 0.0
+        mlp_bias                    = false
+        use_bias                    = false
+        sliding_window              = null
+        tie_word_embeddings         = false
+        use_cache                   = true
+        initializer_range           = 0.02
+        bos_token_id                = 1
+        eos_token_id                = 2
+        pad_token_id                = 0
+        dtype                       = "bfloat16"
+        mtp_layers_block_type       = ["attention", "moe"]
+      }
+    }
+
+    train -> torch.module {
+      name_model  = "backbone.layers.{i}.{scope}{physical}"
+      name_mtp    = "mtp.layers.{i}.{scope}{physical}"
+      name        = "backbone.layers.{i}.{scope}{physical}"
+      # 专家在 mixer.experts.{e}. 下面 —— 不是 mixer. 直下
+      expert_name = "backbone.layers.{i}.mixer.experts.{expert}.{physical}"
+      expert_name_mtp = "mtp.layers.{i}.mixer.experts.{expert}.{physical}"
+      global_name = "{physical}"
+      # 注意：**所有的层内张量都在 `mixer.` 下面** —— 连 Mamba 和 MoE 也是。
+      scope { Mamba = mixer., Attn = mixer., MoE = mixer., MTPAttn = mixer., MTPMoe = mixer., layer = "", global = "" }
+      rename {
+        norm.weight       = norm.weight,
+        embed.weight      = backbone.embeddings.weight,
+        final_norm.weight = backbone.norm_f.weight,
+        mtp_eh.weight         = mtp.layers.0.eh_proj.weight,
+        mtp_enorm.weight      = mtp.layers.0.enorm.weight,
+        mtp_hnorm.weight      = mtp.layers.0.hnorm.weight,
+        mtp_final_norm.weight = mtp.layers.1.final_layernorm.weight
+      }
+    }
+  }
+}

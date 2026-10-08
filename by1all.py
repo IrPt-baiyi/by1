@@ -61,6 +61,11 @@ REAL = [
     # 和前面十一个 Llama 家族是**两代人**。nanoGPT 是同一个架构。
     ('gpt2.by1', 'refs/gpt2.config.json',
      'refs/gpt2.tensors.json', 'torch.module', []),
+    # **唯一真正的新机制族：Mamba（选择性状态空间）。**
+    # 顺带逼出两个改动：显式的逐层序列、按栈的专家名字模板。
+    ('nemotron-h.by1',
+     'refs/nvidia__NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16.config.json',
+     'refs/nemotron.tensors.json', 'torch.module', []),
 ]
 
 # 六个合成模型：三后端

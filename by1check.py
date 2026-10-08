@@ -118,7 +118,7 @@ def make_layer_pred(inner: str):
 
 
 def render_name(rule: dict, i: int, stack: str, mech: str, logical: str,
-                expert: int = 0) -> str:
+                expert=None) -> str:
     """按后端 lowering 规则生成物理张量名。张量契约保持纯逻辑。"""
     scope = rule.get("scope", {}).get(mech, "")
     physical = rule.get("rename", {}).get(logical, logical)
@@ -126,7 +126,18 @@ def render_name(rule: dict, i: int, stack: str, mech: str, logical: str,
     # 例：Qwen3.5 的文本主干是 `model.language_model.layers.{i}.…`，
     # 而 MTP 那几层是 `mtp.layers.{i}.…` —— 同一个 checkpoint 里两套前缀。
     # 所以名字模板允许**按栈各写一份**：`name_<栈名>` 优先，`name` 兜底。
-    s = rule.get("name_" + stack) or rule.get("name", "")
+    # **优先级：expert_name > name_<栈名> > name。**
+    # 传了专家序号就说明这一行是"一个专家一个张量"的，
+    # 而专家模板里通常带 `experts.{expert}.` 那一段 ——
+    # 它必须压过按栈的名字模板，否则那一段会被静默吞掉
+    # （表现：名字看起来正常，只是少了中间一层）。
+    if expert is not None and (rule.get("expert_name_" + stack)
+                               or rule.get("expert_name")):
+        # 专家模板**也按栈分开** —— 主干在 backbone.layers.{i}.mixer.experts.{e}.，
+        # MTP 在 mtp.layers.{i}.mixer.experts.{e}.，前缀不同。
+        s = rule.get("expert_name_" + stack) or rule["expert_name"]
+    else:
+        s = rule.get("name_" + stack) or rule.get("name", "")
     for k, v in (("i", i), ("local_i", i), ("global_i", i), ("stack", stack),
                  ("mech", mech), ("logical", logical), ("expert", expert),
                  ("scope", scope), ("physical", physical)):
@@ -544,7 +555,13 @@ class _Pat:
 
     def parse(self) -> List[Rec]:
         out = self.term()
-        while self.peek()[1] == "+":
+        # **逗号也是分隔符**，于是可以写显式的逐层序列：
+        #     pattern = [Mamba, MoE, Mamba, MoE, ...]
+        # 这不是为了好看 —— 有些模型的层序就是**手写的表**
+        # （Nemotron-H 的 layers_block_type，52 项，attention 落在
+        #  5,12,19,26,33,42，间隔 7,7,7,7,**9** —— 不是纯周期）。
+        # 那种情况下凑一个周期表达式是**推导**，不是**描述**。
+        while self.peek()[1] in ("+", ","):
             self.take()
             out = out + self.term()
         return out
@@ -1217,7 +1234,8 @@ def check(path: str) -> Tuple[Report, dict]:
             #   MTP 那层是 mtp.layers.{i}.…），一个模板装不下。
             # render_name 里 name_<栈名> 优先、name 兜底。
             for _k, _v in be.assigns.items():
-                if _k.startswith("name_") and _k != "name_":
+                if (_k.startswith("name_") or _k.startswith("expert_name_")) \
+                        and _k not in ("name_", "expert_name_"):
                     rule[_k] = _v.strip().strip('"')
             for sub in be.children:
                 h = sub.head.strip()
@@ -1604,6 +1622,27 @@ def check(path: str) -> Tuple[Report, dict]:
             return gen_rope_parameters_flat()
         if v == "sliding_window":
             return gen_sliding_window()
+        if v == "layers_block_type":
+            # Nemotron-H 的 `layers_block_type` 用的词和 HF 通用的
+            # `layer_types` **不一样**：它写 mamba / moe / attention，
+            # 而不是 linear_attention / full_attention。
+            # 名字不同、含义一样 —— 所以是另一个生成器，不是改那个。
+            _MAP = {"linear_attention": "mamba", "full_attention": "attention",
+                    "sliding_attention": "attention"}
+            lt = gen_layer_types() or []
+            kinds = [_k for (_s, _m, _a, _k, _t) in layer_seq
+                     if _s in _main_stack_names]
+            out = []
+            for _i, _lt in enumerate(lt):
+                _m = mechs.get(layer_seq[_i][1]) if _i < len(layer_seq) else None
+                _mk = (_m.mtype or "") if _m is not None else ""
+                if _mk == "MoE":
+                    out.append("moe")
+                elif _mk in ("SSM",):
+                    out.append("mamba")
+                else:
+                    out.append(_MAP.get(_lt, _lt))
+            return out
         if v == "rope_theta":
             # 全局的 rope base —— 有些模型的 Attention 机制里没写，
             # 只在 position 里声明了。
