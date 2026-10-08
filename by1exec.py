@@ -622,12 +622,23 @@ class Exec:
             x = env[L["ops"][-1]["outputs"][0]]
         # **最终归一化也要按 norm_kind 分派** —— 以前无条件走 rms，
         # 于是 LayerNorm 模型的最后一步也是错的。
+        # **eps 要从 IR 里读，不能用函数的默认值。**
+        # 这里原来是 `rms_norm(x, w, one_plus=…)` —— **没传 eps**，
+        # 于是用了默认的 1e-5。而 clef-tiny / mla-shaped 的
+        # `norm_eps` 是 **1e-6**，差一个量级，最后差出 2.7e-04。
+        #
+        # 这就是那个"犯过三次"的 bug 的**第五次**：
+        # eps 写死在某个地方，平时看不出来 —— 因为大多数模型的 eps
+        # 恰好就是 1e-5。llama-shaped 和 gpt2-tiny 都是 1e-5，
+        # 所以它们一直是绿的，**只有偏离默认值的模型才露出来**。
+        _eps = float(self.ir.get("norm_eps", 1e-5))
         if self.ir.get("norm_kind") == "layer":
             x = layer_norm(x, self.params_global("final_norm.w"),
                            self.params_global("final_norm.b"),
+                           eps=_eps,
                            one_plus=self.ir.get("norm_one_plus", False))
         else:
-            x = rms_norm(x, self.params_global("final_norm.w"),
+            x = rms_norm(x, self.params_global("final_norm.w"), eps=_eps,
                          one_plus=self.ir.get("norm_one_plus", False))
         return x @ self.params_global("head.weight").T
 

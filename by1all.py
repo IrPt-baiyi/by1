@@ -120,6 +120,13 @@ KNOWN = [
     ('tensors torch.module step-3.7-flash.by1',
      '那 25 个张量在 HF 的 model-00009 分片里，而那个分片的头是全零 —— '
      '镜像的问题，不是 by1 的'),
+    # **"没实现"和"算错了"要分开。**
+    # C 后端**会拒绝**它没有的能力（而不是静默按别的算法算），
+    # 所以这是一条**已知、可数的覆盖缺口**，不是 bug。
+    # 藏起来和没发现过一样糟 —— 所以它照样打印出来。
+    ('C gpt2-tiny.by1',
+     'C 后端还没有 LayerNorm 和学习式位置表。**它会明确拒绝**，'
+     '不会按 RMSNorm 静默算 —— 那才是更坏的结果'),
 ]
 
 
@@ -139,6 +146,8 @@ def main():
     # selftest.by1 是故意装错的反例（9 个错误），它不是"失败"。
     specs = sorted(glob.glob('*.by1'))
     bad = []
+    # 覆盖缺口（"还没实现"，不是"算错了"）—— 走 KNOWN 那条路。
+    gaps = []
     for f in specs:
         if f in ('selftest.by1', 'gate-probe.by1'):
             continue          # 两个故意的反例
@@ -230,6 +239,17 @@ def main():
             ok, out = run(['by1c.py', f, '--gcc', gcc, '--seq', '16'],
                           'C ' + f)
             line = [l.strip() for l in out.splitlines() if '最大绝对差' in l]
+            # **分清「没实现」和「算错了」。**
+            # 前者是覆盖率缺口（已知、可数），后者是 bug。
+            # 混在一起的话，一个是"还没做"、一个是"做错了"，
+            # 却长得一样 —— 而真问题会被覆盖率噪音淹掉。
+            # （by1irentry 里是同一条规矩。）
+            if not ok and '[不支持]' in out:
+                miss = [l.strip() for l in out.splitlines()
+                        if '[不支持]' in l]
+                # 走 KNOWN 那条路（按前缀匹配），不算失败。
+                gaps.append('C %s' % f)
+                continue
             rows.append(('C ' + f, ok,
                          (line[-1] if line else '').replace('   ', ' ')))
             if not ok:
@@ -268,7 +288,7 @@ def main():
         print('%s%-30s %s' % (mark, name, note[:80]))
     print('-' * 78)
     known, real = [], []
-    for f in fails:
+    for f in fails + gaps:
         hit = next((why for pre, why in KNOWN if f.startswith(pre)), None)
         (known if hit else real).append((f, hit))
     if known:

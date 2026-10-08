@@ -735,6 +735,21 @@ def emit_c(ir, info, params):
 def _emit_c_body(ir, params):
     """把 IR 展开成 C。**不支持就报错，绝不悄悄生成错的。**"""
     d = ir["d_model"]
+    # **要么实现，要么拒绝。**
+    # 这两样 C 后端都没有，而它原来会**照常生成**：
+    #   - `norm_kind = layer` -> 每个 Norm 都发 rmsnorm()，
+    #     也就是把 LayerNorm 当 RMSNorm 算（少了减均值和 bias）
+    #   - `pos_kind = learned` -> 位置表整张不加
+    # 两个都会生成一个**看起来对但算错**的模型。
+    if str(ir.get("norm_kind", "rms")).lower() == "layer":
+        raise SystemExit(
+            "  [不支持] C 后端还没有 LayerNorm（norm_kind = layer）。\n"
+            "  **不能按 RMSNorm 算** —— 那会生成一个看起来对但算错的模型：\n"
+            "  LayerNorm 还要减均值、还有一个 bias。")
+    if str(ir.get("pos_kind", "rope")).lower() == "learned":
+        raise SystemExit(
+            "  [不支持] C 后端还没有学习式位置表（pos_kind = learned）。\n"
+            "  **不能不算** —— 那等于整张位置表不存在，而输出形状完全正常。")
     lines, need = [], {}
     att = next((o["attrs"] for L in ir["layers"] for o in L["ops"]
                 if o["kind"] == "Attention"), None)
@@ -862,7 +877,13 @@ def _emit_c_body(ir, params):
     lines.append("#define Q_DIM %d" % (att["q"] * att["head_dim"]))
     lines.append("#define KV_DIM %d" % (att["kv"] * att["head_dim"]))
     lines.append("#define NORM_ONE_PLUS %d" % (1 if ir.get("norm_one_plus") else 0))
-    lines.append("#define RMS_EPS %sf" % float(ir.get("rms_eps", 1e-5)))
+    # **IR 里这个字段叫 `norm_eps`，不叫 `rms_eps`。**
+    # 原来写的是 `ir.get("rms_eps", 1e-5)` —— 那个名字**在 IR 里
+    # 根本不存在**，于是永远回退到 1e-5。
+    # 而 clef-tiny / mla-shaped 的 `norm_eps` 是 1e-6。
+    # 一个 `.get(不存在的键, 默认值)` 就是这类的经典长相：
+    # 它不报错、不警告，只是**永远走默认那条路**。
+    lines.append("#define RMS_EPS %sf" % float(ir.get("norm_eps", 1e-5)))
     _hids = [o["attrs"]["hidden"] for L in ir["layers"] for o in L["ops"]
              if o["kind"] in ("FFN", "MoE")]
     lines.append("#define HID_MAX %d" % (max(_hids) if _hids else 1))
@@ -1120,8 +1141,12 @@ def main(argv=None):
     got = got.reshape(args.seq, ir["vocab"])
 
     ex = ex_mod.Exec(ir, params)
+    # **第四份硬编码的全局参数名单。** by1exec 里改了两处，
+    # 这里漏了 —— 于是 gpt2-tiny 报 `KeyError: 'pos.weight'`，
+    # 而那个报错长得像"这个张量没声明"。
     ex.P["_g"] = {k: params[k] for k in
-                  ("embed.weight", "final_norm.w", "head.weight")}
+                  ("embed.weight", "pos.weight", "final_norm.w",
+                   "final_norm.b", "head.weight") if k in params}
     want = ex(ids[None, :])[0]
     dd = np.abs(got - want).max()
     amp = max(np.abs(want).max(), 1e-9)
