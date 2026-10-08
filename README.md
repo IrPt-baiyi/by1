@@ -1,0 +1,193 @@
+# by1
+
+**一门描述大模型架构的语言 —— 而它的接口不是这门语言，是一份 IR 规格。**
+
+```
+by1 0.9.0 · by1-ir 1.0
+```
+
+---
+
+## 三十秒
+
+今天给 llama.cpp 添加一个新架构，要在五个地方改代码、写上千行 C++ 建图函数、
+在两处重复写张量命名。但主流模型翻来覆去用的是同一批机制 ——
+GQA、MLA、滑动窗口、Mamba、Gated DeltaNet、MoE ——
+**真正新的东西只是这些机制怎么组合、按什么比例排列、各自需要什么状态。**
+
+Qwen3-Next 的 48 层本质上是一句话：
+
+```
+48 层 = 12 × (3 层 GatedDeltaNet + 1 层 GatedAttention)
+```
+
+by1 让它变成一句话，而且**这句话能被验证**。
+
+---
+
+## 现在能做什么
+
+### ① 把一份已发布的 checkpoint 描述出来，并**证明**描述是对的
+
+```bash
+python by1verify.py clef.by1 refs/Cloudflare__clef.config.json --config \
+                    --tensors refs/clef.tensors.json --backend torch.module
+```
+
+**14 个真实模型**，config 逐字段 + 张量逐名字逐形状，判卷人是官方产物。
+其中 **9 个还对着外部参考比过前向数值**（最好 0.000e+00，最差 1.058e-06）。
+
+### ② 从产物**反推**一份草稿，不用先懂这门语言
+
+```bash
+python by1boot.py <config.json> <tensors.json> --run
+```
+
+```
+推得出   pos_kind · norm_kind · norm_eps · 每层的机制种类 · out_dim · hidden
+推不出   qk_norm · q_gate · sink · head_gate · routing · ...
+         -> 按规格填默认值，**并且报出来**
+```
+
+> **它不是"帮你写"，是把"你必须懂 73 个属性"换成"你改到验过为止"：
+> 草稿对不对不需要你判断 —— 判卷人判断。**
+
+### ③ 端到端：真产物 → IR → 三个后端 → 对官方实现
+
+```bash
+python by1e2e.py
+```
+
+```
+by1boot 的猜测版    1.678e-02  [不一致]
+改对 gate + act     1.160e-07  [一致]
+NumPy（只拿 IR）    1.308e-07  [一致]
+C                   编译成功
+```
+
+### ④ 一条命令看整个项目还活着没有
+
+```bash
+python by1all.py
+```
+
+```
+61 项，0 项失败，另有 1 项已知缺口
+[全过]
+```
+
+---
+
+## 想参与的人**不需要学 by1**
+
+**IR 才是接口。** `.by1` 只是前端之一。
+
+```bash
+python by1ir.py --spec          # 生成规格（字段、必填、语义、闭集）
+python by1ir.py --emit x.by1    # 出一份规范化 JSON
+python by1ir.py --check x.json  # 校验
+```
+
+**写第四个后端**：读规格 → 读懂 JSON → 实现。
+三个现有后端都能**只拿 IR 跑**，这条路由判卷人守着：
+
+```bash
+python by1irentry.py    # 三个后端从 IR 入口跑 + JSON 往返
+python by1opdiff.py     # 逐算子比 NumPy 和 PyTorch
+```
+
+---
+
+## 一句话说清楚它现在**不行**在哪
+
+**描述得了 14 个模型，算得了 6 种机制。**
+
+| | |
+|---|---|
+| **没有外部用户** | 工具是硬的，但**没有任何证据表明别人想要它** |
+| **真正的目标后端（llama.cpp）没接** | 图结构和 `qwen3next.cpp` 逐行核对过，张量名双向 612=612，但**没有生成过一行 ggml 代码** |
+| **覆盖率追不上描述** | KDA / SSM / 稀疏索引器 / mHC **只有契约，算不了** |
+| **C 后端还不全** | 没有 Linear（KDA/GDN）、没有 MLA、没有 `kv_tie`/`head_gate`。**它会明确拒绝**，不会静默按别的算法算 |
+
+---
+
+## 装
+
+```bash
+pip install -e .           # 开发装
+by1 --version
+```
+
+不需要 GPU。CPU 上跑得动 8 个缩小模型和 `tiny-gpt2`。
+
+**核心不需要 torch**：读规格、写第四个后端、跑检查器和 C 后端 ——
+只用标准库。`pip install -e '.[verify]'` 才拉对拍那一套。
+
+> **一个环境上的坑，不是本项目的。**
+> 这台机器上 `pip install -e .` 会失败，报 `No module named 'kernels.lockfile'`。
+> 原因是环境里那个 `kernels 0.17.0` 注册了一个坏掉的 entry point：
+>
+> ```
+> egg_info.writers  kernels.lock -> kernels.lockfile:write_egg_lockfile
+>                                    ^^^^^^^^^^^^^^^^ 这个模块不存在
+> ```
+>
+> `setuptools` 的 `egg_info` 会加载**所有** `egg_info.writers`，
+> 所以**一个空包在这台机器上也装不上** —— 验过。
+> `pyproject.toml` 本身是对的，只是在这台机器上没法证。
+>
+> 能用的分发方式是打包：`python by1pack.py`（不需要 pip）。
+
+---
+
+## 目录里有什么
+
+```
+规格         ir-spec.md      **从 by1ir.py 生成的**，不是手写的
+            by1ir.py        schema + 校验 + JSON 往返
+入口         by1boot.py      产物 -> IR（不用 .by1）
+            by1check.py     .by1 -> 检查 + IR
+后端         by1codegen.py   PyTorch      by1exec.py  NumPy      by1c.py  C
+判卷人       by1all.py       一次跑完全部
+            by1verify.py    对着官方产物验
+            by1e2e.py · by1irentry.py · by1opdiff.py · by1bootir.py
+            by1gate.py      取值门的可证伪对照
+            by1raw.py · by1extdemo.py   逃生舱的两层
+描述         *.by1           26 份，其中 14 份对真实 checkpoint 验过
+```
+
+---
+
+## 逃生舱：两层
+
+语言表达不了的机制，可以下探去写 —— **但约束不松**。
+
+```
+第一层  Raw       写在 raw.py 里          **要改编译器**
+第二层  External  IR 引用外部符号         **不用改编译器** —— 只要一个 .so
+                  (.so + 固定 ABI)        和一份 IR
+```
+
+第二层是接着 llama.cpp 最近的一步：**一个 ggml 后端就是一个 `.so`** ——
+它不需要编译器先认识 Mamba，**可以一个一个机制地长出来**。
+
+---
+
+## 最贵的一课
+
+> **能描述 ≠ 能算。**
+
+`gpt2.by1` 曾经和 `llama-shaped.by1` 编译出**一模一样的 IR**，
+而三个后端、`by1verify`、`by1all` **全说"过"**。
+因为张量契约查的是参数的名字和形状，**不是算了什么**。
+
+**所以现在的规矩是：要么实现，要么拒绝，没有第三条路。**
+
+这条规矩自己也有判卷人（`by1gate.py` —— 三个必须被拒的反例、
+三个必须通过的正例）。**一条只会通过的规则不是规则。**
+
+---
+
+深处的账在 [`ir.md`](ir.md)（1600+ 行）· 主张与现实的对照在 [`1.md`](1.md)。
+
+**语言名称暂定 by1。**

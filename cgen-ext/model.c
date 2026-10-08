@@ -637,6 +637,7 @@ static void attention(float *o, float *q, const float *k, const float *v,
     free(vb);
 }
 
+/* by1 0.9.0 / by1-ir 1.0 */
 extern void weird_fwd(const float *x, float *y, int B, int T, int D, const float *const *w, int nw);
 extern void weird_fwd(const float *x, float *y, int B, int T, int D, const float *const *w, int nw);
 #define D_MODEL 16

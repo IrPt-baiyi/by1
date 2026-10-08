@@ -637,6 +637,7 @@ static void attention(float *o, float *q, const float *k, const float *v,
     free(vb);
 }
 
+/* by1 0.9.0 / by1-ir 1.0 */
 #define D_MODEL 2
 #define VOCAB 50257
 #define N_LAYER 2

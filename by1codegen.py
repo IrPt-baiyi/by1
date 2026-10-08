@@ -25,6 +25,23 @@ import re
 import sys
 from typing import Any, Dict, List, Optional
 
+# **版本号从 by1ver 来。** 原来这里写死 "1.0"，而 by1boot / by1extdemo
+# 也各写了一遍 —— 三份同一个字符串，谁也不认识谁。
+# 改一份忘一份不会崩，只会造出「声称不同版本」的 IR。
+try:
+    from by1ver import IR_VERSION as _IR_VER
+except ImportError:                     # 单独拷一个文件出去时兜底
+    _IR_VER = "1.0"
+
+
+def _stamp():
+    """生成物的版本章。**每一份生成的东西都该能追回是哪版生成的。**"""
+    try:
+        from by1ver import stamp as _s
+        return _s()
+    except ImportError:
+        return "by1"
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -662,7 +679,7 @@ def compile_ir(info: Dict[str, Any]) -> Dict[str, Any]:
     return {
         # **版本号。** 没有它的 IR 不该被接受 —— 读的一方无从判断
         # 自己理解的是哪一版。见 by1ir.py。
-        "by1-ir": "1.0",
+        "by1-ir": _IR_VER,
         "vocab": vocab, "ctx": ctx, "d_model": d_model,
         "norm_one_plus": norm_1p,
         # 最终归一化在 ops_of 之外建，所以这两个要放到 IR 顶层
@@ -1440,6 +1457,7 @@ def render_ir(ir: Dict[str, Any], by1_name: str = "model.ir.json") -> str:
     if _errs:
         raise CodegenError("IR 不合法：\n  " + "\n  ".join(_errs[:10]))
     return (
+        f"# {_stamp()}\n"
         f"# 由 by1 从 {by1_name} 生成 —— 改 IR 再重新生成，不要手改这个文件\n"
         f"# 后端无关的 IR；下面的 RUNTIME 只是它的一个后端（PyTorch）\n\n"
         f"IR = {pprint.pformat(ir, indent=2, width=86, sort_dicts=False)}\n"
@@ -1450,6 +1468,7 @@ def render_ir(ir: Dict[str, Any], by1_name: str = "model.ir.json") -> str:
 def render(info: Dict[str, Any], by1_name: str = "model.by1") -> str:
     ir = compile_ir(info)
     return (
+        f"# {_stamp()}\n"
         f"# 由 by1 从 {by1_name} 生成 —— 改 .by1 再重新生成，不要手改这个文件\n"
         f"# 后端无关的 IR；下面的 RUNTIME 只是它的一个后端（PyTorch）\n\n"
         f"IR = {pprint.pformat(ir, indent=2, width=86, sort_dicts=False)}\n"

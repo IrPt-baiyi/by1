@@ -24,6 +24,15 @@ import sys
 
 import numpy as np
 
+# **版本号从 by1ver 来。** 原来这里写死 "1.0"，而另外两个文件也各写了一遍
+# —— 三份同一个字符串，谁也不认识谁。改一份忘一份不会崩，
+# 只会造出「声称不同版本」的 IR。
+try:
+    from by1ver import IR_VERSION as _IR_VER
+except ImportError:                     # 单独拷一个文件出去时兜底
+    _IR_VER = "1.0"
+
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 SO = os.path.join(HERE, "ext-demo.so")
 SRC = os.path.join(HERE, "ext-demo.c")
@@ -53,7 +62,7 @@ def make_ir(lib=None, symbol="weird_fwd", weights=None, d=D, nlayer=2):
          "inputs": ["hidden", "op1.out"], "outputs": ["op2.out"]},
     ]
     return {
-        "by1-ir": "1.0",
+        "by1-ir": _IR_VER,
         "vocab": 64, "ctx": 32, "d_model": d,
         "pos_kind": "rope", "norm_kind": "rms", "norm_eps": 1e-5,
         "norm_one_plus": False,

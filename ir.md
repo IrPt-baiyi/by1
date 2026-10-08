@@ -2175,3 +2175,71 @@ NumPy 侧的参数名是 `wq`，而映射表里是 `wq.weight` ✗
 **三次都是"两个后端给同一个东西起了不同的名字"** ✓
 
 现在配不上会**打印出来**，而且会报"零填充了几个" ✓
+
+---
+
+## 54. 版本 + 分发 + README
+
+三样都没有 ✗ 而它们是同一件事的三个面：**让别人能拿到、能装、能看懂。**
+
+### 版本：两个，不是一个
+
+在这之前 `"by1-ir": "1.0"` **硬编码在三个地方** ✗
+（`by1codegen` / `by1boot` / `by1extdemo`）—— 三份同一个字符串，
+谁也不认识谁 ✓ 改一份忘一份不会崩，**只会造出「声称不同版本」的 IR** ✓
+
+```
+IR_VERSION    接口的版本。字段增删、语义改变才动。
+TOOL_VERSION  实现的版本。每次发布动；IR 变了必须跟着动。
+```
+
+**分开是因为它们回答不同的问题**：
+
+```
+用的人问   "这份 IR 我读得了吗"    -> IR_VERSION
+报 bug 问  "你用的是哪一版工具"    -> TOOL_VERSION
+```
+
+**「加一个 `.by1` 语法」不动 `IR_VERSION`** —— 因为 `.by1` 是前端之一，
+不是接口本身 ✓ **这正是把 IR 规格化的意义** ✓
+
+还有：**生成的每一份东西都盖章** ✓ `# by1 0.9.0 / by1-ir 1.0` ✓
+`by1all` 先报版本 —— 一份失败的输出要能追回是哪一版跑的 ✓
+
+### 分发
+
+`pyproject.toml` + `VERSION` ✓ 核心**不需要 torch** ✓
+`.[verify]` 才拉对拍那一套 ✓
+
+**版本从文件读，不从模块读** —— `attr = "by1ver.TOOL_VERSION"` 会让
+setuptools 去导入，而它一旦开始导入就会摸到别的模块，其中几个在模块级
+`import transformers` ✓ **打包不该需要跑得动 torch** ✓
+
+### 自己犯的，第四次同一类
+
+改 `_stamp` 那一次：我把 `try/except` 只放进了一个函数，
+**而两个函数都用了它** ✗ 于是 `by1diff` / `by1exec` / `by1instella` /
+`by1gpt2` / `by1raw` 一起崩，**15 项失败** ✓
+
+> 和第 52 节那两个是同一类：
+> **我以为我表达了某个意思，而实际生效的是别的东西。**
+
+**一个补丁的两半分落在不同作用域里 —— 而没有任何东西会告诉你。**
+
+### 环境上的一个坑，不是本项目的（已查实）
+
+```
+pip install -e .  ->  No module named 'kernels.lockfile'
+```
+
+原因是环境里那个 `kernels 0.17.0` 注册了一个坏掉的 entry point：
+
+```
+egg_info.writers  kernels.lock -> kernels.lockfile:write_egg_lockfile
+```
+
+而 `setuptools` 的 `egg_info` 会加载**所有** `egg_info.writers` ✓
+**一个空包在这台机器上也装不上** —— 验过 ✓
+
+`pyproject.toml` 本身是对的，只是**在这台机器上没法证** ✓
+能用的分发方式是 `python by1pack.py`（不需要 pip）✓

@@ -32,7 +32,14 @@
 """
 import json
 
-VERSION = "1.0"
+# **从 by1ver 来，不在这里写死。**
+# 这里原来是 `VERSION = "1.0"`，而 by1codegen / by1boot / by1extdemo
+# 各自**又写了一遍** —— 三份写着同一个字符串，谁也不认识谁。
+# 改一份忘一份不会崩，只会造出"声称不同版本"的 IR。
+try:
+    from by1ver import IR_VERSION as VERSION
+except ImportError:                     # 单独拷一个文件出去时兜底
+    VERSION = "1.0"
 
 # ── 顶层字段 ────────────────────────────────────────────────────────
 # (名字, 类型, 必填, 说明)

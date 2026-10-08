@@ -139,6 +139,12 @@ def find_gcc():
 
 
 def main():
+    # **先报版本。** 一份失败的输出要能追回是哪一版跑的。
+    try:
+        from by1ver import version_line as _vl
+        print('\n  ' + _vl())
+    except ImportError:
+        pass
     quick = '--quick' in sys.argv
 
     # ---- 1. 检查器：**逐个跑**才能归属到文件 ----

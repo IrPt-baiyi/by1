@@ -1,0 +1,59 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "by1"
+# **版本从 by1ver.py 读，不在这里写死。**
+# 写死的话就是这个项目里反复出现的那一类：
+# 同一个意思在两个地方，而没有任何东西保证它们一致。
+dynamic = ["version"]
+description = "描述大模型架构的语言 —— 接口是一份规范化 IR 规格"
+readme = "README.md"
+requires-python = ">=3.9"
+license = "MIT"
+keywords = ["llm", "architecture", "ir", "codegen", "ggml"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+# **依赖只在判卷人那边需要。** 核心（IR、检查器、C 后端）
+# 只用标准库 —— 想读规格、写第四个后端的人不用装 torch。
+dependencies = []
+
+[project.optional-dependencies]
+# 对拍用的。判卷人要跟外部实现比，所以这一坨是必需的。
+verify = ["numpy", "torch", "transformers", "safetensors"]
+# 编译 C 后端用的（Windows 上也可以走 mingw）
+c = []
+
+[project.scripts]
+by1 = "by1ver:main"
+"by1-spec" = "by1ir:_cli"
+"by1-all" = "by1all:main"
+"by1-verify" = "by1verify:main"
+"by1-check" = "by1check:main"
+"by1-boot" = "by1boot:main"
+"by1-e2e" = "by1e2e:main"
+
+[tool.setuptools]
+# **全都摊在根目录。** 这不是一个"包" —— 它是一堆能单独跑的小工具
+# 加一份规格。所以用 py-modules 而不是 packages。
+py-modules = [
+    "by1ver", "by1ir",
+    "by1check", "by1codegen", "by1exec", "by1c",
+    "by1boot", "by1contract", "by1emit", "by1mem", "by1diff",
+    "by1verify", "by1all", "by1pack",
+]
+
+[tool.setuptools.dynamic]
+# **从文件读，不从模块读。**
+# `attr = "by1ver.TOOL_VERSION"` 会让 setuptools 去导入 ——
+# 而它一旦开始导入就会摸到别的模块，其中几个在模块级 import
+# transformers（判卷人必需的）。**打包不该需要跑得动 torch。**
+# VERSION 是 `python by1ver.py --write` 生成的，真相源仍是 TOOL_VERSION。
+version = { file = "VERSION" }
+
+[tool.setuptools.package-data]
+"*" = ["*.md", "*.by1", "*.c"]

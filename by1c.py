@@ -922,6 +922,12 @@ def _emit_c_body(ir, params):
         lines.append("extern void %s(const float *x, float *y, int B, int T,"
                      " int D, const float *const *w, int nw);" % a["symbol"])
 
+    try:
+        from by1ver import stamp as _stamp2
+    except ImportError:
+        def _stamp2():
+            return "by1"
+    lines.insert(0, "/* %s */" % _stamp2())
     lines.append("#define D_MODEL %d" % d)
     lines.append("#define VOCAB %d" % ir["vocab"])
     lines.append("#define N_LAYER %d" % len(ir["layers"]))
