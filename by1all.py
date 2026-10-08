@@ -286,8 +286,16 @@ def main():
         fails.append('gcc')
     else:
         for f, (ok, out) in zip(SHAPED, run_many(
-                [(['by1c.py', f, '--gcc', gcc, '--seq', '16'], 'C ' + f)
-                 for f in SHAPED])):
+                [(['by1c.py', f, '--gcc', gcc, '--seq', '16',
+                   # **每个模型一个工作目录。**
+                   # 这一条是并行化带出来的 bug：8 个 by1c 同时跑，
+                   # 共用默认的 `cgen/` —— 互相覆盖 model.c / w.bin /
+                   # ids.bin / model.exe。
+                   # Windows 上恰好没撞上（I/O 慢），Linux 上一撞就全错，
+                   # 而症状是"C 后端算错了 6 个模型"——**看起来像 C 的 bug**。
+                   # 单独跑一个模型永远是对的，这最误导。
+                   '--workdir', 'cgen-' + f.replace('.by1', '')],
+                  'C ' + f) for f in SHAPED])):
 
             line = [l.strip() for l in out.splitlines() if '最大绝对差' in l]
             # **分清「没实现」和「算错了」。**
