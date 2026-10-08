@@ -94,6 +94,39 @@ def _bool(v, default=False):
     return str(v).strip().lower() in ("true", "1", "yes", "on")
 
 
+# ── 取值必须在**实现过的**集合里 ────────────────────────────────────
+# 一个"看起来对"的默认值比一个报错糟得多：它生成的是**另一个模型**，
+# 而所有检查都会放它过去 —— 张量契约查的是权重的名字和形状，不是算了什么。
+#
+#   act       RUNTIME 只实现了两支：silu 和 gptoss，其余全落回 silu
+#   qk_norm   off / per_head / full
+#   routing   softmax_topk / topk_softmax / sigmoid_group_topk
+#   gate_act  softplus / sigmoid
+ENUMS = {
+    "act": {"silu", "gptoss"},
+    # `true` / `on` 是旧写法，等价于 per_head —— RUNTIME 判的是
+    # `not in ("off", "", None)`，所以它确实实现过。不列进来会误伤。
+    "qk_norm": {"off", "per_head", "full", "true", "on", "yes", "1"},
+    "routing": {"softmax_topk", "topk_softmax", "sigmoid_group_topk",
+                "sigmoid_topk"},
+    "gate_act": {"softplus", "sigmoid"},
+    "pairing": {"half", "interleaved"},
+}
+
+
+def _enum_bad(key, v, name, kind):
+    """取值不在实现集合里 -> 返回错误消息；没问题 -> 返回 None。"""
+    allow = ENUMS.get(key)
+    if allow is None or v is None:
+        return None
+    s = str(v).strip().lower()
+    if s and s not in allow:
+        return ("机制 '%s'（%s）的 %s = <%s> —— codegen 只实现了 %s。"
+                "按默认值生成会得到一个**看起来对但算错**的模型，所以拒绝"
+                % (name, kind, key, v, " / ".join(sorted(allow))))
+    return None
+
+
 def _flag(v, default=False):
     """像 `sink = per_head` 这种描述性取值：只要不是明确的否定，就算开着。
     （旧版用 _bool 会把 per_head 判成 False —— 属性开着却被静默关掉。）"""
@@ -207,6 +240,18 @@ def _yarn_params(info):
 def compile_ir(info: Dict[str, Any]) -> Dict[str, Any]:
     errs: List[str] = []
 
+    def _ck(key, value, name, kind):
+        """取值校验：不合法就 err 并返回 False。
+
+        装在每个"取值选分支"的属性前面 —— act / qk_norm / routing /
+        gate_act 都是这种，取值多一个不会报错，只会**悄悄走默认分支**。
+        """
+        _m = _enum_bad(key, value, name, kind)
+        if _m:
+            err(_m)
+            return False
+        return True
+
     def err(msg):
         if msg not in errs:
             errs.append(msg)
@@ -261,6 +306,9 @@ def compile_ir(info: Dict[str, Any]) -> Dict[str, Any]:
                 return None
             win = (attrs.get("window") or "").strip().lower()
             window = None if win in ("", "none", "null", "0") else int(_num(win, 0))
+            if not (_ck("qk_norm", attrs.get("qk_norm"), name, kind)
+                    and _ck("gate_act", attrs.get("gate_act"), name, kind)):
+                return None
             rs = (_rope_spec(info, li) if li is not None else
                   {"base": base, "pairing": pairing, "scale": 1.0,
                    "yarn": _yarn_params(info)})
@@ -340,9 +388,18 @@ def compile_ir(info: Dict[str, Any]) -> Dict[str, Any]:
                 err(f"机制 '{name}' 的 FFN 缺少 hidden（中间层多宽）")
                 return None
             lim = _num(attrs.get("swiglu_limit"))
+            # **`gate` 原来写的是 `str(...).lower() != "false"`** ——
+            # 于是 `gate = none` 变成 `True`（"none" != "false"）。
+            # 项目里早就有正确的 `_flag`，只是这里没用它。
+            _m = _enum_bad("act", attrs.get("act"), name, kind)
+            if _m:
+                err(_m)
+                return None
+            _gv = attrs.get("gate")
             return {"kind": "FFN", "mech": name, "attrs": {
-                "hidden": int(hid), "act": str(attrs.get("act", "silu")),
-                "gate": str(attrs.get("gate", "true")).lower() != "false",
+                "hidden": int(hid),
+                "act": str(attrs.get("act", "silu")).strip().lower(),
+                "gate": _flag(_gv, True) if _gv is not None else True,
                 "limit": lim, "alpha": float(_num(attrs.get("alpha"), 1.702))}}
 
         if kind == "MoE":
@@ -353,6 +410,10 @@ def compile_ir(info: Dict[str, Any]) -> Dict[str, Any]:
                 err(f"机制 '{name}' 的 MoE 缺少 experts / top_k / hidden")
                 return None
             shared = int(_num(attrs.get("shared"), 0) or 0)
+            if not (_ck("routing", attrs.get("routing"), name, kind)
+                    and _ck("act", attrs.get("act"), name, kind)
+                    and _ck("gate_act", attrs.get("gate_act"), name, kind)):
+                return None
             return {"kind": "MoE", "mech": name, "attrs": {
                 "experts": int(ne), "top_k": int(nk), "hidden": int(hid),
                 "shared": shared,
@@ -365,7 +426,7 @@ def compile_ir(info: Dict[str, Any]) -> Dict[str, Any]:
                 # Mixtral 的是「先 softmax 再 top-k 再归一」。这是两个机制。
                 "routing": (str(attrs.get("routing", "softmax_topk")).strip()
                             .lower() or "softmax_topk"),
-                "act": str(attrs.get("act", "silu")),
+                "act": str(attrs.get("act", "silu")).strip().lower(),
                 "limit": _num(attrs.get("swiglu_limit")),
                 # 共享专家的夹取值是**独立**的：Step-3.7 的路由专家夹 7、
                 # 共享专家夹 16。原来共享专家那条路是裸的 F.silu，夹取对它不生效。
@@ -391,6 +452,8 @@ def compile_ir(info: Dict[str, Any]) -> Dict[str, Any]:
             nk, nv, dk, dv = int(nk), int(nv), int(dk), int(dv)
             if nv % nk:
                 err(f"机制 '{name}': v_heads={nv} 不是 k_heads={nk} 的整数倍")
+                return None
+            if not _ck("act", attrs.get("act"), name, kind):
                 return None
             return {"kind": "Linear", "mech": name, "attrs": {
                 "k_heads": nk, "v_heads": nv, "k_dim": dk, "v_dim": dv,
@@ -877,6 +940,17 @@ class MoE(nn.Module):
                     .expand(-1, ng, self.n_exp // ng)
                     .reshape(-1, self.n_exp))
             choice = choice.masked_fill(~mask.bool(), float("-inf"))
+            topi = choice.topk(self.k, dim=-1, sorted=False)[1]
+            tv = sc.gather(1, topi)
+            topv = tv / (tv.sum(-1, keepdim=True) + 1e-20)
+        elif self.routing == "sigmoid_topk":
+            # sigmoid 打分 + 直接 top-k，**不分组**（Step-3.7）。
+            # 和 sigmoid_group_topk 的差别就是少了"先选组"那一步 ——
+            # 名字只差一个词，但选出来的专家不一样。
+            # **这一支原来没有**：`sigmoid_topk` 会落进下面的 else，
+            # 走成 softmax_topk。而 step-3.7 的前向从来没跑过，所以没人发现。
+            sc = logits.sigmoid()
+            choice = sc + self.score_bias if self.score_bias is not None else sc
             topi = choice.topk(self.k, dim=-1, sorted=False)[1]
             tv = sc.gather(1, topi)
             topv = tv / (tv.sum(-1, keepdim=True) + 1e-20)

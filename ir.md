@@ -1386,3 +1386,71 @@ codegen 对 11 个真实模型的反应（实测）
 2. **显式的逐层序列** —— `layers_block_type` 是手写的表，不是周期
 3. **`aux` 栈 / MTP** —— 辅助头在权重里、不在 `num_hidden_layers` 里
 4. **"契约未覆盖的实物张量"** —— gemma 的"530/530"其实是 833 个里的 530 个
+
+---
+
+## 40. 取值门 —— 「能描述」和「能算」之间的那道缝，以前是**静默**的
+
+### 起因
+
+从头审视时看到：`gpt2.by1` 写着 `gate = none`，而它和 `llama-shaped`
+编译出的 IR 算子序列**一模一样**。根因是这一行：
+
+```python
+"gate": str(attrs.get("gate", "true")).lower() != "false",
+```
+
+**`gate = none` → `True`**（`"none" != "false"`）。
+而项目里早就有正确的 `_flag` —— 只是这里没用它。
+**同一个东西两个实现，第四次。**
+
+### 装的门
+
+`ENUMS` + `_enum_bad`：`act` / `qk_norm` / `routing` / `gate_act` / `pairing`
+这几个**取值选分支**的属性，取值必须在实现过的集合里。
+
+**并且给它配了可证伪对照**（`_gate_probe.py`）：
+
+```
+gpt2          act = gelu_new      必须被拒   ✓
+nemotron-h    SSM                 必须被拒   ✓
+ling          KDA                 必须被拒   ✓
+clef-tiny     取值全都实现过        必须接受   ✓
+step-3.7      sigmoid_topk 已实现  必须接受   ✓
+```
+
+**一条只会通过的规则不是规则。**
+
+### 这道门当场抓出两个真问题
+
+**① `gate = none` → `true`**（GPT-2）—— 现在被拒，理由写在错误里。
+
+**② `routing = sigmoid_topk` 一直在走 softmax**（Step-3.7）
+
+它的 config 是 `moe_router_activation = sigmoid`、
+`moe_router_scaling_factor = 3.0`、**没有 `n_group` / `topk_group`**。
+所以 `.by1` 写的 `sigmoid_topk` 是**对的**，是 RUNTIME 里没有这一支，
+落进了 `else` 的 `softmax_topk`。
+
+**而 step-3.7 的前向从来没跑过**（180B，这台机器跑不动），
+所以这个错一直没人发现 —— 它的 config 46/46、张量 728/753 都是对的，
+**因为那些查的是命名和形状，不是算了什么。**
+
+现在补上了这一支（分组那支去掉选组一步）。
+**诚实说：实现了，但没验过** —— 没有现成的判卷人对拍它。
+
+### 结果
+
+```
+接受 18 个 · 拒绝 4 个（KDA ×2 / SSM / act=gelu_new），零误伤
+by1all 46 项 0 失败
+三个前向护栏没动：4.470e-07 / 2.384e-07 / 1.788e-07
+```
+
+顺手修的：`qk_norm = true` 是旧写法（等价 `per_head`，RUNTIME 确实实现过），
+枚举表要认这个别名 —— 否则会误伤四个已验证的模型。
+
+### 这一条现在的位置
+
+以前：描述里写什么都收下，**算不算得出来看运气**。
+现在：**要么实现，要么拒绝，没有第三条路。**

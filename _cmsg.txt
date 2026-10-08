@@ -1,0 +1,55 @@
+给 codegen 装上「取值门」：没实现的取值一律拒绝，不许静默走默认分支
+
+起因
+----
+从头审视时发现：gpt2.by1 写着 gate = none / qk_norm = off / 没有 position，
+而它和 llama-shaped 编译出的 IR 算子序列一模一样 —— gate = none 变成
+gate: true，RMSNorm 顶着 GPT-2 的 LayerNorm。三个后端、by1verify、by1all
+全说「过」。
+
+根因是那一行：
+
+    "gate": str(attrs.get("gate", "true")).lower() != "false"
+
+于是 gate = none 变成 True（"none" != "false"）。而项目里早就有正确的
+_flag —— 只是这里没用它。同一个东西两个实现，第四次。
+
+做了什么
+--------
+1. 模块级加 ENUMS + _enum_bad：act / qk_norm / routing / gate_act / pairing
+   这几个「取值选分支」的属性，取值必须在实现过的集合里。
+2. FFN 的 gate 改用 _flag；act 过校验。
+3. Attention / MoE / Linear 的对应取值也过校验。
+4. 可证伪对照 _gate_probe.py：gpt2 / nemotron-h / ling 必须被拒，
+   clef-tiny / step-3.7 必须接受。一条只会通过的规则不是规则。
+
+这道门当场抓出两个真问题
+------------------------
+(1) gate = none -> true（GPT-2）
+    现在被拒，理由写清楚：按默认值生成会得到一个看起来对但算错的模型。
+
+(2) routing = sigmoid_topk 一直在走 softmax（Step-3.7）
+    Step-3.7 的 config 是 moe_router_activation = sigmoid、
+    moe_router_scaling_factor = 3.0、没有 n_group / topk_group。
+    所以 .by1 写的 sigmoid_topk 是对的，是 RUNTIME 里没有这一支，
+    落进了 else 的 softmax_topk。
+    而 step-3.7 的前向从来没跑过（180B，这台机器跑不动），所以这个错
+    一直没人发现 —— 它的 config 46/46、张量 728/753 都是对的，
+    因为那些查的是命名和形状，不是算了什么。
+    现在加了这一支（分组那支去掉选组一步）。
+    诚实说：实现了，但没验过 —— 没有现成的判卷人对拍它。
+
+结果
+----
+    接受 18 个 · 拒绝 4 个（KDA x2 / SSM / act=gelu_new），零误伤
+    by1all 46 项 0 失败
+    三个前向护栏没动：4.470e-07 / 2.384e-07 / 1.788e-07
+
+顺手修的：qk_norm = true 是旧写法（等价 per_head，RUNTIME 确实实现过），
+枚举表要认这个别名，否则会误伤四个已验证的模型。
+
+这一条现在的位置
+----------------
+「能描述」和「能算」之间的那道缝，以前是静默的 —— 描述里写什么都收下，
+算不算得出来看运气。现在它有一道明确的门：要么实现，要么拒绝，
+没有第三条路。

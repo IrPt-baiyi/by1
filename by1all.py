@@ -202,7 +202,17 @@ def main():
             if not ok:
                 fails.append('C ' + f)
 
-    # ---- 7. 判卷人脚本 ----
+    # ---- 7. 取值门 —— **可证伪对照** ----
+    # 「声明了一个 codegen 没实现的取值，必须被拒」这条规则本身要被验。
+    # 拿 gpt2 当反例：它写的是 act = gelu_new，而 RUNTIME 只有 silu / gptoss。
+    # 如果它**没被拒**，说明门是坏的 —— 那比没有门更糟，因为它给人虚假的安心。
+    ok, out = run(['_gate_probe.py'], 'gate')
+    rows.append(('取值门（gpt2 必须被拒）', 'gelu_new' in out and '拒绝' in out,
+                 out.strip().splitlines()[-1][:70] if out.strip() else '（没输出）'))
+    if not ('gelu_new' in out and '拒绝' in out):
+        fails.append('gate')
+
+    # ---- 8. 判卷人脚本 ----
     for s in JUDGES:
         ok, out = run([s], s)
         line = [l.strip() for l in out.splitlines() if '[PASS]' in l
