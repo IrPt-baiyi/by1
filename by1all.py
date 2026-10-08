@@ -84,7 +84,10 @@ JUDGES = ['by1mla.py', 'by1moe.py', 'by1rope.py',
           # （LayerNorm / 学习式位置 / 无门控 GELU）
           'by1gpt2.py',
           # 逃生舱：三条断言（能建 / 缺 raw.py 必须拒 / 缺 impl 必须拒）
-          'by1raw.py']
+          'by1raw.py',
+          # **三个后端只从 IR 跑** —— IR 是接口，那就得有一条路
+          # 不经过 .by1 也能跑。它还带 JSON 往返。
+          'by1irentry.py']
 
 fails, rows = [], []
 

@@ -510,6 +510,34 @@ class Exec:
         return self.P["_g"][k]
 
 
+def exec_ir(ir, seq=48, seed=0):
+    """**只吃 IR 的入口。** 返回 (输出, 参数字典)。
+
+    原来这条路埋在 `main` 里 —— 想跑 NumPy 后端就得给一个 `.by1` 路径。
+    规格说 IR 是接口，那就得有这条。
+    """
+    import by1ir as _ir
+    errs = _ir.validate(ir)
+    if errs:
+        raise SystemExit("IR 不合法：\n  " + "\n  ".join(errs[:10]))
+    shapes = shapes_of(ir)
+    kinds = {}
+    for L in ir["layers"]:
+        for o in L["ops"]:
+            kinds[o["kind"]] = kinds.get(o["kind"], 0) + 1
+    miss = [k for k in kinds if k not in OPS]
+    if miss:
+        raise SystemExit("这个后端还没实现：%s" % miss)
+    rng = np.random.default_rng(seed)
+    params = {k: rng.normal(0, 0.1, s).astype(np.float32)
+              for k, s in shapes.items()}
+    ex = Exec(ir, params)
+    ex.P["_g"] = {k: params[k] for k in
+                  ("embed.weight", "final_norm.w", "head.weight")}
+    ids = rng.integers(0, ir["vocab"], (1, seq))
+    return ex(ids), params
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="by1 NumPy 执行器（第二个后端）")
     ap.add_argument("by1")

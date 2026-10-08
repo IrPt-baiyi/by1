@@ -332,8 +332,16 @@ def compile_ir(info: Dict[str, Any]) -> Dict[str, Any]:
                 "window": window,
                 # 取值不只有真假：per_head（按头，默认）与 full（整宽）。
                 # Instella 是 full —— 名字一样但含义不同。
-                "qk_norm": (str(attrs.get("qk_norm", "")).strip().lower()
-                            if attrs.get("qk_norm") is not None else "off"),
+                # **IR 里存规范值。** `true` / `on` / `yes` / `1` 是语言层的
+                # 旧写法，等价于 per_head —— 规格说 IR 只该有三种取值。
+                # 以前直接把原文透传，于是 IR 里混着 `true`，
+                # 而三个后端各自 `not in ("off","",None)` 恰好都对。
+                # **恰好都对**是这类 bug 的典型长相。
+                "qk_norm": ("per_head"
+                            if str(attrs.get("qk_norm", "")).strip().lower()
+                            in ("true", "on", "yes", "1") else
+                            (str(attrs.get("qk_norm", "")).strip().lower()
+                             if attrs.get("qk_norm") is not None else "off")),
                 # 归一化的 eps 跟着模型的 rms_norm_eps 走（这个 bug 犯过三次）
                 "norm_eps": float(_num(attrs.get("norm_eps"),
                                        _num(hp.get("rms_eps"), 1e-5))),
@@ -626,6 +634,9 @@ def compile_ir(info: Dict[str, Any]) -> Dict[str, Any]:
         raise CodegenError("\n".join("  - " + e for e in errs))
 
     return {
+        # **版本号。** 没有它的 IR 不该被接受 —— 读的一方无从判断
+        # 自己理解的是哪一版。见 by1ir.py。
+        "by1-ir": "1.0",
         "vocab": vocab, "ctx": ctx, "d_model": d_model,
         "norm_one_plus": norm_1p,
         # 最终归一化在 ops_of 之外建，所以这两个要放到 IR 顶层
@@ -639,8 +650,13 @@ def compile_ir(info: Dict[str, Any]) -> Dict[str, Any]:
         "globals": [
             {"mech": "Embed", "kind": "Embed", "attrs": {},
              "inputs": [], "outputs": ["hidden"]},
+            # **最终归一化也得带 kind。** 我加 LayerNorm 那一次只改了层里的
+            # 两个 Norm，这个漏了 —— 于是 GPT-2 建出来是 25 个 LayerNorm，
+            # 而 IR 里这一个说是 rms。规格校验一跑就露出来了。
             {"mech": "FinalNorm", "kind": "Norm",
-             "attrs": {"one_plus": norm_1p},
+             "attrs": {"kind": str(hp.get("norm_kind", "rms")).strip().lower(),
+                       "eps": float(_num(hp.get("rms_eps"), 1e-5)),
+                       "one_plus": norm_1p},
              "inputs": ["hidden"], "outputs": ["normed"]},
             {"mech": "Head", "kind": "Head", "attrs": {},
              "inputs": ["normed"], "outputs": ["logits"]},
@@ -1338,6 +1354,24 @@ class By1Model(nn.Module):
 def build():
     return By1Model(IR)
 '''
+
+
+def render_ir(ir: Dict[str, Any], by1_name: str = "model.ir.json") -> str:
+    """**只吃 IR 的入口。** 语言层（.by1）到 IR 是另一件事。
+
+    规格说 IR 是接口 —— 那就得有一条路，不经过 .by1 也能跑。
+    想写第四个后端的人从这里开始，不需要先学 by1。
+    """
+    import by1ir as _ir
+    _errs = _ir.validate(ir)
+    if _errs:
+        raise CodegenError("IR 不合法：\n  " + "\n  ".join(_errs[:10]))
+    return (
+        f"# 由 by1 从 {by1_name} 生成 —— 改 IR 再重新生成，不要手改这个文件\n"
+        f"# 后端无关的 IR；下面的 RUNTIME 只是它的一个后端（PyTorch）\n\n"
+        f"IR = {pprint.pformat(ir, indent=2, width=86, sort_dicts=False)}\n"
+        + RUNTIME
+    )
 
 
 def render(info: Dict[str, Any], by1_name: str = "model.by1") -> str:

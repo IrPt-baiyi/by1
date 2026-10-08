@@ -692,7 +692,22 @@ int main(int argc, char **argv) {
 '''
 
 
+def emit_c_ir(ir, params):
+    """**只吃 IR 的入口。** `info` 那个参数在这个后端里**从头到尾没被用过** ——
+    它是历史遗留。去掉它，"从 IR 入口跑"就是真的。"""
+    import by1ir as _ir
+    _errs = _ir.validate(ir)
+    if _errs:
+        raise SystemExit("IR 不合法：\n  " + "\n  ".join(_errs[:10]))
+    return _emit_c_body(ir, params)
+
+
 def emit_c(ir, info, params):
+    """旧入口，保留。**info 没用。**"""
+    return _emit_c_body(ir, params)
+
+
+def _emit_c_body(ir, params):
     """把 IR 展开成 C。**不支持就报错，绝不悄悄生成错的。**"""
     d = ir["d_model"]
     lines, need = [], {}
