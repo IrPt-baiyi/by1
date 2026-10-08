@@ -52,6 +52,19 @@ SSH_COMMON = ['-o', 'BatchMode=yes',
               '-o', 'ConnectTimeout=15',
               '-o', 'LogLevel=ERROR']
 
+# **依赖要钉版本，而且钉的是 transformers。**
+#
+# by1 自己的代码对 torch 几乎没要求（rsqrt / tril / atan2 / finfo
+# 全是老 API），**任何 torch >= 2.0 都行**。
+#
+# 真正的约束在 transformers：判卷人要 GptOssConfig / Qwen3NextConfig，
+# 而**5.x 改过因果掩码的行为** —— HF 在 `attention_mask=None` 时
+# 不再自动做因果，这个坑在 MLA 和 GPT-2 上各踩过一次。
+#
+# 所以：**判卷人换了就不是同一个判卷人。**
+# 版本不一致的话，改的可能是参考，不是 by1。
+DEPS = 'numpy transformers==5.15.1 safetensors'
+
 
 def ssh(args, cmd, timeout=600, quiet=False):
     full = (['ssh'] + SSH_COMMON
@@ -118,15 +131,14 @@ def cmd_setup(args):
     rc, out = ssh(args, 'python -c "import torch;print(torch.cuda.is_available())"'
                         ' 2>&1 || echo MISSING', quiet=True)
     if 'True' in out:
-        print('    镜像自带 torch 且认得出显卡 —— 只补 numpy/transformers')
-        ssh(args, 'pip install -q numpy transformers safetensors 2>&1 | tail -2')
+        print('    镜像自带 torch 且认得出显卡 —— 只补判卷人要的')
+        ssh(args, 'pip install -q %s 2>&1 | tail -2' % DEPS)
     else:
         print('    没有可用的 torch+cu —— 装一套（这一步慢，几分钟）')
         ssh(args, 'pip install -q torch --index-url '
                   'https://download.pytorch.org/whl/cu124 2>&1 | tail -2',
             timeout=2400)
-        ssh(args, 'pip install -q numpy transformers safetensors 2>&1 | tail -2',
-            timeout=1200)
+        ssh(args, 'pip install -q %s 2>&1 | tail -2' % DEPS, timeout=1200)
     print('  [OK]')
     return 0
 
