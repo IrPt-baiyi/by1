@@ -1720,3 +1720,69 @@ IR 入口     7 个小模型，三个后端全部只拿 IR 跑通
 > 读规格 → 读懂 JSON → 写第四个后端
 
 **`.by1` 降级成前端之一，而不是唯一入口。IR 才是接口。**
+
+---
+
+## 47. 从产物直接出 IR —— 两条路通向同一个地方
+
+上一件让三个后端**只从 IR 跑** ✓ 但 IR 只有 `.by1` 一个前端 ✗
+这一件补上另一半：
+
+```
+路 A：  .by1        --check+compile_ir-->  IR
+路 B：  config+张量  --by1boot.boot_ir--->  IR
+```
+
+### 做了什么
+
+**① `by1boot.boot_ir()` —— 从产物构造规范化 IR**
+
+```
+推得出   pos_kind（有没有 wpe）· norm_kind（归一化有没有 bias）· norm_eps
+         每层的机制种类 · out_dim · hidden · bias 有无
+推不出   qk_norm · q_gate · sink · head_gate · routing · ...
+```
+
+**② 推不出的按规格填默认值，并且报出来**
+
+```
+产物里看不出来、填了默认值的：72 处
+  L0.Attention.qk_norm = 'off'
+  L0.Attention.sink = False
+  ...
+**这些是猜的，不是读出来的。**
+```
+
+**③ `by1bootir.py` —— 两条路的判卷人**
+
+比结构骨架，**只比两边都"知道"的**：
+路 B 的 `qk_norm='off'` 是猜的，路 A 的是真读出来的 ——
+**拿猜的去比真的，比出来的差异不是 bug。**
+
+### 结果
+
+```
+gpt2         一致 270 · 差异 0 · 跳过 108    PASS
+minimind-3   一致 182 · 差异 0 · 跳过  72    PASS
+instella-3b  一致 798 · 差异 0 · 跳过 324    PASS
+```
+
+**三个模型横跨两代。** gpt2 的字段名（`n_embd`/`n_layer`/`n_head`）、
+归一化（LayerNorm）、位置（学习式查表）全都不一样 —— **而两条路还是汇合了。**
+
+### 一路上抓到的，全是"只认得一代"
+
+| | |
+|---|---|
+| **config 字段名有两套方言** | 第一版 `int(cfg["hidden_size"])` —— 崩在 `int(None)` 上。现在有 `FIELD_ALIASES`，**认不出来就说清楚是哪几个字段** |
+| **`classify` 不认 `attn.c_attn`** | GPT-2 是融合 qkv，名字里既没 `self_attn` 也没 `q_proj` —— 12 层全被判成 Raw |
+| **config 不说就从产物读** | GPT-2 没有 `intermediate_size` 也没有 `n_inner` —— 但 `mlp.c_fc.weight` 的形状写着答案。且 Conv1D 是 `[in,out]`、`nn.Linear` 是 `[out,in]`，取大的那维两种都对 |
+
+### 判卷人自己也错了两次（都改了）
+
+1. **拿整条消息当键** —— `guessed` 存的是 `"L0.Attention.qk_norm = 'off'"`，
+   而比对时要 `"L0.Attention.qk_norm"` ✗ 对不上，于是"猜的"没被跳过
+2. **把"缺"当成一个值去比** —— 规格里有一堆可选属性，只有一边写了不是差异 ✗
+
+**都是同一个毛病：判卷人自己的口径没定清楚，就会报假问题。**
+**而假问题会把真问题淹掉。**

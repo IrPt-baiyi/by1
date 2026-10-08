@@ -48,7 +48,10 @@ def classify(names):
         return "Linear"
     if re.search(r"kv_a_proj|q_a_proj", s):
         return "MLA"
-    if re.search(r"self_attn\.(q_proj|wq|c_attn)|attn\.qkv", s):
+    # GPT-2 的注意力在 `h.N.attn.c_attn` —— 融合的 qkv，
+    # 名字里既没有 self_attn 也没有 q_proj。第一版不认它，
+    # 于是 12 层全被判成 Raw。
+    if re.search(r"self_attn\.(q_proj|wq|c_attn)|attn\.(qkv|c_attn)", s):
         return "Attention"
     if re.search(r"mixer\.(q_proj|k_proj)", s):
         return "Attention"
@@ -64,6 +67,220 @@ def ffn_of(names):
     return None
 
 
+# ── 从产物直接构造 IR ──────────────────────────────────────────────
+def _g(real, *suffixes):
+    """张量头里有没有以这些后缀结尾的键。"""
+    for k in real:
+        for s in suffixes:
+            if k.endswith(s):
+                return k
+    return None
+
+
+# **config 的字段名有两套方言。**
+# 现代的那套（Qwen / Llama）和上一代的那套（GPT-2）叫法完全不同 ——
+# 而"另一代"这件事在这个项目里反复出现（GPT-2 已经教育过一次）。
+# 认不出来就**说清楚是哪几个字段**，不要崩在一个 int(None) 上。
+FIELD_ALIASES = {
+    "hidden_size": ["hidden_size", "n_embd", "d_model"],
+    "num_hidden_layers": ["num_hidden_layers", "n_layer", "num_layers"],
+    "num_attention_heads": ["num_attention_heads", "n_head", "num_heads"],
+    "num_key_value_heads": ["num_key_value_heads", "n_head_kv"],
+    "vocab_size": ["vocab_size"],
+    "intermediate_size": ["intermediate_size", "n_inner", "ffn_dim"],
+    "max_ctx": ["max_position_embeddings", "n_positions", "n_ctx",
+                "max_seq_len"],
+    "norm_eps": ["rms_norm_eps", "layer_norm_epsilon", "norm_eps"],
+    "rope_theta": ["rope_theta"],
+    "sliding_window": ["sliding_window"],
+}
+
+
+def pick(cfg, key, default=None):
+    for k in FIELD_ALIASES.get(key, [key]):
+        if cfg.get(k) is not None:
+            return cfg[k]
+    return default
+
+
+def boot_ir(cfg, real, name="booted"):
+    """config + 张量头 -> **规范化的 IR**。
+
+    返回 (ir, guessed)。`guessed` 是"产物里看不出来、填了默认值"的属性 ——
+    **必须报出来**，否则用的人会以为它是读出来的。
+    """
+    d = pick(cfg, "hidden_size")
+    L = pick(cfg, "num_hidden_layers", 0)
+    V = pick(cfg, "vocab_size")
+    ctx = pick(cfg, "max_ctx", 4096)
+    miss = [k for k, v in (("宽 d_model", d), ("层数", L), ("词表", V))
+            if v is None]
+    if miss:
+        raise SystemExit(
+            "这个 config 里认不出：%s\n"
+            "  **这是字段名的问题，不是模型的问题。** 认得的别名在 "
+            "FIELD_ALIASES 里 —— 加一个就行。" % "、".join(miss))
+    d, L, V, ctx = int(d), int(L), int(V), int(ctx)
+    # GPT-2 的 n_inner 常常是 null，含义是 4 倍宽
+    if pick(cfg, "intermediate_size") is None and "n_inner" in cfg:
+        cfg = dict(cfg, intermediate_size=4 * d)
+
+    # 位置：有 wpe 就是学习式查表，否则是 RoPE
+    pos_kind = "learned" if _g(real, "wpe.weight") else "rope"
+    # 归一化：有 bias 就是 LayerNorm（RMSNorm 没有 bias）
+    ln_has_bias = bool(_g(real, "ln_f.bias", "ln_1.bias", "norm.bias"))
+    norm_kind = "layer" if ln_has_bias else "rms"
+    norm_eps = float(pick(cfg, "norm_eps", 1e-5))
+
+    guessed = []
+    guessed_keys = set()
+
+    def _def(where, key, val):
+        # **键和消息分开。** 判卷人要比对"这个属性是不是猜的"，
+        # 而拿整条消息当键对不上（消息里带着值）。
+        # 第一版就是这么错的 —— 于是"猜的"没被跳过，报了一堆假差异。
+        guessed_keys.add("%s.%s" % (where, key))
+        guessed.append("%s.%s = %r" % (where, key, val))
+        return val
+
+    # ── 每层是什么 ─────────────────────────────────────────────────
+    per = {}
+    for k in real:
+        li = layer_of(k)
+        if li is not None:
+            per.setdefault(li, []).append(k)
+
+    q = pick(cfg, "num_attention_heads")
+    kv = pick(cfg, "num_key_value_heads") or q
+    hd = cfg.get("head_dim") or (d // q if q else None)
+    win = pick(cfg, "sliding_window")
+    lts = cfg.get("layer_types") or []
+
+    layers = []
+    for li in range(L):
+        ks = per.get(li, [])
+        kind = classify(ks)
+        if kind is None:
+            kind = "Raw"
+        ops = []
+        # ① 归一化
+        ops.append({"mech": "Norm", "kind": "Norm",
+                    "attrs": {"kind": norm_kind, "eps": norm_eps,
+                              "one_plus": False},
+                    "inputs": ["hidden"], "outputs": ["op0.out"]})
+        # ② 混合器
+        if kind == "Attention":
+            out_dim = None
+            for kk in ks:
+                if kk.endswith("o_proj.weight") or kk.endswith("c_proj.weight"):
+                    out_dim = int(real[kk]["shape"][-1])
+                    break
+            lt = lts[li] if li < len(lts) else "full_attention"
+            w = (win if "sliding" in str(lt) else None)
+            attrs = {
+                "q": int(q), "kv": int(kv), "head_dim": int(hd),
+                "out_dim": int(out_dim or (q * hd)),
+                "bias": bool(_g(real, "self_attn.q_proj.bias", "q_proj.bias",
+                                "c_attn.bias")),
+                "window": w,
+                "qk_norm": _def("L%d.Attention" % li, "qk_norm", "off"),
+                "rope": pos_kind != "learned",
+                "rope_base": int(pick(cfg, "rope_theta", 10000)),
+                "rope_pairing": _def("L%d.Attention" % li, "rope_pairing", "half"),
+                "rope_partial": float(cfg.get("partial_rotary_factor") or 1.0),
+                "rope_scale": 1.0,
+                "yarn": None,
+                "q_gate": _def("L%d.Attention" % li, "q_gate", False),
+                "sink": _def("L%d.Attention" % li, "sink", False),
+                "kv_tie": _def("L%d.Attention" % li, "kv_tie", False),
+                "head_gate": _def("L%d.Attention" % li, "head_gate", "off"),
+                "gate_act": _def("L%d.Attention" % li, "gate_act", "softplus"),
+            }
+            ops.append({"mech": "Attn", "kind": "Attention", "attrs": attrs,
+                        "inputs": ["op0.out"], "outputs": ["op1.out"]})
+        else:
+            # 认不出来 —— 说出来，不猜
+            ops.append({"mech": "Unknown", "kind": "Raw",
+                        "attrs": {"impl": "unknown"},
+                        "inputs": ["op0.out"], "outputs": ["op1.out"]})
+        ops.append({"mech": "Add", "kind": "Add", "attrs": {},
+                    "inputs": ["hidden", "op1.out"], "outputs": ["op2.out"]})
+        # ③ 归一化 + 挂的机制
+        ops.append({"mech": "Norm2", "kind": "Norm",
+                    "attrs": {"kind": norm_kind, "eps": norm_eps,
+                              "one_plus": False},
+                    "inputs": ["op2.out"], "outputs": ["op3.out"]})
+        fk = ffn_of(ks)
+        if fk == "FFN":
+            # **config 不说就从产物里读。** GPT-2 的 config 里没有
+            # n_inner 也没有 intermediate_size —— 但 `mlp.c_fc.weight`
+            # 的形状就写着答案。第一版给了 0，于是 FFN 的宽度是 0。
+            hid = int(pick(cfg, "intermediate_size", 0))
+            if not hid:
+                for kk in ks:
+                    if re.search(r"(gate_proj|up_proj|c_fc)\.weight$", kk):
+                        # Conv1D 是 [in, out]，nn.Linear 是 [out, in] ——
+                        # 取大的那一维，两种布局都对
+                        hid = int(max(real[kk]["shape"]))
+                        break
+            ops.append({"mech": "FFN_", "kind": "FFN",
+                        "attrs": {"hidden": hid,
+                                  "act": _def("L%d.FFN" % li, "act", "silu"),
+                                  "gate": _def("L%d.FFN" % li, "gate", True),
+                                  "bias": bool(_g(real, "mlp.c_fc.bias",
+                                                  "gate_proj.bias")),
+                                  "limit": None, "alpha": 1.702},
+                        "inputs": ["op3.out"], "outputs": ["op4.out"]})
+        elif fk == "MoE":
+            ne = int(cfg.get("num_local_experts") or cfg.get("num_experts")
+                     or cfg.get("n_routed_experts") or 0)
+            nh = int(cfg.get("moe_intermediate_size") or 0)
+            ops.append({"mech": "MoE_", "kind": "MoE",
+                        "attrs": {"experts": ne,
+                                  "top_k": int(cfg.get("num_experts_per_tok")
+                                               or cfg.get("experts_per_token") or 1),
+                                  "hidden": nh,
+                                  "shared": int(cfg.get("n_shared_experts") or 0),
+                                  "shared_hidden": nh,
+                                  "shared_gate": _def("L%d.MoE" % li, "shared_gate", False),
+                                  "routing": _def("L%d.MoE" % li, "routing", "softmax_topk"),
+                                  "router_bias": bool(_g(real, "mlp.gate.bias",
+                                                         "router.bias")),
+                                  "expert_bias": _def("L%d.MoE" % li, "expert_bias", False),
+                                  "score_bias": _def("L%d.MoE" % li, "score_bias", False),
+                                  "n_group": _def("L%d.MoE" % li, "n_group", 0),
+                                  "topk_group": _def("L%d.MoE" % li, "topk_group", 0),
+                                  "routed_scale": float(cfg.get("routed_scaling_factor") or 1.0),
+                                  "act": _def("L%d.MoE" % li, "act", "silu"),
+                                  "limit": None, "limit_shared": None,
+                                  "alpha": 1.702},
+                        "inputs": ["op3.out"], "outputs": ["op4.out"]})
+        ops.append({"mech": "Add2", "kind": "Add", "attrs": {},
+                    "inputs": ["op2.out", "op4.out"], "outputs": ["op5.out"]})
+        layers.append({"index": li, "attrs": {}, "ops": ops, "state": []})
+
+    globals_ = [
+        {"mech": "Embed", "kind": "Embed", "attrs": {},
+         "inputs": [], "outputs": ["hidden"]},
+        {"mech": "FinalNorm", "kind": "Norm",
+         "attrs": {"kind": norm_kind, "eps": norm_eps, "one_plus": False},
+         "inputs": ["hidden"], "outputs": ["normed"]},
+        {"mech": "Head", "kind": "Head", "attrs": {},
+         "inputs": ["normed"], "outputs": ["logits"]},
+    ]
+
+    ir = {
+        "by1-ir": "1.0",
+        "vocab": V, "ctx": ctx, "d_model": d,
+        "pos_kind": pos_kind,
+        "norm_kind": norm_kind, "norm_eps": norm_eps, "norm_one_plus": False,
+        "globals": globals_, "layers": layers,
+    }
+    if pos_kind == "learned":
+        ir["n_pos"] = int(cfg.get("n_positions") or cfg.get("n_ctx") or 1024)
+    return ir, guessed, guessed_keys
+
+
 def main():
     if len(sys.argv) < 3:
         print(__doc__)
@@ -71,6 +288,8 @@ def main():
     cfg_p, ten_p = sys.argv[1], sys.argv[2]
     name = None
     out_p = None
+    want_ir = '--emit-ir' in sys.argv
+    want_run = '--run' in sys.argv
     if '--name' in sys.argv:
         name = sys.argv[sys.argv.index('--name') + 1]
     if '--out' in sys.argv:
@@ -79,6 +298,71 @@ def main():
     cfg = json.load(open(cfg_p, encoding='utf-8'))
     cfg = cfg.get('text_config', cfg)
     real = json.load(open(ten_p, encoding='utf-8'))
+
+    if want_ir or want_run:
+        import by1ir
+        _nm = name or str(cfg.get('model_type', 'booted')).replace('.', '-')
+        ir, guessed, _gk = boot_ir(cfg, real, _nm)
+        errs = by1ir.validate(ir)
+        print('=' * 76)
+        print('  从产物直接构造 IR（**不经过 .by1**）')
+        print('=' * 76)
+        print()
+        print('  推出来的：')
+        print('    pos_kind  = %s   （%s）' % (
+            ir['pos_kind'],
+            'wpe.weight 在产物里' if ir['pos_kind'] == 'learned' else '没有 wpe'))
+        print('    norm_kind = %s   （%s）' % (
+            ir['norm_kind'],
+            '归一化有 bias' if ir['norm_kind'] == 'layer' else '归一化没 bias'))
+        print('    norm_eps  = %s' % ir['norm_eps'])
+        print('    %d 层' % len(ir['layers']))
+        print()
+        print('  **产物里看不出来、填了默认值的：%d 处**' % len(guessed))
+        for g in sorted(set(guessed))[:8]:
+            print('    %s' % g)
+        if len(set(guessed)) > 8:
+            print('    …另有 %d 处' % (len(set(guessed)) - 8))
+        print('    **这些是猜的，不是读出来的。** 要确定就得对拍产物。')
+        print()
+        if errs:
+            print('  [FAIL] IR 不合法：')
+            for e in errs[:8]:
+                print('    ' + e)
+            return 1
+        print('  [OK] 合规格')
+        if want_ir:
+            print()
+            print(by1ir.to_json(ir))
+            return 0
+        # --run：三个后端各跑一遍
+        print('  ── 三个后端从这份 IR 跑 ──')
+        nelem = 0
+        try:
+            import by1exec as _ex
+            sh = _ex.shapes_of(ir)
+            nelem = sum(int(__import__('numpy').prod(v)) for v in sh.values())
+        except Exception:
+            pass
+        if nelem > 2e8:
+            print('    [跳过] %.1fM 参数，这个演示跑不动' % (nelem / 1e6))
+            return 0
+        import numpy as np
+        import by1codegen as _cg
+        ns = {}
+        exec(compile(_cg.render_ir(ir, 'booted.ir'), '<ir>', 'exec'), ns)
+        m = ns['build']().eval()
+        import torch
+        with torch.no_grad():
+            ot = m(torch.randint(0, ir['vocab'], (1, 8))).numpy()
+        import by1exec as _ex2
+        on, _p = _ex2.exec_ir(ir, seq=8)
+        import by1c as _c
+        ctext, _o, _f = _c.emit_c_ir(ir, _ex2.shapes_of(ir))
+        print('    PyTorch %s · NumPy %s · C %d 行' % (
+            ot.shape, on.shape, len(ctext.split(chr(10)))))
+        print('    **三个后端都只拿了这份 IR。**')
+        return 0
 
     name = name or cfg.get('model_type', 'booted').replace('.', '-')
     d = cfg.get('hidden_size')

@@ -87,7 +87,9 @@ JUDGES = ['by1mla.py', 'by1moe.py', 'by1rope.py',
           'by1raw.py',
           # **三个后端只从 IR 跑** —— IR 是接口，那就得有一条路
           # 不经过 .by1 也能跑。它还带 JSON 往返。
-          'by1irentry.py']
+          'by1irentry.py',
+          # **两条路的 IR 对拍**：.by1 出来的 vs 从产物反推出来的
+          'by1bootir.py']
 
 fails, rows = [], []
 

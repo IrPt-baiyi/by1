@@ -45,6 +45,7 @@ WANT = [
     ('by1raw.py', '', '逃生舱的判卷人'),
     ('by1ir.py', '', 'IR 规格 + 校验 + JSON 往返（**规格的唯一真相源**）'),
     ('by1irentry.py', '', '三个后端只从 IR 跑'),
+    ('by1bootir.py', '', '两条路的 IR 对拍（.by1 vs 产物）'),
     ('ir-spec.md', '', 'IR 规格（从 by1ir.py 生成）'),
     ('raw.py', '', '逃生舱的示例实现（配 raw-escape.by1）'),
     ('gate-probe.by1', '', '取值门的反例（故意写错，别修）'),
