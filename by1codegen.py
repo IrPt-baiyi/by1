@@ -103,7 +103,9 @@ def _bool(v, default=False):
 #   routing   softmax_topk / topk_softmax / sigmoid_group_topk
 #   gate_act  softplus / sigmoid
 ENUMS = {
-    "act": {"silu", "gptoss"},
+    # gelu 是**无门控**那一路用的（GPT-2 的 MLP 只有两层）。
+    # gelu_new 是 tanh 近似，和精确式差 1e-3 量级 —— 不能混。
+    "act": {"silu", "gptoss", "gelu", "gelu_new", "relu2"},
     # `true` / `on` 是旧写法，等价于 per_head —— RUNTIME 判的是
     # `not in ("off", "", None)`，所以它确实实现过。不列进来会误伤。
     "qk_norm": {"off", "per_head", "full", "true", "on", "yes", "1"},
@@ -309,6 +311,12 @@ def compile_ir(info: Dict[str, Any]) -> Dict[str, Any]:
             if not (_ck("qk_norm", attrs.get("qk_norm"), name, kind)
                     and _ck("gate_act", attrs.get("gate_act"), name, kind)):
                 return None
+            # **模型用学习式位置编码时，注意力不做旋转。**
+            # 位置信息在输入上（wpe），不在 q/k 上 —— 两件事。
+            # 以前这里无条件 apply_rope：GPT-2 被转了一遍，而 .by1 里
+            # **没有地方能说"别转"**。和 gate = none 变成 true 是同一类：
+            # "不存在的机制"表达不出来。
+            _rope_on = not _pos_learned
             rs = (_rope_spec(info, li) if li is not None else
                   {"base": base, "pairing": pairing, "scale": 1.0,
                    "yarn": _yarn_params(info)})
@@ -324,6 +332,7 @@ def compile_ir(info: Dict[str, Any]) -> Dict[str, Any]:
                 "norm_eps": float(_num(attrs.get("norm_eps"),
                                        _num(hp.get("rms_eps"), 1e-5))),
                 "bias": _flag(attrs.get("bias", attrs.get("attn_bias"))),
+                "rope": _rope_on,
                 "rope_base": int(_num(attrs.get("rope_base"), rs["base"])),
                 "rope_pairing": rs["pairing"],
                 # YaRN 这类缩放会把 cos/sin 整体乘一个系数 —— 位置 0 上也看得出来
@@ -400,7 +409,8 @@ def compile_ir(info: Dict[str, Any]) -> Dict[str, Any]:
                 "hidden": int(hid),
                 "act": str(attrs.get("act", "silu")).strip().lower(),
                 "gate": _flag(_gv, True) if _gv is not None else True,
-                "limit": lim, "alpha": float(_num(attrs.get("alpha"), 1.702))}}
+                "limit": lim, "alpha": float(_num(attrs.get("alpha"), 1.702)),
+                "bias": _flag(attrs.get("bias"))}}
 
         if kind == "MoE":
             ne = _num(attrs.get("experts"))
@@ -467,10 +477,44 @@ def compile_ir(info: Dict[str, Any]) -> Dict[str, Any]:
                 "out_dim": int(_num(attrs.get("out_dim")) or nv * dv)}}
         return None
 
+    # position 块里写 `learned(N)` 就是"学一张表"，不是 RoPE。
+    # 解析器把它当成一个叫做 learned 的 rope_type —— 这里认这个名字。
+    _pos_learned = False
+    _n_pos_decl = None
+    # `info["position"]` 是 {名字: 声明原文}（by1check 那边已经解出来了）。
+    # **不要用 try/except 包住** —— 上一版引用了不存在的变量（position_block），
+    # 异常被吞掉，于是 pos_kind 一直是 rope，而没有任何地方说不对劲。
+    for _pv in ((info.get("position") or {}).values()):
+        # 直接看原文 —— parse_rope 在 by1check 里，codegen 这边没有它。
+        # 上一版就是引用了不存在的名字，而 try/except 把 NameError 吞了，
+        # 于是 pos_kind 一直是 rope 而没有任何地方说不对劲。
+        _s = str(_pv)
+        if "learned" in _s.lower():
+            _pos_learned = True
+            _mm = re.search(r"learned\s*\(\s*(\d+)", _s)
+            if _mm:
+                _n_pos_decl = _mm.group(1)
+
     def ops_of(mixer, attached, layer_attrs):
         """把一层展开成算子序列。数据流用 ValueRef 表示，没有张量形状。"""
         ops: List[dict] = []
         env = "hidden"
+
+        # **用哪种归一化是模型级的选择。**
+        # 以前这里两处都写死 "RMSNorm" —— 于是 GPT-2 被生成成一个用
+        # RMSNorm 的模型，而 .by1 里**根本没有地方能说出口**。
+        # 这不是"默认值选错了"，是"只能 RMSNorm"。
+        _nk = str(hp.get("norm_kind", "rms")).strip().lower()
+        if _nk not in ("rms", "layer"):
+            err("hparams.norm_kind = <%s> —— 只有 rms 和 layer 两种"
+                % hp.get("norm_kind"))
+            return None
+        # 层归一化的 eps **必须跟着模型的 rms_eps 走**。
+        # 三个后端原来各自写死 1e-5 —— 于是它们"一致地错"，
+        # 互相对拍全绿，却都不符合 .by1 里写的值。
+        _n_attrs = {"one_plus": norm_1p, "kind": _nk,
+                    "eps": float(_num(hp.get("rms_eps"), 1e-5))}
+        _n_mech = "LayerNorm" if _nk == "layer" else "RMSNorm"
 
         def emit(mk, ins):
             j = len(ops)
@@ -480,12 +524,7 @@ def compile_ir(info: Dict[str, Any]) -> Dict[str, Any]:
             return out
 
         if mixer is not None:
-            n = {"mech": "RMSNorm", "kind": "Norm",
-     "attrs": {"one_plus": norm_1p,
-               # 层归一化的 eps **必须跟着模型的 rms_eps 走**。
-               # 三个后端原来各自写死 1e-5 —— 于是它们"一致地错"，
-               # 互相对拍全绿，却都不符合 .by1 里写的值。
-               "eps": float(_num(hp.get("rms_eps"), 1e-5))}}
+            n = {"mech": _n_mech, "kind": "Norm", "attrs": dict(_n_attrs)}
             v = emit(n, [env])
             a = emit(mixer, [v])
             j = len(ops)
@@ -493,12 +532,7 @@ def compile_ir(info: Dict[str, Any]) -> Dict[str, Any]:
                         "inputs": [env, a], "outputs": [f"op{j}.out"]})
             env = f"op{j}.out"
         for am in attached:
-            n = {"mech": "RMSNorm", "kind": "Norm",
-     "attrs": {"one_plus": norm_1p,
-               # 层归一化的 eps **必须跟着模型的 rms_eps 走**。
-               # 三个后端原来各自写死 1e-5 —— 于是它们"一致地错"，
-               # 互相对拍全绿，却都不符合 .by1 里写的值。
-               "eps": float(_num(hp.get("rms_eps"), 1e-5))}}
+            n = {"mech": _n_mech, "kind": "Norm", "attrs": dict(_n_attrs)}
             v = emit(n, [env])
             m = emit(am, [v])
             j = len(ops)
@@ -567,6 +601,14 @@ def compile_ir(info: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "vocab": vocab, "ctx": ctx, "d_model": d_model,
         "norm_one_plus": norm_1p,
+        # 最终归一化在 ops_of 之外建，所以这两个要放到 IR 顶层
+        "norm_kind": str(hp.get("norm_kind", "rms")).strip().lower(),
+        # **学习式位置编码**（GPT-2 的 wpe）。它和 RoPE 是两种东西：
+        # 一个是一张学出来的查表、加在输入上；另一个是旋转，在注意力里。
+        # 前者是**输入的一部分**，所以放在 IR 顶层。
+        "pos_kind": "learned" if _pos_learned else "rope",
+        "n_pos": int(_num(_n_pos_decl, _num(hp.get("n_pos"), ctx)) or ctx),
+        "norm_eps": float(_num(hp.get("rms_eps"), 1e-5)),
         "globals": [
             {"mech": "Embed", "kind": "Embed", "attrs": {},
              "inputs": [], "outputs": ["hidden"]},
@@ -606,6 +648,25 @@ class RMSNorm(nn.Module):
     def forward(self, x):
         y = x * torch.rsqrt(x.pow(2).mean(-1, keepdim=True) + self.eps)
         return y * ((1.0 + self.w) if self.one_plus else self.w)
+
+
+class LayerNorm(nn.Module):
+    """GPT-2 那种归一化。
+
+    和 RMSNorm 的差别**不只是多一个 bias** —— 它还要**减均值**。
+    名字都叫"层归一化"，算的不是一回事；而 RMSNorm 那边
+    `one_plus` 又是第三种约定。三个东西顶着相近的名字。
+    """
+    def __init__(self, d, eps=1e-5):
+        super().__init__()
+        self.w = nn.Parameter(torch.ones(d))
+        self.b = nn.Parameter(torch.zeros(d))
+        self.eps = eps
+
+    def forward(self, x):
+        mu = x.mean(-1, keepdim=True)
+        var = x.var(-1, keepdim=True, unbiased=False)
+        return (x - mu) * torch.rsqrt(var + self.eps) * self.w + self.b
 
 
 def rope_tables(head_dim, n, base, device, yarn=None):
@@ -742,6 +803,10 @@ class Attention(nn.Module):
     def __init__(self, a, d):
         super().__init__()
         self.q, self.kv, self.hd = a["q"], a["kv"], a["head_dim"]
+        # **模型用学习式位置编码时，注意力不做旋转**（GPT-2）。
+        # 位置在输入上，不在 q/k 上。以前无条件转 —— 而 .by1 里
+        # 没有地方能说"别转"，所以 GPT-2 被静默转了一遍。
+        self.rope = bool(a.get("rope", True))
         # q_gate：q_proj 的输出是 2 倍，一半当 query、一半当门（Qwen3-Next）
         self.q_gate = a.get("q_gate", False)
         self.wq = nn.Linear(d, self.q * self.hd * (2 if self.q_gate else 1),
@@ -804,7 +869,9 @@ class Attention(nn.Module):
             q, k = self.qn(q), self.kn(k)
         # partial：只转前一段维度，剩下的原样带走
         np_ = int(self.hd * self.rope_partial)
-        if 0 < np_ < self.hd:
+        if not self.rope:
+            pass                        # 不转：位置在输入上（wpe）
+        elif 0 < np_ < self.hd:
             cos, sin = rope_tables(np_, n, self.base, x.device, self.yarn)
             if self.scale != 1.0:
                 cos, sin = cos * self.scale, sin * self.scale
@@ -849,6 +916,33 @@ class Attention(nn.Module):
         return self.wo(o)
 
 
+def _gelu(x, style="gelu"):
+    """GPT-2 用的是 tanh 近似（HF 里叫 gelu_new）。
+
+    精确式和近似式**不是一回事** —— 差在 1e-3 量级，
+    比前面所有对拍的阈值都大。所以两个都要有，不能混。
+    """
+    if style in ("gelu_new", "gelu_tanh", "tanh"):
+        return 0.5 * x * (1.0 + torch.tanh(
+            0.7978845608028654 * (x + 0.044715 * x * x * x)))
+    return F.gelu(x)
+
+
+def _act(x, style):
+    """**无门控**那一层用的激活。
+
+    原来那条分支写死 `F.silu` —— style 直接丢了。
+    GPT-2 的 MLP 是无门控 + gelu，于是拿到的是 silu，
+    而 .by1 里写的 `act = gelu_new` 一声不吭地被忽略。
+    （和 gate = none 变成 true 是同一类：一条分支只为一种情况写过。）
+    """
+    if style in ("gelu", "gelu_new", "gelu_tanh", "tanh"):
+        return _gelu(x, style)
+    if style == "relu2":
+        return F.relu(x) ** 2
+    return F.silu(x)
+
+
 def _swiglu(gate, up, style, limit, alpha):
     """两个都叫 SwiGLU，但不是一回事：
          标准   silu(gate) * up
@@ -868,16 +962,18 @@ class MLP(nn.Module):
         self.style = a.get("act", "silu")
         self.limit = a.get("limit")
         self.alpha = a.get("alpha", 1.702)
-        self.w1 = nn.Linear(d, a["hidden"], bias=False)
-        self.w2 = nn.Linear(a["hidden"], d, bias=False)
+        _b = bool(a.get("bias", False))
+        self.w1 = nn.Linear(d, a["hidden"], bias=_b)
+        self.w2 = nn.Linear(a["hidden"], d, bias=_b)
         if self.gate:
-            self.w3 = nn.Linear(d, a["hidden"], bias=False)
+            self.w3 = nn.Linear(d, a["hidden"], bias=_b)
 
     def forward(self, x):
         g = self.w1(x)
         if self.gate:
             return self.w2(_swiglu(g, self.w3(x), self.style, self.limit, self.alpha))
-        return self.w2(F.silu(g))
+        # style 要传下去 —— 见 _act 的注释
+        return self.w2(_act(g, self.style))
 
 
 class MoE(nn.Module):
@@ -994,6 +1090,16 @@ class MoE(nn.Module):
 
 
 def _mk_norm(attrs, d):
+    """归一化：**两种不是一回事**，只能按 attrs 里说的来。
+
+    rms   只除均方根 —— 不减均值，没有 bias
+    layer 减均值、除标准差、还有一个 bias（GPT-2 那种）
+
+    参数名对应关系也不同（`w` vs `w`+`b`），所以选错了张量契约就对不上 ——
+    但契约查不出**算错了**，所以这里必须是显式的。
+    """
+    if str(attrs.get("kind", "rms")).lower() == "layer":
+        return LayerNorm(d, eps=attrs.get("eps", 1e-5))
     return RMSNorm(d, eps=attrs.get("eps", 1e-5),
                    one_plus=attrs.get("one_plus", False))
 
@@ -1123,12 +1229,25 @@ class By1Model(nn.Module):
         self.ir = ir
         d = ir["d_model"]
         self.embed = nn.Embedding(ir["vocab"], d)
+        self.wpe = (nn.Embedding(int(ir.get("n_pos", ir.get("ctx", 1024))), d)
+                    if ir.get("pos_kind") == "learned" else None)
         self.layers = nn.ModuleList([LayerMod(L, d) for L in ir["layers"]])
-        self.final_norm = RMSNorm(d, one_plus=ir.get("norm_one_plus", False))
+        # **最终归一化也得跟着模型的选择走。** 它不在 ops_of 里，
+        # 所以刚才那一处改动没带上它 —— GPT-2 建出来是 24 个 LayerNorm
+        # 加 1 个 RMSNorm，而那个 1 就是这里。
+        _fk = str(ir.get("norm_kind", "rms")).lower()
+        self.final_norm = (LayerNorm(d, eps=ir.get("norm_eps", 1e-5))
+                           if _fk == "layer"
+                           else RMSNorm(d, one_plus=ir.get("norm_one_plus", False),
+                                        eps=ir.get("norm_eps", 1e-5)))
         self.head = nn.Linear(d, ir["vocab"], bias=False)
 
     def forward(self, idx):
         x = self.embed(idx)
+        if self.wpe is not None:
+            # 学习式位置编码：**加在输入上**，不是旋转。
+            pos = torch.arange(idx.size(1), device=idx.device)
+            x = x + self.wpe(pos)
         for blk in self.layers:
             x = blk(x)
         return self.head(self.final_norm(x))

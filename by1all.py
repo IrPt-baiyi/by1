@@ -79,7 +79,10 @@ SHAPED = ['llama-shaped.by1', 'mixtral-shaped.by1', 'gpt-oss-shaped.by1',
 # 三个判卷人脚本
 JUDGES = ['by1mla.py', 'by1moe.py', 'by1rope.py',
           # 前向，**真实维度**（六个真实模型里唯一在这台机器上跑得动的）
-          'by1instella.py']
+          'by1instella.py',
+          # 真实维度、官方 config 的前向 —— **另一代**
+          # （LayerNorm / 学习式位置 / 无门控 GELU）
+          'by1gpt2.py']
 
 fails, rows = [], []
 
@@ -118,8 +121,8 @@ def main():
     specs = sorted(glob.glob('*.by1'))
     bad = []
     for f in specs:
-        if f == 'selftest.by1':
-            continue
+        if f in ('selftest.by1', 'gate-probe.by1'):
+            continue          # 两个故意的反例
         ok, out = run(['by1check.py', f], 'check ' + f)
         m = re.search(r'摘要:\s*(\d+)\s*错误\s*/\s*(\d+)\s*警告', out)
         e, w = (int(m.group(1)), int(m.group(2))) if m else (-1, -1)
@@ -204,12 +207,17 @@ def main():
 
     # ---- 7. 取值门 —— **可证伪对照** ----
     # 「声明了一个 codegen 没实现的取值，必须被拒」这条规则本身要被验。
-    # 拿 gpt2 当反例：它写的是 act = gelu_new，而 RUNTIME 只有 silu / gptoss。
-    # 如果它**没被拒**，说明门是坏的 —— 那比没有门更糟，因为它给人虚假的安心。
-    ok, out = run(['_gate_probe.py'], 'gate')
-    rows.append(('取值门（gpt2 必须被拒）', 'gelu_new' in out and '拒绝' in out,
+    # `gate-probe.by1` 是故意的反例（act 是个不存在的取值）；
+    # nemotron / ling 是整族没实现。三个都必须被拒，三个已实现的必须通过。
+    # 门坏了比没有门更糟 —— 它给人虚假的安心。
+    #
+    # （判据看它自己的判定行，不看某个具体字样：2026-10 把 gelu 实现之后，
+    #   GPT-2 从"必须被拒"变成"必须通过"，而这个脚本立刻红了 ——
+    #   那是它该干的事，但这里的判据不该绑死在某个模型的某个取值上。）
+    gok, out = run(['by1gate.py'], 'gate')
+    rows.append(('取值门（三个反例 + 三个正例）', gok,
                  out.strip().splitlines()[-1][:70] if out.strip() else '（没输出）'))
-    if not ('gelu_new' in out and '拒绝' in out):
+    if not gok:
         fails.append('gate')
 
     # ---- 8. 判卷人脚本 ----

@@ -1,0 +1,70 @@
+# ── gate-probe.by1 ────────────────────────────────────────────────────
+# 取值门的**反例**：故意写一个 codegen 没实现的取值。
+#
+# 和 selftest.by1 是同一个角色 —— 一条只会通过的规则不是规则。
+# 这个文件**必须**被 compile_ir 拒绝；如果它被接受了，说明门坏了，
+# 而那比没有门更糟：它给人虚假的安心。
+#
+# **不要修它。** 它是故意写错的。
+
+model gate-probe {
+  arch  probe
+  ctx   512
+
+  hparams {
+    d_model = 64
+    n_layer = 2
+    vocab   = 256
+    rms_eps = 1e-05
+  }
+
+  mech Attn : Attention {
+    heads      = { q = 4, kv = 2, head_dim = 16 }
+    out_dim    = 64
+    qk_norm    = off
+    structural = [ head_dim, out_dim ]
+  }
+
+  # 这个激活不存在 —— 实现的只有 silu / gptoss / gelu / gelu_new / relu2
+  mech FFN_ : FFN {
+    hidden = 128
+    act    = nosuchactivation
+  }
+
+  schedule {
+    blk   = 1 * Attn
+    block = blk
+  }
+
+  stack model {
+    pattern = 2 * block
+    model[:] >> FFN_
+  }
+
+  position {
+    default = rope(base = 10000, pairing = half)
+  }
+
+  tensors {
+    Attn {
+      q_proj.weight : (q * head_dim, d_model)
+      k_proj.weight : (kv * head_dim, d_model)
+      v_proj.weight : (kv * head_dim, d_model)
+      o_proj.weight : (d_model, out_dim)
+    }
+    FFN_ {
+      gate_proj.weight : (hidden, d_model)
+      up_proj.weight   : (hidden, d_model)
+      down_proj.weight : (d_model, hidden)
+    }
+    layer {
+      input_layernorm.weight          : (d_model,)
+      post_attention_layernorm.weight : (d_model,)
+    }
+    global {
+      embed.weight      : (vocab, d_model)
+      final_norm.weight : (d_model,)
+      lm_head.weight    : (vocab, d_model)
+    }
+  }
+}

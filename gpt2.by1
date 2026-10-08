@@ -32,6 +32,7 @@ model gpt2 {
     n_layer = 12
     vocab   = 50257
     ln_eps  = 1e-05
+    norm_kind = layer     # **GPT-2 用 LayerNorm**，不是 RMSNorm
     d_ff    = 3072
   }
 
@@ -53,6 +54,12 @@ model gpt2 {
     gate   = none             # ← 这一步是新的
     bias   = true
     structural = [ hidden, bias ]
+  }
+
+  # **位置信息是 wpe —— 一张学出来的查表，不是旋转。**
+  # 语言里 position 一直是 RoPE 的天下；learned(N) 是第二种做法。
+  position {
+    default = learned(1024)
   }
 
   schedule {
