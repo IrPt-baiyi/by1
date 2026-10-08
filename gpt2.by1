@@ -1,0 +1,150 @@
+# ── gpt2.by1 ──────────────────────────────────────────────────────────
+# GPT-2 —— **这门语言的边界**。
+#
+# 前面十一个模型全是 Llama 家族（或者从它长出来的），所以语言里长出来的东西
+# 也全是那一代的：RMSNorm、RoPE、SwiGLU。
+#
+# GPT-2 是**上一代**：
+#
+#            它有              我有
+#   归一化   LayerNorm         RMSNorm        ← 均值也要减、还有 bias
+#   位置     学习式 wpe        RoPE           ← 根本没有"位置编码矩阵"这个东西
+#   前馈     两层 + GELU       门控 + SwiGLU   ← 没有门，也没有门控乘法
+#
+# 这三样都不是"特例"，是**另一个时代的标准做法**。
+# 一个只能描述 2023 年之后模型的语言，说"能描述主流架构"是不诚实的。
+#
+# **判卷人**：nanoGPT（karpathy）的 `model.py` 是架构说明，
+# 而 `openai-community/gpt2` 有全套官方产物 —— config + 160 个张量。
+# 两者是同一个架构。
+#
+# 事实来源：
+#   refs/gpt2.config.json
+#   model.safetensors 的头（160 个张量）
+#   llamacpp/nanogpt_model.py
+
+model gpt2 {
+  arch  gpt2
+  ctx   1024
+
+  hparams {
+    d_model = 768
+    n_layer = 12
+    vocab   = 50257
+    ln_eps  = 1e-05
+    d_ff    = 3072
+  }
+
+  # GPT-2 的注意力：**融合的 qkv，带 bias，没有 qk-norm，没有 RoPE**。
+  # 位置信息全靠外面的 wpe 加进去。
+  mech Attn : Attention {
+    heads      = { q = 12, kv = 12, head_dim = 64 }
+    out_dim    = 768
+    bias       = true
+    qk_norm    = off          # 它没有 QK-norm
+    structural = [ head_dim, out_dim, bias ]
+  }
+
+  # **没有门的 MLP**：c_fc → GELU → c_proj。
+  # 语言里的 FFN 一直assumed 门控（gate/up/down 三块），GPT-2 只有两块。
+  mech MLP : FFN {
+    hidden = 3072
+    act    = gelu_new
+    gate   = none             # ← 这一步是新的
+    bias   = true
+    structural = [ hidden, bias ]
+  }
+
+  schedule {
+    blk = 1 * Attn
+    block = blk
+  }
+
+  stack model {
+    pattern = 12 * block
+    model[:] >> MLP
+  }
+
+  # **没有 position 块** —— 位置信息是 wpe，一张查表，不是旋转。
+  # 语言里 `position` 一直是必有的（否则 rope 参数无从推导）。
+
+  tensors {
+    # **注意 GPT-2 的线性层是 Conv1D 布局：[in, out]，转置的。**
+    # 契约照实写，不做转置假装。
+    Attn {
+      c_attn.weight : (d_model, 3 * d_model)
+      c_attn.bias   : (3 * d_model,)
+      c_proj.weight : (d_model, d_model)
+      c_proj.bias   : (d_model,)
+      # 因果掩码当 buffer 存在权重文件里 —— 它不是学出来的参数，
+      # 但它在表里，所以要说出来。
+      # （写死 1024 而不是用 ctx：层级/图层张量的符号表只取 hparams，
+      #   不含 ctx —— 检查器当场指出了这一点。）
+      bias          : (1, 1, 1024, 1024)
+    }
+    MLP {
+      c_fc.weight   : (d_model, 4 * d_model)
+      c_fc.bias     : (4 * d_model,)
+      c_proj.weight : (4 * d_model, d_model)
+      c_proj.bias   : (d_model,)
+    }
+    layer {
+      ln_1.weight : (d_model,)
+      ln_1.bias   : (d_model,)
+      ln_2.weight : (d_model,)
+      ln_2.bias   : (d_model,)
+    }
+    global {
+      wte.weight        : (vocab, d_model)
+      # 学习式位置编码 —— **一张学出来的查表**，不是旋转。
+      # 写死 1024 而不是 ctx：图层/全局张量的符号表只取 hparams。
+      wpe.weight        : (1024, d_model)
+      ln_f.weight       : (d_model,)
+      ln_f.bias         : (d_model,)
+      lm_head.weight    : --      # 权重共享：wte 就是 lm_head
+    }
+  }
+
+  emit {
+    train -> transformers.config {
+      field {
+        model_type            = "gpt2"
+        vocab_size            = vocab
+        n_embd                = d_model
+        n_layer               = n_layer
+        n_head                = Attn.q
+        n_ctx                 = ctx
+        n_positions           = ctx
+        layer_norm_epsilon    = 1e-05
+        activation_function   = "gelu_new"
+        initializer_range     = 0.02
+        attn_pdrop            = 0.1
+        embd_pdrop            = 0.1
+        resid_pdrop           = 0.1
+        summary_activation    = null
+        summary_first_dropout = 0.1
+        summary_proj_to_labels = true
+        summary_type          = "cls_index"
+        summary_use_proj      = true
+        bos_token_id          = 50256
+        eos_token_id          = 50256
+        task_specific_params  = {"text-generation": {"do_sample": true, "max_length": 50}}
+      }
+    }
+
+    train -> torch.module {
+      # **这个 checkpoint 存的是 base model 的名字** —— `h.0.attn.…`、`wte.weight`，
+      # 没有 `transformer.` 那一段（GPT2LMHeadModel 的命名才有）。
+      # 名字是产物的事实，不是我该"修正"的东西。
+      name        = "h.{i}.{scope}{physical}"
+      global_name = "{physical}"
+      scope { Attn = attn., MLP = mlp., layer = "", global = "" }
+      rename {
+        ln_1.weight = ln_1.weight,
+        ln_1.bias   = ln_1.bias,
+        ln_2.weight = ln_2.weight,
+        ln_2.bias   = ln_2.bias
+      }
+    }
+  }
+}

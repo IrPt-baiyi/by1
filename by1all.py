@@ -57,6 +57,10 @@ REAL = [
     # 官方 Step-3.7（未剪枝）—— 和剪枝版的差别就是被删掉的那几行。
     ('step37-official.by1', 'refs/stepfun-ai__Step-3.7-Flash.config.json',
      'refs/step37-official.tensors.json', 'torch.module', []),
+    # **语言的边界**：GPT-2 —— LayerNorm / 学习式位置编码 / 无门控 MLP，
+    # 和前面十一个 Llama 家族是**两代人**。nanoGPT 是同一个架构。
+    ('gpt2.by1', 'refs/gpt2.config.json',
+     'refs/gpt2.tensors.json', 'torch.module', []),
 ]
 
 # 六个合成模型：三后端
