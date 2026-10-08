@@ -91,6 +91,31 @@ static void linear_b(float *o, const float *x, const float *w, const float *b,
         for (int j = 0; j < dout; j++) o[(size_t)i * dout + j] += b[j];
 }
 
+/* **无门控那一层用的激活。**
+ *
+ * 这里原来只有 silu_ —— 而 C 后端的无门控分支写死用它。
+ * 和 by1codegen 那边当初的 bug 一模一样：一条分支只为一种情况写过，
+ * 于是 GPT-2 的 `act = gelu_new` 一声不吭地被忽略。
+ * （PyTorch 那边修过了，C 这边没有。） */
+static void gelu_tanh_(float *x, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        float v = x[i];
+        x[i] = 0.5f * v * (1.0f + tanhf(0.7978845608028654f *
+                                        (v + 0.044715f * v * v * v)));
+    }
+}
+static void gelu_erf_(float *x, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        float v = x[i];
+        x[i] = 0.5f * v * (1.0f + erff(v * 0.7071067811865476f));
+    }
+}
+static void relu2_(float *x, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        float v = x[i] < 0 ? 0 : x[i];
+        x[i] = v * v;
+    }
+}
 static void silu_(float *x, size_t n) {
     for (size_t i = 0; i < n; i++) x[i] = x[i] / (1.0f + expf(-x[i]));
 }
@@ -762,10 +787,19 @@ def _emit_c_body(ir, params):
                         order.append((key(i, j, nm), pre + nm))
                 body.append((i, j, "Attention", a))
             elif k == "FFN":
-                if not a.get("gate", True) or a.get("act") == "gptoss":
-                    raise SystemExit(f"  [不支持] 第 {i} 层的 FFN 形态")
-                for nm in ("w1", "w2", "w3"):
+                # **无门控的 FFN 也是 FFN。**
+                # 这里原来是 `if not gate: raise` —— 和 by1codegen 那边当初
+                # 一模一样的毛病：一条分支只为"有门"那一种情况写过。
+                # **而 GPT-2 正是没有门的那种**，于是 C 后端建不了它。
+                gated = a.get("gate", True)
+                for nm in (("w1", "w2", "w3") if gated else ("w1", "w2")):
                     order.append((key(i, j, nm), pre + nm))
+                if a.get("bias"):
+                    for nm in (("w1.bias", "w2.bias", "w3.bias") if gated
+                               else ("w1.bias", "w2.bias")):
+                        order.append((key(i, j, nm), pre + nm))
+                if a.get("act") == "gptoss":
+                    raise SystemExit(f"  [不支持] 第 {i} 层的 FFN 用了 gptoss 激活")
                 body.append((i, j, "FFN", a))
             elif k == "Linear":
                 for nm in ("in_proj_qkvz", "in_proj_ba", "conv", "dt_bias",
@@ -894,7 +928,10 @@ def _emit_c_body(ir, params):
                 _sc = a["rope_scale"] if (not _y or _ty == "yarn") else 1.0
                 _rt = 0 if not _y else (2 if _ty == "llama3" else 1)
                 _nrot = int(hd * a.get("rope_partial", 1.0))
-                lb.append(f" rope(q, kk, n, {nh}, {nkv}, {hd},"
+                # **`rope` 是开关。** 这里以前无条件发这行 ——
+                # GPT-2 的 `rope = false`，于是它也把这个忙转了。
+                if a.get("rope", True):
+                    lb.append(f" rope(q, kk, n, {nh}, {nkv}, {hd},"
                           f" {float(a['rope_base'])}f,"
                           f" {0 if a['rope_pairing']=='half' else 1},"
                           f" {float(_sc)}f, {_nrot},"
@@ -913,12 +950,37 @@ def _emit_c_body(ir, params):
                 lb.append(f" {B}({dst}, ob, P({key(i,j,'wo')}){BA('wo')}, n, {nh*hd}, D);")
             elif k == "FFN":
                 hid = a["hidden"]
-                lb.append(f" linear(hb, {src[0]}, P({key(i,j,'w1')}), n, D, {hid});")
-                lb.append(f" silu_(hb, (size_t)n * {hid});")
-                lb.append(f" linear(ob, {src[0]}, P({key(i,j,'w3')}), n, D, {hid});")
-                lb.append(f" for (size_t z = 0; z < (size_t)n * {hid}; z++)"
-                          f" hb[z] *= ob[z];")
-                lb.append(f" linear({dst}, hb, P({key(i,j,'w2')}), n, {hid}, D);")
+                _b = bool(a.get("bias"))
+                # **参数顺序要和 order 里注册的一致** —— 不一致的话
+                # 权重会串位，而算出来的数看着仍然"像那么回事"。
+                # **有 bias 用 linear_b，没有用 linear** —— 两个不同的函数，
+                # 不是一个函数多一个参数。第一版写成了一个带 NULL 的调用，
+                # 那个签名根本不存在。
+                def _lin(dst_, x_, w_, b_, di_, do_):
+                    if _b:
+                        return (f" linear_b({dst_}, {x_}, P({w_}), P({b_}),"
+                                f" n, {di_}, {do_});")
+                    return f" linear({dst_}, {x_}, P({w_}), n, {di_}, {do_});"
+                lb.append(_lin("hb", src[0], key(i,j,'w1'), key(i,j,'w1.bias'),
+                               "D", hid))
+                # **激活要分派，不能写死 silu。**
+                # GPT-2 是 gelu_new —— 写死 silu 会生成一个
+                # 看起来对但算错的模型（PyTorch 那边踩过这个坑）。
+                _act = a.get("act", "silu")
+                _fn = {"gelu_new": "gelu_tanh_", "gelu": "gelu_erf_",
+                       "gelu_tanh": "gelu_tanh_", "tanh": "gelu_tanh_",
+                       "relu2": "relu2_"}.get(_act, "silu_")
+                if a.get("gate", True):
+                    lb.append(f" {_fn}(hb, (size_t)n * {hid});")
+                    lb.append(_lin("ob", src[0], key(i,j,'w3'),
+                                   key(i,j,'w3.bias'), "D", hid))
+                    lb.append(f" for (size_t z = 0; z < (size_t)n * {hid}; z++)"
+                              f" hb[z] *= ob[z];")
+                else:
+                    # **无门控：只有一块上投影。** 这就是 GPT-2 的 MLP。
+                    lb.append(f" {_fn}(hb, (size_t)n * {hid});")
+                lb.append(_lin(dst, "hb", key(i,j,'w2'), key(i,j,'w2.bias'),
+                               hid, "D"))
             elif k == "Linear":
                 lb.append(
                     f" gdn({dst}, {src[0]}, n, D, {a['k_heads']}, {a['v_heads']},"

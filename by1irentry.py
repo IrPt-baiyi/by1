@@ -114,7 +114,7 @@ def main():
             nelem = sum(int(np.prod(v)) for v in ex.shapes_of(ir0).values())
         except Exception:
             continue
-        if nelem > 3e7:            # ~30M 参数，fp32 约 120MB
+        if nelem > 2e8:            # ~200M 参数，fp32 约 800MB
             skipped.append((f, nelem))
             continue
         try:

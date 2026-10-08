@@ -43,6 +43,31 @@ static void linear_b(float *o, const float *x, const float *w, const float *b,
         for (int j = 0; j < dout; j++) o[(size_t)i * dout + j] += b[j];
 }
 
+/* **无门控那一层用的激活。**
+ *
+ * 这里原来只有 silu_ —— 而 C 后端的无门控分支写死用它。
+ * 和 by1codegen 那边当初的 bug 一模一样：一条分支只为一种情况写过，
+ * 于是 GPT-2 的 `act = gelu_new` 一声不吭地被忽略。
+ * （PyTorch 那边修过了，C 这边没有。） */
+static void gelu_tanh_(float *x, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        float v = x[i];
+        x[i] = 0.5f * v * (1.0f + tanhf(0.7978845608028654f *
+                                        (v + 0.044715f * v * v * v)));
+    }
+}
+static void gelu_erf_(float *x, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        float v = x[i];
+        x[i] = 0.5f * v * (1.0f + erff(v * 0.7071067811865476f));
+    }
+}
+static void relu2_(float *x, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        float v = x[i] < 0 ? 0 : x[i];
+        x[i] = v * v;
+    }
+}
 static void silu_(float *x, size_t n) {
     for (size_t i = 0; i < n; i++) x[i] = x[i] / (1.0f + expf(-x[i]));
 }

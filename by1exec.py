@@ -45,6 +45,21 @@ def rms_norm(x, w, eps=1e-5, one_plus=False):
     return y * ((1.0 + w) if one_plus else w)
 
 
+def layer_norm(x, w, b, eps=1e-5, one_plus=False):
+    """**LayerNorm 和 RMSNorm 不是一个东西。**
+
+    这里原来只有 rms_norm —— 于是 NumPy 后端算 GPT-2 的时候，
+    24 个 LayerNorm bias **根本没有参与运算**，而输出形状完全正常。
+    "看起来对但算错"，正是这个项目里最贵的那一类。
+    （PyTorch 那边早就两样都有了。）
+    """
+    mu = x.mean(-1, keepdims=True)
+    var = ((x - mu) ** 2).mean(-1, keepdims=True)
+    y = (x - mu) / np.sqrt(var + eps)
+    y = y * ((1.0 + w) if one_plus else w)
+    return y + b if b is not None else y
+
+
 def silu(x):
     return x / (1.0 + np.exp(-x))
 
@@ -126,6 +141,11 @@ def _qk_on(v):
 # ── 每个 op 一个函数：签名统一 (params, attrs, inputs, d_model) ────
 
 def op_norm(P, a, ins, d):
+    # **按 kind 分派。** 以前无条件走 rms —— `kind` 这个属性
+    # 在 IR 里一直有，这个后端从来没读它。
+    if a.get("kind") == "layer":
+        return layer_norm(ins[0], P["w"], P.get("b"), a.get("eps", 1e-5),
+                          a.get("one_plus", False))
     return rms_norm(ins[0], P["w"], a.get("eps", 1e-5),
                     a.get("one_plus", False))
 
@@ -167,8 +187,21 @@ def op_attention(P, a, ins, d):
         q = rms_norm(q, P["qn.w"], one_plus=a.get("norm_one_plus", False))
         k = rms_norm(k, P["kn.w"], one_plus=a.get("norm_one_plus", False))
     hd, part = a["head_dim"], a.get("rope_partial", 1.0)
+    # **`rope` 是一个开关，不是一个常量。**
+    # 这一段以前无条件转 —— 而 GPT-2 的 `rope = false`
+    # （它的位置信息是外面加的 wpe）。
+    # 这个后端**从来没读过这个属性**，而 SHAPED 里那些模型的
+    # rope 全是开着的，所以一直看不见。
+    #
+    # 和 by1codegen 当初那个"Attention 无条件 apply_rope"是同一个 bug，
+    # 只是那个是在 PyTorch 后端、且是被 GPT-2 逼出来的。
+    _rope_on = bool(a.get("rope", True))
     npr = int(hd * part)
-    if 0 < npr < hd:
+    # **开关要真的管住两个分支。**
+    # 第一版我写的是 `if not _rope_on: part = 0.0` —— 于是 `npr = 0`
+    # 让 `0 < npr < hd` 变假，**直接掉进 else 分支照转不误**。
+    # 一个"看起来加了开关"的改动比没加更坏：它让人以为查过了。
+    if _rope_on and 0 < npr < hd:
         c, s = rope_tables(npr, n, a["rope_base"], a.get("yarn"))
         if a.get("rope_scale", 1.0) != 1.0:
             c, s = c * a["rope_scale"], s * a["rope_scale"]
@@ -176,7 +209,7 @@ def op_attention(P, a, ins, d):
                             q[..., npr:]], -1)
         k = np.concatenate([apply_rope(k[..., :npr], c, s, a["rope_pairing"]),
                             k[..., npr:]], -1)
-    else:
+    elif _rope_on:
         c, s = rope_tables(hd, n, a["rope_base"], a.get("yarn"))
         if a.get("rope_scale", 1.0) != 1.0:
             c, s = c * a["rope_scale"], s * a["rope_scale"]
@@ -259,21 +292,53 @@ def op_mla(P, a, ins, d):
     return o
 
 
+def _act_apply(v, style):
+    """**激活要分派，不能写死 silu。**
+
+    这里原来那条无门控分支写死 `silu` —— 和 by1codegen 那边当初
+    一模一样的毛病：一条分支只为"有门 + silu"那一种情况写过。
+    GPT-2 是无门控 + gelu_new，于是拿到的是 silu，
+    而 `.by1` 里写的 `act` 一声不吭地被忽略。
+
+    **而且是三个后端里最后一个修好的** —— PyTorch 那边改过了，
+    C 那边刚改，这里是漏的那个。同一个 bug 在三处，
+    改的时候只改了一处。
+    """
+    if style in ("gelu_new", "gelu_tanh", "tanh"):
+        return 0.5 * v * (1.0 + np.tanh(0.7978845608028654
+                                        * (v + 0.044715 * v ** 3)))
+    if style == "gelu":
+        from math import erf
+        _e = np.vectorize(erf)
+        return 0.5 * v * (1.0 + _e(v * 0.7071067811865476))
+    if style == "relu2":
+        return np.maximum(v, 0.0) ** 2
+    return silu(v)
+
+
+def _bias(y, P, key):
+    """**bias 也要认。** 这里以前一条都没有 —— GPT-2 的 4×12 个 bias
+    在后端层面根本不存在，而"张量搬运 173/173"看起来是满的。"""
+    return y + P[key] if key in P else y
+
+
 def op_ffn(P, a, ins, d):
     x = ins[0]
-    g = x @ P["w1"].T
+    _act = a.get("act", "silu")
+    g = _bias(x @ P["w1"].T, P, "w1.bias")
     if not a.get("gate", True):
-        return silu(g) @ P["w2"].T
-    u = x @ P["w3"].T
-    if a.get("act") == "gptoss":
+        # 无门控：**一块上投影**。这就是 GPT-2 的 MLP。
+        return _bias(_act_apply(g, _act) @ P["w2"].T, P, "w2.bias")
+    u = _bias(x @ P["w3"].T, P, "w3.bias")
+    if _act == "gptoss":
         lim = a.get("limit")
         if lim is not None:
             g = np.minimum(g, lim)
             u = np.clip(u, -lim, lim)
         h = (u + 1) * (g / (1.0 + np.exp(-a.get("alpha", 1.702) * g)))
     else:
-        h = silu(g) * u
-    return h @ P["w2"].T
+        h = _act_apply(g, _act) * u
+    return _bias(h @ P["w2"].T, P, "w2.bias")
 
 
 def op_moe(P, a, ins, d):
@@ -425,6 +490,10 @@ def shapes_of(ir):
             pre = f"layers.{L['index']}.op{j}."
             if k == "Norm":
                 out[pre + "w"] = (d,)
+                # **LayerNorm 有 bias。** 以前这里一条都没有 ——
+                # GPT-2 的 ln_1.bias / ln_2.bias 在后端层面不存在。
+                if a.get("kind") == "layer":
+                    out[pre + "b"] = (d,)
             elif k == "Attention":
                 hd, q, kv = a["head_dim"], a["q"], a["kv"]
                 out[pre + "wq"] = (q * hd * (2 if a.get("q_gate") else 1), d)
@@ -470,6 +539,14 @@ def shapes_of(ir):
                 out[pre + "w2"] = (d, a["hidden"])
                 if a.get("gate", True):
                     out[pre + "w3"] = (a["hidden"], d)
+                # **bias。** 以前这里一条都没有 —— 于是 GPT-2 的
+                # 4×12 个 bias 在后端层面**根本不存在**，
+                # 而"张量搬运 173/173"看起来是满的。
+                if a.get("bias"):
+                    out[pre + "w1.bias"] = (a["hidden"],)
+                    out[pre + "w2.bias"] = (d,)
+                    if a.get("gate", True):
+                        out[pre + "w3.bias"] = (a["hidden"],)
             elif k == "MoE":
                 E, H = a["experts"], a["hidden"]
                 out[pre + "router"] = (E, d)
@@ -502,7 +579,13 @@ def shapes_of(ir):
                 out[pre + "norm.w"] = (a["v_dim"],)
                 out[pre + "out_proj"] = (d, vd)
     out["embed.weight"] = (ir["vocab"], d)
+    # **学习式位置表。** pos_kind=learned 的模型有一张 (n_pos, d) 的查表 ——
+    # 它不在任何一层里，也不是 embed，所以以前这个后端**完全不知道它存在**。
+    if ir.get("pos_kind") == "learned":
+        out["pos.weight"] = (int(ir.get("n_pos") or ir.get("ctx") or 1024), d)
     out["final_norm.w"] = (d,)
+    if ir.get("norm_kind") == "layer":
+        out["final_norm.b"] = (d,)
     out["head.weight"] = (ir["vocab"], d)
     return out
 
@@ -522,6 +605,12 @@ class Exec:
     def __call__(self, ids):
         d = self.ir["d_model"]
         x = self.params_global("embed.weight")[ids]
+        # **学习式位置表。** 这一段以前不存在 —— 于是 GPT-2 的
+        # `wpe.weight`（整张位置表）在这个后端里**根本没被加进去**，
+        # 而输出形状完全正常。位置信息全靠外面加进来，不加就少了一样东西。
+        if self.ir.get("pos_kind") == "learned":
+            n = x.shape[1]
+            x = x + self.params_global("pos.weight")[:n][None, :, :]
         for L in self.ir["layers"]:
             env = {"hidden": x}
             for j, o in enumerate(L["ops"]):
@@ -531,8 +620,15 @@ class Exec:
                     raise SystemExit(f"  [不支持] 这个后端还没有实现 {o['kind']}")
                 env[o["outputs"][0]] = fn(self.P[L["index"]][j], o["attrs"], ins, d)
             x = env[L["ops"][-1]["outputs"][0]]
-        x = rms_norm(x, self.params_global("final_norm.w"),
-                     one_plus=self.ir.get("norm_one_plus", False))
+        # **最终归一化也要按 norm_kind 分派** —— 以前无条件走 rms，
+        # 于是 LayerNorm 模型的最后一步也是错的。
+        if self.ir.get("norm_kind") == "layer":
+            x = layer_norm(x, self.params_global("final_norm.w"),
+                           self.params_global("final_norm.b"),
+                           one_plus=self.ir.get("norm_one_plus", False))
+        else:
+            x = rms_norm(x, self.params_global("final_norm.w"),
+                         one_plus=self.ir.get("norm_one_plus", False))
         return x @ self.params_global("head.weight").T
 
     def params_global(self, k):
@@ -561,8 +657,12 @@ def exec_ir(ir, seq=48, seed=0):
     params = {k: rng.normal(0, 0.1, s).astype(np.float32)
               for k, s in shapes.items()}
     ex = Exec(ir, params)
+    # **按 shapes_of 实际给出的来** —— 硬编码三个名字的话，
+    # 位置表和最终归一化的 bias 永远不会进 `_g`，
+    # 而 `params_global` 会 KeyError（或者更糟：被静默跳过）。
     ex.P["_g"] = {k: params[k] for k in
-                  ("embed.weight", "final_norm.w", "head.weight")}
+                  ("embed.weight", "pos.weight", "final_norm.w",
+                   "final_norm.b", "head.weight") if k in params}
     ids = rng.integers(0, ir["vocab"], (1, seq))
     return ex(ids), params
 
@@ -603,7 +703,12 @@ def main(argv=None):
     rng = np.random.default_rng(0)
     params = {k: rng.normal(0, 0.1, s).astype(np.float32) for k, s in shapes.items()}
     ex = Exec(ir, params)
-    ex.P["_g"] = {k: params[k] for k in ("embed.weight", "final_norm.w", "head.weight")}
+    # **按 shapes_of 实际给出的来** —— 硬编码三个名字的话，
+    # 位置表和最终归一化的 bias 永远不会进 `_g`，
+    # 而 `params_global` 会 KeyError（或者更糟：被静默跳过）。
+    ex.P["_g"] = {k: params[k] for k in
+                  ("embed.weight", "pos.weight", "final_norm.w",
+                   "final_norm.b", "head.weight") if k in params}
     ids = rng.integers(0, ir["vocab"], (1, args.seq))
     out = ex(ids)
     print(f"\n  跑通：输出 {out.shape}，幅度 {np.abs(out).max():.4e}")
@@ -620,15 +725,31 @@ def main(argv=None):
         sd = m.state_dict()
         import re as _re
 
+        # **两个后端对同一个东西可以用不同的名字，那是事实，不是要猜的谜。**
+        # 所以这里是一张**显式别名表** —— 而不是"按形状兜底猜一个"。
+        #
+        # 我试过按形状兜底（唯一匹配才认）。它把 clef-tiny 和 mla-shaped
+        # 从 PASS 变成了 ~3e-04 —— 因为同形状的参数太多，
+        # "唯一"匹配也会配到错的那个，而**配错之后检查照样往下走**。
+        # 一个"帮你多认几个名字"的兜底，把"找不到就停"变成了"装错也继续"。
+        NAME_ALIAS = {
+            # PyTorch 那边叫 wpe（GPT-2 的历史名字），
+            # IR 里叫 pos（`pos_kind = learned`，与具体模型无关）。
+            "wpe.weight": "pos.weight",
+            "pos.weight": "wpe.weight",
+        }
+
         def find(nm, v):
-            """两个后端各自命名参数（PyTorch 的 nn.Linear 会加 .weight），
-            IR 不管这件事 —— 所以搬运时按形状兜底匹配。"""
-            for cand in (nm, _re.sub(r"\.(weight|bias)$", "", nm)):
-                if cand in params and (params[cand].shape == tuple(v.shape)
-                                  or params[cand].shape == tuple(s for s in v.shape if s != 1)):
+            """按**名字**配对。配不上就返回 None —— 让它报"没找到"，
+            而不是猜一个然后算出一个错的数。"""
+            for cand in (nm,
+                         NAME_ALIAS.get(nm),
+                         _re.sub(r"\.(weight|bias)$", "", nm)):
+                if cand and cand in params:
                     return cand
             return None
-        tgt, left = {}, []
+
+        tgt, left, used = {}, [], set()
         for k, v in sd.items():
             c = find(k, v)
             if c is None:
@@ -653,8 +774,17 @@ def main(argv=None):
         amp = max(np.abs(ref).max(), 1e-9)
         print(f"    PyTorch 幅度 {np.abs(ref).max():.4e}   NumPy 幅度 "
               f"{np.abs(out).max():.4e}")
+        _ok2 = dd / amp < 1e-5
         print(f"    最大绝对差 {dd:.3e}   相对 {dd/amp:.3e}   "
-              + ("[PASS] 两个后端一致" if dd / amp < 1e-5 else "[FAIL] 不一致"))
+              + ("[PASS] 两个后端一致" if _ok2 else "[FAIL] 不一致"))
+        # **打印了 FAIL 就得返回非零。**
+        # 这里原来是 `return 0` —— 于是 by1all 看退出码，把
+        # `[FAIL] 不一致` 标成 **ok**。护栏瞎了多久没人知道：
+        # mla-shaped 差 3.1e-04、clef-tiny 差 4.2e-04，
+        # 一直在跑、一直在打印 FAIL、一直被当成通过。
+        if not _ok2:
+            print()
+            return 1
     print()
     return 0
 

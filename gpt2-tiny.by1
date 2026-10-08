@@ -1,0 +1,101 @@
+# ── gpt2-tiny.by1 ─────────────────────────────────────────────────────
+# **由 gpt2.by1 机械缩小维度得来，结构一个字没改。**
+#
+# ## 为什么要有这个
+#
+# `by1all` 里三个后端对拍的那批（SHAPED）**全是有门控 + silu 的**。
+# 于是"无门控 FFN"这一类**从来没被三个后端一起对过** ——
+# 而 `by1exec` 的 `op_ffn` 里就藏着写死的 `silu`（还不认 bias）。
+#
+# 它是怎么被发现的：我改 C 后端让它支持无门控，然后拿 **gpt2 本体**
+# 去对拍 C↔NumPy，差 3.9e-01。改 gpt2-tiny 是为了让这条**留下来** ——
+# 162M 参数的模型进不了 --quick。
+#
+# GPT-2 那一代的四样东西，全在这个文件里：
+#
+#            它有              现代那套
+#   归一化   LayerNorm         RMSNorm        ← 均值也要减、还有 bias
+#   位置     学习式 wpe        RoPE           ← 根本没有"位置编码矩阵"
+#   前馈     两层 + GELU       门控 + SwiGLU   ← 没有门，也没有门控乘法
+#   线性     Conv1D [in,out]  nn.Linear      ← 转置的
+#
+# 缩小的只有数字：d_model 768→64，n_layer 12→2，vocab 50257→256，
+# ctx 1024→64，hidden 3072→256，heads 12→4，head_dim 64→16。
+#
+# 判卷人：三个后端互相 + by1check + by1gate。
+
+model gpt2-tiny {
+  arch  gpt2
+  ctx   64
+
+  hparams {
+    d_model = 64
+    n_layer = 2
+    vocab   = 256
+    ln_eps  = 1e-05
+    norm_kind = layer     # **GPT-2 用 LayerNorm**，不是 RMSNorm
+    d_ff    = 256
+  }
+
+  # 融合的 qkv，带 bias，没有 qk-norm，没有 RoPE。
+  mech Attn : Attention {
+    heads      = { q = 4, kv = 4, head_dim = 16 }
+    out_dim    = 64
+    bias       = true
+    qk_norm    = off
+    structural = [ head_dim, out_dim, bias ]
+  }
+
+  # **没有门的 MLP**：c_fc → GELU → c_proj。
+  mech MLP : FFN {
+    hidden = 256
+    act    = gelu_new
+    gate   = none             # ← 就是这一行让三个后端分道扬镳过
+    bias   = true
+    structural = [ hidden, bias ]
+  }
+
+  position {
+    default = learned(64)
+  }
+
+  schedule {
+    blk = 1 * Attn
+    block = blk
+  }
+
+  stack model {
+    pattern = 2 * block
+    model[:] >> MLP
+  }
+
+  tensors {
+    # Conv1D 布局：[in, out]，转置的。契约照实写，不做转置假装。
+    Attn {
+      c_attn.weight : (d_model, 3 * d_model)
+      c_attn.bias   : (3 * d_model,)
+      c_proj.weight : (d_model, d_model)
+      c_proj.bias   : (d_model,)
+      bias          : (1, 1, 64, 64)
+    }
+    MLP {
+      c_fc.weight   : (d_model, 4 * d_model)
+      c_fc.bias     : (4 * d_model,)
+      c_proj.weight : (4 * d_model, d_model)
+      c_proj.bias   : (d_model,)
+    }
+    layer {
+      ln_1.weight : (d_model,)
+      ln_1.bias   : (d_model,)
+      ln_2.weight : (d_model,)
+      ln_2.bias   : (d_model,)
+    }
+    global {
+      wte.weight     : (vocab, d_model)
+      wpe.weight     : (64, d_model)
+      ln_f.weight    : (d_model,)
+      ln_f.bias      : (d_model,)
+      lm_head.weight : --      # 权重共享：wte 就是 lm_head
+    }
+  }
+}

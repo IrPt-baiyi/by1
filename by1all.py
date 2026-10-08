@@ -74,7 +74,14 @@ SHAPED = ['llama-shaped.by1', 'mixtral-shaped.by1', 'gpt-oss-shaped.by1',
           # **由 clef.by1 机械缩小维度得来，结构一个字没改。**
           # 它证明"对着真 checkpoint 验过的那份描述"**同时是能跑的** ——
           # 不是两套东西。
-          'clef-tiny.by1']
+          'clef-tiny.by1',
+          # **无门控 FFN + LayerNorm + 学习式位置** —— 上一代的东西。
+          # 别的 SHAPED 全是有门控 + silu，所以这一类从来没被三个后端
+          # 一起对过 —— 而 `by1exec` 的 `op_ffn` 里就藏着写死的 `silu`
+          # （还不认 bias）。它是怎么被发现的：改 C 后端让它支持无门控，
+          # 然后拿 gpt2 本体对拍，差 3.9e-01。
+          # 这个文件是让那条检查**留下来**：162M 参数的进不了 --quick。
+          'gpt2-tiny.by1']
 
 # 三个判卷人脚本
 JUDGES = ['by1mla.py', 'by1moe.py', 'by1rope.py',
@@ -180,7 +187,10 @@ def main():
     for f in SHAPED:
         # mla-shaped 的参考在 by1mla.py 里；llama3-shaped 是合成的，没有
         # transformers 对应物（它的验证靠 by1rope.py + 两个跨后端对拍）。
-        if f in ('mla-shaped.by1', 'llama3-shaped.by1', 'clef-tiny.by1'):
+        # gpt2-tiny 的参考在 by1gpt2.py 里（对 HF 官方实现）；
+        # 它没有对应的 transformers 配置可生成，所以这里跳过。
+        if f in ('mla-shaped.by1', 'llama3-shaped.by1', 'clef-tiny.by1',
+                 'gpt2-tiny.by1'):
             continue
         ok, out = run(['by1diff.py', f], 'diff ' + f)
         line = [l.strip() for l in out.splitlines() if '最大绝对差' in l]
@@ -193,6 +203,14 @@ def main():
     for f in SHAPED:
         ok, out = run(['by1exec.py', f, '--compare'], 'exec ' + f)
         line = [l.strip() for l in out.splitlines() if '最大绝对差' in l]
+        # **除了退出码，也看输出里有没有 FAIL。**
+        # 只信退出码的话，一个"打印了 FAIL 却 return 0"的脚本
+        # 会被当成通过 —— 而那正是发生过的事。
+        #
+        # 判卷人的判据**不能只有一条通道**：它自己坏了，就没人发现。
+        if ok and any('[FAIL]' in l for l in out.splitlines()):
+            ok = False
+            line = ['（退出码说 ok，但输出里是 FAIL —— 两个通道不一致）']
         rows.append(('NumPy ' + f, ok,
                      (line[-1] if line else '').replace('   ', ' ')))
         if not ok:
