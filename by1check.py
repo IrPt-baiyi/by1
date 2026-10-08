@@ -1266,20 +1266,35 @@ def check(path: str) -> Tuple[Report, dict]:
             return int(n) if float(n).is_integer() else n
         return t
 
-    def _ltype_of_attrs(a):
+    # 层类型不只看 window —— **还要看机制的种类**。
+    # 原来这里只读 window，于是 GDN/KDA 这类线性注意力层（根本没有 window）
+    # 被算成 full_attention。混合栈的 layer_types 以前从来没被检查过：
+    # Ling 的 config 里没这个键，Qwen3-Next 那个没有 field 映射，
+    # clef 是第一个把它摆上台面的。
+    def _ltype_of_attrs(a, mech_name=None):
+        # 层类型不只看 window —— **还要看机制的种类**。
+        # 原来这里只读 window，于是 GDN/KDA 这类线性注意力层（根本没有 window）
+        # 被算成 full_attention。混合栈的 layer_types 以前从来没被检查过：
+        # Ling 的 config 里没这个键，Qwen3-Next 那个没有 field 映射，
+        # clef 是第一个把它摆上台面的。
+        # layer_seq 里第 2 项是**机制名**（不是种类）。
+        # 种类在 Blk.mtype（Blk.kind 是"块"的种类，恒为 "mech"）。
+        _m = mechs.get(mech_name) if mech_name else None
+        if _m is not None and (_m.mtype or "").strip() in ("Linear", "SSM", "Recurrent"):
+            return "linear_attention"
         w = (a.get("window") or "").strip().lower()
         return "full_attention" if w in ("none", "null", "0", "") else "sliding_attention"
 
     def gen_layer_types():
-        return [_ltype_of_attrs(a) for (_s, _m, a, _k, _t) in layer_seq]
+        return [_ltype_of_attrs(a, m) for (_s, m, a, _k, _t) in layer_seq]
 
     def name_layer_type(nm):
         recs = named.get(nm)
         if recs:
-            return _ltype_of_attrs(recs[0].attrs)
+            return _ltype_of_attrs(recs[0].attrs, nm)
         for (_s, m, a, _k, _t) in layer_seq:
             if m == nm:
-                return _ltype_of_attrs(a)
+                return _ltype_of_attrs(a, nm)
         return None
 
     ROPE_KEYS = {"base": "rope_theta", "type": "rope_type",

@@ -41,6 +41,10 @@ REAL = [
     # 前面几个都是特意挑来压东西的，如果连这一个都要新属性，就是没收敛。
     ('minimind-3.by1', 'refs/jingyaogong__minimind-3.config.json',
      'refs/minimind-3.tensors.json', 'torch.module', []),
+    # 第二个收敛判卷人，比 minimind 严格得多：48 层线性注意力 + 16 层全量，
+    # 而这一整套 Qwen3-Next 时代就有了（GDN + 3+1 混合 + q_gate + qk_norm）。
+    ('clef.by1', 'refs/Cloudflare__clef.config.json',
+     'refs/clef.tensors.json', 'torch.module', []),
 ]
 
 # 六个合成模型：三后端

@@ -812,3 +812,80 @@ nerkyor 剪枝微调版      有，18 个不同的值（249~288）
 `nanoGPT` 没有 HF config（它是训练代码仓库）；它的架构要从 `model.py` 读，
 而那是 **GPT-2**：`LayerNorm`（不是 RMSNorm）、学习式位置编码（不是 RoPE）、
 `GELU`（不是 SwiGLU）—— **这门语言是 Llama 形状的**，这一条才是真的边界。
+
+---
+
+## 28. clef —— 第二个收敛判卷人，而且这个严格得多
+
+`Cloudflare/clef` 是 Qwen3.5 形状：**48 层线性注意力 + 16 层全量注意力**
+（每 4 层一次），全量那 16 层带输出门控和按头的 QK-norm。
+
+```
+config          33 / 33      值不同 0   多出 0   官方多出 0
+layer_types     64 / 64
+张量            851 / 851    形状不符 0  缺失 0
+```
+
+**这一整套我都有** —— 因为 Qwen3-Next 就是同一个形状：
+线性注意力 = 我的 GDN（张量集逐个相同）· 3+1 混合 = 我的 schedule ·
+输出门控 = 我的 `q_gate`（实测 `q_proj [12288] = 24 × 256 × 2`）·
+按头 QK-norm = 我的 `qk_norm = per_head`。
+
+**它是 Qwen3.8-27B 去掉 MTP**（实测 1184/1199 同名同形，多出的 15 个全是 `mtp.*`，
+而 config 里 `mtp_num_hidden_layers = 0`）。
+
+### 它逼出来的四个 bug，全是"同一个东西有两个实现"
+
+**① `layer_types` 只看 `window`**
+
+```python
+def _ltype_of_attrs(a):
+    w = (a.get("window") or "").strip().lower()
+    return "full_attention" if w in ("none","null","0","") else "sliding_attention"
+```
+
+**它假设每一层都是带窗口的注意力。** GDN / KDA 这类线性注意力层根本没有
+`window`，于是被算成 `full_attention` —— 64 层全错。
+
+**混合栈的 `layer_types` 以前从来没被检查过**：Ling 的 config 里没这个键，
+Qwen3-Next 那个没有 field 映射，clef 是第一个把它摆上台面的。
+
+**② 同一件事两个实现，我修了一个**
+
+`by1check` 里一个、`by1verify` 里一个，逻辑一样。
+修完前者，结果是**同一个模型"字段对拍通过、层类型检查失败"**。
+现在 `by1verify.by1_layer_types` 直接用 `info["layer_types"]` —— 只留一份。
+
+**③ 机制属性里引用 hparams 符号，不参与形状求值**
+
+432 个张量因此解析不出来（"符号形状跳过"）。改成字面量。
+**这是个已知短板**：机制属性写 `k_heads = lin_k_heads` 是自然的，
+但现在不行。
+
+**④ `block` 里重复同一个部件名，解析不了**
+
+`block = local + local + local + global` ✗ → 每个部件要先单独命名 ✓
+`lin = 3 * Lin` 然后 `block = lin + full`。
+
+### 还有一件：检查是**单向**的
+
+上面全是"契约 → 实物"。于是 `官方多出 0` 读起来像"什么都没漏"，
+而**实物里可能有几百个契约根本没提的张量**。
+
+补上反方向之后，立刻看到：
+
+| 模型 | 契约未覆盖的实物张量 |
+|---|---|
+| gpt-oss-120b | 0（全覆盖） |
+| minimind-3 | 0（全覆盖） |
+| **clef** | **333 个（28%）** —— 全是 `model.visual.*` 视觉塔 |
+| **gemma-4-31b** | **303 个（36%）** |
+
+**"gemma 530/530 张量"听起来像全覆盖 —— 实际是 833 个里的 530 个。**
+36% 的权重从来没被提过。这是**范围边界**，不是失败 —— **但必须看得见**。
+
+### Qwen3.5 族剩下的两个
+
+`Qwen3.8-27B` = clef + MTP(1 层) · `Qwen3.6-35B-A3B` = 40 层 + MoE（gate_up 融合、
+共享专家、shared_gate，全是已有词汇）+ MTP(1 层)。
+**MTP 是这一族里唯一的新东西。**

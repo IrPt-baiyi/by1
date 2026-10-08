@@ -1,0 +1,173 @@
+# ── clef.by1 ──────────────────────────────────────────────────────────
+# Cloudflare/clef —— 又一个**收敛判卷人**，而且比 minimind-3 严格得多。
+#
+# 它是 Qwen3.5 形状：48 层线性注意力 + 16 层全量注意力（每 4 层一次），
+# 全量那 16 层带输出门控和按头的 QK-norm。
+#
+# **而这一整套我都有** —— 因为 Qwen3-Next 就是同一个形状：
+#   线性注意力   -> 我的 GDN，张量集逐个对上
+#   3+1 混合     -> 我的 schedule/block
+#   输出门控     -> 我的 q_gate（q_proj 输出翻倍）
+#   按头 QK-norm -> 我的 qk_norm = per_head
+#
+# 它和 Qwen3.8-27B 是**同一个模型去掉 MTP**（实测 1184/1199 同名同形，
+# 多出的 15 个全是 mtp.*），而 config 里 mtp_num_hidden_layers = 0。
+# 所以它不需要 MTP —— 是新属性数为 **0** 的那一个。
+#
+# 事实来源：
+#   refs/Cloudflare__clef.config.json
+#   refs/clef.tensors.json（1184 个张量，12 个分片全读）
+
+model clef {
+  arch  qwen3_5
+  ctx   262144
+
+  hparams {
+    d_model = 5120
+    n_layer = 64
+    vocab   = 248320
+    rms_eps = 1e-06
+  }
+
+  # ── 线性注意力（48 层）────────────────────────────────────────────
+  # 张量集与 Qwen3-Next 的 GDN **逐个相同**：
+  #   in_proj_qkv [10240] = 16*128*2 + 48*128
+  #   in_proj_z   [6144]  = 48*128          （门控）
+  # 实测算得：16*128*2 + 48*128 = 10240 ✓
+  #
+  # **四个维度要写死，不能引用 hparams** —— 机制属性里的符号不会
+  # 参与形状求值（432 个张量因此解析不出来）。这是个已知的短板。
+  mech Lin : Linear {
+    k_heads     = 16
+    k_dim       = 128
+    v_heads     = 48            # ≠ k_heads，所以 q/k 要按 v 的头数复制
+    v_dim       = 128
+    conv_kernel = 4
+    act         = silu
+    structural  = [ k_heads, k_dim, v_heads, v_dim, conv_kernel, out_dim ]
+  }
+
+  # ── 全量注意力（16 层）────────────────────────────────────────────
+  # q_proj 实测 [12288, 5120] = 24 * 256 * **2** —— 翻倍的那一半是输出门控，
+  # 就是 q_gate。o_proj [5120, 6144] = (d, q * head_dim)，不含门控。
+  mech GQA : Attention {
+    heads      = { q = 24, kv = 4, head_dim = 256 }
+    out_dim    = 6144
+    q_gate     = true
+    qk_norm    = per_head
+    structural = [ head_dim, out_dim, q_gate, qk_norm ]
+  }
+
+  mech FFN_ : FFN { hidden = 17408 }
+
+  # ── 调度：三线性 + 一全量，重复 16 次 ──────────────────────────────
+  # **每个部件要先单独命名** —— 写 `local + local + local + global` 这种
+  # 重复名字的写法，layer_types 会退化成一整串 full_attention。
+  schedule {
+    lin   = 3 * Lin
+    full  = 1 * GQA
+    block = lin + full
+  }
+
+  stack main {
+    pattern = 16 * block           # 64 层 = 48 线性 + 16 全量
+    main[:] >> FFN_
+  }
+
+  position {
+    # Qwen3.5 把 rope_theta 挪进了 rope_parameters，而且只转**四分之一**的维度
+    # （partial_rotary_factor 0.25 → 256 维里转 64 维）。
+    # mrope_section 是给视觉塔的多模态分段，标准文本推理用不到，
+    # 但它写在 config 里，所以要照抄。
+    default = partial(rope(base = 10000000, pairing = half), ratio = 0.25)
+  }
+
+  tensors {
+    Lin {
+      in_proj_qkv.weight : (k_heads * k_dim * 2 + v_heads * v_dim, d_model)
+      in_proj_z.weight   : (v_heads * v_dim, d_model)
+      in_proj_a.weight   : (v_heads, d_model)
+      in_proj_b.weight   : (v_heads, d_model)
+      conv1d.weight      : (k_heads * k_dim * 2 + v_heads * v_dim, 1, conv_kernel)
+      A_log              : (v_heads,)
+      dt_bias            : (v_heads,)
+      norm.weight        : (v_dim,)
+      out_proj.weight    : (d_model, v_heads * v_dim)
+    }
+    GQA {
+      q_proj.weight : (q * head_dim * 2, d_model)
+      k_proj.weight : (kv * head_dim, d_model)
+      v_proj.weight : (kv * head_dim, d_model)
+      o_proj.weight : (d_model, q * head_dim)
+      q_norm.weight : (head_dim,)
+      k_norm.weight : (head_dim,)
+    }
+    FFN_ {
+      gate_proj.weight : (hidden, d_model)
+      up_proj.weight   : (hidden, d_model)
+      down_proj.weight : (d_model, hidden)
+    }
+    layer {
+      input_layernorm.weight          : (d_model,)
+      post_attention_layernorm.weight : (d_model,)
+    }
+    global {
+      embed.weight      : (vocab, d_model)
+      final_norm.weight : (d_model,)
+      lm_head.weight    : (vocab, d_model)
+    }
+  }
+
+  emit {
+    train -> transformers.config {
+      field {
+        model_type                  = "qwen3_5_text"
+        vocab_size                  = vocab
+        hidden_size                 = d_model
+        num_hidden_layers           = n_layer
+        intermediate_size           = FFN_.hidden
+        num_attention_heads         = GQA.q
+        num_key_value_heads         = GQA.kv
+        head_dim                    = GQA.head_dim
+        max_position_embeddings     = ctx
+        rms_norm_eps                = rms_eps
+        hidden_act                  = "silu"
+        attention_bias              = false
+        attention_dropout           = 0.0
+        initializer_range           = 0.02
+        rope_parameters             = {"rope_theta": 10000000, "rope_type": "default", "partial_rotary_factor": 0.25, "mrope_interleaved": true, "mrope_section": [11, 11, 10]}
+        partial_rotary_factor       = 0.25
+        use_cache                   = true
+        dtype                       = "bfloat16"
+        layer_types                 = layer_types
+        full_attention_interval     = 4
+        attn_output_gate            = true
+        output_gate_type            = "swish"
+        linear_conv_kernel_dim      = 4
+        linear_key_head_dim         = 128
+        linear_num_key_heads        = 16
+        linear_num_value_heads      = 48
+        linear_value_head_dim       = 128
+        mamba_ssm_dtype             = "float32"
+        mtp_num_hidden_layers       = 0
+        mtp_use_dedicated_embeddings = false
+        tie_word_embeddings         = false
+        bos_token_id                = 248044
+        eos_token_id                = 248044
+        pad_token_id                = null
+      }
+    }
+
+    train -> torch.module {
+      name        = "model.language_model.layers.{i}.{scope}{physical}"
+      global_name = "{physical}"
+      scope { Lin = linear_attn., GQA = self_attn., FFN_ = mlp., layer = "", global = "" }
+      rename {
+        input_layernorm.weight          = input_layernorm.weight,
+        post_attention_layernorm.weight = post_attention_layernorm.weight,
+        embed.weight      = model.language_model.embed_tokens.weight,
+        final_norm.weight = model.language_model.norm.weight
+      }
+    }
+  }
+}

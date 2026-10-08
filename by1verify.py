@@ -87,6 +87,14 @@ def check_config(info, tc, out):
 # ── 1. layer_types 对拍 ──────────────────────────────────────────────
 
 def by1_layer_types(info):
+    # **不要再算一遍。** 这里原来是一份 _ltype_of_attrs 的副本，
+    # 同样只看 window —— 于是 GDN/KDA 这类线性注意力层被算成 full_attention。
+    # 修了 by1check 里那个、忘了修这个，结果是同一个模型
+    # "字段对拍通过、层类型检查失败"。
+    # info["layer_types"] 是唯一的那一份实现。
+    lt = info.get("layer_types")
+    if lt:
+        return list(lt)
     out = []
     for stack, mech, attrs in info["layers"]:
         w = (attrs.get("window") or "").strip().lower()
@@ -373,6 +381,27 @@ def check_tensors(info, real, render, rule_desc, scope_map, out,
     else:
         out.append(f"  [PASS] {ok} 个张量的名字与形状全部一致，"
                    f"{sup_ok} 处抑制也正确")
+
+    # **反方向也要报。** 上面全是"契约 → 实物"，于是"官方多出 0"读起来像
+    # "什么都没漏"，而实际上实物里可能有几百个契约根本没提的张量。
+    # 多模态模型就是这种情况：Gemma 的 vision/audio、Qwen3.5 的 model.visual.*
+    # 都在权重文件里，而 by1 不建模它们。
+    # 不报的话，一个只看文本主干的描述会显得像是覆盖了整个 checkpoint。
+    covered = generated
+    uncovered = sorted(k for k in real if k not in covered)
+    if uncovered:
+        groups = {}
+        for k in uncovered:
+            key = re.sub(r"\.\d+\.", ".N.", k)
+            groups[key] = groups.get(key, 0) + 1
+        out.append(f"  契约**未覆盖**的实物张量: {len(uncovered)} 个"
+                   f"（共 {len(real)} 个里的 "
+                   f"{100.0 * len(uncovered) / max(len(real), 1):.0f}%）")
+        for k in sorted(groups, key=lambda x: -groups[x])[:6]:
+            out.append(f"        {groups[k]:5d}  {k}")
+        if len(groups) > 6:
+            out.append(f"        …另有 {len(groups) - 6} 类")
+        out.append("      （这是**范围边界**，不是失败 —— 但必须看得见）")
 
     # 反向覆盖：参考产物里有哪些张量是契约还没表达的
     residue = {}
