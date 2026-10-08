@@ -333,6 +333,18 @@ def check_tensors(info, real, render, rule_desc, scope_map, out,
             break
         nm = render_g(lname)
         generated.add(nm)
+        # `--` = **声明为不该存在**（权重共享时 checkpoint 里没有 lm_head）。
+        # 全局张量走的是这个循环（不是 check_tensors 里那个），
+        # 两边都得认这个标记，否则它会被当成"符号形状"静默跳过。
+        if shape_txt == "--":
+            sup_total += 1
+            if nm in real:
+                absent_but_present += 1
+                details.append(
+                    f"global {nm}\n        契约说应被抑制，实际存在 {real[nm]['shape']}")
+            else:
+                sup_ok += 1
+            continue
         if len(samples) < 6 and shape_txt != "--":
             samples.append(f"      --   global.{lname:<12} -> {nm}")
         exp = parse_shape(shape_txt)

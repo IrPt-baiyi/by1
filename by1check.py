@@ -1083,6 +1083,12 @@ def check(path: str) -> Tuple[Report, dict]:
                         s2 = re.sub(r"\b" + re.escape(i) + r"\b", _fmt(sym0[i]), s2)
                 v = eval_num(s2)
                 comps.append(_fmt(v) if v is not None else s2.replace(" ", ""))
+            # `--` 是**声明为不该存在**（权重共享时没有 lm_head），
+            # 它不是形状，不能被重新包成 `(...)` —— 原样透传，
+            # 让 by1verify 去检查"确实不存在"。
+            if shp.strip() == "--":
+                res.append((lname, "--", guard, pe))
+                continue
             # guard 留着 —— layer 作用域用它做「只有挂了某机制才有这个张量」
             res.append((lname, "(" + ", ".join(comps) + ")", guard, pe))
         return res

@@ -37,6 +37,10 @@ REAL = [
      'refs/step37.tensors.json', 'torch.module', []),
     ('ling-3.0-tiny.by1', 'refs/inclusionAI_Ling-3.0-tiny.config.json',
      'refs/ling-3.0-tiny.tensors.json', 'torch.module', []),
+    # **收敛的判卷人**：最普通的那种模型（标准 Qwen3 形状）。
+    # 前面几个都是特意挑来压东西的，如果连这一个都要新属性，就是没收敛。
+    ('minimind-3.by1', 'refs/jingyaogong__minimind-3.config.json',
+     'refs/minimind-3.tensors.json', 'torch.module', []),
 ]
 
 # 六个合成模型：三后端

@@ -1,0 +1,122 @@
+# ── minimind-3.by1 ────────────────────────────────────────────────────
+# jingyaogong/minimind-3 —— 一个**刻意普通**的模型。
+#
+# 它进这批的理由是当**收敛的判卷人**：前面八个模型都是特意挑来压东西的
+# （MoE、sink、混合栈、MLA、逐层剪枝……），每一个都带出新属性是必然的。
+# 这个不是 —— 它就是标准的 Qwen3 形状：
+#
+#   RMSNorm -> GQA（带按头的 QK-norm）-> 残差 -> RMSNorm -> SwiGLU -> 残差
+#
+# 如果连它都要新属性，那就说明这门语言没有收敛。
+#
+# 结果：**只需要一样新东西 —— 权重共享**（而且它是真的架构特性，
+# 不是 config 的写法）。见下面 global 那块的 lm_head。
+#
+# 事实来源：
+#   refs/jingyaogong__minimind-3.config.json
+#   model.safetensors 的头（90 个张量）
+
+model minimind-3 {
+  arch  qwen3
+  ctx   32768
+
+  hparams {
+    d_model = 768
+    n_layer = 8
+    vocab   = 6400
+    rms_eps = 1e-06
+    d_ff    = 2432
+  }
+
+  mech Attn : Attention {
+    heads      = { q = 8, kv = 4, head_dim = 96 }
+    out_dim    = 768
+    qk_norm    = per_head      # Qwen3 一定有 q_norm/k_norm，
+                               # **但 config 里没有这个开关** —— 它在代码里。
+    # 实测 q_norm/k_norm 是 [96] = head_dim，不是整宽
+    structural = [ head_dim, out_dim, qk_norm ]
+  }
+
+  mech FFN_ : FFN { hidden = 2432 }
+
+  stack main {
+    pattern = 8 * Attn
+    main[:] >> FFN_
+  }
+
+  position {
+    default = rope(base = 1000000, pairing = half)
+  }
+
+  tensors {
+    Attn {
+      q_proj.weight : (q * head_dim, d_model)
+      k_proj.weight : (kv * head_dim, d_model)
+      v_proj.weight : (kv * head_dim, d_model)
+      o_proj.weight : (d_model, out_dim)
+      q_norm.weight : (head_dim,)
+      k_norm.weight : (head_dim,)
+    }
+    FFN_ {
+      gate_proj.weight : (hidden, d_model)
+      up_proj.weight   : (hidden, d_model)
+      down_proj.weight : (d_model, hidden)
+    }
+    layer {
+      input_layernorm.weight          : (d_model,)
+      post_attention_layernorm.weight : (d_model,)
+    }
+    global {
+      embed.weight      : (vocab, d_model)
+      final_norm.weight : (d_model,)
+      # **权重共享**：这个 checkpoint 里根本没有 lm_head ——
+      # 实测 90 个张量里 `lm_head.weight` 不存在。
+      # `--` 就是"声明为不该存在"，by1verify 会检查它确实不存在；
+      # 少了这一行，它会被当成"缺失"报错。
+      lm_head.weight    : --
+    }
+  }
+
+  emit {
+    train -> transformers.config {
+      field {
+        model_type              = "qwen3"
+        vocab_size              = vocab
+        hidden_size             = d_model
+        num_hidden_layers       = n_layer
+        intermediate_size       = FFN_.hidden
+        num_attention_heads     = Attn.q
+        num_key_value_heads     = Attn.kv
+        head_dim                = Attn.head_dim
+        max_position_embeddings = ctx
+        rms_norm_eps            = rms_eps
+        hidden_act              = "silu"
+        attention_bias          = false
+        attention_dropout       = 0.0
+        initializer_range       = 0.02
+        rope_scaling            = null
+        rope_theta              = 1000000.0
+        # **权重共享**：embed 和 lm_head 是同一块
+        tie_word_embeddings     = true
+        use_cache               = true
+        dtype                   = "float16"
+        layer_types             = layer_types
+        sliding_window          = null
+        max_window_layers       = 28
+        use_sliding_window      = false
+      }
+    }
+
+    train -> torch.module {
+      name        = "model.layers.{i}.{scope}{physical}"
+      global_name = "{physical}"
+      scope { Attn = self_attn., FFN_ = mlp., layer = "", global = "" }
+      rename {
+        input_layernorm.weight          = input_layernorm.weight,
+        post_attention_layernorm.weight = post_attention_layernorm.weight,
+        embed.weight      = model.embed_tokens.weight,
+        final_norm.weight = model.norm.weight
+      }
+    }
+  }
+}
