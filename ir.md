@@ -2243,3 +2243,55 @@ egg_info.writers  kernels.lock -> kernels.lockfile:write_egg_lockfile
 
 `pyproject.toml` 本身是对的，只是**在这台机器上没法证** ✓
 能用的分发方式是 `python by1pack.py`（不需要 pip）✓
+
+---
+
+## 55. 上显卡：A800-80G 那一趟
+
+租了一台 AutoDL（A800-80G / torch 2.8.0+cu128 / 算力 8.0）。
+额度用完时停在这里。**做成什么、卡在哪、挖出什么，逐条记。**
+
+### 做成的
+
+```
+✓ 显卡验证     9 个模型 CPU vs CUDA，相对 3e-07 ~ 1.2e-06   [PASS]
+✓ 远端全量     62 项 0 失败 —— 和本地一样                     [全过]
+✓ Instella-3B  真维度前向对官方实现，**0.000e+00**
+✓ 真权重 27B   729 个物理名从 emit 规则全反推出来（**零个推不出**）
+               55.6 GB 从 ModelScope 下完（13 分钟，72 MB/s）
+               27.3 B 参数建成（198 秒）
+✗ 前向         **没跑完** —— 差最后一步
+```
+
+### 挖出的 8 个 bug
+
+| | |
+|---|---|
+| **8 个 `by1c` 共用 `cgen/`** | **我加并行时引入的 race** ✗ 症状是"C 后端在 Linux 上算错 6 个模型" ✓ **看起来像未定义行为** ✓ 单独跑一个永远是对的 —— 最误导的那种 |
+| **OpenSSH hostbound** | AutoDL 网关不认 `publickey-hostbound-v00` ✓ debug 说 "Server accepts key" 然后 Permission denied ✓ |
+| **非交互 SSH 的 PATH 极简** | `python`/`pip`/`gcc` 全找不到 ✓ **一个原因三个症状** ✓ |
+| **`glob.glob('gcc')` 不搜 PATH** | **两处各一份** ✓ 加了 Linux 路径**还是不行** ✓ |
+| **`by1e2e` 只认 safetensors** | 缓存里是 `.bin` ✓ 报"没有"，而不是"格式不对" ✓ |
+| **`os.path.abspath`** | POSIX 相对路径不去当前目录找 ✓ Windows 会 ✓ |
+| **cgroup 120 GB** | fp32 建 27B = 108 GB ✗ 加 shm 的 52 GB → OOM ✓ **`free` 说 1 TB，但 cgroup 才是管用的那个** ✓ |
+| **`by1load` 的 `parts[2]`** | 是 `"op0"` 不是 `"0"` ✓ 本地小模型没真权重，根本走不到那一步 ✓ |
+
+### 最值钱的一条：换源
+
+```
+hf-mirror   这个仓库的权重走 Xet（cas-bridge.xethub.hf.co）   26 KB/s
+ModelScope  阿里的源，Qwen 也是阿里的                        72 MB/s
+                                                  **差 2700 倍**
+```
+
+排查顺序（前三个都不是原因）：hf-mirror 确实在用 ✓ `hf_xet` 已卸 ✓
+`config.json` 走镜像自己的缓存 ✓ —— **慢的是权重的字节流** ✓
+
+**55.6 GB：hf-mirror 要 8 天，ModelScope 13 分钟。**
+
+### 下次接着做
+
+`by1real.py` 已经写好并推到能跑的程度 ✓ 下次有额度时：
+**下权重（13 分钟）→ 跑它** ✓ 就这两步 ✓
+
+权重在 `/dev/shm`，实例一释放就没了 ✗ 所以要重下 ✓ 但 13 分钟不算什么 ✓
