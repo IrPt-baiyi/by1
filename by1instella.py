@@ -26,6 +26,8 @@ import re
 import sys
 
 import torch
+import contextlib
+import by1io
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, 'llamacpp'))
@@ -104,7 +106,7 @@ def main():
     # **只把层数降下来，其余维度全真。**
     # 36 层 = 12GB fp32，加上参考模型这台机器装不下。
     # 做法是临时生成一份 LAYERS 层的 .by1 —— 不动工具，也不手改 IR。
-    src = io.open(os.path.join(HERE, 'instella-3b.by1'), encoding='utf-8').read()
+    src = by1io.read_text(os.path.join(HERE, 'instella-3b.by1'))
     src = src.replace('n_layer = 36', 'n_layer = %d' % LAYERS)
     src = re.sub(r'pattern\s*=\s*36\s*\*', 'pattern = %d *' % LAYERS, src)
     tmp = os.path.join(HERE, '_instella_shaped.by1')
@@ -213,10 +215,9 @@ def main():
     print('\n  [%s] Instella-3B 的前向%s'
           % ('PASS' if ok else 'FAIL',
              '与官方实现一致' if ok else '对不上'))
-    try:
+    # 临时文件删不掉不影响结论 —— 真正要报的是上面那个 PASS/FAIL。
+    with contextlib.suppress(OSError):
         os.remove(tmp)          # 临时的那份 N 层 .by1
-    except OSError:
-        pass
     return 0 if ok else 1
 
 

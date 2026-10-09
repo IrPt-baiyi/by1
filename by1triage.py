@@ -16,10 +16,9 @@
 """
 import glob
 import importlib.util
-import io
-import json
 import os
 import sys
+import by1io
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -62,7 +61,7 @@ def main():
     for f in files:
         name = os.path.basename(f).replace('.config.json', '')
         try:
-            cfg = json.load(io.open(f, encoding='utf-8'))
+            cfg = by1io.read_json(f, encoding='utf-8')
         except Exception as e:
             rows.append((name, '文件错', str(e)[:40])); rows2.append((name, '文件错', '', []))
             continue
@@ -89,12 +88,12 @@ def main():
                           + '.tensors.json')
         if os.path.exists(_p):
             try:
-                real = json.load(io.open(_p, encoding='utf-8'))
+                real = by1io.read_json(_p, encoding='utf-8')
             except Exception:
                 real = {}
 
                 try:
-                    real = json.load(io.open(p, encoding='utf-8'))
+                    real = by1io.read_json(p, encoding='utf-8')
                 except Exception:
                     real = {}
                 if real:

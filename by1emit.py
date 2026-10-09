@@ -20,7 +20,6 @@ by1 emit -- 从 IR 生成 **ggml 侧的后端需求 + 声明式图**，并和 GG
 import argparse
 import importlib.util
 import os
-import re
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))

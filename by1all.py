@@ -15,6 +15,7 @@ import os
 import re
 import subprocess
 import sys
+import contextlib
 
 PY = sys.executable
 # **找 gcc：原来只写了 Windows 的路径，Linux 上找不到。**
@@ -194,11 +195,11 @@ def run_many(pairs, jobs=None):
 
 def main():
     # **先报版本。** 一份失败的输出要能追回是哪一版跑的。
-    try:
+    # 版本行是**锦上添花**：拿不到就少一行，不影响这次跑得对不对。
+    # 用 `suppress` 而不是 `try/except/pass` —— 后者读起来像"没想好"。
+    with contextlib.suppress(ImportError):
         from by1ver import version_line as _vl
         print('\n  ' + _vl())
-    except ImportError:
-        pass
     quick = '--quick' in sys.argv
 
     # ---- 1. 检查器：**逐个跑**才能归属到文件 ----

@@ -14,7 +14,6 @@ type of RoPE"），跟着 YaRN 的公式算会多乘一个 1.069。
 
 用法:  python by1rope.py
 """
-import math
 import sys
 import torch
 
@@ -58,7 +57,6 @@ def main():
     print("  attention_factor: 参考 %.6f   by1 %.6f" % (attn_factor, 1.0))
 
     # 可证伪：把类型当成 yarn 算，必须对不上
-    import math as _m
     try:
         c2, s2 = ns["rope_tables"](HD, 2, BASE, torch.device("cpu"),
                                    {"type": "yarn", "factor": FAC,

@@ -26,29 +26,37 @@
 用法:  python by1real.py [--by1 Qwen3.8-27B.by1] [--dir /dev/shm/qwen38] [--seq 4]
 """
 import glob
-import json
 import os
 import sys
 import time
 
 import numpy as np
 import torch
+import contextlib
+import by1io
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
 
 def _cgroup_gb():
-    """容器的真实内存上限。**`free` 说的不算。**"""
+    """容器的真实内存上限。**`free` 说的不算。**
+
+    ## 读不到时返回 `None`，不返回 0
+
+    原来读不到就 `return 0.0` —— 而调用方拿它去打印
+    "cgroup 上限 0 GB"，**那句话是错的，而且会让人以为装不下**。
+
+    `None` 表示"不知道"。调用方要自己分辨：
+    **0 GB 和"不知道"是两件事，混在一起两个都不成立。**
+    """
     for f in ('/sys/fs/cgroup/memory.max',
               '/sys/fs/cgroup/memory/memory.limit_in_bytes'):
-        try:
-            v = int(open(f).read().strip())
+        with contextlib.suppress(OSError, ValueError):
+            v = int(by1io.read_text(f).strip())
             if v < 1 << 50:          # 不是 "max"
                 return v / 1e9
-        except Exception:
-            pass
-    return 0.0
+    return None
 
 
 def _dirsize(d):

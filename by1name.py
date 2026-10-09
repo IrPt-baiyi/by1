@@ -43,6 +43,7 @@ import os
 import re
 import subprocess
 import sys
+import by1io
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TSV = os.path.join(HERE, 'models.tsv')
@@ -108,7 +109,7 @@ def fix_file(old, 长名, 短名, hf, do):
         print('    !! %s 不存在' % os.path.basename(path))
         return
 
-    t = io.open(path, encoding='utf-8').read()
+    t = by1io.read_text(path, encoding='utf-8')
     before = t
 
     # model 声明 -> 短名
@@ -179,7 +180,7 @@ def main():
             p = os.path.join(HERE, fn)
             if not os.path.exists(p):
                 continue
-            t = io.open(p, encoding='utf-8').read()
+            t = by1io.read_text(p, encoding='utf-8')
             n = 0
             for old, new in ren:
                 n += t.count(old)

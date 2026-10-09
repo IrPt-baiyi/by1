@@ -33,6 +33,7 @@ import io
 import os
 import sys
 from collections import Counter, defaultdict
+import by1io
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -119,7 +120,6 @@ def main():
     # 塞进表格会把表撑坏，可读性没了。
     # 而每个 `.by1` 里的 `model <短名> {` 就是给人看的那个名字，
     # 由 `by1name.py` 从 `models.tsv` 统一生成，不会漂。
-    import io as _io
     import re as _re
 
     def label_of(fname):
@@ -129,7 +129,7 @@ def main():
         （`nerkyor/Step-3_7-Flash`）。
         """
         try:
-            src = _io.open(os.path.join(HERE, fname), encoding='utf-8').read()
+            src = by1io.read_text(os.path.join(HERE, fname))
             m = _re.search(r'^model\s+([\w.\-/]+)\s*\{', src, _re.M)
             return m.group(1) if m else fname[:-4]
         except Exception:

@@ -30,12 +30,11 @@
 用法:  python by1vocab.py [--all] [--min 3]
 """
 import glob
-import io
-import json
 import os
 import re
 import sys
 from collections import defaultdict
+import by1io
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 os.chdir(HERE)
@@ -51,7 +50,7 @@ def main():
     for f in sorted(glob.glob('refs/*.tensors.json')):
         try:
             alls[f.replace('refs/', '').replace('.tensors.json', '')] = \
-                list(json.load(io.open(f, encoding='utf-8')))
+                list(by1io.read_json(f, encoding='utf-8'))
         except Exception:
             continue
 

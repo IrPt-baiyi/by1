@@ -44,12 +44,10 @@
 """
 import glob
 import io
-import json
 import os
 import re
-import subprocess
 import sys
-import time
+import by1io
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 os.chdir(HERE)
@@ -116,7 +114,7 @@ def main():
     print('  ── 抓的那部分，URL 能不能从 .by1 推出来')
     n_ok, n_bad = 0, []
     for f in sorted(glob.glob('*.by1')):
-        head = io.open(f, encoding='utf-8').read(2000)
+        head = by1io.head_text(f)
         if 'by1-repo' not in head:
             continue
         m = re.search(r'^#\s*by1-repo:\s*(\S+)', head, re.M)

@@ -17,7 +17,6 @@ by1 mem -- 从 IR 的 state 声明推出**内存计划**，并可选地用真实
 
 import argparse
 import importlib.util
-import json
 import os
 import sys
 

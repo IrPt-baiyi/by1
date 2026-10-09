@@ -21,7 +21,6 @@ import importlib.util
 import os
 import shutil
 import sys
-import tempfile
 
 import torch
 
@@ -30,6 +29,7 @@ sp = importlib.util.spec_from_file_location('bcm', 'by1check.py')
 bc = importlib.util.module_from_spec(sp)
 sp.loader.exec_module(bc)
 import by1codegen as cg
+import by1io
 
 F = 'raw-escape.by1'
 bad = []
@@ -79,7 +79,7 @@ finally:
     shutil.move(bak, 'raw.py')
 
 # ── ③ Raw 没写 impl ───────────────────────────────────────────────
-src = open(F, encoding='utf-8').read()
+src = by1io.read_text(F, encoding='utf-8')
 src = src.replace('    impl       = "scale_mix"\n', '')
 src = src.replace('model raw-escape', 'model raw-noimpl')
 tmp = '_noimpl.by1'

@@ -18,11 +18,11 @@ import re
 import sys
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Tuple, Any
+import contextlib
 
-try:
+# 老 Python 没有 `reconfigure`；没有它也能跑，只是中文可能乱码。
+with contextlib.suppress(Exception):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-except Exception:
-    pass
 
 
 # ════════════════════════════════════════════════════════════════════

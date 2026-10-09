@@ -24,12 +24,11 @@
 用法:  python by1blind.py
 """
 import glob
-import io
-import json
 import os
 import re
 import subprocess
 import sys
+import by1io
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 os.chdir(HERE)
@@ -50,7 +49,7 @@ def main():
     # ── A. 验证的方向 ─────────────────────────────────────────────
     sec('A.', '验证的方向：契约 -> 产物 查了，**产物 -> 契约** 没查')
     # by1verify 检查"契约里的张量在产物里"，那产物里多出来的呢？
-    src = io.open('by1verify.py', encoding='utf-8').read()
+    src = by1io.read_text('by1verify.py', encoding='utf-8')
     has_rev = 'uncovered' in src and 'covered = generated' in src
     print('     by1verify 里有"产物多出来的张量"这类检查吗：**%s**'
           % ('有' if has_rev else '没有'))
@@ -76,8 +75,8 @@ def main():
             for t in item[3]:
                 if t[0] != '--':
                     declared.add(t[0])
-        real = json.load(io.open('refs/Cloudflare__clef.tensors.json',
-                                 encoding='utf-8'))
+        real = by1io.read_json('refs/Cloudflare__clef.tensors.json',
+                                 encoding='utf-8')
         print('     clef：契约声明 %d 个逻辑名，产物有 %d 个物理张量'
               % (len(declared), len(real)))
         print('     **两者不是一个命名空间，没法直接做差** ——')
@@ -90,7 +89,7 @@ def main():
     seqs = {}
     for f in glob.glob('by1*.py'):
         try:
-            s = io.open(f, encoding='utf-8').read()
+            s = by1io.read_text(f, encoding='utf-8')
         except Exception:
             continue
         for m in re.finditer(r'--seq[= ](\d+)', s):
@@ -101,7 +100,7 @@ def main():
     ctxs = []
     for f in glob.glob('*.by1'):
         try:
-            h = io.open(f, encoding='utf-8').read()
+            h = by1io.read_text(f, encoding='utf-8')
         except Exception:
             continue
         m = re.search(r'^\s*ctx\s+(\d+)', h, re.M)
@@ -120,7 +119,7 @@ def main():
     for f in ('by1exec.py', 'by1c.py', 'by1gpu.py', 'by1diff.py'):
         if not os.path.exists(f):
             continue
-        s = io.open(f, encoding='utf-8').read()
+        s = by1io.read_text(f, encoding='utf-8')
         for m in re.finditer(r'([\d.]+e-?\d+)\s*[:<]', s):
             pass
     try:
@@ -143,7 +142,7 @@ def main():
     n_rand = 0
     for f in glob.glob('by1*.py'):
         try:
-            s = io.open(f, encoding='utf-8').read()
+            s = by1io.read_text(f, encoding='utf-8')
         except Exception:
             continue
         n_rand += len(re.findall(r'randn|rand\(|normal_', s))
@@ -165,7 +164,7 @@ def main():
                                text=True, encoding='utf-8',
                                errors='replace', timeout=600)
             same = (r.stdout.strip() ==
-                    io.open(gen, encoding='utf-8').read().strip())
+                    by1io.read_text(gen, encoding='utf-8').strip())
             print('     %-14s 和 `%s` %s'
                   % (gen, ' '.join(cmd), '一致' if same
                      else '**不一致（忘了重新生成）**'))
@@ -174,7 +173,7 @@ def main():
 
     # ── F. 并行 vs 串行 ──────────────────────────────────────────
     sec('F.', '并行 vs 串行：结果一样吗')
-    s = io.open('by1all.py', encoding='utf-8').read()
+    s = by1io.read_text('by1all.py', encoding='utf-8')
     has_chk = bool(re.search(r'并行.*串行|jobs\s*==\s*1|--serial|--jobs', s))
     print('     by1all 有"关掉并行再跑一遍对比"的开关吗：%s'
           % ('有' if has_chk else '**没有**'))
@@ -189,7 +188,7 @@ def main():
     for f in ('pyproject.toml', 'requirements.txt'):
         if not os.path.exists(f):
             continue
-        s = io.open(f, encoding='utf-8').read()
+        s = by1io.read_text(f, encoding='utf-8')
         m = re.search(r'dependencies\s*=\s*\[(.*?)\]', s, re.S)
         if m:
             for d in re.findall(r'"([^"]+)"', m.group(1)):

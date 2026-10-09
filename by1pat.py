@@ -39,10 +39,9 @@
 """
 import glob
 import importlib.util
-import io
-import json
 import os
 import sys
+import by1io
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 os.chdir(HERE)
@@ -59,7 +58,7 @@ def main():
     for f in sorted(glob.glob('refs/*.tensors.json')):
         try:
             alls[f.replace('refs/', '').replace('.tensors.json', '')] = \
-                list(json.load(io.open(f, encoding='utf-8')))
+                list(by1io.read_json(f, encoding='utf-8'))
         except Exception:
             continue
     total = sum(len(v) for v in alls.values())

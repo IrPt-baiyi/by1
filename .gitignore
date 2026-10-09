@@ -54,3 +54,7 @@ _lh/
 *.pth
 refs/*.index.json
 
+
+# 删数据测试的副本 —— 和仓库里的原件是同一批字节，
+# 收进来 git 会存两遍。测试的**定义**（README/MANIFEST）收在 docs/ 下。
+__delete_test/files/

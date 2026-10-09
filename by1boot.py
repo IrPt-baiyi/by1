@@ -25,11 +25,11 @@
 
 用法:  python by1boot.py <config.json> <tensors.json> [--name X] [--out f.by1]
 """
-import json
 import os
 import re
 import sys
 from collections import Counter, defaultdict
+import by1io
 
 # **版本号从 by1ver 来。** 原来这里写死 "1.0"，而另外两个文件也各写了一遍
 # —— 三份同一个字符串，谁也不认识谁。改一份忘一份不会崩，
@@ -569,9 +569,9 @@ def main():
     if '--out' in sys.argv:
         out_p = sys.argv[sys.argv.index('--out') + 1]
 
-    cfg = json.load(open(cfg_p, encoding='utf-8'))
+    cfg = by1io.read_json(cfg_p, encoding='utf-8')
     cfg = cfg.get('text_config', cfg)
-    real = json.load(open(ten_p, encoding='utf-8'))
+    real = by1io.read_json(ten_p, encoding='utf-8')
 
     if want_ir or want_run:
         import by1ir
@@ -611,17 +611,26 @@ def main():
             return 0
         # --run：三个后端各跑一遍
         print('  ── 三个后端从这份 IR 跑 ──')
-        nelem = 0
+        # **这道护栏不能"算不出来就当 0"。**
+        #
+        # 原来是 `nelem = 0` + `except: pass` —— 于是算不出参数量时
+        # `nelem > 2e8` 永远为假，**一个本该跳过的巨型演示会照跑**，
+        # 然后跑到一半炸在内存上。而报出来的原因是"内存不足"，
+        # 不是"护栏没生效"。
+        #
+        # 改成 None 表示"不知道"，并且**说出来**：不知道就不跳过，
+        # 但至少用的人知道这次没有护栏。
+        nelem = None
         try:
             import by1exec as _ex
             sh = _ex.shapes_of(ir)
             nelem = sum(int(__import__('numpy').prod(v)) for v in sh.values())
-        except Exception:
-            pass
-        if nelem > 2e8:
+        except Exception as e:
+            print('    （算不出参数量：%s —— **这道护栏这次没生效**）'
+                  % type(e).__name__)
+        if nelem is not None and nelem > 2e8:
             print('    [跳过] %.1fM 参数，这个演示跑不动' % (nelem / 1e6))
             return 0
-        import numpy as np
         import by1codegen as _cg
         ns = {}
         exec(compile(_cg.render_ir(ir, 'booted.ir'), '<ir>', 'exec'), ns)

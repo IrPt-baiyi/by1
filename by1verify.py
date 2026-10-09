@@ -24,11 +24,11 @@ by1 verify -- 差分验证：把 .by1 的展开结果与官方产物对拍。
 """
 
 import importlib.util
-import json
 import os
 import re
 import struct
 import sys
+import by1io
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -182,7 +182,7 @@ class _Rd:
 
 def read_gguf_header(path):
     """返回 {张量名: {'shape': [PyTorch 顺序]}}。ne 是反序的，这里统一反转。"""
-    r = _Rd(open(path, "rb").read())
+    r = _Rd(by1io.read_text(path, "rb"))
     if r.b[:4] != b"GGUF":
         raise ValueError("不是 GGUF 文件")
     r.p = 4
@@ -215,7 +215,7 @@ def load_reference(tensors_path, gguf_path):
         magic = f.read(4)
     if magic == b"GGUF":
         return read_gguf_header(path)
-    raw = json.load(open(path, encoding="utf-8"))
+    raw = by1io.read_json(path, encoding="utf-8")
     return {k: {"shape": [int(x) for x in v["shape"]]}
             for k, v in raw.items() if isinstance(v, dict) and "shape" in v}
 
@@ -459,7 +459,7 @@ def main(argv):
     gguf_path = opt("--gguf")
     backend = opt("--backend", "ggml" if gguf_path else "torch.module")
 
-    cfg = json.load(open(cfg_path, encoding="utf-8"))
+    cfg = by1io.read_json(cfg_path, encoding="utf-8")
     tc = cfg.get(sub, cfg)
 
     bc = load_checker()

@@ -23,9 +23,10 @@ by1 oracle -- 执行神谕：把 .by1 声明的状态策略与**真实前向的�
 import argparse
 import importlib.util
 import inspect
-import json
 import os
 import sys
+import contextlib
+import by1io
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -100,7 +101,7 @@ def build_tiny(fam, ref_path, info, seq_max):
     }
     fields = {}
     if ref_path:
-        raw = json.load(open(ref_path, encoding="utf-8"))
+        raw = by1io.read_json(ref_path, encoding="utf-8")
         tc = raw.get("text_config", raw)
         for k, v in tc.items():
             if k in accepted and k not in STRUCTURAL and not isinstance(v, (dict, list)):
@@ -118,10 +119,12 @@ def build_tiny(fam, ref_path, info, seq_max):
     for _s, _m, a in layers:
         w = (a.get("window") or "").strip().lower()
         if w not in ("none", "null", "0", ""):
-            try:
+            # 解析不出来就**保持默认**，并说明默认是什么。
+            # 原来是 `except ValueError: pass` —— 读起来像"没想好"，
+            # 而实际语义是"这层的 window 不是个整数，就不设上限"。
+            window = None
+            with contextlib.suppress(ValueError):
                 window = int(float(w))
-            except ValueError:
-                pass
             break
 
     hidden = 64
@@ -189,10 +192,9 @@ def main(argv=None):
     for _s, _m, a in info["layers"]:
         w = (a.get("window") or "").strip().lower()
         if w not in ("none", "null", "0", ""):
-            try:
+            window_guess = None
+            with contextlib.suppress(ValueError):
                 window_guess = int(float(w))
-            except ValueError:
-                pass
             break
 
     seq_a = args.seq_a or (window_guess * 2 if window_guess else 64)

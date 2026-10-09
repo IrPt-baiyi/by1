@@ -36,6 +36,7 @@ import subprocess
 import sys
 import tarfile
 import time
+import by1io
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 KEY = os.path.expanduser('~/.ssh/by1_autodl')
@@ -114,7 +115,7 @@ def bootstrap_key(args):
     if not os.path.exists(pub):
         print('  [FAIL] 没有公钥 %s —— 先跑 python by1cloud.py key' % pub)
         return 1
-    pubtext = open(pub, encoding='utf-8').read().strip()
+    pubtext = by1io.read_text(pub, encoding='utf-8').strip()
     print('  ── 用密码连一次，把公钥装进去 ──')
     cmd = ('mkdir -p ~/.ssh && chmod 700 ~/.ssh && '
            'grep -qF "%s" ~/.ssh/authorized_keys 2>/dev/null || '
@@ -349,7 +350,7 @@ def main():
     if args.action == 'key':
         pub = args.key + '.pub'
         if os.path.exists(pub):
-            print(open(pub, encoding='utf-8').read().strip())
+            print(by1io.read_text(pub, encoding='utf-8').strip())
             print()
             print('  贴到 AutoDL 控制台的「SSH 公钥」里。')
             return 0

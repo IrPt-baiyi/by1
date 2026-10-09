@@ -31,6 +31,7 @@
 `by1all` 真的跑一遍**。
 """
 import json
+import by1io
 
 # **从 by1ver 来，不在这里写死。**
 # 这里原来是 `VERSION = "1.0"`，而 by1codegen / by1boot / by1extdemo
@@ -480,7 +481,7 @@ def _cli():
         return 0
     if '--check' in sys.argv:
         f = sys.argv[sys.argv.index('--check') + 1]
-        errs = validate(json.load(open(f, encoding='utf-8')))
+        errs = validate(by1io.read_json(f, encoding='utf-8'))
         for e in errs:
             print("  " + e)
         print("  [%s] %d 个问题" % ("PASS" if not errs else "FAIL", len(errs)))

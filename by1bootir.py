@@ -22,7 +22,6 @@
 用法:  python by1bootir.py <文件>.by1 <config.json> <tensors.json>
 """
 import importlib.util
-import json
 import sys
 
 sys.path.insert(0, '.')
@@ -31,6 +30,7 @@ bc = importlib.util.module_from_spec(sp)
 sp.loader.exec_module(bc)
 import by1codegen as cg
 import by1boot
+import by1io
 
 
 def main():
@@ -44,7 +44,6 @@ def main():
     # **但这里的三行字符串不知道** ——
     # 症状是 `FileNotFoundError: refs/minimind-3.tensors.json`，
     # **看起来像文件丢了，其实是引用没跟上。**
-    import os as _os
     import by1refs as _refs
 
     def _pair(by1):
@@ -67,9 +66,9 @@ def _one(f, cfg_p, ten_p):
 
     _r, info = bc.check(f)
     ir_a = cg.compile_ir(info)
-    cfg = json.load(open(cfg_p, encoding='utf-8'))
+    cfg = by1io.read_json(cfg_p, encoding='utf-8')
     cfg = cfg.get('text_config', cfg)
-    real = json.load(open(ten_p, encoding='utf-8'))
+    real = by1io.read_json(ten_p, encoding='utf-8')
     ir_b, guessed, gset = by1boot.boot_ir(cfg, real)
 
     print('=' * 80)

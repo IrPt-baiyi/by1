@@ -26,11 +26,10 @@
 
 用法:  python by1contract.py <文件>.by1 [--only Mech]
 """
-import glob
 import importlib.util
-import io
 import re
 import sys
+import by1io
 
 HERE = '.'
 
@@ -155,7 +154,7 @@ def main():
     mechs = info.get('mechs') or {}
 
     # 每个 mech 用它自己的属性；同名机制被改了属性的话，两个都出
-    src = io.open(f, encoding='utf-8').read()
+    src = by1io.read_text(f, encoding='utf-8')
     seen = set()
     print('    tensors {')
     for m in re.finditer(r'mech\s+(\w+)\s*:\s*(\w+)\s*\{(.*?)\n  \}', src, re.S):

@@ -30,13 +30,13 @@
 用法:  python by1e2e.py [--gcc <gcc>] [--seq 16]
 """
 import glob
-import importlib.util
 import json
 import os
 import subprocess
 import sys
 
 import numpy as np
+import by1io
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -214,7 +214,7 @@ def main():
     print('    权重      %s  (%.1f MB)'
           % (os.path.basename(st_p), os.path.getsize(st_p) / 1e6))
 
-    cfg = json.load(open(cfg_p, encoding='utf-8'))
+    cfg = by1io.read_json(cfg_p, encoding='utf-8')
     header = read_header(st_p)
     print('  张量头 %d 个张量' % len(header))
 

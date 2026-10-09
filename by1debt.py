@@ -18,12 +18,11 @@
 用法:  python by1debt.py
 """
 import glob
-import io
-import json
 import os
 import re
 import subprocess
 import sys
+import by1io
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 os.chdir(HERE)
@@ -44,7 +43,7 @@ def real_models():
     out = []
     for f in by1files():
         try:
-            head = io.open(f, encoding='utf-8').read(2000)
+            head = by1io.head_text(f)
         except Exception:
             continue
         m = re.search(r'^#\s*by1-repo:\s*(\S+)', head, re.M)
@@ -98,7 +97,7 @@ def main():
     print()
     print('  ③ 回归覆盖面')
     allpy = sorted(os.path.basename(f) for f in glob.glob('by1*.py'))
-    allb = io.open('by1all.py', encoding='utf-8').read()
+    allb = by1io.read_text('by1all.py', encoding='utf-8')
     # **要分三类。** 第一版把"库"也当成"没跑到"，22 个里大半是误报 ——
     # 而 `by1ir` / `by1codegen` 是**被 import 的**，本来就不该单独跑。
     #
@@ -106,7 +105,7 @@ def main():
     imported = set()
     for f in glob.glob('*.py'):
         try:
-            src = io.open(f, encoding='utf-8').read()
+            src = by1io.read_text(f, encoding='utf-8')
         except Exception:
             continue
         for m in re.finditer(r'import\s+(by1\w+)', src):
@@ -116,7 +115,7 @@ def main():
 
     libs, scripts, gpu = [], [], []
     for p2 in allpy:
-        s = io.open(p2, encoding='utf-8').read() if os.path.exists(p2) else ''
+        s = by1io.read_text(p2, encoding='utf-8') if os.path.exists(p2) else ''
         if 'cuda' in s.lower() or 'nvidia-smi' in s or 'by1cloud' in s:
             gpu.append(p2)
         elif p2 in imported and p2 not in allb:
@@ -137,7 +136,7 @@ def main():
     # ── ④ 前向跑过没有 ───────────────────────────────────────────
     print()
     print('  ④ 真模型前向')
-    ir = io.open('ir.md', encoding='utf-8').read() if os.path.exists('ir.md') \
+    ir = by1io.read_text('ir.md', encoding='utf-8') if os.path.exists('ir.md') \
         else ''
     never = []
     for f, repo in reals:
@@ -153,7 +152,7 @@ def main():
     # ── ⑤ 数不出来的 ─────────────────────────────────────────────
     print()
     print('  ⑤ **数不出来的**（列出来，但不假装它们可验收）')
-    src = io.open('ir.md', encoding='utf-8').read() if ir else ''
+    src = by1io.read_text('ir.md', encoding='utf-8') if ir else ''
     print('     llama.cpp 后端：提到 %d 次，**没有实现**'
           % len(re.findall(r'llama\.?cpp', src, re.I)))
     q = len(re.findall(r'量化|quant', src, re.I))

@@ -16,13 +16,10 @@
 
 用法:  python by1extdemo.py [--gcc <gcc>]
 """
-import ctypes
-import importlib.util
 import os
 import subprocess
 import sys
 
-import numpy as np
 
 # **版本号从 by1ver 来。** 原来这里写死 "1.0"，而另外两个文件也各写了一遍
 # —— 三份同一个字符串，谁也不认识谁。改一份忘一份不会崩，
@@ -173,7 +170,6 @@ def main():
     # ── ③ 失败要明确 ───────────────────────────────────────────────
     print()
     print('  ③ 三种失败必须拒绝，不能给个恒等或一堆零：')
-    import by1ext
 
     cases = [
         ('符号不在', make_ir(symbol='no_such_symbol'), 'no_such_symbol'),
@@ -216,7 +212,6 @@ def main():
     # **一个编译器文件都不动**，它照样建得起来、三个后端照样跑。
     print()
     print('  ④ 加一个新机制，编译器动了吗：')
-    import time as _time
     _mates = ['by1codegen.py', 'by1exec.py', 'by1c.py', 'by1ir.py']
     _before = {m: os.path.getmtime(os.path.join(HERE, m)) for m in _mates
                if os.path.exists(os.path.join(HERE, m))}

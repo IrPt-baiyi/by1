@@ -27,9 +27,9 @@ by1oracle、by1triage）—— 而它们会**各自过期**：
 
 规则写在一处，就不会有"谁忘了改"。
 """
-import io
 import os
 import re
+import by1io
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REF = os.path.join(HERE, 'refs')
@@ -43,7 +43,7 @@ def repo_of(by1file):
     if not os.path.exists(p):
         return None
     try:
-        head = io.open(p, encoding='utf-8').read(2000)
+        head = by1io.head_text(p)
     except Exception:
         return None
     m = _REPO.search(head)
