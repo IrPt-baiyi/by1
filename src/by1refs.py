@@ -202,7 +202,14 @@ def corpus_audit():
     """
     import glob as _g
 
-    files = sorted(_g.glob(os.path.join(REF, '*.json')))
+    # **`.index.json` 不是语料，是 by1index 的工作缓存。**
+    #
+    # 它们是抓张量清单时的原始索引，`.gitignore` 挡着（不进仓库），
+    # 但**在磁盘上**。原来这里 glob `*.json` 把它们全捞进来了 ——
+    # 后果有两个：语料计数虚高 9 个，而且它们的 kind 是 None，
+    # 让下面那句 `sorted(kinds.items())` 直接 TypeError。
+    files = sorted(p for p in _g.glob(os.path.join(REF, '*.json'))
+                   if not p.endswith('.index.json'))
     kinds, bad, orphan = {}, [], []
     for p in files:
         b, s = base_and_kind(p)
@@ -225,10 +232,13 @@ def corpus_audit():
     miss = [(f, m) for f, m in audit() if any('缺' in x for x in m)]
 
     lines = []
-    lines.append('  refs/*.json       %d 个（%s）'
-                 % (len(files), ' · '.join(
-                     '%s %d' % (k.lstrip('.').replace('.json', ''), v)
-                     for k, v in sorted(kinds.items()) if k)))
+    # **先滤再排。** 原来写的是 `sorted(kinds.items()) if k` —— sorted
+    # 先跑，撞上 None 键就 TypeError。只有存在 kind 为 None 的文件时
+    # 才会炸，所以是个"数据一变就现形"的坑。
+    kind_bits = ' · '.join(
+        '%s %d' % (k.lstrip('.').replace('.json', ''), v)
+        for k, v in sorted((a, b) for a, b in kinds.items() if a))
+    lines.append('  refs/*.json       %d 个（%s）' % (len(files), kind_bits))
     lines.append('  能解析为 JSON     %d / %d'
                  % (len(files) - len(bad), len(files)))
     lines.append('  有出处            %d / %d（by1 %d · models.tsv %d · SOURCES %d）'

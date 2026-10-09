@@ -185,25 +185,48 @@ def read_bytes(path):
 
 
 def write_text(path, text, encoding=ENCODING):
-    """写文本。**先建目录**，然后句柄一定关。"""
+    """写文本。**先建目录**，句柄一定关，**而且行尾恒为 LF**。
+
+    ## `newline=''` 是干什么的
+
+    不加它，Python 在 Windows 上会把 `\\n` 翻译成 `\\r\\n` ——
+    于是**每个由本仓库生成的文件在 Windows 上都是 CRLF**：
+    `FILES.md`、`models.md`、`ir-spec.md`、`VERSION`。
+
+    而 `.gitattributes` 规定文本一律 LF。后果正是那份文件里预言的：
+
+    > 在另一台机器上检出，每个文件都显示成改动过 ——
+    > 于是"这次改了什么"这个问题失去意义。
+
+    只不过这一次是**生成方**造成的：跑一遍 `--write`，git 就说
+    "FILES.md 改了"，而 diff 里全是行尾。
+
+    `newline=''` 关掉那个翻译：写进去什么字节就是什么字节。
+    仓库约定 LF，所以生成方一律写 LF，不随平台变。
+    """
     _ensure_dir(path)
-    with io.open(path, 'w', encoding=encoding) as f:
+    with io.open(path, 'w', encoding=encoding, newline='') as f:
         f.write(text)
 
 
 def append_text(path, text, encoding=ENCODING):
-    """追加文本。"""
+    """追加文本。行尾同样恒为 LF（理由见 `write_text`）。"""
     _ensure_dir(path)
-    with io.open(path, 'a', encoding=encoding) as f:
+    with io.open(path, 'a', encoding=encoding, newline='') as f:
         f.write(text)
 
 
 def write_json(path, obj, encoding=ENCODING, **kw):
-    """写 JSON。`indent=0` 是这个仓库 `refs/` 的既有格式。"""
+    """写 JSON。`indent=0` 是这个仓库 `refs/` 的既有格式。
+
+    行尾恒为 LF —— 理由见 `write_text`。这一条对 `refs/` 尤其要紧：
+    那些文件的字节被拿来当"重建的判据"（见 `docs/delete-test-1/`），
+    **平台不同就字节不同的话，那个判据就不成立了。**
+    """
     kw.setdefault('ensure_ascii', False)
     kw.setdefault('indent', 0)
     _ensure_dir(path)
-    with io.open(path, 'w', encoding=encoding) as f:
+    with io.open(path, 'w', encoding=encoding, newline='') as f:
         json.dump(obj, f, **kw)
 
 

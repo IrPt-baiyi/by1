@@ -83,3 +83,6 @@ _rewrite.py
 
 # 清根目录时补的
 tools/remote/*.out
+
+# 检查轮换的状态（本机的节奏，不跟仓库走）
+.by1run-state

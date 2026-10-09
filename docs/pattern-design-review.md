@@ -8,7 +8,7 @@
 
 ## 一、草案提的语法，代码已经支持了
 
-写了份探针（`_probe.by1`，测完就删）实际跑了一遍：
+写了份临时探针实际跑了一遍（测完就删了）：
 
 ```
 mech Attention : Attention { heads = { q = 4, kv = 2, head_dim = 16 } }
