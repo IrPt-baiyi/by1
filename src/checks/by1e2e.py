@@ -27,7 +27,7 @@
 它的 config 里写着 `activation_function = gelu_new`，
 而 `by1boot` 从产物里**看不出来**这一点 —— 名字和形状都不说激活函数。
 
-用法:  python by1e2e.py [--gcc <gcc>] [--seq 16]
+用法:  python by1e2e.py [--gcc <gcc>] [--seq 512]
 """
 
 import os as _os
@@ -201,7 +201,29 @@ def snapshot_dir(root):
 
 
 def main():
-    seq = 16
+    # **默认 512，不是 16。** 量出来的：
+    #
+    #      seq     PyTorch vs HF   NumPy vs HF    C<->NumPy
+    #      16      1.160e-07       1.308e-07      1.222e-07
+    #      64      3.322e-07       2.928e-07      1.788e-07
+    #      256     3.322e-07       9.266e-07      9.194e-07
+    #      1024    3.322e-07       9.264e-07      9.192e-07
+    #
+    # 误差随长度涨约 **7 倍**然后持平（fp32 累积，不是结构性错）。
+    # 但含义是实在的：**在 seq=16 上标定的余量，比看上去少 7 倍** ——
+    # 一个在短序列上 1e-5 的模型，到长序列就是 7e-5，贴着 1e-4。
+    #
+    # 而 `by1blind` 那节说得更直白：
+    #
+    #     各脚本用的 --seq：[16, 64]
+    #     模型声明的 ctx：最高 1048576
+    #     **RoPE / sliding window / yarn 全是长序列才现形的东西**
+    #
+    # `apply_rope` 交错（这个仓库三次数值错之一）就是这个形状 ——
+    # "三个后端一致地错"，互拍绿，而外部判卷人在短序列上看不见。
+    #
+    # 代价：seq 16 -> 512 是 13.6 秒 -> 15.2 秒，**多 1.6 秒**。
+    seq = 512
     if '--seq' in sys.argv:
         seq = int(sys.argv[sys.argv.index('--seq') + 1])
     gcc = None
