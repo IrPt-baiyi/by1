@@ -22,6 +22,8 @@ import importlib.util
 import os
 import sys
 
+import by1io      # noqa: F401  —— import 即把 stdout 钉成 UTF-8
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 # IR 的算子 -> ggml 原语序列。这张表就是 3b 要写的东西。

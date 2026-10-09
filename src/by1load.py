@@ -38,6 +38,8 @@ import sys
 
 import torch
 
+import by1io      # noqa: F401  —— import 即把 stdout 钉成 UTF-8
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 

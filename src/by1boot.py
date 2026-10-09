@@ -30,6 +30,7 @@ import re
 import sys
 from collections import Counter, defaultdict
 import by1io
+import by1skip
 
 # **版本号从 by1ver 来。** 原来这里写死 "1.0"，而另外两个文件也各写了一遍
 # —— 三份同一个字符串，谁也不认识谁。改一份忘一份不会崩，
@@ -629,8 +630,9 @@ def main():
             print('    （算不出参数量：%s —— **这道护栏这次没生效**）'
                   % type(e).__name__)
         if nelem is not None and nelem > 2e8:
-            print('    [跳过] %.1fM 参数，这个演示跑不动' % (nelem / 1e6))
-            return 0
+            # **原来是 return 0（通过）。** 一个"跑不动所以没跑"的演示
+            # 不是验过了 —— 走 by1skip 的两条通道。
+            return by1skip.skip('%.1fM 参数，这个演示跑不动' % (nelem / 1e6))
         import by1codegen as _cg
         ns = {}
         exec(compile(_cg.render_ir(ir, 'booted.ir'), '<ir>', 'exec'), ns)

@@ -20,11 +20,8 @@ from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Tuple, Any
 import contextlib
 
+import by1io          # **import 它就够** —— 它在 import 时把 stdout 钉成 UTF-8
 import by1paths
-
-# 老 Python 没有 `reconfigure`；没有它也能跑，只是中文可能乱码。
-with contextlib.suppress(Exception):
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -2011,7 +2008,15 @@ def run_one(path: str) -> int:
     return 1 if rep.count(E) else 0
 
 
-def main(argv):
+def main(argv=None):
+    # **`argv` 要能省。** pyproject 里的入口是 `by1-check = "by1check:main"`，
+    # 而 setuptools 生成的启动器是 `sys.exit(main())` —— **不带参数**。
+    # 于是 `by1-check hello.by1` 一直是
+    #     TypeError: main() missing 1 required positional argument: 'argv'
+    # 这个 bug 没人发现，因为**包从来装不上**（pyproject 的 py-modules
+    # 少了 39 个模块，连 by1paths / by1io 都没列）。
+    if argv is None:
+        argv = sys.argv[1:]
     args = list(argv)
     emit_to = None
     if "--emit-config" in args:

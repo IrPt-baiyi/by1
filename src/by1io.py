@@ -40,9 +40,50 @@ numpy / torch / transformers —— 否则每个小脚本的启动都变贵。
 import io
 import json
 import os
+import sys
 
 # 整个仓库的编码约定。**只此一处。**
 ENCODING = 'utf-8'
+
+
+def force_utf8_stdio(streams=('stdout', 'stderr')):
+    """把 stdout / stderr 钉成 UTF-8。**整个仓库只此一处。**
+
+    ## 为什么非做不可
+
+    管道里的 Python 用的是**系统 ANSI 代码页**，中文 Windows 上就是 cp936。
+    而 `by1all` 是用 `encoding='utf-8'` 去读子进程输出的 —— 于是子进程的
+    中文判定行在父进程手里变成一堆 U+FFFD：
+
+        !! 模式分类 by1pat.py         （没有判定行）      <- 其实打印的是"分类全对"
+        UnicodeEncodeError: 'gbk' codec can't encode character '\ufffd'
+                                     ^ 连汇总行都打不出来，by1all 自己崩掉
+
+    **一个退出码 0、判定正确的脚本被记成失败** —— 正是这个仓库最反对的那类
+    "跳过和通过长得一样"，只不过方向反了。
+
+    ## errors='replace' 是判据的一部分
+
+    宁可把编不出来的字符换成 `?`，也不能让**报告本身**抛异常。
+    一份打不出来的报告等于没有报告。
+
+    ## 老 Python 没有 `reconfigure`
+
+    没有它也能跑，只是中文可能乱码 —— 所以这里是 `suppress`，不是崩溃。
+    """
+    for name in streams:
+        s = getattr(sys, name, None)
+        if s is None:
+            continue
+        try:
+            s.reconfigure(encoding=ENCODING, errors='replace')
+        except Exception:
+            pass
+
+
+# **import 即生效。** 这个模块几乎所有 by1*.py 都会 import，
+# 所以钉一次就够 —— 不需要每个脚本各写一遍（那正是"同一个意思两处实现"）。
+force_utf8_stdio()
 
 
 def _ensure_dir(path):

@@ -14,8 +14,14 @@
 
 ## 它从哪起步
 
-**`models.tsv`** —— 那里面有 `HF id`（`owner/Repo`）。
-这是唯一需要的种子：**不依赖 `refs/`、也不依赖 `*.by1`。**
+**两个种子，都是手写的、都不依赖 `refs/`：**
+
+    models.tsv          14 个模型（有 `.by1`，进护栏）
+    refs/SOURCES.tsv    21 个候选（只有产物，还没写 `.by1`）
+
+**为什么要两个。** 只用 `models.tsv` 的话，`refs/` 里那 41 个文件
+**没有出处** —— 删掉它们就再也抓不回来，而"删掉 refs/ 也能重建"
+这句话看起来仍然成立（见 `SOURCES.tsv` 的头注）。
 
 （`*.by1` 也能提供 `by1-repo`，但 `.by1` 可能也一起被删了 ——
 所以种子必须是最小的、手写的那一个文件。）
@@ -65,7 +71,11 @@ def get(url, nbytes=None, timeout=30):
 
 
 def seed():
-    """从 models.tsv 读出 (HF id)。**这是唯一的种子。**"""
+    """种子：`models.tsv` + `refs/SOURCES.tsv`。返回 `(列表, 额外的个数)`。
+
+    列表里是 `(显示名, 短名, HF id, 来源)`，**来源只影响打印** ——
+    抓法一个字不变：同一个 HF id、同两条规则路径。
+    """
     out = []
     for line in by1io.iter_lines(by1paths.root('models.tsv'), encoding='utf-8'):
         line = line.rstrip('\n')
@@ -73,8 +83,20 @@ def seed():
             continue
         p = line.split('\t')
         if len(p) >= 3 and '/' in p[2]:
-            out.append((p[0], p[1], p[2]))
-    return out
+            out.append((p[0], p[1], p[2], '有 .by1'))
+    extra = 0
+    src = by1paths.ref('SOURCES.tsv')
+    if os.path.exists(src):
+        for line in by1io.iter_lines(src, encoding='utf-8'):
+            line = line.rstrip('\n')
+            if not line.strip() or line.lstrip().startswith('#'):
+                continue
+            p = line.split('\t')
+            hfid = p[0].strip()
+            if '/' in hfid:
+                out.append((hfid, '', hfid, '探索源'))
+                extra += 1
+    return out, extra
 
 
 def base_of(hfid):
@@ -129,9 +151,10 @@ def main():
         only = sys.argv[sys.argv.index('--only') + 1]
 
     os.makedirs(REF, exist_ok=True)
-    seeds = seed()
+    seeds, n_extra = seed()
     print()
-    print('  种子 models.tsv：%d 个模型' % len(seeds))
+    print('  种子：models.tsv %d 个模型（有 .by1）' % (len(seeds) - n_extra))
+    print('        refs/SOURCES.tsv %d 个探索源（没有 .by1）' % n_extra)
     print('  重抓模式：%s' % ('全部覆盖' if allf else '只补缺的'))
     print()
     print('  %-46s %-10s %-8s %s' % ('模型', 'config', '张量', '耗时'))
@@ -139,7 +162,7 @@ def main():
 
     t0 = time.time()
     n_cfg = n_ten = n_skip = n_bad = 0
-    for 长名, 短名, hfid in seeds:
+    for 长名, 短名, hfid, 来源 in seeds:
         if only and only.lower() not in hfid.lower():
             continue
         b = base_of(hfid)
@@ -155,7 +178,10 @@ def main():
         if need_c:
             bts = fetch_config(hfid)
             if bts:
-                io.open(pc, 'wb').write(bts)
+                # **`with` 关句柄。** 原来是 `io.open(...).write(...)` ——
+                # CPython 上引用计数会立刻关，所以不是 bug；但这是
+                # py1io 存在的理由之一（"每一种意图各有一个名字"）。
+                by1io.write_bytes(pc, bts)
                 n_cfg += 1
                 cstat = '%d KB' % (len(bts) // 1024)
             else:
@@ -164,8 +190,7 @@ def main():
         if need_t:
             d, how = fetch_tensors(hfid)
             if d:
-                io.open(pt, 'w', encoding='utf-8').write(
-                    json.dumps(d, ensure_ascii=False, indent=0))
+                by1io.write_text(pt, json.dumps(d, ensure_ascii=False, indent=0))
                 n_ten += 1
                 tstat = '%d 个(%s)' % (len(d), how)
             else:

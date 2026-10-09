@@ -20,6 +20,7 @@
 import glob
 import os
 import re
+import shutil
 import subprocess
 import sys
 import by1io
@@ -30,8 +31,20 @@ os.chdir(HERE)
 
 
 def sh(*a):
-    r = subprocess.run(a, capture_output=True, text=True,
-                       encoding='utf-8', errors='replace')
+    """跑一条命令，返回 stdout。**工具不在 PATH 上就明说，不抛栈。**
+
+    原来这里是裸的 `subprocess.run(('git', ...))` —— 而 git 不在这台机器
+    的 PATH 上，于是 `by1debt` 以一个 `FileNotFoundError` 的栈结束，
+    冒烟测把它记成"**可疑**"（有 Traceback、又不像环境问题）。
+    而它既不是"可疑"，也不是 by1debt 的 bug：**是这台机器上没有 git。**
+    """
+    exe = shutil.which(a[0]) or a[0]
+    try:
+        r = subprocess.run((exe,) + tuple(a[1:]), capture_output=True,
+                           text=True, encoding='utf-8', errors='replace',
+                           timeout=120)
+    except FileNotFoundError:
+        return ''
     return r.stdout
 
 
@@ -163,9 +176,13 @@ def main():
     # ── ⑥ git 状态 ───────────────────────────────────────────────
     print()
     print('  ⑥ 仓库状态')
-    dirty = sh('git', 'status', '--short').strip()
-    print('     未提交：%s' % (dirty.replace('\n', ' | ')[:60] or '干净'))
-    print('     提交数：%s' % sh('git', 'rev-list', '--count', 'HEAD').strip())
+    if shutil.which('git') is None:
+        # **"这台机器上没有 git" 不是"可疑"。** 说清楚，然后往下走。
+        print('     （找不到 git —— 这一段没做。它在 PATH 上时才数。）')
+    else:
+        dirty = sh('git', 'status', '--short').strip()
+        print('     未提交：%s' % (dirty.replace('\n', ' | ')[:60] or '干净'))
+        print('     提交数：%s' % sh('git', 'rev-list', '--count', 'HEAD').strip())
     print()
     return 0
 

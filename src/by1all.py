@@ -8,7 +8,14 @@
 用法:  python by1all.py [--quick]
         --quick   跳过 C 后端（要调 gcc，慢）
 
-退出码: 0 = 全过   1 = 有失败
+**三种结论，不是两种**（协议见 `by1skip.py`）：
+
+    ok     验过了
+    skip   **这台机器上没验**（没有 gcc / 没有 CUDA / 缓存里没有那个模型）
+           —— 不算失败，但也不是通过；报告里**单独列出来**
+    fail   验了，不对
+
+退出码: 0 = 没有失败   1 = 有失败
 """
 import glob
 import os
@@ -16,7 +23,9 @@ import re
 import subprocess
 import sys
 import contextlib
+import by1io
 import by1paths
+import by1skip
 
 PY = sys.executable
 # **找 gcc：原来只写了 Windows 的路径，Linux 上找不到。**
@@ -32,7 +41,7 @@ GCC_GLOBS = [
     '/usr/bin/cc', '/opt/homebrew/bin/gcc',        # cc / macOS
 ]
 
-# 六个真实模型：(by1, config, tensors, backend, 额外参数)
+# 14 个真实模型：(by1, config, tensors, backend, 额外参数)
 REAL = [
     ('gpt-oss-120b.by1', 'refs/openai__gpt-oss-120b.config.json',
      'refs/openai__gpt-oss-120b.tensors.json', 'torch.module', []),
@@ -78,6 +87,18 @@ REAL = [
     ('NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16.by1',
      'refs/nvidia__NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16.config.json',
      'refs/nemotron.tensors.json', 'torch.module', []),
+    # **第 14 个真实模型 —— 而它原来是漏在护栏外面的那一个。**
+    #
+    # 一份 `.by1` 写在 `models/` 里、`models.tsv` 里也有、`1.md` 的表里
+    # 还写了数字（"36289（97%）"），**但 by1all 从来没跑过它**。
+    # 手动一跑：契约 37534 个张量里**缺 1245 个** —— 名字模板少了
+    # `language_model.` 这一节，而专家张量走另一条模板（那条是对的），
+    # 于是 36288 个专家张量全中、报告写着"97%"，**差的是别的一切**。
+    #
+    # 修好模板之后：37534/37534 全中、0 缺失。
+    # 教训进 KNOWN 那条路是错的 —— 那是**描述写错了**，不是产物缺东西。
+    ('GLM-5.3-Flash.by1', 'refs/zai-org__GLM-5.3-Flash.config.json',
+     'refs/zai-org__GLM-5.3-Flash.tensors.json', 'torch.module', []),
 ]
 
 # 六个合成模型：三后端
@@ -106,7 +127,14 @@ SHAPED = ['llama-shaped.by1', 'mixtral-shaped.by1', 'gpt-oss-shaped.by1',
 
 # 三个判卷人脚本
 JUDGES = ['by1mla.py', 'by1moe.py', 'by1rope.py',
-          # 前向，**真实维度**（六个真实模型里唯一在这台机器上跑得动的）
+          # **refs 语料**：每个文件都能解析、都有出处（by1 / models.tsv / SOURCES）。
+          # 在这之前，"一个 refs 文件从哪来"从来没有被问过 ——
+          # 于是里面躺着一个 29 字节的 `Invalid username or password.`。
+          'by1refs.py',
+          # **文档里写的路径还在吗。** 它原来没有判定行、也没有 `__main__`
+          # 守卫（import 它就印一屏），所以既不能被判、也没人跑它。
+          'by1docs.py',
+          # 前向，**真实维度**（14 个真实模型里唯一在这台机器上跑得动的）
           'by1instella.py',
           # 真实维度、官方 config 的前向 —— **另一代**
           # （LayerNorm / 学习式位置 / 无门控 GELU）
@@ -128,9 +156,19 @@ JUDGES = ['by1mla.py', 'by1moe.py', 'by1rope.py',
           'by1e2e.py',
           # 设备无关性：前向期间不带 device 的张量创建。
           # 这台机器没有显卡，所以验的是「显卡上能跑」的必要条件。
-          'by1dev.py']
+          'by1dev.py',
+          # **显卡那半没验，要说出来。** 它在这台机器上走 by1skip
+          # （没有 CUDA 设备）—— 于是每一轮报告里都印着
+          # 「-- by1gpu.py [跳过] 没有可用的 CUDA 设备」，
+          # 而不是像以前那样：这件事只存在于 README 的叙述里。
+          'by1gpu.py']
 
 fails, rows = [], []
+
+# **子进程必须有个上限。** 一个挂住的生成程序（或一个等 stdin 的编译器）
+# 会让整轮验证**永远停在那里** —— 而"永远停在那里"在日志里看起来
+# 和"还在跑"一模一样。上限可以用 BY1_TIMEOUT 调。
+TIMEOUT = int(os.environ.get('BY1_TIMEOUT', '600'))
 
 
 def run(args, tag=None):
@@ -143,9 +181,68 @@ def run(args, tag=None):
         args = [by1paths.tool(args[0])] + list(args[1:])
     # **子进程的 cwd 固定成仓库根。** 生成物（`cgen-<模型>/`）落在这里，
     # 和搬家前一致；`.gitignore` 的 `cgen-*/` 指的也正是这里。
-    r = subprocess.run([PY] + args, cwd=by1paths.ROOT, capture_output=True,
-                       text=True, encoding='utf-8', errors='replace')
-    return r.returncode == 0, (r.stdout or '') + (r.stderr or '')
+    #
+    # **顺手把子进程的输出也钉成 UTF-8。** 判据是在**这里**解出来的
+    # （`'逐字段' in out`），所以"子进程用什么编码"不能听凭系统代码页 ——
+    # 中文 Windows 的管道默认是 cp936，于是子进程写的中文判定行到了这边
+    # 变成 U+FFFD：一个退出码 0、判定正确的脚本被记成"没有判定行"。
+    # 只动这一个变量，不碰 PATH、不碰别的环境。
+    env = dict(os.environ)
+    env['PYTHONIOENCODING'] = 'utf-8'
+    try:
+        r = subprocess.run([PY] + args, cwd=by1paths.ROOT, capture_output=True,
+                           text=True, encoding='utf-8', errors='replace',
+                           env=env, timeout=TIMEOUT)
+    except subprocess.TimeoutExpired:
+        # **超时是失败，不是跳过。** 跳过是"这台机器上验不了"；
+        # 挂住是"它坏了" —— 两者混起来，一个死循环会变成一条安静的缺口。
+        return 'fail', ('（%d 秒没跑完 —— **超时**。这不是"没验"，'
+                        '是它挂住了。）' % TIMEOUT)
+    # **三态，不是布尔。** "退出码 ≠ 0" 里混着两类完全不同的东西：
+    # 真的算错了，和"这台机器上验不了"。by1skip 用两条通道
+    # （退出码 2 + `[跳过]` 标记）把它们分开 —— 两条通道不一致时取更保守的。
+    out = (r.stdout or '') + (r.stderr or '')
+    return by1skip.verdict(r.returncode, out), out
+
+
+def _st(v):
+    """行状态归一：布尔（老写法）和字符串都收。"""
+    if v is True:
+        return 'ok'
+    if v is False:
+        return 'fail'
+    return v
+
+
+def confirmed(st, out, line):
+    """**输出通道能否决一个 0。**（判卷人的判据不能只有一条通道。）
+
+    两种"绿得可疑"：
+
+        · 退出码说通过，输出里却有一行 `[FAIL]`     -> 那是失败
+        · 退出码说通过，输出里连一行判定都没有       -> 那是最坏的一种绿
+          （它可能什么都没跑）
+
+    这条规矩原来只写在 NumPy 那一段里（那次事故：一个脚本打印了 FAIL
+    却 `return 0`，于是被当成通过）。现在它对**每一段**都成立。
+    """
+    if st != 'ok':
+        return st
+    if any('[FAIL]' in l for l in (out or '').splitlines()):
+        return 'fail'
+    return 'fail' if not line else 'ok'
+
+
+def note_of(st, out, line, empty='（没有判定行）'):
+    """行的备注：判定行优先；跳过就用它自己那行 `[跳过] …`。"""
+    if line:
+        return line[-1]
+    if st == 'skip':
+        for ln in (out or '').splitlines():
+            if by1skip.MARK in ln:
+                return ln.strip()
+        return '（跳过，但没说为什么）'
+    return empty
 
 
 # 已知缺口：(那一项的名字前缀, 为什么)。**仍然打印出来**，只是不算失败 ——
@@ -188,8 +285,9 @@ def run_many(pairs, jobs=None):
     `import torch + transformers`**（4.7 秒/条）。
     计算本身不慢 —— 慢的是启动。
 
-    判据一个字没改：还是**退出码 + 输出**。
-    并行不放松任何一条规则，只是不再排队等 import。
+    判据一个字没改：还是**退出码 + 输出**（现在是三态：`by1skip` 认
+    退出码 2 加输出里的 `[跳过]` 标记）。并行不放松任何一条规则，
+    只是不再排队等 import。
     """
     import os as _os
     from concurrent.futures import ThreadPoolExecutor
@@ -222,20 +320,21 @@ def main():
     for f in specs:
         if f in ('selftest.by1', 'gate-probe.by1'):
             continue          # 两个故意的反例
-        ok, out = run(['by1check.py', f], 'check ' + f)
+        _, out = run(['by1check.py', f], 'check ' + f)
         m = re.search(r'摘要:\s*(\d+)\s*错误\s*/\s*(\d+)\s*警告', out)
         e, w = (int(m.group(1)), int(m.group(2))) if m else (-1, -1)
         if e != 0:
             bad.append('%s(%d 错 %d 警)' % (f, e, w))
     rows.append(('检查器 %d 个 .by1' % (len(specs) - 1),
-                 not bad, '除 selftest 外全 0 错' if not bad else '; '.join(bad)))
+                 'ok' if not bad else 'fail',
+                 '除 selftest 外全 0 错' if not bad else '; '.join(bad)))
     if bad:
         fails.append('by1check')
     # selftest 单独确认：它**必须**报错，否则说明检查器坏了
-    ok, out = run(['by1check.py', 'selftest.by1'], 'selftest')
+    _, out = run(['by1check.py', 'selftest.by1'], 'selftest')
     m = re.search(r'摘要:\s*(\d+)\s*错误', out)
     n = int(m.group(1)) if m else 0
-    rows.append(('selftest（反例，必须有错）', n > 0,
+    rows.append(('selftest（反例，必须有错）', 'ok' if n > 0 else 'fail',
                  '报了 %d 个错误' % n))
     if n == 0:
         fails.append('selftest')
@@ -245,11 +344,11 @@ def main():
     # `by1boot` 的识别词分两张表：数据里有的、和一次都没出现的。
     # 这个检查确认那张分类是对的 —— **分类一旦错了，
     # 把想象的放进已验证，它就永远不会被发现**（死模式不出声）。
-    ok, out = run(['by1pat.py'], 'patterns')
+    st, out = run(['by1pat.py'], 'patterns')
     line = [l.strip() for l in out.splitlines() if '分类' in l]
-    rows.append(('模式分类 by1pat.py', ok and bool(line),
-                 line[-1] if line else '（没有判定行）'))
-    if not (ok and line):
+    st = confirmed(st, out, line)
+    rows.append(('模式分类 by1pat.py', st, note_of(st, out, line)))
+    if st == 'fail':
         fails.append('patterns')
 
     # ---- 1.5 神谕：**不依赖 by1 的期望值** ----
@@ -261,11 +360,11 @@ def main():
     #   > **两边"一致地错"**，所以四个模型的 NumPy<->PyTorch 对拍全是绿的。
     #
     # 神谕验的是**对**。它慢一点，但它是唯一能抓到"一致地错"的东西。
-    ok, out = run(['by1oracles.py'], 'oracles')
+    st, out = run(['by1oracles.py'], 'oracles')
     line = [l.strip() for l in out.splitlines() if '/ 10' in l]
-    rows.append(('神谕 by1oracles.py', ok and bool(line),
-                 line[-1] if line else '（没有判定行）'))
-    if not (ok and line):
+    st = confirmed(st, out, line)
+    rows.append(('神谕 by1oracles.py', st, note_of(st, out, line)))
+    if st == 'fail':
         fails.append('oracles')
 
     # ---- 2. config 逐字段 ----
@@ -293,11 +392,12 @@ def main():
             if _refs.repo_of(f):
                 derived_fail.append(f)
             continue                     # 合成模型没有 config，正常
-        ok, out = run(['by1verify.py', f, cfg, '--config'], 'config ' + f)
+        st, out = run(['by1verify.py', f, cfg, '--config'], 'config ' + f)
         line = [l.strip() for l in out.splitlines() if '逐字段' in l]
-        note = line[-1] if line else '（没有 field 映射）'
-        rows.append(('config ' + f, ok and bool(line), note))
-        if not (ok and line):
+        st = confirmed(st, out, line)
+        rows.append(('config ' + f, st,
+                     note_of(st, out, line, empty='（没有 field 映射）')))
+        if st == 'fail':
             fails.append('config ' + f)
     if derived_fail:
         # **不静默。** 有 by1-repo 却推不出 config，是引用坏了。
@@ -321,12 +421,13 @@ def main():
             if _refs.repo_of(f):
                 ten_fail.append((f, backend))
             continue
-        ok, out = run(['by1verify.py', f, cfg, '--tensors', ten,
+        st, out = run(['by1verify.py', f, cfg, '--tensors', ten,
                        '--backend', backend] + extra, 'tensors ' + f)
         line = [l.strip() for l in out.splitlines() if '契约声明存在' in l]
-        rows.append(('%s %s' % (backend, f), ok,
-                     (line[-1] if line else '').replace('   ', ' ')))
-        if not ok:
+        st = confirmed(st, out, line)
+        rows.append(('%s %s' % (backend, f), st,
+                     note_of(st, out, line, empty='').replace('   ', ' ')))
+        if st == 'fail':
             fails.append('tensors %s %s' % (backend, f))
     if ten_fail:
         print('  !! **%d 个张量检查找不到文件**（不是合成模型）：' % len(ten_fail))
@@ -351,41 +452,43 @@ def main():
     _todo = [f for f in SHAPED
              if f not in ('mla-shaped.by1', 'llama3-shaped.by1',
                           'clef-tiny.by1', 'gpt2-tiny.by1', 'hello.by1')]
-    for f, (ok, out) in zip(_todo, run_many(
+    for f, (st, out) in zip(_todo, run_many(
             [(['by1diff.py', f], 'diff ' + f) for f in _todo])):
         line = [l.strip() for l in out.splitlines() if '最大绝对差' in l]
-        rows.append(('前向 ' + f, ok,
-                     (line[-1] if line else '').replace('   ', ' ')))
-        if not ok:
+        st = confirmed(st, out, line)
+        rows.append(('前向 ' + f, st,
+                     note_of(st, out, line, empty='').replace('   ', ' ')))
+        if st == 'fail':
             fails.append('diff ' + f)
 
     # ---- 5. 三后端 ----
-    for f, (ok, out) in zip(SHAPED, run_many(
+    for f, (st, out) in zip(SHAPED, run_many(
             [(['by1exec.py', f, '--compare'], 'exec ' + f)
              for f in SHAPED])):
         line = [l.strip() for l in out.splitlines() if '最大绝对差' in l]
-        # **除了退出码，也看输出里有没有 FAIL。**
-        # 只信退出码的话，一个"打印了 FAIL 却 return 0"的脚本
-        # 会被当成通过 —— 而那正是发生过的事。
-        #
-        # 判卷人的判据**不能只有一条通道**：它自己坏了，就没人发现。
-        if ok and any('[FAIL]' in l for l in out.splitlines()):
-            ok = False
+        # **"输出否决退出码"这条规矩现在在 `confirmed()` 里**，对每一段
+        # 都成立，不再是这一段的特例。这里只负责把那次的备注写得更好看：
+        if st == 'ok' and any('[FAIL]' in l for l in out.splitlines()):
             line = ['（退出码说 ok，但输出里是 FAIL —— 两个通道不一致）']
-        rows.append(('NumPy ' + f, ok,
-                     (line[-1] if line else '').replace('   ', ' ')))
-        if not ok:
+        st = confirmed(st, out, line)
+        rows.append(('NumPy ' + f, st,
+                     note_of(st, out, line, empty='').replace('   ', ' ')))
+        if st == 'fail':
             fails.append('exec ' + f)
 
     # ---- 6. C 后端 ----
     gcc = find_gcc()
     if quick:
-        rows.append(('C 后端', True, '--quick 跳过'))
+        # **这里原来写的是 True（通过）。** 整个 C 后端在 `--quick` 下是
+        # "没验"，不是"验过了" —— 而 `gpu/README.md` 正是叫人**在租卡前**
+        # 跑 `--quick`，于是那一步的失败会显示成一片绿。
+        rows.append(('C 后端', 'skip', '--quick 跳过（要 gcc，慢）'))
     elif not gcc:
-        rows.append(('C 后端', False, '找不到 gcc'))
-        fails.append('gcc')
+        # 缺 gcc = **这台机器上验不了**，不是"C 后端错了"。
+        # 跳过会在报告里单列出来 —— 它没有被藏起来，只是不再冒充失败。
+        rows.append(('C 后端', 'skip', '找不到 gcc —— C 后端这一整段没验'))
     else:
-        for f, (ok, out) in zip(SHAPED, run_many(
+        for f, (st, out) in zip(SHAPED, run_many(
                 [(['by1c.py', f, '--gcc', gcc, '--seq', '16',
                    # **每个模型一个工作目录。**
                    # 这一条是并行化带出来的 bug：8 个 by1c 同时跑，
@@ -403,15 +506,16 @@ def main():
             # 混在一起的话，一个是"还没做"、一个是"做错了"，
             # 却长得一样 —— 而真问题会被覆盖率噪音淹掉。
             # （by1irentry 里是同一条规矩。）
-            if not ok and '[不支持]' in out:
+            if st == 'fail' and '[不支持]' in out:
                 miss = [l.strip() for l in out.splitlines()
                         if '[不支持]' in l]
                 # 走 KNOWN 那条路（按前缀匹配），不算失败。
                 gaps.append('C %s' % f)
                 continue
-            rows.append(('C ' + f, ok,
-                         (line[-1] if line else '').replace('   ', ' ')))
-            if not ok:
+            st = confirmed(st, out, line)
+            rows.append(('C ' + f, st,
+                         note_of(st, out, line, empty='').replace('   ', ' ')))
+            if st == 'fail':
                 fails.append('C ' + f)
 
     # ---- 7. 取值门 —— **可证伪对照** ----
@@ -423,43 +527,63 @@ def main():
     # （判据看它自己的判定行，不看某个具体字样：2026-10 把 gelu 实现之后，
     #   GPT-2 从"必须被拒"变成"必须通过"，而这个脚本立刻红了 ——
     #   那是它该干的事，但这里的判据不该绑死在某个模型的某个取值上。）
-    gok, out = run(['by1gate.py'], 'gate')
-    rows.append(('取值门（三个反例 + 三个正例）', gok,
-                 out.strip().splitlines()[-1][:70] if out.strip() else '（没输出）'))
-    if not gok:
+    st, out = run(['by1gate.py'], 'gate')
+    line = [l.strip() for l in out.splitlines() if '[PASS]' in l
+            or '[FAIL]' in l]
+    st = confirmed(st, out, line)
+    note = line[-1] if line else (out.strip().splitlines()[-1][:70]
+                                  if out.strip() else '（没输出）')
+    rows.append(('取值门（三个反例 + 三个正例）', st, note))
+    if st == 'fail':
         fails.append('gate')
 
     # ---- 8. 判卷人脚本 ----
     # **13 条判卷人，74 秒 —— 最重的一段。** 它们互不依赖，并行。
-    for s, (ok, out) in zip(JUDGES, run_many([([s], s) for s in JUDGES])):
+    for s, (st, out) in zip(JUDGES, run_many([([s], s) for s in JUDGES])):
         line = [l.strip() for l in out.splitlines() if '[PASS]' in l
                 or '[FAIL]' in l]
-        rows.append((s, ok, line[-1] if line else '（没有判定行）'))
-        if not ok:
+        st = confirmed(st, out, line)
+        rows.append((s, st, note_of(st, out, line)))
+        if st == 'fail':
             fails.append(s)
 
     # ---- 输出 ----
     print('=' * 78)
     print('  by1 全量验证')
     print('=' * 78)
-    for name, ok, note in rows:
-        mark = '  ok ' if ok else '  !! '
-        print('%s%-30s %s' % (mark, name, note[:80]))
+    for name, st, note in rows:
+        print('%s%-30s %s' % (by1skip.mark(_st(st)), name, note[:80]))
     print('-' * 78)
     known, real = [], []
     for f in fails + gaps:
         hit = next((why for pre, why in KNOWN if f.startswith(pre)), None)
         (known if hit else real).append((f, hit))
+    # **跳过单独列。** 它不算失败 —— 但它也不是通过。
+    # 藏起来的话，读者会把"总数 − 失败数"读成"验过的数"。
+    skipped = [(n, note) for n, st, note in rows if _st(st) == 'skip']
+    if skipped:
+        print('  跳过（**没验** —— 不算失败，但也不是通过）:')
+        for n, note in skipped:
+            print('    - %-30s %s' % (n, note[:70]))
     if known:
         print('  已知缺口（不算失败，但仍然存在）:')
         for f, why in known:
             print('    - %s\n      %s' % (f, why))
-    print('  %d 项，%d 项失败%s'
+    print('  %d 项，%d 项失败%s%s'
           % (len(rows), len(real),
+             ('，%d 项跳过' % len(skipped)) if skipped else '',
              ('，另有 %d 项已知缺口' % len(known)) if known else ''))
     if real:
         print('  失败: %s' % ', '.join(f for f, _ in real))
-    print('  [%s]' % ('全过' if not real else '有失败'))
+    if real:
+        verdict = '有失败'
+    elif skipped:
+        # **带着 3 项"没验"还说"全过"，那就是骗人。** 跳过不拦退出码，
+        # 但它必须出现在这最后一行里。
+        verdict = '全过（%d 项没验）' % len(skipped)
+    else:
+        verdict = '全过'
+    print('  [%s]' % verdict)
     return 0 if not real else 1
 
 

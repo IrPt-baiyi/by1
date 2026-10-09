@@ -39,34 +39,39 @@ CASE = [
      'gelu / LayerNorm / 学习式位置 / 无门控 MLP 现在都实现了'),
 ]
 
-bad = []
-for f, want_ok, needle, why in CASE:
-    try:
-        _r, info = bc.check(f)
-    except Exception as e:
-        bad.append('%s: 检查器就没过 %s' % (f, str(e)[:40]))
-        continue
-    try:
-        cg.compile_ir(info)
-        got, msg = True, ''
-    except cg.CodegenError as e:
-        got, msg = False, str(e)
+def main():
+    bad = []
+    for f, want_ok, needle, why in CASE:
+        try:
+            _r, info = bc.check(f)
+        except Exception as e:
+            bad.append('%s: 检查器就没过 %s' % (f, str(e)[:40]))
+            continue
+        try:
+            cg.compile_ir(info)
+            got, msg = True, ''
+        except cg.CodegenError as e:
+            got, msg = False, str(e)
 
-    if got == want_ok:
-        detail = '接受' if got else '拒绝：' + msg.strip().replace('\n', ' ')[:52]
-        print('  ok %-22s %s' % (f, detail))
-    else:
-        print('  !! %-22s **预期%s，实际%s** —— %s'
-              % (f, '接受' if want_ok else '拒绝',
-                 '接受' if got else '拒绝', why))
-        bad.append(f)
+        if got == want_ok:
+            detail = '接受' if got else '拒绝：' + msg.strip().replace('\n', ' ')[:52]
+            print('  ok %-22s %s' % (f, detail))
+        else:
+            print('  !! %-22s **预期%s，实际%s** —— %s'
+                  % (f, '接受' if want_ok else '拒绝',
+                     '接受' if got else '拒绝', why))
+            bad.append(f)
 
-    if not got and needle and needle not in msg:
-        print('         拒绝理由里没提到 %s' % needle)
-        bad.append(f + '(理由)')
+        if not got and needle and needle not in msg:
+            print('         拒绝理由里没提到 %s' % needle)
+            bad.append(f + '(理由)')
 
-print()
-print('  [%s] 取值门 %s'
-      % ('PASS' if not bad else 'FAIL',
-         '工作正常' if not bad else '坏了：%s' % ', '.join(bad)))
-sys.exit(0 if not bad else 1)
+    print()
+    print('  [%s] 取值门 %s'
+          % ('PASS' if not bad else 'FAIL',
+             '工作正常' if not bad else '坏了：%s' % ', '.join(bad)))
+    return 0 if not bad else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

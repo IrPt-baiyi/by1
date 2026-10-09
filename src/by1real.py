@@ -35,6 +35,7 @@ import torch
 import contextlib
 import by1io
 import by1paths
+import by1skip
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -126,9 +127,8 @@ def main():
     # ── ② 找权重文件 ──────────────────────────────────────────────
     shards = sorted(glob.glob(os.path.join(root, '*.safetensors')))
     if not shards:
-        print()
-        print('  [跳过] %s 里没有 safetensors —— 先从 ModelScope 下' % root)
-        return 2
+        return by1skip.skip('%s 里没有 safetensors —— 先从 ModelScope 下'
+                            % root)
     tot = sum(os.path.getsize(f) for f in shards)
     print()
     print('  ② 权重：%d 个分片，%.1f GB' % (len(shards), tot / 1e9))
@@ -166,9 +166,9 @@ def main():
     #     搬的时候 CPU 上那份还在 -> 峰值更高，容易撞 120 GB 的 cgroup 上限
     # 先搬再装：CPU 上只有 shm 那 52 GB，权重是 CPU -> GPU 逐块过去的。
     if not torch.cuda.is_available():
-        print()
-        print('  [跳过] 没有 CUDA')
-        return 1
+        # **这个是"这台机器上验不了"，不是失败。** 原来返回 1 ——
+        # 于是一个没有显卡的机器看起来像"模型算错了"。
+        return by1skip.skip('没有 CUDA')
     dev = torch.device('cuda')
     print()
     print('  ④ 先搬到显卡（这样 CPU 峰值只有 shm 那份）')

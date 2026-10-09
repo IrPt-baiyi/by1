@@ -33,6 +33,8 @@
 import ctypes
 import os
 
+import by1io      # noqa: F401  —— import 即把 stdout 钉成 UTF-8
+
 _CACHE = {}
 
 

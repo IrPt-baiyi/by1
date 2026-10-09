@@ -26,7 +26,11 @@ dependencies = []
 # 对拍用的。判卷人要跟外部实现比，所以这一坨是必需的。
 verify = ["numpy", "torch", "transformers", "safetensors"]
 # 编译 C 后端用的（Windows 上也可以走 mingw）
-c = []
+#
+# **这里以前是空的 `c = []`**，而 `by1c.py` / `by1exec.py` 在**模块级**
+# `import numpy` —— 于是"跑 C 后端只用标准库"这句话对不上：
+# `pip install -e '.[c]'` 什么都不会装。numpy 是那两个后端的运行时依赖。
+c = ["numpy"]
 
 [project.scripts]
 by1 = "by1ver:main"
@@ -44,10 +48,20 @@ by1 = "by1ver:main"
 # `models/` `refs/` 不是包数据 —— 分发那一包走 `by1pack.py`，不经过 pip。
 package-dir = {"" = "src"}
 py-modules = [
-    "by1ver", "by1ir",
-    "by1check", "by1codegen", "by1exec", "by1c",
-    "by1boot", "by1contract", "by1emit", "by1mem", "by1diff",
-    "by1verify", "by1all", "by1pack",
+    "by1", "by1all", "by1blind", "by1boot",
+    "by1bootir", "by1c", "by1check", "by1cloud",
+    "by1cmp", "by1codegen", "by1contract", "by1debt",
+    "by1dev", "by1diff", "by1docs", "by1e2e",
+    "by1emit", "by1exec", "by1ext", "by1extdemo",
+    "by1fetch", "by1gate", "by1gpt2", "by1gpu",
+    "by1index", "by1instella", "by1io", "by1ir",
+    "by1irentry", "by1lint", "by1load", "by1mem",
+    "by1mla", "by1moe", "by1name", "by1opdiff",
+    "by1oracle", "by1oracles", "by1pack", "by1pat",
+    "by1paths", "by1raw", "by1real", "by1rebuild",
+    "by1refs", "by1rope", "by1skip", "by1smoke",
+    "by1train", "by1triage", "by1ver", "by1verify",
+    "by1vocab",
 ]
 
 [tool.setuptools.dynamic]

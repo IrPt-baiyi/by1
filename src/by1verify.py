@@ -29,6 +29,7 @@ import re
 import struct
 import sys
 import by1io
+import by1skip
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -46,7 +47,9 @@ def check_config(info, tc, out):
     """反向：config 由 .by1 生成，官方 config 只是判卷人。"""
     got = info.get("config") or {}
     if not got:
-        out.append("  (by1 里没有 transformers.config 的 field 映射，跳过)")
+        # **"没验"不是"通过"。** 这里返回 None，主流程把它记成跳过（by1skip）。
+        out.append("  %s by1 里没有 transformers.config 的 field 映射 —— "
+                   "这一项没验" % by1skip.MARK)
         return None
     # 这些键描述的是「这份权重怎么被加载」，不是「这个模型的架构是什么」：
     #   architectures / auto_map / transformers_version   HF 的加载元信息
@@ -105,7 +108,13 @@ def by1_layer_types(info):
 def check_layer_types(info, tc, out):
     want = tc.get("layer_types")
     if not want:
-        out.append("  (config 无 layer_types，跳过)")
+        # **这是"不适用"，不是"没验"。**
+        #
+        # 官方 config 里没有逐层数组，就没有可比的东西 —— 而 `by1all` 的
+        # `--tensors` 那一路**并没有要求**比层类型。第一版把它记成跳过，
+        # 于是"形状全中"的一次调用被降级成跳过（13 个模型的张量行全变 `--`）。
+        # **一个不在请求范围内的东西，不能给整个调用定结论。**
+        out.append("  (config 无 layer_types，这一项不适用)")
         return None
     got = by1_layer_types(info)
     # 官方有些 config 的逐层数组**比模型长**：Step-3.7 是 48、模型 45 层
@@ -444,7 +453,10 @@ def check_tensors(info, real, render, rule_desc, scope_map, out,
 
 # ── main ─────────────────────────────────────────────────────────────
 
-def main(argv):
+def main(argv=None):
+    # 同上：入口 `by1-verify = "by1verify:main"` 是不带参数调的。
+    if argv is None:
+        argv = sys.argv[1:]
     if len(argv) < 2:
         print(__doc__)
         return 2
@@ -482,10 +494,15 @@ def main(argv):
                    % (sub, len(_dropped),
                       ', '.join(_dropped[:5]) + (' …' if len(_dropped) > 5 else '')))
         out.append("")
+    # **跳过要单独记。** 一个调用里"验了一部分、跳了一部分"，
+    # 结论必须是跳过 —— 否则"部分验过"会被读成"验过了"。
+    skipped = []
     ok0 = None
     if "--config" in argv:
         out.append("[1] config 逐字段对拍   (由 .by1 生成，不继承任何字段)")
         ok0 = check_config(info, tc, out)
+        if ok0 is None:
+            skipped.append('config 映射')
         out.append("")
     out.append("[2] layer_types")
     ok1 = check_layer_types(info, tc, out)
@@ -494,7 +511,7 @@ def main(argv):
     real = load_reference(tensors_path, gguf_path)
     if real is not None:
         out.append("")
-        out.append(f"[2] tensor names + shapes   (backend = {backend})")
+        out.append(f"[3] tensor names + shapes   (backend = {backend})")
         rules = info.get("emit", {})
         render, rule_desc, scope_map = None, "", {}
         if name_tpl:
@@ -506,7 +523,11 @@ def main(argv):
             rule_desc = f'by1 emit[{backend}]  name = "{rule["name"]}"'
             scope_map = rule.get("scope", {})
         else:
-            out.append(f"  (by1 里没有 emit[{backend}] 规则，跳过)")
+            # **一个拼错的 `--backend` 原来就能静默删掉整项形状校验还报绿。**
+            # 现在它是"跳过"：输出留痕、退出码 2 —— 见 by1skip。
+            out.append(f"  {by1skip.MARK} by1 里没有 emit[{backend}] 规则"
+                       f" —— 这一项没验")
+            skipped.append(f'emit[{backend}]')
         if render:
             _r = rules.get(backend) or {}
             render_e = None
@@ -545,7 +566,13 @@ def main(argv):
                    f"kv_tie={tie or '?':<6} {c:>3} 层")
 
     print("\n".join(out))
-    return 0 if (ok0 is not False and ok1 is not False and ok2 is not False) else 1
+    # **失败压过跳过。** 验出了错就是错；只有"什么都没验出错、但有没验的"
+    # 才算跳过。反过来（跳过压失败）会把真失败藏起来。
+    if ok0 is False or ok1 is False or ok2 is False:
+        return 1
+    if skipped:
+        return by1skip.CODE
+    return 0
 
 
 if __name__ == "__main__":

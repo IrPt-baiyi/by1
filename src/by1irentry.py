@@ -46,10 +46,14 @@ import by1exec as ex
 import by1ir
 import by1paths
 
-SKIP = {'selftest.by1', 'gate-probe.by1', 'hello.by1',
-        # 这些用的机制 codegen 还没实现 —— 是**覆盖率**问题，
-        # 不是 IR 入口问题。见 by1gate.py。
-        'ling-3.0-tiny.by1', 'glm53.by1', 'nemotron-h.by1'}
+SKIP = {'selftest.by1', 'gate-probe.by1'}
+# **这里原来还列着 `ling-3.0-tiny.by1` / `glm53.by1` / `nemotron-h.by1`
+# —— 三个文件名早就不存在了**（改名之后是 `Ling-3.0-tiny.by1` /
+# `GLM-5.3-Flash.by1` / `NVIDIA-Nemotron-…-BF16.by1`）。
+#
+# 后果不是"少跳过了三个"，而是**它们掉进了下面那个宽泛的
+# `except: continue` —— 一个本该被打印出来的覆盖率缺口，变成了静默消失。**
+# 现在不留它们：codegen 不支持就报在 `gaps` 里（KDA / SSM）。
 SRC = {'llama-shaped.by1', 'mixtral-shaped.by1', 'gpt-oss-shaped.by1',
        'qwen3-next-shaped.by1', 'mla-shaped.by1', 'llama3-shaped.by1',
        'clef-tiny.by1'}
@@ -120,7 +124,15 @@ def main():
             _r, info = bc.check(f)
             ir0 = cg.compile_ir(info)
             nelem = sum(int(np.prod(v)) for v in ex.shapes_of(ir0).values())
-        except Exception:
+        except cg.CodegenError as e:
+            # **覆盖率缺口要报出来，不能落进下面那个宽泛的 except。**
+            # 那三个 KDA/SSM 模型原来就是这样消失的（见上面 SKIP 的注释）。
+            gaps.append((f, str(e).strip().splitlines()[0][:56]))
+            continue
+        except Exception as e:
+            # 检查器不过 / 形状算不出来 —— 那是**真问题**，进 bad。
+            # （原来的 `except Exception: continue` 把这两种混成了一件事。）
+            bad.append('%s(%s)' % (f, type(e).__name__))
             continue
         if nelem > 2e8:            # ~200M 参数，fp32 约 800MB
             skipped.append((f, nelem))

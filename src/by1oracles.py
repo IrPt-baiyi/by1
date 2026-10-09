@@ -41,10 +41,13 @@
 import importlib.util
 import os
 import re
+import shutil
 import sys
 import tempfile
 
 import torch
+
+import by1io      # noqa: F401  —— import 即把 stdout 钉成 UTF-8
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -66,17 +69,26 @@ def _mod(name):
 
 
 def build(src, name='oracle'):
-    """把一段 .by1 源码建起来，返回 (model, info, ir, tmpdir)。"""
+    """把一段 .by1 源码建起来，返回 `(model, info, ir)`。
+
+    **临时目录在这里就删掉。** 里面的 `.by1` 只有 `check()` 那一步用得上；
+    原来它被当作第 4 个返回值带出去，而**没有任何调用方删它** ——
+    每跑一次神谕就在临时区漏 10 个目录（`by1oracle-*`）。
+    一个只写不删的临时目录，跑一万遍就是一万个。
+    """
     bc, cg = _mod('by1check'), _mod('by1codegen')
     d = tempfile.mkdtemp(prefix='by1oracle-')
-    p = os.path.join(d, name + '.by1')
-    with open(p, 'w', encoding='utf-8') as f:
-        f.write(src)
-    _r, info = bc.check(p)
-    ir = cg.compile_ir(info)
-    ns = {}
-    exec(compile(cg.render_ir(ir, name + '.by1'), '<oracle>', 'exec'), ns)
-    return ns['build']().eval(), info, ir, d
+    try:
+        p = os.path.join(d, name + '.by1')
+        with open(p, 'w', encoding='utf-8') as f:
+            f.write(src)
+        _r, info = bc.check(p)
+        ir = cg.compile_ir(info)
+        ns = {}
+        exec(compile(cg.render_ir(ir, name + '.by1'), '<oracle>', 'exec'), ns)
+        return ns['build']().eval(), info, ir
+    finally:
+        shutil.rmtree(d, ignore_errors=True)
 
 
 def fill(model, seed=0):
@@ -116,7 +128,7 @@ def o01_causal():
     真相：因果模型里位置 0 看不到位置 1。这不是"差不多"，
     是**逐位相等** —— 而这条如果用互拍永远验不出来。
     """
-    m, _i, _r, _d = build(MINI)
+    m, _i, _r = build(MINI)
     fill(m)
     ids = torch.tensor([[3, 7, 1, 9]])
     flipped = torch.tensor([[3, 11, 5, 2]])       # 只改后面
@@ -264,7 +276,7 @@ def o06_seq1_is_v():
     然后和 by1 的后端比。
     """
     ex, cg = _mod('by1exec'), _mod('by1codegen')
-    m, info, ir, _d = build(NOFFN)
+    m, info, ir = build(NOFFN)
     fill(m, seed=1)
     sd = m.state_dict()
     # 找 q/k/v 投影
@@ -299,7 +311,7 @@ def o07_gqa_heads_equal():
     真相：**如果实现把 head 索引搞错了，各头就会不同** ——
     而三后端互拍看不出来（三个都错得一样）。
     """
-    m, _i, _r, _d = build(MINI)
+    m, _i, _r = build(MINI)
     fill(m, seed=2)
     sd = m.state_dict()
     hd = 4
@@ -333,7 +345,7 @@ def o08_ffn_gate_zero():
 
     先看清楚键再写判据：这是这个项目里反复学到的那一条。
     """
-    m, _i, _r, _d = build(MINI)
+    m, _i, _r = build(MINI)
     fill(m, seed=3)
     sd = m.state_dict()
     gate_keys = [k for k in sd if re.search(r'\.w[13]\.weight$', k)]
@@ -356,7 +368,7 @@ def o08_ffn_gate_zero():
 @oracle
 def o09_embed_lookup():
     """`Embed` 就是取第 i 行。真相：逐位相等，不是"接近"。"""
-    m, _i, _r, _d = build(MINI)
+    m, _i, _r = build(MINI)
     fill(m, seed=4)
     sd = m.state_dict()
     emb = None
@@ -386,7 +398,7 @@ def o10_zero_weights():
     真相：**0 @ x = 0**。如果实现里混进了不该有的项（比如写死的
     初始化、或残留的随机），这条会红。
     """
-    m, _i, _r, _d = build(MINI)
+    m, _i, _r = build(MINI)
     sd = m.state_dict()
     n_zero = 0
     with torch.no_grad():

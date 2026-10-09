@@ -47,6 +47,11 @@
 import glob as _glob
 import os
 
+# **只为编码。** `by1io` 在 import 时把 stdout/stderr 钉成 UTF-8，
+# 而这个模块几乎每个脚本都会 import —— 所以放在这里，钉一次全都沾光。
+# （不要因此把 by1io 变成"什么都往里塞"的模块：它只管读写和这一条约定。）
+import by1io  # noqa: F401
+
 # ── 五个目录，各一个名字 ────────────────────────────────────────────
 SRC = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(SRC)

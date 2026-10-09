@@ -36,6 +36,7 @@ import os
 import struct
 import sys
 import urllib.request
+import by1io
 import by1paths
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -140,8 +141,7 @@ def main():
                     break
         if got:
             p = os.path.join(REF, base + '.tensors.json')
-            io.open(p, 'w', encoding='utf-8').write(
-                json.dumps(got, ensure_ascii=False, indent=0))
+            by1io.write_text(p, json.dumps(got, ensure_ascii=False, indent=0))
             print('    ✓ %-48s %5d 个张量' % (base[:48], len(got)))
             ok += 1
         else:

@@ -1174,9 +1174,9 @@ def main(argv=None):
     flat = np.concatenate([params[p].ravel() for _m, p in order])
     print(f"  权重 {total:,} 个 float = {total*4/1024:.1f} KiB，"
           f"{len(order)} 个张量")
-    open(os.path.join(args.workdir, "w.bin"), "wb").write(flat.tobytes())
+    by1io.write_bytes(os.path.join(args.workdir, "w.bin"), flat.tobytes())
     ids = rng.integers(0, ir["vocab"], args.seq).astype(np.int32)
-    open(os.path.join(args.workdir, "ids.bin"), "wb").write(ids.tobytes())
+    by1io.write_bytes(os.path.join(args.workdir, "ids.bin"), ids.tobytes())
 
     src = C_HEAD + "\n" + decls + "\n" + C_MAIN
     cpath = os.path.join(args.workdir, "model.c")
@@ -1197,8 +1197,10 @@ def main(argv=None):
             if o["kind"] == "External":
                 _lib = os.path.abspath(o["attrs"]["lib"])
                 _link += [_lib, "-Wl,-rpath,%s" % os.path.dirname(_lib)]
+    # **两个 subprocess 都要有上限。** 一个卡住的编译器（或者生成的程序
+    # 自己死循环）会让这一整轮验证永远停在这里。
     p = subprocess.run([args.gcc, "-O2", "-o", exe, cpath, "-lm"] + _link,
-                       capture_output=True, text=True)
+                       capture_output=True, text=True, timeout=300)
     if p.returncode != 0:
         print("  [编译失败]")
         print((p.stderr or "")[:1600])
@@ -1209,7 +1211,7 @@ def main(argv=None):
                         os.path.join(args.workdir, "w.bin"),
                         os.path.join(args.workdir, "ids.bin"),
                         os.path.join(args.workdir, "logits.bin")],
-                       capture_output=True, text=True)
+                       capture_output=True, text=True, timeout=300)
     if r.returncode != 0:
         print(f"  [运行失败] {r.stdout} {r.stderr}")
         return 1

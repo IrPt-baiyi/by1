@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """by1instella -- Instella-3B 前向的差分验证，**用真实维度**。
 
-为什么单独做这一步：截至这篇文章，"六个真实模型全中"的准确版本是
+为什么单独做这一步：在它之前，"**14 个真实模型全中**"的准确版本是
 **"config 与命名全中，数值行为只在合成维度上验过"**。
 Instella-3B 是六个里唯一在这台机器上也跑得动的（稠密、3B），
 所以它是第一个能把后半句去掉的。
@@ -29,6 +29,7 @@ import torch
 import contextlib
 import by1io
 import by1paths
+import by1skip
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, by1paths.root('llamacpp'))
@@ -83,8 +84,7 @@ def main():
 
     mi, err = load_reference()
     if mi is None:
-        print('\n  [跳过] 拿不到判卷人: %s' % err)
-        return 2
+        return by1skip.skip('拿不到判卷人: %s' % err)
 
     cfg = mi.InstellaConfig(
         vocab_size=VOCAB, hidden_size=D, intermediate_size=FF,

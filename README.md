@@ -33,7 +33,7 @@ by1 0.9.0 · by1-ir 1.0
 | | 从哪来 | 怎么重建 |
 |---|---|---|
 | `by1*.py` | 手写的代码 | —— 这就是源码本身 |
-| `refs/*.json` | **从 HuggingFace / ModelScope 抓的模型元数据** | `python src/by1fetch.py`（种子是 `models.tsv`） |
+| `refs/*.json` | **从 HuggingFace / ModelScope 抓的模型元数据** | `python src/by1fetch.py`（种子：`models.tsv` + `refs/SOURCES.tsv`） |
 | `models/*.by1` · `models.tsv` | **手写的知识** | 手写的；可交叉验证（`.by1` 头部的 `by1-repo` 和 `models.tsv` 互为参照） |
 | `models.md` · `ir-spec.md` · `VERSION` | 生成的 | `by1cmp.py --md` · `by1ir.py --spec` · `by1ver.py --write` |
 
@@ -72,7 +72,8 @@ python src/by1verify.py models/clef.by1 refs/Cloudflare__clef.config.json --conf
 ```
 
 **14 个真实模型**，config 逐字段 + 张量逐名字逐形状，判卷人是官方产物。
-其中 **9 个还对着外部参考比过前向数值**（最好 0.000e+00，最差 1.058e-06）。
+其中 **6 个整模型还对着外部参考比过前向数值**（最好 0.000e+00，最差 1.058e-06），
+另有 2 个只验了一个机制（单层 MLA / 只验 rope）。
 
 ### ② 从产物**反推**一份草稿，不用先懂这门语言
 
@@ -105,13 +106,25 @@ C                   编译成功
 ### ④ 一条命令看整个项目还活着没有
 
 ```bash
-python src/by1all.py
+python src/by1all.py            # 或 by1-all（装过的话）
 ```
 
 ```
-61 项，0 项失败，另有 1 项已知缺口
-[全过]
+63 项，0 项失败，4 项跳过，另有 1 项已知缺口
+[全过（4 项没验）]
 ```
+
+**三种结论，不是两种。**
+
+| | |
+|---|---|
+| `ok` | 验过了 |
+| `--` 跳过 | **这台机器上没验**（没有 gcc / 没有 CUDA / HF 缓存里没有 gpt2）—— 不算失败，但也不是通过，**报告里单独列出来** |
+| `!!` 失败 | 验了，不对 |
+
+要看到 `0 项跳过`，需要三样都在：一个装了 torch + transformers 的解释器
+（这个仓库的 venv 在 `~/.venvs/by1`）、`gcc`、以及 HF 缓存里的 `sshleifer/tiny-gpt2`。
+**缺哪一样，那一项就是"没验"，而不是"通过"。**
 
 ---
 
@@ -144,7 +157,7 @@ python src/by1opdiff.py     # 逐算子比 NumPy 和 PyTorch
 | **没有外部用户** | 工具是硬的，但**没有任何证据表明别人想要它** |
 | **真正的目标后端（llama.cpp）没接** | 图结构和 `qwen3next.cpp` 逐行核对过，张量名双向 612=612，但**没有生成过一行 ggml 代码** |
 | **覆盖率追不上描述** | KDA / SSM / 稀疏索引器 / mHC **只有契约，算不了** |
-| **C 后端还不全** | 没有 Linear（KDA/GDN）、没有 MLA、没有 `kv_tie`/`head_gate`。**它会明确拒绝**，不会静默按别的算法算 |
+| **C 后端还不全** | 只拒三样：Attention 的 `kv_tie`/`head_gate`、gpt-oss 那种 FFN 激活、以及未知机制。**它会明确拒绝**，不会静默按别的算法算。（Linear / MLA 已经实现 —— 这句话以前是旧的。） |
 
 ---
 
@@ -157,8 +170,10 @@ by1 --version
 
 不需要 GPU。CPU 上跑得动 8 个缩小模型和 `tiny-gpt2`。
 
-**核心不需要 torch**：读规格、写第四个后端、跑检查器和 C 后端 ——
-只用标准库。`pip install -e '.[verify]'` 才拉对拍那一套。
+**核心不需要 torch**：读规格、写第四个后端、跑检查器 —— 只用标准库。
+**但 NumPy 后端和 C 后端要 numpy**（`by1exec.py` / `by1c.py` 在模块级 import 它），
+所以那一条路是「标准库 + numpy」。对拍那一套（torch / transformers / safetensors）
+走 `pip install -e '.[verify]'`。
 
 > **一个环境上的坑，不是本项目的。**
 > 这台机器上 `pip install -e .` 会失败，报 `No module named 'kernels.lockfile'`。
@@ -170,10 +185,14 @@ by1 --version
 > ```
 >
 > `setuptools` 的 `egg_info` 会加载**所有** `egg_info.writers`，
-> 所以**一个空包在这台机器上也装不上** —— 验过。
-> `pyproject.toml` 本身是对的，只是在这台机器上没法证。
+> 所以**一个空包在那台机器上也装不上** —— 验过。
+> **但那只在全局解释器上。** 这个仓库自己的 venv（`~/.venvs/by1`）里
+> 没有 `kernels`，所以 `pip install -e .` 在那里是好的 ——
+> 实测 `Successfully installed by1-0.9.0`，`by1 --version` 能跑。
+> （它以前跑不了：`pyproject.toml` 的 `py-modules` 漏了 39 个模块，
+> 连 `by1paths` 都没列 —— 见 `history/ir.md` 第 71 节。）
 >
-> 能用的分发方式是打包：`python src/by1pack.py`（不需要 pip）。
+> 不经过 pip 的分发方式是打包：`python src/by1pack.py`。
 
 ---
 
@@ -222,15 +241,27 @@ ok gpt2-tiny.by1          前向里没有裸的创建
 
 ### 用哪张卡 —— **门槛在哪**
 
-不是"越快越好"，是**哪几个真模型突然装得下**。算过（bf16 权重 +
-logits + 激活，留 10% 余量）：
+不是"越快越好"，是**哪几个真模型突然装得下**。这张表**是算出来的，不是手写的**：
 
-| 卡 | 装得下 | 多出来的是谁 |
+```bash
+python src/by1gpu.py --plan 16     # 假装有一张 16 GB 的卡
+python src/by1gpu.py --plan 80
+```
+
+它按「bf16 权重 + 2 GB 余量」挑，**每一个没被选的都会带理由列出来**。
+
+> 这一段以前是一张手写表，而它和代码对不上：`by1gpu` 里有一行
+> `if len(ir['layers']) > 8: continue`，把那 5 个大模型**静默丢掉**了 ——
+> 表上写着它们装得下，代码里它们连候选都不是。见 `history/ir.md` 第 70 节。
+
+**实测（`--plan`）：**
+
+| 卡 | 跑得了 | 谁 |
 |---|---|---|
-| **T4 16 GB** | 11 个 | 8 个 shaped + `minimind-3` + `gpt2` + **`instella-3b`** |
-| **A800 80 GB** | **16 个** | **`clef` 26.9B · `qwen38` 27.3B · `gemma-4-31b` 32.1B · `laguna-xs-2.1` 33.4B · `qwen36` 35.5B** |
+| **T4 16 GB** | **12 个** | 9 个合成/教学模型 + **`minimind-3` · `gpt2` · `instella-3b`（7.8 GB）** |
+| **A800 80 GB** | **17 个** | 上面 12 个 + **`clef` 52.1 · `qwen38` 52.8 · `gemma-4-31b` 61.8 · `laguna-xs-2.1` 64.3 · `qwen36` 68.1 GB** |
 | A100/H100 80 GB | 同上 | |
-| — | — | `gpt-oss-120b` 要 **218 GB**，`step-3.7` 要 **337 GB** —— 单卡都装不下 |
+| — | — | `gpt-oss-120b` 要 **219.6 GB**、`step-3.7` 要 **368.9 GB** —— 单卡都装不下 |
 
 **那 5 个多出来的，正是最该跑的**：它们的**契约早就验过了**
 （config 逐字段 + 张量逐名逐形状 —— `laguna` 的 **30430 个张量全中**），
@@ -273,13 +304,17 @@ pip install transformers==5.15.1 safetensors     # 和本机一致
 入口         src/by1boot.py   产物 -> IR（不用 .by1）
             src/by1check.py  .by1 -> 检查 + IR
 后端         src/by1codegen.py PyTorch   src/by1exec.py NumPy   src/by1c.py C
-判卷人       src/by1all.py    一次跑完全部
+判卷人       src/by1all.py    一次跑完全部（ok / 跳过 / 失败 三态）
             src/by1verify.py 对着官方产物验
+            src/by1refs.py   refs 语料：能解析、有出处
+            src/by1docs.py   .md 里写的路径还在吗
             src/by1e2e.py · src/by1irentry.py · src/by1opdiff.py
             src/by1bootir.py
             src/by1gate.py   取值门的可证伪对照
             src/by1raw.py · src/by1extdemo.py   逃生舱的两层
+            src/by1skip.py   "这次没验"是第三种结论（协议在这里）
 描述         models/*.by1     26 份，其中 14 份对真实 checkpoint 验过
+                             而且**14 份都在上面那个清单里**
 ```
 
 ---
@@ -314,6 +349,6 @@ pip install transformers==5.15.1 safetensors     # 和本机一致
 
 ---
 
-深处的账在 [`history/ir.md`](history/ir.md)（2800+ 行）· 主张与现实的对照在 [`1.md`](1.md)。
+深处的账在 [`history/ir.md`](history/ir.md)（3200+ 行）· 主张与现实的对照在 [`1.md`](1.md)。
 
 **语言名称暂定 by1。**

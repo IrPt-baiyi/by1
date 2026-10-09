@@ -38,6 +38,7 @@ import sys
 import numpy as np
 import by1io
 import by1paths
+import by1skip
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -204,8 +205,9 @@ def main():
 
     root, cfg_p, st_p = find_cached()
     if not cfg_p:
-        print('  [跳过] HF 缓存里没有 gpt2 —— 这一步要真产物')
-        return 2
+        # **跳过要走 by1skip。** 原来是"打印一行 + return 2"，两处各写一半 ——
+        # 而 by1all 只认退出码时，这一条就变成了失败（见 by1skip）。
+        return by1skip.skip('HF 缓存里没有 gpt2 —— 这一步要真产物')
 
     print('=' * 78)
     print('  端到端：真产物 -> IR -> 三个后端 -> 对官方实现')
@@ -369,7 +371,7 @@ def main():
             by1io.write_text(cp, by1c.C_HEAD + '\n' + ctext + '\n' + by1c.C_MAIN)
             exe = os.path.join(wd, 'model.exe')
             r = subprocess.run([gcc, '-O2', '-o', exe, cp, '-lm'],
-                               capture_output=True, text=True)
+                               capture_output=True, text=True, timeout=300)
             print('     C：%s' % ('编译成功' if r.returncode == 0
                                   else '编译失败 ' + (r.stderr or '')[:80]))
         except SystemExit as e:

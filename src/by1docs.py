@@ -28,10 +28,11 @@
 每一处路径、链接、`python xxx.py` 调用，逐条看目标在不在。
 **只报告，不改。**
 """
-import io
 import os
 import re
+import sys
 
+import by1io
 import by1paths
 
 ROOT = by1paths.ROOT
@@ -90,62 +91,75 @@ def find(target, near=None):
     return None
 
 
-print()
-print('=' * 76)
-print('  文档里写的路径，还在吗')
-print('=' * 76)
-print()
+def main():
+    # **这两行原来在模块级** —— import 这个模块会先印一个横幅出来。
+    # 它就是"import 即执行"最轻的一种：不 crash，但谁 import 谁脏输出。
+    print()
+    print('=' * 76)
+    print('  文档里写的路径，还在吗')
+    print('=' * 76)
+    print()
 
-files = md_files()
-total, bad = 0, []
-for p in files:
-    rel = by1paths.rel(p)
-    near = os.path.dirname(p)
-    t = io.open(p, encoding='utf-8', errors='replace').read()
-    seen = {}
-    for m in PAT_PATH.finditer(t):
-        seen.setdefault(m.group(1), ('路径', t[:m.start()].count('\n') + 1))
-    # **链接也要看** —— 这是原来漏掉的那一类。
-    for m in PAT_LINK.finditer(t):
-        tgt = m.group(1).strip()
-        if tgt.startswith(SKIP_LINK):
+    files = md_files()
+    total, bad = 0, []
+    for p in files:
+        rel = by1paths.rel(p)
+        near = os.path.dirname(p)
+        t = by1io.read_text(p, errors='replace')
+        seen = {}
+        for m in PAT_PATH.finditer(t):
+            seen.setdefault(m.group(1), ('路径', t[:m.start()].count('\n') + 1))
+        # **链接也要看** —— 这是原来漏掉的那一类。
+        for m in PAT_LINK.finditer(t):
+            tgt = m.group(1).strip()
+            if tgt.startswith(SKIP_LINK):
+                continue
+            seen.setdefault(tgt.split('#')[0],
+                            ('链接', t[:m.start()].count('\n') + 1))
+        if not seen:
             continue
-        seen.setdefault(tgt.split('#')[0],
-                        ('链接', t[:m.start()].count('\n') + 1))
-    if not seen:
-        continue
-    miss = [(k, ln, kind) for k, (kind, ln) in seen.items()
-            if not find(k, near)]
-    total += len(seen)
-    if miss:
-        print('  %s（%d 处引用）' % (rel, len(seen)))
-        for k, ln, kind in sorted(miss, key=lambda x: x[1]):
-            print('     **%s:%d**  %s  %s  ← 不存在' % (rel, ln, kind, k))
-        print()
-        bad.extend((rel, ln, k) for k, ln, _kind in miss)
+        miss = [(k, ln, kind) for k, (kind, ln) in seen.items()
+                if not find(k, near)]
+        total += len(seen)
+        if miss:
+            print('  %s（%d 处引用）' % (rel, len(seen)))
+            for k, ln, kind in sorted(miss, key=lambda x: x[1]):
+                print('     **%s:%d**  %s  %s  ← 不存在' % (rel, ln, kind, k))
+            print()
+            bad.extend((rel, ln, k) for k, ln, _kind in miss)
 
-print('  扫了 %d 个 .md、%d 处引用，**%d 处指向不存在的文件**'
-      % (len(files), total, len(bad)))
-print('  （`history/` 故意不扫：那是日志，里面的老路径是历史事实。）')
-print()
+    print('  扫了 %d 个 .md、%d 处引用，**%d 处指向不存在的文件**'
+          % (len(files), total, len(bad)))
+    print('  （`history/` 故意不扫：那是日志，里面的老路径是历史事实。）')
+    print()
 
-# 顺带：文档里对脚本的调用，脚本在吗
-print('  ── 顺带：文档里的 `python xxx.py` 调用')
-calls = {}
-for p in files:
-    t = io.open(p, encoding='utf-8', errors='replace').read()
-    for m in PAT_CALL.finditer(t):
-        # **把哪个文件提到的也记下来** —— 脚本可能就在那份文档旁边
-        # （docs/delete-test-1/rebuild_manifest.py 就是这种）。
-        # 不带目录去查会把它误报成不存在。
-        calls.setdefault(m.group(1), {})[by1paths.rel(p)] = os.path.dirname(p)
-missing = [k for k in calls
-           if not any(find(k, d) for d in calls[k].values())]
-print('     %d 个不同的脚本被提到' % len(calls))
-if missing:
-    for k in sorted(missing):
-        print('     **%s** 不存在（在 %s 里被提到）'
-              % (k, ', '.join(sorted(calls[k]))))
-else:
-    print('     全部都存在 ✓')
-print()
+    # 顺带：文档里对脚本的调用，脚本在吗
+    print('  ── 顺带：文档里的 `python xxx.py` 调用')
+    calls = {}
+    for p in files:
+        t = by1io.read_text(p, errors='replace')
+        for m in PAT_CALL.finditer(t):
+            # **把哪个文件提到的也记下来** —— 脚本可能就在那份文档旁边
+            # （docs/delete-test-1/rebuild_manifest.py 就是这种）。
+            # 不带目录去查会把它误报成不存在。
+            calls.setdefault(m.group(1), {})[by1paths.rel(p)] = os.path.dirname(p)
+    missing = [k for k in calls
+               if not any(find(k, d) for d in calls[k].values())]
+    print('     %d 个不同的脚本被提到' % len(calls))
+    if missing:
+        for k in sorted(missing):
+            print('     **%s** 不存在（在 %s 里被提到）'
+                  % (k, ', '.join(sorted(calls[k]))))
+    else:
+        print('     全部都存在 ✓')
+    print()
+    print('  [%s] 文档路径 %s'
+          % ('PASS' if not bad and not missing else 'FAIL',
+             '路径、链接、脚本调用都在' if not bad and not missing
+             else '%d 处路径 + %d 个脚本 有问题' % (len(bad), len(missing))))
+    print()
+    return 0 if not bad and not missing else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

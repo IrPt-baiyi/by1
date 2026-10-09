@@ -19,6 +19,9 @@ import importlib.util
 import os
 import sys
 
+import by1io      # noqa: F401  —— import 即把 stdout 钉成 UTF-8
+import by1skip
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -79,8 +82,7 @@ def main(argv=None):
     attn_layer = next((i for i, L in enumerate(ir["layers"])
                        if op_index(L, "Attention") is not None), None)
     if attn_layer is None:
-        print("  [跳过] 没有全量注意力层，本脚本的对拍路径还不支持")
-        return 2
+        return by1skip.skip('没有全量注意力层，本脚本的对拍路径还不支持')
     L0 = ir["layers"][attn_layer]
     j_attn, j_norm0, j_norm1, j_ffn = layouts[attn_layer]
     attn = L0["ops"][j_attn]["attrs"]

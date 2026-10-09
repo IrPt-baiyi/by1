@@ -1,0 +1,76 @@
+# ── refs/SOURCES.tsv ─────────────────────────────────────────────────
+# **refs/ 里那些"没有 .by1"的产物的出处。**
+#
+# ## 为什么要有这个文件
+#
+# `refs/*.json` 的重建原来只认一个种子：`models.tsv`（14 个模型）。
+# 而 refs/ 里有 21 个基名（41 个文件）不在那 14 个里 —— 它们是
+# **探索过的候选**（同族的其它尺寸、上一代、多模态），抓了产物但没写 `.by1`。
+#
+# 于是"删掉 refs/ 也能重建"这句话只对 31 个文件成立，**对另外 41 个不成立** ——
+# 而报告里看不出来。这个文件把那 41 个补上出处：
+#
+#     · `by1fetch.py` 把这里当**额外的种子**（只补缺的，不会重抓已有的）
+#     · `by1refs.py` 用它做**出处审计** —— 一个 refs 文件要么来自某个
+#       `.by1` 的 `by1-repo`，要么来自 `models.tsv`，要么必须在这里
+#
+# **没有出处的 refs 文件 = 硬编码的知识**，那正是这个仓库不要的东西。
+#
+# ## 列
+#
+#     HF id \t 说明
+#
+# `HF id` 带 owner（`owner/Repo`）。文件名由规则推：
+#
+#     refs/<owner>__<Repo>.{config,tensors,gguf-tensors}.json
+#
+# 和 `by1refs.py` 完全一致 —— **路径规则仍然只此一处**。
+#
+# ## 它们和 models.tsv 的区别
+#
+#     models.tsv   有 `.by1`（描述写出来了）—— 进护栏、有判卷人
+#     这里         只有产物（还在看）—— **不进护栏**，也不该被当成"验过"
+#
+# 一个候选要"毕业"，做的是写 `.by1` 并把它加进 `models.tsv`，
+# 不是把这个文件里的行删掉。
+#
+# ## 三个 `.gguf-tensors.json` 的出处 —— **只记下来了一个**
+#
+# 这三个文件不在上面的表里（它们的基名都有 `.by1`），但
+# `by1fetch.py` **不产这种文件**：它是从 GGUF 仓库抽的头，
+# 多一列 `ggml_type`，形状是反序的（ggml 的 ne[] 顺序）。
+#
+#   refs/poolside__Laguna-XS-2_1.gguf-tensors.json
+#       poolside/Laguna-XS-2.1-GGUF
+#       （记在 docs/delete-test-1/rebuild_manifest.py:17 —— 有出处）
+#
+#   refs/openai__gpt-oss-120b.gguf-tensors.json
+#   refs/google__gemma-4-31B.gguf-tensors.json
+#       **当初从哪个 GGUF 仓库抽的，没有记下来。**
+#       这是账上的一条真缺口：不是"抓不到"，是"没记住从哪抓"。
+#       要补的话：找到那个 GGUF 仓库，按 rebuild_manifest.py 里那条规则
+#       （形状反序、ggml_type 保留、单行 compact）抽头，再对一遍字节。
+# ─────────────────────────────────────────────────────────────────────
+#
+# HF id	说明
+Qwen/Qwen3-Coder-Next	同代候选（代码向）：产物在 refs/，还没写 .by1
+Qwen/Qwen3-Omni-30B-A3B-Thinking	多模态候选：还没写 .by1
+Qwen/Qwen3-VL-235B-A22B-Thinking	多模态候选（最大号）：还没写 .by1
+Qwen/Qwen3-VL-2B-Thinking	多模态候选（最小号）：还没写 .by1
+Qwen/Qwen3-VL-30B-A3B-Thinking	多模态候选：还没写 .by1
+Qwen/Qwen3.5-0.8B	Qwen3.5 家族最小号：还没写 .by1
+Qwen/Qwen3.5-397B-A17B	Qwen3.5 家族最大号：还没写 .by1
+Qwen/Qwen3.5-9B	Qwen3.5 家族：还没写 .by1
+Qwen/Qwen3.8-Flash-Next	Qwen3.8 的 Flash 分支：草稿在 drafts/，过不了检查器
+deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B	早期对拍用的小模型：还没写 .by1
+deepseek-ai/DeepSeek-R1-Distill-Qwen-7B	早期对拍用的模型：还没写 .by1
+deepseek-ai/DeepSeek-V4.1-Flash	分 encoder/decoder 两半的那个：草稿在 drafts/，过不了检查器
+google/embeddinggemma-2	嵌入模型候选：还没写 .by1
+google/gemma-4-12B	gemma-4 家族中间号：还没写 .by1
+google/gemma-4-26B-A4B	gemma-4 家族 MoE 号：还没写 .by1
+google/gemma-4-E4B	gemma-4 家族小号：还没写 .by1
+inclusionAI/LLaDA2.2-flash	扩散语言模型候选：还没写 .by1
+openai/gpt-oss-20b	gpt-oss-120b 的小号（同一个架构族）：还没写 .by1
+poolside/Laguna-XS_2	Laguna-XS-2_1 的**上一代**：只留了 config 做对比
+state-spaces/mamba-130m-hf	Mamba 参考实现（Nemotron 的 SSM 对照）：还没写 .by1
+zai-org/GLM-4.7-Flash	GLM-5.3 的**上一代**：还没写 .by1

@@ -2,34 +2,49 @@
   by1 验证清单  ——  每个模型验到了什么，判卷人是谁
 ====================================================================================================
 
-【A】真实模型 · config 与张量名，对着**官方产物**
+  这份清单和 `by1all` 的输出对齐（数字取自最近一次全量：63 项，0 项失败，4 项跳过）。
+
+【A】真实模型 · config 与张量名，对着**官方产物**   —— 14 个，**14 个都在护栏里**
 
   模型                           config         张量               来源
   ------------------------------------------------------------------------------------------------
-  gpt-oss-120b（HF 侧）           29 中 / 0 不同    687 中 / 0 不符     gpt-oss-120b
-  gpt-oss-120b（GGUF 侧）         29 中 / 0 不同    687 中 / 0 不符     gpt-oss-120b
-  gemma-4-31b（GGUF 侧）          35 中 / 0 不同    530 中 / 0 不符     gemma-4-31B
-  laguna-xs-2.1                34 中 / 0 不同    30430 中 / 0 不符   poolside_Laguna-XS-2_1
-  instella-3b                  20 中 / 0 不同    399 中 / 0 不符     amd_Instella-3B
-  step-3.7 文本主干（剪枝微调）          46 中 / 0 不同    728 中 / 0 不符 / 缺 25 nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL
-  ling-3.0-tiny                71 中 / 0 不同    9283 中 / 0 不符    inclusionAI_Ling-3.0-tiny
+  gpt-oss-120b（HF 侧）           29 中 / 0 不同    687 中 / 0 不符     openai/gpt-oss-120b
+  gpt-oss-120b（GGUF 侧）         29 中 / 0 不同    687 中 / 0 不符     同上（另一套命名）
+  gemma-4-31B（GGUF 侧）          35 中 / 0 不同    530 中 / 0 不符     google/gemma-4-31B
+  laguna-xs-2.1                34 中 / 0 不同    30430 中 / 0 不符   poolside/Laguna-XS-2_1
+  instella-3b                  20 中 / 0 不同    399 中 / 0 不符     amd/Instella-3B
+  step-3.7 文本主干（剪枝微调）          46 中 / 0 不同    728 中 / 0 不符 / 缺 25
+                                                    nerkyor/Step-3_7-Flash-180B-...-RL
+  step-3.7 官方（未剪枝）              40 中 / 0 不同    753 中 / 0 不符     stepfun-ai/Step-3.7-Flash
+  ling-3.0-tiny                71 中 / 0 不同    9283 中 / 0 不符    inclusionAI/Ling-3.0-tiny
+  minimind-3                   22 中 / 0 不同    90 中 / 0 不符      jingyaogong/minimind-3
+  clef                         33 中 / 0 不同    851 中 / 0 不符     Cloudflare/clef
+  Qwen3.8-27B                  33 中 / 0 不同    866 中 / 0 不符     Qwen/Qwen3.8-27B
+  Qwen3.6-35B-A3B              37 中 / 0 不同    712 中 / 0 不符     Qwen/Qwen3.6-35B-A3B
+  gpt2                         21 中 / 0 不同    160 中 / 0 不符     openai-community/gpt2
+  NVIDIA-Nemotron-3.5-Lightning 58 中 / 0 不同   6513 中 / 0 不符    nvidia/NVIDIA-Nemotron-...-BF16
+  GLM-5.3-Flash                57 中 / 0 不同    37534 中 / 0 不符   zai-org/GLM-5.3-Flash
 
-【B】合成模型 · **前向数值**，对着 transformers 的参考实现
+  GLM-5.3 那一行**原来不在这个清单里，也不在护栏里**：它带着"36289（97%）"
+  的记录，而那 97% 几乎全是专家权重（走另一条命名模板，那条是对的）；
+  其余 1245 个张量一个都没命中。根因是 `name` 模板少了 `language_model.`。
+  修好之后 37534/37534。见 history/ir.md 第 68 节。
 
-  模型                     C↔NumPy       NumPy↔Torch   判卷人
+【B】前向数值 · 对着 transformers 的参考实现   —— **6 个整模型 + 2 个只验一层/只验 rope**
+
+  模型                     C↔NumPy       NumPy↔Torch    判卷人
   ------------------------------------------------------------------------------------------------
   llama-shaped           2.241e-07     2.505e-07     transformers LlamaForCausalLM
-                                                       （对参考的前向: 4.470e-07）
   mixtral-shaped         1.744e-07     2.340e-07     transformers MixtralForCausalLM
-                                                       （对参考的前向: 4.172e-07）
   gpt-oss-shaped         7.407e-08     1.028e-07     transformers GptOssForCausalLM
-                                                       （对参考的前向: 2.384e-07）
   qwen3-next-shaped      2.990e-06     2.513e-06     transformers Qwen3NextForCausalLM
-                                                       （对参考的前向: 1.788e-07）
-  mla-shaped             3.945e-07     4.992e-07     transformers DeepseekV3Attention（MLA 单层）
-                                                       （对参考的前向: —）
-  llama3-shaped          5.114e-07     4.462e-07     transformers _compute_llama3_parameters（只验 rope）
-                                                       （对参考的前向: —）
+  mla-shaped             3.945e-07     4.992e-07     transformers DeepseekV3Attention（**单层**）
+  llama3-shaped          5.114e-07     4.462e-07     _compute_llama3_parameters（**只验 rope**）
+  clef-tiny              4.244e-07     6.135e-07     —（没有外部参考，比的是三后端自洽）
+  instella-3b（真实维度）     —             —         官方 modeling_instella.py：**0.000e+00**
+  gpt2（真实维度）           —             —         官方 GPT2LMHeadModel：**1.058e-06**
+
+  **"9 行"不等于"9 个模型"**：一行没有外部参考，两行只验了一个机制。
 
 【C】单机制判卷人脚本
   脚本           机制               判卷人                                          结果
@@ -41,8 +56,14 @@
 【D】反向梯度 · 四个合成模型，对 transformers 参考
   llama 39/39 · mixtral 35/35 · gpt-oss 31/31 · qwen3-next 62/62  —— 全在阈值内
 
-【E】没验到的
-  · 六个真实模型的**前向**：一个都没跑过（130B / 31B，这台机器跑不动）
-  · KDA 的计算：fla 要 Triton，没有 CUDA
-  · llama.cpp 本身：图核对过，但没生成过一行 ggml 并跑起来
-  · 多模态部分（Gemma 的 vision/audio、Step-3.7 的视觉塔）：完全没建模
+【E】refs 语料（每次全量都会查）
+  72 个文件：能解析 72/72 · 有出处 72/72（by1 14 · models.tsv 14 · SOURCES 21）
+  出处规则见 refs/SOURCES.tsv；重建例外：3 个 .gguf-tensors.json（by1fetch 不产这种）
+
+【F】没验到的
+  · **13 个真实模型的前向**：要显存（`by1gpu.py --plan 80` 会列出来谁能装下）
+  · **KDA / SSM 的计算**：codegen 还不支持（Ling / GLM-5.3 / Nemotron）
+  · **llama.cpp 本身**：图核对过，但没生成过一行 ggml 并跑起来
+  · **多模态部分**（Gemma 的 vision/audio、GLM-5.3 的 visual、Step-3.7 的视觉塔）：完全没建模
+  · **这台机器上没有的**（每次跑都会印成"跳过"，不是失败）：
+      C 后端（要 gcc）· by1extdemo（要 gcc）· by1e2e（要 HF 缓存里的 gpt2）· by1gpu（要显卡）

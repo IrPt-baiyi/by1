@@ -21,6 +21,7 @@ import sys
 
 import torch
 import by1paths
+import by1skip
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -36,8 +37,7 @@ def main():
     try:
         from transformers import GPT2LMHeadModel, GPT2Config
     except Exception as e:
-        print('\n  [跳过] 没有 transformers:', e)
-        return 2
+        return by1skip.skip('没有 transformers: %s' % e)
 
     # 用官方 config —— 维度全真
     cfg = GPT2Config()

@@ -21,6 +21,7 @@ import subprocess
 import sys
 import by1io
 import by1paths
+import by1skip
 
 
 # **版本号从 by1ver 来。** 原来这里写死 "1.0"，而另外两个文件也各写了一遍
@@ -40,8 +41,9 @@ B_T = 4
 
 
 def build_so(gcc):
+    # **编译器也要有上限**：卡在一个等 stdin 的 gcc 上，整轮验证就停住了。
     r = subprocess.run([gcc, "-O2", "-shared", "-fPIC", "-o", SO, SRC],
-                       capture_output=True, text=True)
+                       capture_output=True, text=True, timeout=300)
     return r.returncode == 0, (r.stderr or "")[:300]
 
 
@@ -110,8 +112,7 @@ def main():
     print('=' * 78)
 
     if not gcc:
-        print('\n  [跳过] 找不到 gcc —— 这一步要编译那个 .so')
-        return 2
+        return by1skip.skip('找不到 gcc —— 这一步要编译那个 .so')
     ok, err = build_so(gcc)
     if not ok:
         print('\n  [FAIL] .so 编译失败：%s' % err)
@@ -162,7 +163,7 @@ def main():
     exe = os.path.join(wd, 'model.exe')
     r = subprocess.run([gcc, '-O2', '-o', exe, cp, '-lm', SO,
                         '-Wl,-rpath,%s' % HERE],
-                       capture_output=True, text=True)
+                       capture_output=True, text=True, timeout=300)
     if r.returncode != 0:
         print('  !! C 编译失败：%s' % (r.stderr or '')[:200])
         bad.append('C 编译')

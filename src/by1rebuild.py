@@ -49,6 +49,7 @@ import re
 import sys
 import by1io
 import by1paths
+import by1refs
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 os.chdir(HERE)
@@ -71,7 +72,12 @@ def main():
     kinds = {
         'refs/*.config.json': ('抓', 'HF / ModelScope 的 config.json'),
         'refs/*.tensors.json': ('抓', 'HF 的 index.json 或 safetensors 头'),
-        'refs/*.gguf-tensors.json': ('抓', 'llama.cpp 的 GGUF 张量表'),
+        # **by1fetch 只产上面两种。** 这三个是 GGUF 侧的表（多一列 ggml_type、
+        # 形状是反序的），要从**另一个仓库**抽头 —— 出处见 refs/SOURCES.tsv。
+        'refs/*.gguf-tensors.json': ('抓', 'GGUF 仓库的张量表（by1fetch 不产这种）'),
+        # **第二个种子是手写的。** 它记的是"这个 refs 文件从哪来"，
+        # 抓不回来 —— 所以它自己必须能活下来（和 models.tsv 一样）。
+        'refs/SOURCES.tsv': ('手写', '**没有 .by1 的产物的出处**（by1fetch 的第二个种子）'),
         '*.by1': ('手写', '**模型声明 —— 这个项目的知识本身**'),
         'models.tsv': ('手写', '长名/短名/HF id 对照'),
         # **这两个原本写的是 `ir.md` / `plan.md`** —— 它们早就在
@@ -109,7 +115,13 @@ def main():
         total += sz
         if src == '手写':
             hand += sz
-        how = {'抓': '按 by1refs 的规则重抓（URL 可推）',
+        how = {'refs/*.gguf-tensors.json':
+               # **这一行原来印的是"按规则重抓（URL 可推）"—— 而它推不出来。**
+               # by1fetch 只产 config / tensors；gguf 表要从**另一个仓库**抽头，
+               # 而那个仓库名只记下来一个（见 refs/SOURCES.tsv 头注）。
+               '从 **GGUF 仓库**抽头（by1fetch 不产这种；出处见 refs/SOURCES.tsv）',
+               }.get(pat) or {
+               '抓': '按 by1refs 的规则重抓（URL 可推）',
                '手写': '**只能重写**',
                '日志': '**不可重建**',
                '文档': '**只能重写**'}[src]
@@ -133,7 +145,11 @@ def main():
             n_ok += 1
         else:
             n_bad.append(f)
-    print('     能推的：%d 个' % n_ok)
+    print('     能推的：%d 个（`.by1` 的 `by1-repo`）' % n_ok)
+    # **另外那 41 个 refs 文件也推得出来 —— 从第二个种子推。**
+    # 不写这一行的话，这个报表会让人以为"能推的只有 .by1 那 31 个"。
+    print('     另外 %d 个探索源：从 refs/SOURCES.tsv 推（没有 .by1）'
+          % len(by1refs.sources()))
     if n_bad:
         print('     **推不出的：%d 个**：%s' % (len(n_bad), ', '.join(n_bad)))
 

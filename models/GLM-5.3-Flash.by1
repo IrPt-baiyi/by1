@@ -12,7 +12,7 @@
 #
 # 事实来源：
 #   refs/zai-org__GLM-5.3-Flash.config.json 的 text_config
-#   refs/glm53.tensors.json（76108 个张量，62 个分片）
+#   refs/zai-org__GLM-5.3-Flash.tensors.json（76108 个张量，62 个分片）
 # by1-model: GLM-5.3-Flash
 # by1-repo:  zai-org/GLM-5.3-Flash
 # by1-short: GLM-5.3-Flash
@@ -250,10 +250,27 @@ model GLM-5.3-Flash {
     }
 
     train -> torch.module {
-      name        = "model.layers.{i}.{scope}{physical}"
+      # **少了 `language_model.` 这一节，整份契约就等于没验。**
+      #
+      # 原来的模板是 `model.layers.{i}.…`，而这个 checkpoint 的张量
+      # 全在 `model.language_model.layers.{i}.…` 里。而专家张量走的是
+      # 另一条模板（`expert_name`），**那条是对的** —— 于是
+      # 288 专家 × 42 层 = 36288 个张量全部命中，报告写着
+      # "名字+形状一致 36289（97%）"，看起来只差 3%。
+      #
+      # 实际差的是**别的全部**：注意力、卷积、mHC、norm、稠密 FFN、
+      # 共享专家、全局张量 —— 1245 个，一个都没验。
+      # **百分比是张量个数，不是覆盖率。**
+      name        = "model.language_model.layers.{i}.{scope}{physical}"
       global_name = "{physical}"
       scope { KDA = self_attn., SparseMLA = self_attn., MoE = mlp., Dense = mlp., layer = "", global = "" }
       expert_name = "model.language_model.layers.{i}.mlp.experts.{expert}.{physical}"
+      rename {
+        # 官方这两个不叫 `embed.weight` / `final_norm.weight`：
+        embed.weight      = model.language_model.embed_tokens.weight,
+        final_norm.weight = model.language_model.norm.weight
+        # `lm_head.weight` 不在 rename 里 —— 官方就叫这个名字。
+      }
     }
   }
 }

@@ -20,6 +20,8 @@ import importlib.util
 import os
 import sys
 
+import by1skip
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 DT = {2: "fp16", 4: "fp32"}
 
@@ -95,7 +97,7 @@ def measure(fam, info, ir, seq):
             shared_expert_intermediate_size=16)
         model = T.Qwen3NextForCausalLM(cfg).eval()
     else:
-        raise SystemExit(f"  [跳过] 还没有 {fam} 的量测路径")
+        raise SystemExit(f"  还没有 {fam} 的量测路径")
     ids = torch.randint(0, ir["vocab"], (1, seq))
     with torch.no_grad():
         out = model(ids, use_cache=True)
@@ -191,8 +193,11 @@ def main(argv=None):
         try:
             mrows = measure(args.family, info, ir, min(args.seq, 512))
         except SystemExit as ex:
+            # **跳过不是通过。** 原来这里 `print(...) ; return 0` ——
+            # 一个"还没量测路径"的族报告成成功。上面的推算仍然有效，
+            # 但"实测"这一项没验，所以整条结论是跳过。
             print(str(ex))
-            return 0
+            return by1skip.skip('实测：这个族还没有量测路径')
         m1 = plan_of(ir, min(args.seq, 512))
         bad = 0
         print(f"  {'层':>4} {'推算':>12} {'实测':>12}  实际持有的东西")

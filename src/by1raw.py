@@ -39,75 +39,80 @@ import by1paths
 F = 'raw-escape.by1'
 # **`raw.py` 跟着模型走。** 断言②要把它挪走再挪回来。
 RAW = by1paths.model('raw.py')
-bad = []
+def main():
+    bad = []
 
-# ── ① 有 raw.py ────────────────────────────────────────────────────
-_r, info = bc.check(F)
-ns = {}
-exec(compile(cg.render(info, F), '<by1-generated>', 'exec'), ns)
-m = ns['build']()
-names = [k for k, _ in m.named_parameters()]
-# 契约里 Weird 声明的逻辑名
-want = ['scale.weight']
-hit = [w for w in want if any(k.endswith(w) for k in names)]
-if len(hit) == len(want):
-    print('  ok ① 有 raw.py：建起来了，契约里的名字也在（%s）' % ', '.join(hit))
-else:
-    print('  !! ① 契约说 %s，建出来的里面没有 —— 现在的名字：%s'
-          % (want, [k for k in names if 'scale' in k]))
-    bad.append('①')
-try:
-    m(torch.randint(0, 256, (1, 8)))
-    print('     前向跑得动 ✓ 形状 %s'
-          % (tuple(m(torch.randint(0, 256, (1, 8))).shape),))
-except Exception as e:
-    print('  !! ① 前向崩了:', str(e)[:60])
-    bad.append('①前向')
-
-# ── ② 没有 raw.py ─────────────────────────────────────────────────
-bak = RAW + '.by1bak'
-shutil.move(RAW, bak)
-try:
+    # ── ① 有 raw.py ────────────────────────────────────────────────────
     _r, info = bc.check(F)
     ns = {}
+    exec(compile(cg.render(info, F), '<by1-generated>', 'exec'), ns)
+    m = ns['build']()
+    names = [k for k, _ in m.named_parameters()]
+    # 契约里 Weird 声明的逻辑名
+    want = ['scale.weight']
+    hit = [w for w in want if any(k.endswith(w) for k in names)]
+    if len(hit) == len(want):
+        print('  ok ① 有 raw.py：建起来了，契约里的名字也在（%s）' % ', '.join(hit))
+    else:
+        print('  !! ① 契约说 %s，建出来的里面没有 —— 现在的名字：%s'
+              % (want, [k for k in names if 'scale' in k]))
+        bad.append('①')
     try:
-        exec(compile(cg.render(info, F), '<by1-generated>', 'exec'), ns)
-        ns['build']()
-        print('  !! ② 没有 raw.py 却建起来了 —— 那比报错糟得多')
-        bad.append('②')
+        m(torch.randint(0, 256, (1, 8)))
+        print('     前向跑得动 ✓ 形状 %s'
+              % (tuple(m(torch.randint(0, 256, (1, 8))).shape),))
     except Exception as e:
-        msg = str(e)
-        if 'raw.py' in msg:
-            print('  ok ② 没有 raw.py：拒绝 ✓ 理由对（%s）' % msg[:48])
-        else:
-            print('  !! ② 拒了，但理由不是"找不到 raw.py"：%s' % msg[:60])
-            bad.append('②理由')
-finally:
-    shutil.move(bak, RAW)
+        print('  !! ① 前向崩了:', str(e)[:60])
+        bad.append('①前向')
 
-# ── ③ Raw 没写 impl ───────────────────────────────────────────────
-src = by1io.read_text(by1paths.model(F), encoding='utf-8')
-src = src.replace('    impl       = "scale_mix"\n', '')
-src = src.replace('model raw-escape', 'model raw-noimpl')
-tmp = by1paths.root('_noimpl.by1')
-by1io.write_text(tmp, src)
-try:
-    _r, info = bc.check(tmp)
+    # ── ② 没有 raw.py ─────────────────────────────────────────────────
+    bak = RAW + '.by1bak'
+    shutil.move(RAW, bak)
     try:
-        cg.compile_ir(info)
-        print('  !! ③ 没写 impl 却编译过了')
-        bad.append('③')
-    except cg.CodegenError as e:
-        msg = str(e)
-        if 'impl' in msg:
-            print('  ok ③ 没写 impl：拒绝 ✓ 理由对')
-        else:
-            print('  !! ③ 拒了，但理由里没提 impl：%s' % msg[:60])
-            bad.append('③理由')
-finally:
-    os.remove(tmp)
+        _r, info = bc.check(F)
+        ns = {}
+        try:
+            exec(compile(cg.render(info, F), '<by1-generated>', 'exec'), ns)
+            ns['build']()
+            print('  !! ② 没有 raw.py 却建起来了 —— 那比报错糟得多')
+            bad.append('②')
+        except Exception as e:
+            msg = str(e)
+            if 'raw.py' in msg:
+                print('  ok ② 没有 raw.py：拒绝 ✓ 理由对（%s）' % msg[:48])
+            else:
+                print('  !! ② 拒了，但理由不是"找不到 raw.py"：%s' % msg[:60])
+                bad.append('②理由')
+    finally:
+        shutil.move(bak, RAW)
 
-print()
-print('  [%s] 逃生舱 %s' % ('PASS' if not bad else 'FAIL',
-                            '三条断言都成立' if not bad else '坏了：%s' % ', '.join(bad)))
-sys.exit(0 if not bad else 1)
+    # ── ③ Raw 没写 impl ───────────────────────────────────────────────
+    src = by1io.read_text(by1paths.model(F), encoding='utf-8')
+    src = src.replace('    impl       = "scale_mix"\n', '')
+    src = src.replace('model raw-escape', 'model raw-noimpl')
+    tmp = by1paths.root('_noimpl.by1')
+    by1io.write_text(tmp, src)
+    try:
+        _r, info = bc.check(tmp)
+        try:
+            cg.compile_ir(info)
+            print('  !! ③ 没写 impl 却编译过了')
+            bad.append('③')
+        except cg.CodegenError as e:
+            msg = str(e)
+            if 'impl' in msg:
+                print('  ok ③ 没写 impl：拒绝 ✓ 理由对')
+            else:
+                print('  !! ③ 拒了，但理由里没提 impl：%s' % msg[:60])
+                bad.append('③理由')
+    finally:
+        os.remove(tmp)
+
+    print()
+    print('  [%s] 逃生舱 %s' % ('PASS' if not bad else 'FAIL',
+                                '三条断言都成立' if not bad else '坏了：%s' % ', '.join(bad)))
+    return 0 if not bad else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
