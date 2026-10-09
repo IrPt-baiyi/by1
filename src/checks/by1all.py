@@ -5,8 +5,13 @@
 存在的理由：在这之前，"护栏"是我一条条敲命令、肉眼看输出。
 **没有 CI、没有测试运行器 —— 我停下来，就没人知道这个项目是不是还是好的。**
 
-用法:  python by1all.py [--quick]
-        --quick   跳过 C 后端（要调 gcc，慢）
+用法:  python by1all.py [--tier N] [--quick] [--gcc PATH]
+
+--tier N   1..6，**默认 4**。每加一档多要一样东西：
+           1 静态（11 秒，什么都不用）  2 +numpy  3 +refs/ 产物
+           4 +torch（50 秒，默认）      5 +gcc/下载    6 +显卡
+--quick    老的写法，等价于 --tier 4（默认值）
+--gcc      指定 C 编译器；档 5 才用得上
 
 **三种结论，不是两种**（协议见 `by1skip.py`）：
 
@@ -395,7 +400,11 @@ def main():
     # ── 档位 ────────────────────────────────────────────────────
     # `--quick` 是老的写法，等价于"跑到档 4"（档 5 里要 gcc 的那些跳过）。
     # `--tier N` 可以选细。两个都在时以 `--tier` 为准。
-    TIER = 6
+    # **默认不是最高档。** 一个新人克隆下来第一件事就是跑这个 ——
+    # 默认给最慢的那个（档 6 要 gcc、要下载、要显卡，好几分钟），
+    # 第一步体验就是"卡住了"。默认给档 4（约 50 秒，含数值），
+    # 深的浅的都写在开头那一行里。
+    TIER = 4
     if '--tier' in sys.argv:
         TIER = int(sys.argv[sys.argv.index('--tier') + 1])
     TIER = max(1, min(6, TIER))
@@ -809,6 +818,7 @@ def main():
     print('=' * 78)
     print('  by1 验证 · **档 %d / 6**' % TIER)
     print('  %s' % TIER_WHAT[TIER])
+    print('  浅一点 --tier 1（11 秒） · 深一点 --tier 5/6（要 gcc / 显卡）')
     print('=' * 78)
     for name, st, note in rows:
         print('%s%-30s %s' % (by1skip.mark(_st(st)), name, note[:80]))
