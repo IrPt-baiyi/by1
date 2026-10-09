@@ -91,6 +91,57 @@ def find(target, near=None):
     return None
 
 
+#: **"多少行 / 多少节 / 多少个 .by1"这类可复核的数字。**
+#
+# 为什么要有这一条：`by1docs` 原来只查"路径还在不在"，
+# 于是**行数、节数、项数这些数字没有任何判卷人** —— 而它们会烂。
+# 实测（2026-10）：`README.md` 说 `history/ir.md` 是 "3200+ 行"、
+# `1.md` 说 "3321 行"，而那份文件是 **2306 行**；
+# `by1pack.py` 的说明写 "65 节"，实际 **73 节**。
+# `history/ir.md` §73 的标题就叫"抄进文档的数字，寿命比文档短" ——
+# 这一条就是那件事的执行者。
+#:
+#: ## `(?<!第 )` 那一段是必要的
+#:
+#: `第 71 节` 是**指某一节**，不是"一共 71 节"。第一版没有这个断言，
+#: 于是 README 里三处"见 `history/ir.md` 第 70 节"全被读成
+#: "这份文档有 70 节"，报了三个假警报。
+#: **假警报会把真问题淹掉** —— 所以宁可窄，不可宽。
+#: `第 71 节` 里还有第二个坑：`(\d+)` 会从**中间**开始匹配，
+#: 于是 "71 节" 被读成 "1 节"。所以再补一个 `(?<!\d)` ——
+#: 数字要从头到尾整块匹配，不能是某个数字的尾巴。
+PAT_CLAIM = re.compile(r'(?<!第[ ])(?<!\d)(\d+)\s*(行|节|个\s*\.by1)')
+
+
+def measure(path, unit):
+    """一个文件"多少行 / 多少节 / 多少个 .by1"。
+
+    `unit` 只认三种，**量不出来就返回 None** —— 那时候这条声明不判，
+    而不是猜一个数出来（猜出来的数就是下一个要烂的数字）。
+    """
+    try:
+        t = by1io.read_text(path, errors='replace')
+    except OSError:
+        return None
+    if unit == '行':
+        # **跳过围栏代码块** —— 那里面是**别人的输出**（比如一段
+        # 粘贴的 `wc -l` 结果），不是这段行文自己的声明。
+        n, fenced = 0, False
+        for ln in t.splitlines():
+            if ln.lstrip().startswith('```'):
+                fenced = not fenced
+                continue
+            if not fenced:
+                n += 1
+        return n
+    if unit == '节':
+        return len(re.findall(r'^##\s', t, re.M))
+    if unit.replace(' ', '') == '个.by1':
+        import glob as _g
+        d = os.path.dirname(path)
+        return len(_g.glob(os.path.join(d or '.', '*.by1')))
+    return None
+
 def main():
     # **这两行原来在模块级** —— import 这个模块会先印一个横幅出来。
     # 它就是"import 即执行"最轻的一种：不 crash，但谁 import 谁脏输出。
@@ -153,12 +204,89 @@ def main():
     else:
         print('     全部都存在 ✓')
     print()
-    print('  [%s] 文档路径 %s'
-          % ('PASS' if not bad and not missing else 'FAIL',
-             '路径、链接、脚本调用都在' if not bad and not missing
-             else '%d 处路径 + %d 个脚本 有问题' % (len(bad), len(missing))))
+
+    # ── 数字类声明：**行数 / 节数 / 多少个 .by1** ───────────────────
+    #
+    # 这一类以前**完全没有判卷人**。判据很窄，故意的：
+    # 数字必须**紧挨着**那个反引号路径（前 60 字符 / 后 20 字符之内），
+    # 比如 `` `history/ir.md`（73 节）``。
+    #
+    # **一行里出现的数字不能全和一行里出现的路径配对** ——
+    # 第一版就是那样，于是
+    #     `ir.md`（73 节）· `1.md`（8 节）
+    # 这一行被判成"`1.md` 是 73 节"和"`ir.md` 是 8 节"，两条假警报。
+    # 假警报会把真问题淹掉（这个项目为此踩过两次），所以宁可窄。
+    claims, wrong = 0, []
+    for p in files:
+        rel = by1paths.rel(p)
+        near = os.path.dirname(p)
+        for i, line in enumerate(by1io.read_text(p, errors='replace')
+                                .splitlines(), 1):
+            for pm in PAT_CLAIM.finditer(line):
+                claimed, unit = int(pm.group(1)), pm.group(2)
+                win = line[max(0, pm.start() - 60):pm.end() + 20]
+                for rm in re.finditer(r'`([^`]+)`', win):
+                    tgt = rm.group(1).strip()
+                    if tgt.startswith(SKIP_LINK) or ' ' in tgt:
+                        continue
+                    real = find(tgt, near)
+                    if not real or not os.path.isfile(real):
+                        continue
+                    got = measure(real, unit)
+                    if got is None:
+                        continue
+                    claims += 1
+                    if got != claimed:
+                        wrong.append((rel, i, tgt, claimed, unit, got))
+    print('  ── 顺带：文档里"多少行 / 多少节 / 多少个 .by1"这类数字')
+    print('     查了 %d 处可复核的声明' % claims)
+    if wrong:
+        for rel, i, tgt, claimed, unit, got in wrong:
+            print('     **%s:%d** 说 `%s` 是 %d %s —— 实际 %d %s'
+                  % (rel, i, tgt, claimed, unit, got, unit))
+    else:
+        print('     全部对得上 ✓')
     print()
-    return 0 if not bad and not missing else 1
+
+    # ── 生成物：**`ir-spec.md` 和生成它的代码还一致吗** ──────────────
+    #
+    # `by1blind.py` 里列过这条盲区（"E. 文档同步：生成物和源头还一致吗"），
+    # 而 `by1docs` 的 docstring 也引用了它 —— 但**它自己一直没查**。
+    #
+    # 实测（2026-10）：`ir-spec.md` 和 `by1ir.spec_markdown()` 差了 30 行，
+    # 全都不是笔误 —— 是 `by1ir` 的 schema 改了（闭集从裸 `enum`
+    # 改成 `enum:a,b`），而那份"从表生成的"文档没跟着重新生成。
+    # **一份声称自己是从 X 生成的文档，比一份手写文档更需要判卷人**：
+    # 手写的至少不会被信成"和代码同步"。
+    stale = []
+    try:
+        import by1ir as _ir
+        spec_p = os.path.join(ROOT, 'ir-spec.md')
+        if os.path.exists(spec_p):
+            have = by1io.read_text(spec_p, encoding='utf-8').rstrip('\n')
+            want_ = _ir.spec_markdown().rstrip('\n')
+            if have != want_:
+                stale.append(('ir-spec.md', 'python src/by1ir.py --spec'))
+    except Exception as e:                      # 读不了就说读不了，不猜
+        print('  ── 顺带：生成物一致性（读不了 by1ir：%s）' % str(e)[:40])
+        print()
+    print('  ── 顺带：声称"从代码生成"的文档，和代码还一致吗')
+    if stale:
+        for f, cmd in stale:
+            print('     **%s** 和生成它的代码不一致 —— 跑一下：%s' % (f, cmd))
+    else:
+        print('     ir-spec.md 与 `by1ir.spec_markdown()` 逐字符一致 ✓')
+    print()
+
+    print('  [%s] 文档路径 %s'
+          % ('PASS' if not bad and not missing and not wrong and not stale
+             else 'FAIL',
+             '路径、链接、脚本调用、数字、生成物都在'
+             if not bad and not missing and not wrong and not stale
+             else '%d 处路径 + %d 个脚本 + %d 个数字 + %d 个生成物 有问题'
+                  % (len(bad), len(missing), len(wrong), len(stale))))
+    print()
+    return 0 if not bad and not missing and not wrong and not stale else 1
 
 
 if __name__ == "__main__":

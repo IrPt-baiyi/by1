@@ -37,7 +37,6 @@ A 卡在这条路上为什么不行，三条都写在 README 的"显卡"一节�
 
 用法:  python by1dev.py [文件.by1 ...]
 """
-import glob
 import importlib.util
 import os
 import sys

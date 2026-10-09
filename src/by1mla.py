@@ -16,8 +16,7 @@ import torch
 
 import by1codegen as cg
 from transformers.models.deepseek_v3.modeling_deepseek_v3 import (
-    DeepseekV3Attention, DeepseekV3RotaryEmbedding,
-    apply_rotary_pos_emb_interleave, apply_rotary_pos_emb)
+    DeepseekV3Attention, DeepseekV3RotaryEmbedding)
 from transformers.models.deepseek_v3.configuration_deepseek_v3 import (
     DeepseekV3Config)
 

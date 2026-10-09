@@ -20,7 +20,8 @@ import os
 import sys
 
 import torch
-import by1paths
+# **副作用 import**：拉进 `by1io`，它把 stdout 钉成 UTF-8（见 by1gate 里同一句）。
+import by1paths  # noqa: F401
 import by1skip
 
 HERE = os.path.dirname(os.path.abspath(__file__))

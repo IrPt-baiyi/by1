@@ -17,76 +17,82 @@
 
 退出码: 0 = 没有失败   1 = 有失败
 """
-import glob
 import os
 import re
 import subprocess
 import sys
 import contextlib
-import by1io
+# **副作用 import，别删**：它在 import 时把 stdout/stderr 钉成 UTF-8。
+# 这个脚本是全量护栏的汇总口 —— 它自己那几行中文（`！！`、`跳过`）
+# 在一个 cp936 的控制台上打不出来，而"打不出来"会被读成"没跑"。
+import by1io          # noqa: F401
 import by1paths
+import by1refs as _refs
 import by1skip
 
 PY = sys.executable
-# **找 gcc：原来只写了 Windows 的路径，Linux 上找不到。**
-# 实测在 A800 那台 Ubuntu 上，`/usr/bin/gcc` 明明在，by1all 却报
-# 「失败: gcc」—— 于是整段 C 的检查被跳过。
-# **那不是失败，是静默少了一半验证。**
-GCC_GLOBS = [
-    'gcc', 'cc',                                   # PATH 上先找，两个平台都对
-    os.path.expandvars(                            # Windows：WinGet 的 mingw
-        r'%LOCALAPPDATA%\Microsoft\WinGet\Packages'
-        r'\BrechtSanders*\mingw64\bin\gcc.exe'),
-    '/usr/bin/gcc', '/usr/local/bin/gcc',          # Linux
-    '/usr/bin/cc', '/opt/homebrew/bin/gcc',        # cc / macOS
-]
+# **找 gcc 的规则不在这里了** —— 它只有一个地方：`by1paths.find_gcc`。
+# 原来这里有一份 `GCC_GLOBS`，by1extdemo 抄了第二份、by1e2e 抄了第三份，
+# 而第三份抄漏了（只剩 WinGet 一条），症状是"整段 C 后端静默跳过"。
+# （连那个空壳 `GCC_GLOBS = []` 也删了：一个"兼容旧引用"的变量，
+#  在没有旧引用之后，只会让下一个人以为还有第二条路。）
 
-# 14 个真实模型：(by1, config, tensors, backend, 额外参数)
+#: 真实模型：(by1, **张量清单覆盖**, backend, 额外参数)
+#
+# **`config` 那一列删掉了。** 它从来没被读过一次 —— `main()` 里
+# `for f, _cfg, _t, _b, _x in REAL` 那个下划线就是它。
+# 而它**自己会烂**：15 条里 3 条指的是不存在的文件
+# （`refs/poolside_Laguna-XS-2_1.config.json` 之类的旧名），
+# 只是没人读它，所以没人发现。**一个没人读的字段不是"备用",
+# 是一个迟早会说谎的字段。**
+#
+# **张量清单那一列留着，但只是"覆盖"。** 默认从 `.by1` 头部的
+# `by1-repo` 推（`by1refs.paths`，那是路径规则的唯一真相源），
+# 只有**推不出来**的才写在这里：
+#
+#     gpt-oss-120b 的两套命名（HF 侧 + GGUF 侧）
+#     gemma-4-31B 只有 GGUF 侧
+#
+# 其余 8 条原来写的是 `refs/clef.tensors.json` / `refs/step37.tensors.json`
+# 这种**早已不存在**的短名 —— 靠 `os.path.exists` 兜底才没炸。
+# 删掉它们，`tensor_list()` 会把"兜底"换成"报错"。
 REAL = [
-    ('gpt-oss-120b.by1', 'refs/openai__gpt-oss-120b.config.json',
-     'refs/openai__gpt-oss-120b.tensors.json', 'torch.module', []),
-    ('gpt-oss-120b.by1', 'refs/openai__gpt-oss-120b.config.json',
-     'refs/openai__gpt-oss-120b.gguf-tensors.json', 'ggml', []),
-    ('gemma-4-31B.by1', 'refs/google__gemma-4-31B.config.json',
-     'refs/google__gemma-4-31B.gguf-tensors.json', 'ggml', []),
-    ('Laguna-XS-2_1.by1', 'refs/poolside_Laguna-XS-2_1.config.json',
-     'refs/laguna-xs-2.1.tensors.json', 'torch.module', []),
-    ('Instella-3B.by1', 'refs/amd__Instella-3B.config.json',
-     'refs/amd__Instella-3B.tensors.json', 'torch.module', []),
+    # gpt-oss 有两个侧：HF 的 `torch.module` 和 GGUF 的那一套命名。
+    # 同一个 `.by1`，两份清单，两个后端 —— 这正是"能描述 ≠ 能算"的另一面：
+    # **命名是发布决策，不是架构**，所以同一份描述对得上两套名字。
+    ('gpt-oss-120b.by1', None, 'torch.module', []),
+    ('gpt-oss-120b.by1', 'refs/openai__gpt-oss-120b.gguf-tensors.json',
+     'ggml', []),
+    ('gemma-4-31B.by1', 'refs/google__gemma-4-31B.gguf-tensors.json',
+     'ggml', []),
+    ('Laguna-XS-2_1.by1', None, 'torch.module', []),
+    ('Instella-3B.by1', None, 'torch.module', []),
+    # 剪枝版。和官方**同名不同源**，所以短名带 owner（见 models.tsv）。
     ('Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL.by1',
-     'refs/nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL.config.json',
-     'refs/step37.tensors.json', 'torch.module', []),
-    ('Ling-3.0-tiny.by1', 'refs/inclusionAI__Ling-3.0-tiny.config.json',
-     'refs/inclusionAI__Ling-3.0-tiny.tensors.json', 'torch.module', []),
+     None, 'torch.module', []),
+    ('Ling-3.0-tiny.by1', None, 'torch.module', []),
     # **收敛的判卷人**：最普通的那种模型（标准 Qwen3 形状）。
     # 前面几个都是特意挑来压东西的，如果连这一个都要新属性，就是没收敛。
-    ('minimind-3.by1', 'refs/jingyaogong__minimind-3.config.json',
-     'refs/jingyaogong__minimind-3.tensors.json', 'torch.module', []),
+    ('minimind-3.by1', None, 'torch.module', []),
     # 第二个收敛判卷人，比 minimind 严格得多：48 层线性注意力 + 16 层全量，
     # 而这一整套 Qwen3-Next 时代就有了（GDN + 3+1 混合 + q_gate + qk_norm）。
-    ('clef.by1', 'refs/Cloudflare__clef.config.json',
-     'refs/clef.tensors.json', 'torch.module', []),
+    ('clef.by1', None, 'torch.module', []),
     # clef + MTP。MTP 是这一族里唯一的新东西，它逼出了三个语言改动：
     # `aux = true`（辅助栈不算解码层）、`name_<栈名>`（各栈物理前缀不同）、
     # 以及**栈内序号**（传全局层号会拼出 mtp.layers.64. 这种名字）。
-    ('Qwen3.8-27B.by1', 'refs/Qwen__Qwen3.8-27B.config.json',
-     'refs/qwen38.tensors.json', 'torch.module', []),
+    ('Qwen3.8-27B.by1', None, 'torch.module', []),
     # 同一个 Qwen3.5 形状换成 MoE。**零个新属性** —— MoE、共享专家、
     # 共享专家门控、MTP、线性注意力、3+1 混合，全是现成的。
-    ('Qwen3.6-35B-A3B.by1', 'refs/Qwen__Qwen3.6-35B-A3B.config.json',
-     'refs/qwen36.tensors.json', 'torch.module', []),
+    ('Qwen3.6-35B-A3B.by1', None, 'torch.module', []),
     # 官方 Step-3.7（未剪枝）—— 和剪枝版的差别就是被删掉的那几行。
-    ('Step-3.7-Flash.by1', 'refs/stepfun-ai__Step-3.7-Flash.config.json',
-     'refs/step37-official.tensors.json', 'torch.module', []),
+    ('Step-3.7-Flash.by1', None, 'torch.module', []),
     # **语言的边界**：GPT-2 —— LayerNorm / 学习式位置编码 / 无门控 MLP，
     # 和前面十一个 Llama 家族是**两代人**。nanoGPT 是同一个架构。
-    ('gpt2.by1', 'refs/gpt2.config.json',
-     'refs/gpt2.tensors.json', 'torch.module', []),
+    ('gpt2.by1', None, 'torch.module', []),
     # **唯一真正的新机制族：Mamba（选择性状态空间）。**
     # 顺带逼出两个改动：显式的逐层序列、按栈的专家名字模板。
-    ('NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16.by1',
-     'refs/nvidia__NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16.config.json',
-     'refs/nemotron.tensors.json', 'torch.module', []),
+    ('NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16.by1', None,
+     'torch.module', []),
     # **第 14 个真实模型 —— 而它原来是漏在护栏外面的那一个。**
     #
     # 一份 `.by1` 写在 `models/` 里、`models.tsv` 里也有、`1.md` 的表里
@@ -97,8 +103,7 @@ REAL = [
     #
     # 修好模板之后：37534/37534 全中、0 缺失。
     # 教训进 KNOWN 那条路是错的 —— 那是**描述写错了**，不是产物缺东西。
-    ('GLM-5.3-Flash.by1', 'refs/zai-org__GLM-5.3-Flash.config.json',
-     'refs/zai-org__GLM-5.3-Flash.tensors.json', 'torch.module', []),
+    ('GLM-5.3-Flash.by1', None, 'torch.module', []),
 ]
 
 # 六个合成模型：三后端
@@ -258,24 +263,44 @@ KNOWN = [
 ]
 
 
+def tensor_list(f, override):
+    """这个真实模型的张量清单在哪。**推不出来就报错，不静默跳过。**
+
+    ## 为什么这不只是"少写几个字符串"
+
+    这里原来是 `want = root(_t) if _t else ''` 然后
+    `ten = want if os.path.exists(want) else _refs.paths(f, 'tensors')`
+    —— 一份手写的路径，配一个静默兜底。于是：
+
+      · 有人把 `refs/clef.tensors.json` 改名成
+        `refs/Cloudflare__clef.tensors.json`，**手写的那 8 条全部过期**
+      · `os.path.exists` 把过期变成了"换一条路走"，
+        **没有任何输出说这件事发生过**
+      · 而 `by1refs` 的 docstring 写着"refs 的路径规则，只此一处"
+
+    现在：默认走 `by1refs`（唯一真相源），只有**推不出来**的才由
+    `REAL` 覆盖；两条都拿不到就是**失败**，不是跳过。
+    """
+    if override:
+        p = by1paths.root(override)
+        if not os.path.exists(p):
+            raise SystemExit(
+                '  **%s 的张量清单覆盖写错了**：\n'
+                '    REAL 里写的是 %s，而它不存在。\n'
+                '    要么它是错的，要么文件被改名了 —— 两种都要人看一眼，'
+                '不能悄悄换一条路走。' % (f, override))
+        return p
+    return _refs.paths(f, 'tensors')
+
+
 def find_gcc():
-    # **裸名字要用 shutil.which 搜 PATH，不能用 glob.glob。**
-    # 我第一版把 'gcc' 加进 GCC_GLOBS 就以为修好了 ——
-    # 而 `glob.glob('gcc')` 只找**当前目录**下的同名文件，
-    # 它不搜 PATH。于是远端还是"找不到 gcc"，而我以为改了。
-    #
-    # **一个看起来加了、其实没生效的修复，比没加更坏。**
-    import shutil as _sh
-    for g in GCC_GLOBS:
-        if os.sep not in g and '/' not in g:
-            hit = _sh.which(g)
-            if hit:
-                return hit
-            continue
-        hits = glob.glob(g)
-        if hits:
-            return hits[0]
-    return None
+    """**找 gcc 的规则只有一个地方**：`by1paths.find_gcc`。
+
+    这里原来自己维护一份 `GCC_GLOBS` + `shutil.which` 的逻辑，
+    `by1extdemo` 抄了第二份，`by1e2e` 抄了第三份（而它抄漏了，
+    见 `by1paths.find_gcc` 的注释）。现在三处都调这一个。
+    """
+    return by1paths.find_gcc()
 
 
 def run_many(pairs, jobs=None):
@@ -317,15 +342,21 @@ def main():
     bad = []
     # 覆盖缺口（"还没实现"，不是"算错了"）—— 走 KNOWN 那条路。
     gaps = []
+    # **数出来的，不是减出来的。** 这里原来写 `len(specs) - 1`
+    # （只减了 selftest），而循环里**跳过了两个**（selftest 和 gate-probe）
+    # —— 于是报告印"检查器 25 个"，实际查了 24 个。
+    # 一个"少算一个"的计数不会让谁崩，它只是**让这一行不能信**。
+    n_checked = 0
     for f in specs:
         if f in ('selftest.by1', 'gate-probe.by1'):
             continue          # 两个故意的反例
+        n_checked += 1
         _, out = run(['by1check.py', f], 'check ' + f)
         m = re.search(r'摘要:\s*(\d+)\s*错误\s*/\s*(\d+)\s*警告', out)
         e, w = (int(m.group(1)), int(m.group(2))) if m else (-1, -1)
         if e != 0:
             bad.append('%s(%d 错 %d 警)' % (f, e, w))
-    rows.append(('检查器 %d 个 .by1' % (len(specs) - 1),
+    rows.append(('检查器 %d 个 .by1' % n_checked,
                  'ok' if not bad else 'fail',
                  '除 selftest 外全 0 错' if not bad else '; '.join(bad)))
     if bad:
@@ -367,6 +398,31 @@ def main():
     if st == 'fail':
         fails.append('oracles')
 
+    # ---- 1.6 十类"不出声"的写法 + 它自己的自检 ----
+    #
+    # **`by1lint` 原来是个永远绿的检查。** 它 `return 0`，一条判定线都没有，
+    # 而且**没有任何东西在跑它** —— 一个不存在的检查长什么样，
+    # 它就是什么样。（它自己的 docstring 说"查十类"，而第⑧类
+    # 根本没实现、规则⑨ 把 `capture_output=True` 当成"看过返回码"。）
+    #
+    # 现在它有一条线（十类必须 0 处）、有一个自检（**每条规则都要在
+    # 反例上真的红一次**，外加两个不许误报的正例），而这两样都进护栏。
+    st, out = run(['by1lint.py'], 'lint')
+    line = [l.strip() for l in out.splitlines() if '[PASS]' in l
+            or '[FAIL]' in l]
+    st = confirmed(st, out, line)
+    rows.append(('静态检查 by1lint.py', st, note_of(st, out, line)))
+    if st == 'fail':
+        fails.append('lint')
+
+    st, out = run(['by1lint.py', '--selftest'], 'lint-selftest')
+    line = [l.strip() for l in out.splitlines() if '[PASS]' in l
+            or '[FAIL]' in l]
+    st = confirmed(st, out, line)
+    rows.append(('by1lint 自检（十条规则都要会红）', st, note_of(st, out, line)))
+    if st == 'fail':
+        fails.append('lint-selftest')
+
     # ---- 2. config 逐字段 ----
     #
     # **路径从 `.by1` 推，不用 REAL 清单里那两个字符串。**
@@ -379,11 +435,12 @@ def main():
     # **跳过和通过，在输出里长得一样。那是最坏的一种绿。**
     #
     # 所以：路径由规则推（by1refs），**推不出来就报错**，不跳过。
-    import by1refs as _refs
+    # （`by1refs` 现在在文件头 import —— `tensor_list()` 也要用它，
+    #  而它是个模块级函数，看不见 main() 里的局部 import。）
 
     seen = set()
     derived_fail = []
-    for f, _cfg, _t, _b, _x in REAL:
+    for f, _t, _b, _x in REAL:
         if f in seen:
             continue
         seen.add(f)
@@ -409,14 +466,13 @@ def main():
 
     # ---- 3. 张量名与形状 ----
     ten_fail = []
-    for f, _cfg, _t, backend, extra in REAL:
+    for f, _t, backend, extra in REAL:
         cfg = _refs.paths(f, 'config')
-        # ggml 那一路的张量清单名字不同（`.gguf-tensors.json`），
-        # 由 REAL 里的第三个字段指定 —— 那是**数据**，不是路径规则。
-        # REAL 里的第三个字段是**数据**（ggml 那一路的清单名字不同），
-        # 但它写的是仓库根相对的路径 —— 所以要按仓库根解析，不能靠 cwd。
-        want = by1paths.root(_t) if _t else ''
-        ten = want if os.path.exists(want) else _refs.paths(f, 'tensors')
+        # **清单从 `by1refs` 推，不再手写。** ggml 那一路的文件名不同
+        # （`.gguf-tensors.json`），那种由 REAL 的第二列**覆盖** ——
+        # 覆盖也只写"文件名不同"这一种，因为它推不出来。
+        # 覆盖写错、或者推不出来，都是**失败**，不是静默跳过（见 `tensor_list`）。
+        ten = tensor_list(f, _t)
         if cfg is None or ten is None or not os.path.exists(ten):
             if _refs.repo_of(f):
                 ten_fail.append((f, backend))
@@ -538,7 +594,9 @@ def main():
         fails.append('gate')
 
     # ---- 8. 判卷人脚本 ----
-    # **13 条判卷人，74 秒 —— 最重的一段。** 它们互不依赖，并行。
+    # **15 条判卷人，各跑各的，互不依赖，所以并行。**
+    # （这里原来写"13 条，74 秒" —— 而 `JUDGES` 是 15 条。
+    #  一个数写进注释就没人再数它了；所以要写就写能一眼数出来的。）
     for s, (st, out) in zip(JUDGES, run_many([([s], s) for s in JUDGES])):
         line = [l.strip() for l in out.splitlines() if '[PASS]' in l
                 or '[FAIL]' in l]

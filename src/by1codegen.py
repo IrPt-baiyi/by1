@@ -23,7 +23,7 @@ import os
 import pprint
 import re
 import sys
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 # **版本号从 by1ver 来。** 原来这里写死 "1.0"，而 by1boot / by1extdemo
 # 也各写了一遍 —— 三份同一个字符串，谁也不认识谁。
@@ -32,6 +32,21 @@ try:
     from by1ver import IR_VERSION as _IR_VER
 except ImportError:                     # 单独拷一个文件出去时兜底
     _IR_VER = "1.0"
+
+# **eps 的默认值只有一个地方写**（`by1ir.EPS_DEFAULT`）。
+# 这个文件里原来有 17 处 `1e-5` —— 形状没错，错在"哪一处漏了传参"
+# 没有结构性征兆（这一类在 history/ir.md 里记着犯过五次）。
+#
+# **但这里有两种用法，不能一把替换**：
+#   · `compile_ir` 里那些是**现在**算的 -> 直接用常量
+#   · 生成器模板里那些会被**写进生成的代码**，而那段代码在一个
+#     空命名空间里 exec，看不见这个模块的全局名 ——
+#     所以必须内插成**字面量**（`1e-05`）。
+#     第一版我一把全换成常量名，生成出来的代码当场 NameError。
+try:
+    from by1ir import EPS_DEFAULT as _DEFAULT_EPS
+except ImportError:                     # 单独拷一个文件出去时兜底
+    _DEFAULT_EPS = 1e-5
 
 
 def _stamp():
@@ -199,7 +214,16 @@ def _rope_spec(info, li):
     没有按类型声明时（只有 position { default = ... }）才退回全局扫描。
     """
     base = int(_num(_rope_decl(info, "base", "10000"), 10000))
+    # **`pairing` 原来没走取值校验。** `ENUMS` 里声明了它的闭集，
+    # 但那个声明**一个调用点都没有** —— 于是 `pairing = totally_bogus`
+    # 安静地落进 `apply_rope` 的 `else` 分支（interleaved）：
+    # 对 half 配对的模型，两边前向差 1.8e-02，而张量契约全中、
+    # `by1check` 报 0 错。这正是「能描述 ≠ 能算」那个 bug 类的新入口。
+    # `_rope_spec` 没有 errs 通道（它是独立函数），所以在这里直接抛。
     pairing = _rope_decl(info, "pairing", "interleaved")
+    _p = _enum_bad("pairing", pairing, "position", "rope")
+    if _p:
+        raise CodegenError(_p)
     lts = info.get("layer_types") or []
     rbt = info.get("rope_by_type") or {}
     d = rbt.get(lts[li]) if li < len(lts) else None
@@ -301,7 +325,11 @@ def compile_ir(info: Dict[str, Any]) -> Dict[str, Any]:
     nv = str((info.get("hparams") or {}).get("norm", "")).strip().lower()
     norm_1p = nv in ("zero_centered", "one_plus", "1+", "gemma")
     base = int(_num(_rope_decl(info, "base", "10000"), 10000))
+    # 同 `_rope_spec`：全局声明的 `pairing` 也要过取值门，
+    # 不能静默落进 `apply_rope` 的默认分支。
     pairing = _rope_decl(info, "pairing", "interleaved")
+    if not _ck("pairing", pairing, "position", "rope"):
+        pairing = "interleaved"     # 已经记了错，值随便取；下面会 raise
     kinds = info.get("mechs") or {}
     defaults = info.get("mech_attrs") or {}
 
@@ -367,7 +395,7 @@ def compile_ir(info: Dict[str, Any]) -> Dict[str, Any]:
                              if attrs.get("qk_norm") is not None else "off")),
                 # 归一化的 eps 跟着模型的 rms_norm_eps 走（这个 bug 犯过三次）
                 "norm_eps": float(_num(attrs.get("norm_eps"),
-                                       _num(hp.get("rms_eps"), 1e-5))),
+                                       _num(hp.get("rms_eps"), _DEFAULT_EPS))),
                 "bias": _flag(attrs.get("bias", attrs.get("attn_bias"))),
                 "rope": _rope_on,
                 "rope_base": int(_num(attrs.get("rope_base"), rs["base"])),
@@ -408,6 +436,11 @@ def compile_ir(info: Dict[str, Any]) -> Dict[str, Any]:
                 return None
             rs = (_rope_spec(info, li) if li is not None else
                   {"base": base, "pairing": pairing})
+            # **逐机制也可以改 `pairing`**（MLA 的 ATTRS 里有它）——
+            # 这里也要过取值门，和全局声明那条一样。原来只有全局那条，
+            # 而逐机制的非法值会静默落进 `apply_rope` 的默认分支。
+            if not _ck("pairing", attrs.get("pairing"), name, kind):
+                return None
             return {"kind": "MLA", "mech": name, "attrs": {
                 "q": q, "q_lora": int(h["q_lora"]), "kv_lora": int(h["kv_lora"]),
                 "qk_nope": qn, "qk_rope": kr, "v_dim": int(h["v_dim"]),
@@ -425,7 +458,7 @@ def compile_ir(info: Dict[str, Any]) -> Dict[str, Any]:
                 # 跟着模型的 rms_norm_eps 走**必须**。GDN 那边为这个 bug 修过一次
                 # （原来写死 1e-6，而 RMSNorm 是 1e-5），MLA 这里又犯了一遍。
                 "norm_eps": float(_num(attrs.get("norm_eps"),
-                                       _num(hp.get("rms_eps"), 1e-5))),
+                                       _num(hp.get("rms_eps"), _DEFAULT_EPS))),
                 "norm_one_plus": norm_1p}}
 
         if kind == "FFN":
@@ -539,7 +572,7 @@ def compile_ir(info: Dict[str, Any]) -> Dict[str, Any]:
                 # 跟着模型的 rms_norm_eps 走。之前这里写死 1e-6，而 RMSNorm 那边是 1e-5 ——
                 # 同一个模型里两个 eps，隔离测试因为显式传了值所以没暴露。
                 "norm_eps": float(_num(attrs.get("norm_eps"),
-                                       _num(hp.get("rms_eps"), 1e-5))),
+                                       _num(hp.get("rms_eps"), _DEFAULT_EPS))),
                 "l2_eps": float(_num(attrs.get("l2_eps"), 1e-6)),
                 "out_dim": int(_num(attrs.get("out_dim")) or nv * dv)}}
         return None
@@ -580,7 +613,7 @@ def compile_ir(info: Dict[str, Any]) -> Dict[str, Any]:
         # 三个后端原来各自写死 1e-5 —— 于是它们"一致地错"，
         # 互相对拍全绿，却都不符合 .by1 里写的值。
         _n_attrs = {"one_plus": norm_1p, "kind": _nk,
-                    "eps": float(_num(hp.get("rms_eps"), 1e-5))}
+                    "eps": float(_num(hp.get("rms_eps"), _DEFAULT_EPS))}
         _n_mech = "LayerNorm" if _nk == "layer" else "RMSNorm"
 
         def emit(mk, ins):
@@ -689,7 +722,7 @@ def compile_ir(info: Dict[str, Any]) -> Dict[str, Any]:
         # 前者是**输入的一部分**，所以放在 IR 顶层。
         "pos_kind": "learned" if _pos_learned else "rope",
         "n_pos": int(_num(_n_pos_decl, _num(hp.get("n_pos"), ctx)) or ctx),
-        "norm_eps": float(_num(hp.get("rms_eps"), 1e-5)),
+        "norm_eps": float(_num(hp.get("rms_eps"), _DEFAULT_EPS)),
         "globals": [
             {"mech": "Embed", "kind": "Embed", "attrs": {},
              "inputs": [], "outputs": ["hidden"]},
@@ -698,7 +731,7 @@ def compile_ir(info: Dict[str, Any]) -> Dict[str, Any]:
             # 而 IR 里这一个说是 rms。规格校验一跑就露出来了。
             {"mech": "FinalNorm", "kind": "Norm",
              "attrs": {"kind": str(hp.get("norm_kind", "rms")).strip().lower(),
-                       "eps": float(_num(hp.get("rms_eps"), 1e-5)),
+                       "eps": float(_num(hp.get("rms_eps"), _DEFAULT_EPS)),
                        "one_plus": norm_1p},
              "inputs": ["hidden"], "outputs": ["normed"]},
             {"mech": "Head", "kind": "Head", "attrs": {},
@@ -721,9 +754,20 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+# ⚠️ **从这里往下的 `1e-05` 是"写进产物"的字面量，不是可引用的常量。**
+#
+# 这一整段会被渲染成文本、在一个**空命名空间**里 exec ——
+# 它看不见本模块的任何全局名（`_DEFAULT_EPS` 也不例外）。
+# 所以这些位置只能是字面量。值本身仍然是 `by1ir.EPS_DEFAULT`；
+# 两者一致由 `by1lint` 之外的这条约定守着：**生成器里的 eps 只能出现在这里**，
+# 而 `compile_ir`（真正决定 IR 那几个 eps 的地方）用的是常量名。
+# （第一版我把这些也换成常量名，生成出来的代码当场 NameError；
+#   第二版换成 `{_DEFAULT_EPS!r}`，而这几行在普通字符串里，原样进了产物 ——
+#   两次都是"看着像改了"。）
+
 
 class RMSNorm(nn.Module):
-    def __init__(self, d, eps=1e-5, one_plus=False):
+    def __init__(self, d, eps=1e-05, one_plus=False):
         super().__init__()
         # 两种约定：直接乘 w，或者乘 (1+w)。后者是 zero-centered，w 初值为 0。
         # 同一个模型里两种可以并存 —— Qwen3-Next 就是这样。
@@ -743,7 +787,7 @@ class LayerNorm(nn.Module):
     名字都叫"层归一化"，算的不是一回事；而 RMSNorm 那边
     `one_plus` 又是第三种约定。三个东西顶着相近的名字。
     """
-    def __init__(self, d, eps=1e-5):
+    def __init__(self, d, eps=1e-05):
         super().__init__()
         self.w = nn.Parameter(torch.ones(d))
         self.b = nn.Parameter(torch.zeros(d))
@@ -837,7 +881,7 @@ class MLAttention(nn.Module):
         self.qk_head = self.qk_nope + self.qk_rope
         self.v_dim, self.kv_lora = a["v_dim"], a["kv_lora"]
         _op = a.get("norm_one_plus", False)
-        _eps = a.get("norm_eps", 1e-5)
+        _eps = a.get("norm_eps", 1e-05)
         self.q_a_proj = nn.Linear(d, a["q_lora"], bias=a["bias"])
         self.q_a_layernorm = RMSNorm(a["q_lora"], eps=_eps, one_plus=_op)
         self.q_b_proj = nn.Linear(a["q_lora"], self.nh * self.qk_head, bias=False)
@@ -912,7 +956,7 @@ class Attention(nn.Module):
         self.qk_norm = a["qk_norm"]
         if self.qk_norm not in ("off", "", None):
             _op = a.get("norm_one_plus", False)
-            _eps = a.get("norm_eps", 1e-5)
+            _eps = a.get("norm_eps", 1e-05)
             # **两种 qk_norm 的区别是"在哪一步归一化"**：
             #   per_head  拆头之后，按 head_dim（多数模型）
             #   full      拆头**之前**，按 q*head_dim 整宽（Instella 是 [2560] 而不是 [80]）
@@ -1304,8 +1348,8 @@ def _mk_norm(attrs, d):
     但契约查不出**算错了**，所以这里必须是显式的。
     """
     if str(attrs.get("kind", "rms")).lower() == "layer":
-        return LayerNorm(d, eps=attrs.get("eps", 1e-5))
-    return RMSNorm(d, eps=attrs.get("eps", 1e-5),
+        return LayerNorm(d, eps=attrs.get("eps", 1e-05))
+    return RMSNorm(d, eps=attrs.get("eps", 1e-05),
                    one_plus=attrs.get("one_plus", False))
 
 
@@ -1441,10 +1485,10 @@ class By1Model(nn.Module):
         # 所以刚才那一处改动没带上它 —— GPT-2 建出来是 24 个 LayerNorm
         # 加 1 个 RMSNorm，而那个 1 就是这里。
         _fk = str(ir.get("norm_kind", "rms")).lower()
-        self.final_norm = (LayerNorm(d, eps=ir.get("norm_eps", 1e-5))
+        self.final_norm = (LayerNorm(d, eps=ir.get("norm_eps", 1e-05))
                            if _fk == "layer"
                            else RMSNorm(d, one_plus=ir.get("norm_one_plus", False),
-                                        eps=ir.get("norm_eps", 1e-5)))
+                                        eps=ir.get("norm_eps", 1e-05)))
         self.head = nn.Linear(d, ir["vocab"], bias=False)
 
     def forward(self, idx):

@@ -35,6 +35,16 @@ _*.by1
 # 由 by1 生成的示例，可重新生成
 hello_model.py
 
+# **`pip install -e .` 的产物。**
+# README 的「装」一节就叫读者跑这条命令，而它会在仓库根留下
+# `by1.egg-info/` 和 `build/` —— 这两个原来都没挡，
+# 于是**照文档走一遍，`git status` 就脏了**。
+# （`*.so` / `*.exe` / `cgen-*/` 都挡了，唯独漏了 pip 自己造的。）
+*.egg-info/
+build/
+dist/
+.eggs/
+
 # 手工备份（git 接管之前的手段）
 *.bak
 !1.md.bak

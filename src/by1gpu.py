@@ -40,7 +40,6 @@
 用法:  python by1gpu.py [--seq 64]
        python by1gpu.py --plan <GB>      # 不碰显卡，只印"会挑哪些"
 """
-import glob
 import importlib.util
 import os
 import sys

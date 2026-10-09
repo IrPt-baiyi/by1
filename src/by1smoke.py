@@ -16,9 +16,7 @@
 
 用法:  python by1smoke.py
 """
-import io
 import os
-import re
 import subprocess
 import sys
 import time

@@ -44,7 +44,6 @@
     python by1fetch.py --all        全部重抓（覆盖已有的）
     python by1fetch.py --only Qwen  只抓名字里带 Qwen 的
 """
-import io
 import json
 import os
 import struct

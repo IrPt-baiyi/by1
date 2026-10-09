@@ -75,8 +75,29 @@ def _ffn(a):
             ("down_proj.weight", "(d_model, hidden)", True)]
 
 
+def _int(v, default=0):
+    """属性 -> 整数。**取不到就 default，不抛异常。**
+
+    `.by1` 里"关掉"的写法不止一种：`shared = none`、`= off`、`= 0`。
+    这里原来是 `int(float(a.get("shared", 0) or 0))` —— 碰上 `none`
+    直接 `ValueError: could not convert string to float: 'none'`，
+    而**同一个模型 `by1check` 报 0 错、`by1ir --emit` 也编译得出来**
+    （codegen 那边走的是 `_num(...) or 0`，它认这个写法）。
+    同一个值，两个模块两种理解 —— 那正是这仓库里"同名不同义"那一类。
+    """
+    if v is None:
+        return default
+    s = str(v).strip().lower()
+    if s in ("", "none", "null", "off", "false", "no"):
+        return default
+    try:
+        return int(float(s))
+    except ValueError:
+        return default
+
+
 def _moe(a):
-    sh = int(float(a.get("shared", 0) or 0))
+    sh = _int(a.get("shared"), 0)
     sg = str(a.get("shared_gate", "")).lower() in ("true", "1", "yes", "on")
     out = [("gate.weight", "(experts, d_model)", True),
            ("gate_proj.weight", "(experts, hidden, d_model)", True),
@@ -103,7 +124,7 @@ PACKING_HINTS = """\
       #     per_expert   一个专家一个张量，还是打包成一整块
       #     fuse         gate/up 融合存储（experts.gate_up_proj）还是分开
       #     bias         投影有没有 bias
-      #     bias         融合存储时，名字是 c_attn 还是分开的 q/k/v
+      #     name         融合存储时，名字是 c_attn 还是分开的 q/k/v
       #     --           权重共享时为"声明为不该存在"（lm_head.weight : --）"""
 
 

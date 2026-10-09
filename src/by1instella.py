@@ -20,7 +20,6 @@ Instella-3B 是六个里唯一在这台机器上也跑得动的（稠密、3B）
 用法:  python by1instella.py
 """
 import importlib.util
-import io
 import os
 import re
 import sys

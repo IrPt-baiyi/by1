@@ -43,7 +43,6 @@
        python by1rebuild.py --measure 顺带量重建耗时
 """
 import glob
-import io
 import os
 import re
 import sys

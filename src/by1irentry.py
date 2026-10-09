@@ -25,7 +25,6 @@ IR** —— 那才是"别人给我的 IR"的样子。少了第 ② 步，这个�
 
 用法:  python by1irentry.py [文件.by1 ...]
 """
-import glob
 import importlib.util
 import json
 import os

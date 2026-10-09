@@ -45,6 +45,12 @@ def sh(*a):
                            timeout=120)
     except FileNotFoundError:
         return ''
+    # **退出码非零 = 没拿到，返回空串。**
+    # 调用方把这个串丢给 regex，"空串"就等于"什么都没发现" ——
+    # 而"命令跑失败"和"跑成功、没有输出"是两件事。
+    # 返回一个空串冒充后者，就是一次静默的假绿。
+    if r.returncode != 0:
+        return ''
     return r.stdout
 
 
@@ -97,6 +103,10 @@ def main():
                            encoding='utf-8', errors='replace',
                            timeout=1800)
         out = r.stdout
+        # 同上：正则从 stdout 里抠数字，那就得先确认这次跑成功了。
+        if r.returncode != 0:
+            print('     （by1triage 退出码 %d —— 下面的数不作数）'
+                  % r.returncode)
         m = re.search(r'① (\d+) 种模式\s*·\s*② (\d+) 种模式', out)
         n_ok = len(re.findall(r'\n  ✓ ', out))
         n_all = len(re.findall(r'\n  [✓!] ', out))

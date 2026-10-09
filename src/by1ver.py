@@ -88,7 +88,15 @@ def write_files():
     # 写进 `src/VERSION` 就是造出第二个版本文件 —— 而"同一个意思写在两个
     # 地方、没有任何东西保证它们一致"正是这个文件在 docstring 里反对的事。
     io_p = os.path.join(by1paths.ROOT, 'VERSION')
-    with open(io_p, 'w', encoding='utf-8') as f:
+    # **行尾钉成 `\n`，别让平台决定。**
+    # `open(..., 'w')` 在 Windows 上把 `\n` 翻成 `\r\n` —— 于是同一个
+    # `TOOL_VERSION`，在 Windows 上生成 7 字节、在 Linux 上 6 字节，
+    # 而 git 那边看到的是"VERSION 被改了"（整文件一行 diff）。
+    # 这是"同一个意思，两个平台两种字节"，而它唯一的症状是
+    # **在另一台机器上 `git status` 变脏**。
+    # 用 `newline=''` = 不做任何翻译，写什么就是什么。
+    # （配套：仓库根有 `.gitattributes`，`* text=auto eol=lf`。）
+    with open(io_p, 'w', encoding='utf-8', newline='') as f:
         f.write(TOOL_VERSION + "\n")
     return io_p
 

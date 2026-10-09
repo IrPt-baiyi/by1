@@ -140,6 +140,52 @@ def rel(path):
     return path if r.startswith('..') else r
 
 
+# ── 找 gcc ──────────────────────────────────────────────────────────
+#: 候选项。**裸名字要用 `shutil.which` 搜 PATH** —— `glob.glob('gcc')`
+#: 只找当前目录，by1all 那边已经为这个踩过一次坑（"看起来改了，其实没生效"）。
+GCC_CANDIDATES = (
+    'gcc', 'cc',                                   # PATH 上先找，两个平台都对
+    '/usr/bin/gcc', '/usr/local/bin/gcc',          # Linux
+    '/usr/bin/cc', '/opt/homebrew/bin/gcc',        # cc / macOS
+)
+
+#: Windows：WinGet 装的 mingw（**相对路径要展开**，`%LOCALAPPDATA%`）
+GCC_WIN_GLOBS = (
+    r'%LOCALAPPDATA%\Microsoft\WinGet\Packages'
+    r'\BrechtSanders*\mingw64\bin\gcc.exe',
+)
+
+
+def find_gcc():
+    """找一个可用的 C 编译器。**找不到返回 None。**
+
+    这件事原来在**三个脚本里各写了一遍、规则还不一样**：
+    `by1all` 是对的（`shutil.which` + Linux 路径 + WinGet glob），
+    `by1extdemo` 是第二版（有 which，WinGet 兜底），
+    而 `by1e2e` **只剩 WinGet 那一条** —— 于是在 Linux 上它
+    "找不到 gcc"，整段 C 后端被静默跳过，**而判定行照样印
+    「三个后端 [PASS]」**。同一件事三份实现，坏的那份没人发现。
+
+    所以放一处。谁要用谁 import —— `by1paths` 本来就是每个脚本
+    都会 import 的那个模块，加在这里不引入新依赖。
+    """
+    import glob as _glob
+    import shutil as _sh
+    for c in GCC_CANDIDATES:
+        if os.sep in c or '/' in c:
+            if os.path.exists(c):
+                return c
+            continue
+        hit = _sh.which(c)
+        if hit:
+            return hit
+    for g in GCC_WIN_GLOBS:
+        hits = _glob.glob(os.path.expandvars(g))
+        if hits:
+            return hits[0]
+    return None
+
+
 def _check():
     print()
     print('  仓库布局')

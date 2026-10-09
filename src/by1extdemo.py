@@ -34,8 +34,48 @@ except ImportError:                     # 单独拷一个文件出去时兜底
 
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def _find_src():
+    """`ext-demo.c` 在哪。**要搜，不能只假设"在我旁边"。**
+
+    在**源码树**里它确实就在旁边（`src/ext-demo.c`）—— 所以这一步
+    以前是"碰巧对的"。但 `pip install` 之后，模块进
+    `site-packages/`，而 `pyproject.toml` 里那条
+    `package-data` 是**空的**：这个项目只有 `py-modules`、**没有一个
+    package**，而 `package-data` 只挂在 package 上。于是装完之后
+    `src/ext-demo.c` 根本不在，`by1extdemo` 编译时才发现——
+    而那个报错长得像"编译器坏了"。
+
+    现在改成：`pyproject.toml` 用 `data-files` 把它装到
+    `<prefix>/ext-demo.c`（实测 `pip install` 后落在 venv 根），
+    这里按几种布局各找一遍。找不到就**明确报出找过哪儿**。
+    """
+    cands = [os.path.join(HERE, "ext-demo.c"),                 # 源码树 / 同目录
+             os.path.join(HERE, "data", "ext-demo.c")]
+    # **沿途每一级祖先都看一遍** —— 别写死"往上几级"。
+    # 实测（venv 里 `pip install`）它落在 `<venv>/ext-demo.c`，
+    # 而模块在 `<venv>/Lib/site-packages/` —— 中间隔着几级取决于
+    # 平台和安装方式，写死数字就等于把一个安装布局钉进代码里。
+    p = HERE
+    for _ in range(6):
+        p = os.path.dirname(p)
+        if not p or p == os.path.dirname(p):
+            break
+        cands.append(os.path.join(p, "ext-demo.c"))
+    cands.append(os.path.join(by1paths.DOCS, "..", "src", "ext-demo.c"))
+    for c in cands:
+        if os.path.exists(c):
+            return c
+    raise SystemExit(
+        "  找不到 ext-demo.c —— 找过这些地方：\n"
+        + "\n".join("    %s" % c for c in cands)
+        + "\n  **它是这个判卷人的输入，不能少。**"
+          "源码树里它在 src/ 下；装过的话见 pyproject.toml 的 data-files。")
+
+
 SO = os.path.join(HERE, "ext-demo.so")
-SRC = os.path.join(HERE, "ext-demo.c")
+SRC = _find_src()
 D = 16
 B_T = 4
 
@@ -86,26 +126,10 @@ def main():
     if '--gcc' in sys.argv:
         gcc = sys.argv[sys.argv.index('--gcc') + 1]
     if not gcc:
-        # **找 gcc 的写法要和 by1all 一致。**
-        # 原来这里只写死了 Windows 的 WinGet 路径 —— Linux 上明明
-        # `/usr/bin/gcc` 在，它也说"找不到"。而这个"找不到"的症状是
-        # **静默跳过整步验证**，不是报错。
-        #
-        # 另外：裸名字要用 `shutil.which` 搜 PATH，`glob.glob('gcc')`
-        # 只找当前目录 —— by1all 那边已经踩过一次了。
-        import shutil as _sh
-        for cand in ('gcc', 'cc', '/usr/bin/gcc', '/usr/local/bin/gcc'):
-            hit = _sh.which(cand) if os.sep not in cand else (
-                cand if os.path.exists(cand) else None)
-            if hit:
-                gcc = hit
-                break
-        if not gcc:
-            import glob as _g
-            hits = _g.glob(os.path.expandvars(
-                r'%LOCALAPPDATA%\Microsoft\WinGet\Packages'
-                r'\BrechtSanders*\mingw64\bin\gcc.exe'))
-            gcc = hits[0] if hits else None
+        # **找 gcc 的规则只有一个地方**（`by1paths.find_gcc`）。
+        # 这里原来是第二份手写实现；第三份在 by1e2e 里、而它抄漏了。
+        # 同一件事三份实现，坏的那份没人发现 —— 所以合成一处。
+        gcc = by1paths.find_gcc()
 
     print('=' * 78)
     print('  逃生舱第二层：IR 引用一个外部符号（.so + ABI）')

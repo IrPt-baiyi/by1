@@ -95,7 +95,6 @@ def need(by1file, kind='config'):
 
 def audit(files=None):
     """查一遍：哪些 .by1 缺 config / 缺张量清单。返回 [(名字, 缺什么)]。"""
-    import glob
     if files is None:
         files = by1paths.names()
     out = []

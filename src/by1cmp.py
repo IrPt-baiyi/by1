@@ -27,9 +27,7 @@
 
 用法:  python src/by1cmp.py [--md] [--only 属性名]
 """
-import glob
 import importlib.util
-import io
 import os
 import sys
 from collections import Counter, defaultdict

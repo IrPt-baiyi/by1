@@ -34,7 +34,6 @@ sp.loader.exec_module(bc)
 import by1codegen as cg
 import by1boot
 import by1io
-import by1paths
 
 
 def main():

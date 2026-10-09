@@ -250,7 +250,18 @@ def cmd_push(args):
     # 只用 git 里跟踪的文件 —— 把 25MB 的 refs/ 也传上去没意义
     r = subprocess.run(['git', 'ls-files'], capture_output=True, text=True,
                        cwd=by1paths.ROOT)
+    # **git 失败时不能照常打包。** 退出码非零的话 stdout 可能是空的，
+    # 于是打出一个**几乎空**的包、照样传上去 —— 而远端要到
+    # `tar xzf` 之后才发现。这里直接停，比传一个坏包便宜。
+    if r.returncode != 0:
+        print('  [FAIL] `git ls-files` 退出码 %d：%s'
+              % (r.returncode, (r.stderr or '').strip()[:120]))
+        print('         打包要靠它列文件 —— 没有清单就不打。')
+        return 1
     files = [f for f in r.stdout.split() if os.path.exists(os.path.join(by1paths.ROOT, f))]
+    if not files:
+        print('  [FAIL] `git ls-files` 返回 0 个文件 —— 不做空包')
+        return 1
     with tarfile.open(PKG, 'w:gz') as tf:
         for f in files:
             tf.add(os.path.join(by1paths.ROOT, f), arcname=f)

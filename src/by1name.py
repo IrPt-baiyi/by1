@@ -38,7 +38,6 @@
     python by1name.py            只报告
     python by1name.py --apply    真改
 """
-import io
 import os
 import re
 import subprocess

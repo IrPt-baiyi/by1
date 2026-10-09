@@ -1,0 +1,54 @@
+# 行尾规范化 —— **这个仓库以前没有这个文件，而它的 blob 是混的。**
+#
+# 实测（`git cat-file blob HEAD:<f>` 逐个数）：
+#
+#     带 CRLF 的 blob   114 个
+#     带 LF   的 blob   102 个
+#     一行 CRLF 一行 LF  1 个（.gitignore）
+#     本机 core.autocrlf = true
+#
+# 后果不是"编译不过"，而是更坏的一种：**在另一台机器上检出，
+# 每个文件都显示成改动过** —— 于是"这次改了什么"这个问题失去意义，
+# 而真正的改动淹在整文件 diff 里。`VERSION` 更糟：它是
+# `by1ver.py --write` 生成的，内容随平台变（见那里的注释）。
+#
+# 所以：**文本一律 LF**。Python / JSON / Markdown / shell 都不在乎，
+# 而在乎的那个（shell 脚本）恰恰一直是 LF。
+* text=auto eol=lf
+
+# ── 二进制：**别碰** ────────────────────────────────────────────────
+# refs/ 里的 JSON 是文本（要规范化），但权重和产物不是。
+*.bin    binary
+*.gguf   binary
+*.safetensors binary
+*.pt     binary
+*.pth    binary
+*.so     binary
+*.dll    binary
+*.dylib  binary
+*.exe    binary
+*.obj    binary
+*.o      binary
+*.pdb    binary
+*.png    binary
+*.jpg    binary
+*.jpeg   binary
+*.gif    binary
+*.zip    binary
+*.gz     binary
+*.tar    binary
+
+# ── 显式点名那几个"必须 LF"的 ──────────────────────────────────────
+# `* text=auto` 已经涵盖了，但这两类值得单独写出来：
+# shell 脚本在 Windows 上检出成 CRLF 会直接跑不起来
+# （`bad interpreter: No such file or directory`），
+# 而 `.by1` 是数据的真相源，diff 要能一行一行读。
+*.sh     text eol=lf
+*.by1    text eol=lf
+*.py     text eol=lf
+*.json   text eol=lf
+*.md     text eol=lf
+*.tsv    text eol=lf
+*.c      text eol=lf
+*.toml   text eol=lf
+VERSION  text eol=lf

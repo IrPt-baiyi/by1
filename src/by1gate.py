@@ -23,7 +23,11 @@ sp = importlib.util.spec_from_file_location(
 bc = importlib.util.module_from_spec(sp)
 sp.loader.exec_module(bc)
 import by1codegen as cg
-import by1paths
+# **这个 import 是为副作用**：`by1paths` 拉进 `by1io`，而 `by1io` 在
+# import 时把 stdout/stderr 钉成 UTF-8。这个脚本用 `sys.exit(main())` 出口，
+# 在一个非 UTF-8 的控制台上，判定行会打不出来（见 by1io 的 `force_utf8_stdio`）。
+# 所以它不能删 —— `# noqa` 是给"看起来没用、其实有用"留的写法。
+import by1paths  # noqa: F401
 
 # (文件, 是否应当接受, 拒绝理由里应当出现的字样, 为什么)
 CASE = [

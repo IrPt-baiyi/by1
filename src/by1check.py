@@ -18,10 +18,19 @@ import re
 import sys
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Tuple, Any
-import contextlib
 
-import by1io          # **import 它就够** —— 它在 import 时把 stdout 钉成 UTF-8
+import by1io          # noqa: F401  —— import 它就够：它在 import 时钉 UTF-8
 import by1paths
+
+#: **"这个 field 映射指不到东西"的占位符。**
+#
+# 产出方（`lookup_attr`）和判据（`--emit-config` 那段）**必须用同一个常量**。
+# 以前它们各写一份字面量：产出的是 `<找不到 ...>`，判的是 `startswith("<未解析")`
+# —— **永远匹配不上**，于是"字段引用了一个不存在的机制/属性"这条错误
+# 从来没有报过：配置里写进一个 `<找不到 NoSuchMech[].bar>` 的字符串，
+# 而 `by1check` 报 0 错误。两个意思一个常量，就不会再有"谁忘了改"。
+MISSING_PREFIX = "<找不到 "
+MISSING = MISSING_PREFIX + "%s[%s].%s>"
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -1545,8 +1554,25 @@ def check(path: str) -> Tuple[Report, dict]:
             # **按周期续**：官方 Step-3.7 的 layer_types 是 48 长、模型是 45 层，
             # 45/46/47 接着 4 周期的第 1/2/3 项（都是滑窗）。
             # 既不是"重复最后一个"（那会给出全量层），也不是补零。
+            #
+            # ## 上界原来写的是 `len(vals) // 2`
+            #
+            # 于是"最小周期 > 长度的一半"时找不到周期，退化成一律重复最后一个：
+            #
+            #     [full, sliding, full]        最小周期 3   <- 3//2 = 1，取不到 3
+            #     [A, B, A, B, A]              最小周期 2   <- 这个能取到（2 <= 2）
+            #
+            # 也就是说：**长度是奇数、而周期比一半大**时一定退化。
+            # 当前语料碰不到（Step-3.7 是 48 长、周期 4），所以这是个潜伏的错
+            # —— 而"没被碰到"不是"对"。
+            #
+            # 上界改成 `len(vals)` 就够：**找最小的那个匹配周期**。
+            # （我第一版顺手加了"只试长度自己的因子"，那是错的 ——
+            #  它会把 `[A,B,A,B,A]` 的最小周期从 2 改成 5，**改动了一个
+            #  旧实现本来就对的结果**。修 bug 别顺手改对的东西；
+            #  这处是 `by1check`，它决定"补什么"，改错没人看得出来。）
             per = None
-            for cand in range(1, len(vals) // 2 + 1):
+            for cand in range(1, len(vals) + 1):
                 if all(vals[i] == vals[i % cand] for i in range(len(vals))):
                     per = cand
                     break
@@ -1566,7 +1592,7 @@ def check(path: str) -> Tuple[Report, dict]:
         for c in scope.children:            # head / memory / residual 这类块
             if c.name == mech:
                 return _coerce(c.assigns.get(attr, ""))
-        return f"<找不到 {mech}[{sel}].{attr}>"
+        return MISSING % (mech, sel, attr)
 
     def gen_per_layer(key):
         """per_layer(q) / per_layer(attach.layer_kind) -> 逐层一个值。
@@ -1784,7 +1810,10 @@ def check(path: str) -> Tuple[Report, dict]:
             cfg_out[fname] = resolve_field(fval)
     for key, rule in emit_rules.items():
         for fname in rule.get("fields", {}):
-            if str(cfg_out.get(fname, "")).startswith("<未解析"):
+            # **判据和产出方共用一个常量。** 见文件头上 `MISSING` 那段：
+            # 这里原来写的是 `startswith("<未解析")`，而产出的是
+            # `<找不到 ...>` —— 一条永远为假的判断，也就是一个不会响的报警。
+            if str(cfg_out.get(fname, "")).startswith(MISSING_PREFIX):
                 rep.add(E, rule["line"], "config",
                         f"emit {key} 的字段 '{fname}' 的值无法解析：{cfg_out[fname]}")
 
@@ -2021,6 +2050,12 @@ def main(argv=None):
     emit_to = None
     if "--emit-config" in args:
         i = args.index("--emit-config")
+        if i + 1 >= len(args):
+            # **原来这里是 `args[i + 1]`** —— 少了路径就 IndexError，
+            # 一个 traceback 而不是一句用法。用法错误要长得像用法错误。
+            print("  --emit-config 后面要给一个输出路径：\n"
+                  "      python src/by1check.py --emit-config out.json <file.by1>")
+            return 2
         emit_to = args[i + 1]
         args = args[:i] + args[i + 2:]
     if not args:
@@ -2028,7 +2063,18 @@ def main(argv=None):
         return 2
 
     if emit_to:
-        _rep, info = check(args[0])
+        # **报告不能丢。** 原来这里是 `_rep, info = check(...)`，`_rep`
+        # 再也没被看过 —— 于是一个有 E 级错误的模型（比如 n_layer = 99
+        # 而实际 3 层）在 `--emit-config` 下**退出码 0、不打印任何诊断**，
+        # 还照样吐出一份写着 99 的 config。两条路必须同一个判据。
+        rep, info = check(args[0])
+        for sev, ln, code, msg in sorted(rep.items, key=lambda x: x[1]):
+            loc = f"{ln:>4}" if ln else "   -"
+            print(f"  [{sev}] {loc}  {msg}")
+        if rep.count(E):
+            print(f"\n  {rep.count(E)} 个错误 —— **不生成 config**："
+                  f"把错误写进去，下游看不出来")
+            return 1
         cfg = info.get("config") or {}
         if not cfg:
             print(f"{args[0]}: 没有 transformers.config 的 field 映射，无法生成")

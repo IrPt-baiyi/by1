@@ -30,7 +30,6 @@
        python by1index.py --report   # 只报告
 """
 import glob
-import io
 import json
 import os
 import struct

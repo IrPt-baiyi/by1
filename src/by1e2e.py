@@ -198,10 +198,12 @@ def main():
     if '--gcc' in sys.argv:
         gcc = sys.argv[sys.argv.index('--gcc') + 1]
     if not gcc:
-        hits = glob.glob(os.path.expandvars(
-            r'%LOCALAPPDATA%\Microsoft\WinGet\Packages'
-            r'\BrechtSanders*\mingw64\bin\gcc.exe'))
-        gcc = hits[0] if hits else None
+        # **原来是 `glob.glob(WinGet 路径)` 一条** —— 在 Linux 上永远
+        # 返回 None，于是上面那两行判定照跑，最后印出
+        # 「端到端：真产物 -> IR -> **三个后端** [PASS]」，
+        # 而 C 那一段**根本没跑**。这是本项目自己记为"最坏的一种绿"
+        # 的形态（见 by1all 的 `confirmed()`），只修了 by1all，没修这里。
+        gcc = by1paths.find_gcc()
 
     root, cfg_p, st_p = find_cached()
     if not cfg_p:
@@ -361,6 +363,13 @@ def main():
     print('     而且 PyTorch 侧同一份 IR 是 %.3e —— **两个后端读的是同一份 IR**'
           % dd2)
 
+    # **C 那一段要算数，不能只"编译成功"。**
+    # 判定行说的是"N 个后端"，那就得让 N 由**真的跑过的后端**数出来：
+    #   · 没有 gcc      -> 2 个（而且要明说这一项没验）
+    #   · 编不过 / 不支  -> 那也是 2 个，且判定必须是失败
+    #   · 跑起来         -> 3 个，并且**对着 NumPy 比数值**
+    # 以前这里 `if gcc:` 只印一行"编译成功"，判定行却恒定写"三个后端"。
+    n_back, c_fail, c_note = 2, False, ''
     if gcc:
         wd = by1paths.root('cgen-e2e')
         os.makedirs(wd, exist_ok=True)
@@ -372,16 +381,69 @@ def main():
             exe = os.path.join(wd, 'model.exe')
             r = subprocess.run([gcc, '-O2', '-o', exe, cp, '-lm'],
                                capture_output=True, text=True, timeout=300)
-            print('     C：%s' % ('编译成功' if r.returncode == 0
-                                  else '编译失败 ' + (r.stderr or '')[:80]))
+            if r.returncode != 0:
+                c_fail = True
+                c_note = '编译失败'
+                print('     C：编译失败 %s' % (r.stderr or '')[:80])
+            else:
+                # 真的把它跑起来，再和 NumPy 比 —— 只看"编译过了"
+                # 等于把一个可能算错的二进制记成验证通过。
+                #
+                # **token 数要从 shape 里取，不能 `len(ids)`。**
+                # `ids` 的形状是 `(1, seq)` —— `len()` 给的是**行数 1**，
+                # 于是 C 那边只算 1 个 token、只写 vocab 个数，而下面
+                # `got - out_n`（1×V 对 seq×V）**被 numpy 静默广播**，
+                # 报出一个 1.95 的"不一致"。一个自己写错的判据，
+                # 长得和"后端算错了"一模一样 —— 所以形状要显式对，不对就报。
+                ids_np = ids.numpy().astype(np.int32)
+                n_tok = int(ids_np.size)
+                flat = np.concatenate([params[p].ravel() for _m, p in order])
+                by1io.write_bytes(os.path.join(wd, 'w.bin'), flat.tobytes())
+                by1io.write_bytes(os.path.join(wd, 'ids.bin'),
+                                  ids_np.reshape(-1).tobytes())
+                rr = subprocess.run(
+                    [exe, str(n_tok), os.path.join(wd, 'w.bin'),
+                     os.path.join(wd, 'ids.bin'),
+                     os.path.join(wd, 'logits.bin')],
+                    capture_output=True, text=True, timeout=300)
+                if rr.returncode != 0:
+                    c_fail = True
+                    c_note = '运行失败'
+                    print('     C：运行失败 %s' % ((rr.stdout or '')
+                                                  + (rr.stderr or ''))[:80])
+                else:
+                    got = np.fromfile(os.path.join(wd, 'logits.bin'),
+                                      dtype=np.float32)
+                    # C 那边没有 batch 维，`out_n` 有（`(1, seq, vocab)`）——
+                    # 按总元素数对齐到 NumPy 的形状，**对不上就报，不 reshape 猜**。
+                    if got.size != out_n.size:
+                        c_fail = True
+                        c_note = ('元素数对不上 %d vs %d —— 不猜，直接判失败'
+                                  % (got.size, out_n.size))
+                        print('     C：%s' % c_note)
+                    else:
+                        got = got.reshape(out_n.shape)
+                        dc = np.abs(got - out_n).max() / max(
+                            np.abs(out_n).max(), 1e-30)
+                        n_back = 3
+                        if dc >= 1e-4:
+                            c_fail = True
+                        c_note = 'C↔NumPy 相对差 %.3e  %s' % (
+                            dc, '[一致]' if dc < 1e-4 else '[**不一致**]')
+                        print('     C：%s' % c_note)
         except SystemExit as e:
-            print('     C：[不支持] %s' % str(e).strip()[:70])
+            c_fail = True
+            c_note = '%s' % str(e).strip()[:70]
+            print('     C：[不支持] %s' % c_note)
 
     print()
-    ok = dd2 < 1e-4 and ddn < 1e-4
-    print('  [%s] 端到端：真产物 -> IR -> 三个后端 %s'
-          % ('PASS' if ok else 'FAIL',
-             '对得上官方实现' if ok else '还有对不上的'))
+    if not gcc:
+        print('     [注意] 这台机器上没有 gcc —— **C 后端这一项没验**')
+    ok = dd2 < 1e-4 and ddn < 1e-4 and not c_fail
+    print('  [%s] 端到端：真产物 -> IR -> %d 个后端 %s%s'
+          % ('PASS' if ok else 'FAIL', n_back,
+             '对得上官方实现' if ok else '还有对不上的',
+             ('（C 后端：%s）' % c_note) if c_note else ''))
     return 0 if ok else 1
 
 

@@ -22,6 +22,14 @@ import sys
 import numpy as np
 import by1io
 
+# **eps 的默认值只有一个地方写**（`by1ir.EPS_DEFAULT`）。
+# 这个文件里原来有 9 处 `1e-5`；C_HEAD 里那段"eps 必须由调用方传进来"
+# 的注释记的就是这一类 —— 而它当时没管住 `qk_norm()`。
+try:
+    from by1ir import EPS_DEFAULT as _DEFAULT_EPS
+except ImportError:                     # 单独拷一个文件出去时兜底
+    _DEFAULT_EPS = 1e-5
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 MANGLE = re.compile(r"[^0-9A-Za-z]")
 
@@ -500,22 +508,29 @@ static void apply_qg(float *o, const float *gt, int n, int nq) {
         o[i] *= 1.f / (1.f + expf(-gt[i]));
 }
 
-/* qk_norm：按头做 RMSNorm，在 RoPE 之前 */
+/* qk_norm：按头做 RMSNorm，在 RoPE 之前。
+ *
+ * **eps 由调用方传进来。** 这里原来是写死的 `1e-5f` —— 而
+ * `RMS_EPS` 这个宏上面已经按 `ir["norm_eps"]` 生成好了，
+ * 也就是说**同一个文件里有两套 eps**：一处读 IR、一处写死。
+ * clef-tiny 的 qk_norm 是 per_head、norm_eps 是 1e-6，
+ * 于是 C 和 by1codegen 对同一份 IR 给出不同的 q/k。
+ * 相对差只有 1.05e-05 —— **低于 1e-4 的判据，所以三个后端互拍是绿的。 */
 static void qk_norm(float *q, float *k, const float *qn, const float *kn,
-                    int n, int nh, int nkv, int hd, int one_plus) {
+                    int n, int nh, int nkv, int hd, int one_plus, float eps) {
     for (int t = 0; t < n; t++) {
         for (int h = 0; h < nh; h++) {
             float *v = q + ((size_t)t * nh + h) * hd;
             float s = 0.f;
             for (int i = 0; i < hd; i++) s += v[i] * v[i];
-            s = 1.f / sqrtf(s / hd + 1e-5f);
+            s = 1.f / sqrtf(s / hd + eps);
             for (int i = 0; i < hd; i++) v[i] *= s * (one_plus ? (1.f + qn[i]) : qn[i]);
         }
         for (int h = 0; h < nkv; h++) {
             float *v = k + ((size_t)t * nkv + h) * hd;
             float s = 0.f;
             for (int i = 0; i < hd; i++) s += v[i] * v[i];
-            s = 1.f / sqrtf(s / hd + 1e-5f);
+            s = 1.f / sqrtf(s / hd + eps);
             for (int i = 0; i < hd; i++) v[i] *= s * (one_plus ? (1.f + kn[i]) : kn[i]);
         }
     }
@@ -946,7 +961,7 @@ def _emit_c_body(ir, params):
     # 而 clef-tiny / mla-shaped 的 `norm_eps` 是 1e-6。
     # 一个 `.get(不存在的键, 默认值)` 就是这类的经典长相：
     # 它不报错、不警告，只是**永远走默认那条路**。
-    lines.append("#define RMS_EPS %sf" % float(ir.get("norm_eps", 1e-5)))
+    lines.append("#define RMS_EPS %sf" % float(ir.get("norm_eps", _DEFAULT_EPS)))
     _hids = [o["attrs"]["hidden"] for L in ir["layers"] for o in L["ops"]
              if o["kind"] in ("FFN", "MoE")]
     lines.append("#define HID_MAX %d" % (max(_hids) if _hids else 1))
@@ -989,7 +1004,7 @@ def _emit_c_body(ir, params):
                 # **按 kind 分派。** 以前无条件发 rmsnorm() ——
                 # 也就是把 LayerNorm 当 RMSNorm 算（少了减均值和 bias）。
                 # 见 C_HEAD 里 layernorm 的注释。
-                _eps = float(a.get("eps", 1e-5))
+                _eps = float(a.get("eps", _DEFAULT_EPS))
                 _op = 1 if a.get("one_plus") else 0
                 if str(a.get("kind", "rms")).lower() == "layer":
                     lb.append(
@@ -1013,9 +1028,13 @@ def _emit_c_body(ir, params):
                 lb.append(f" {B}(kk, {src[0]}, P({key(i,j,'wk')}){BA('wk')}, n, D, {nkv*hd});")
                 lb.append(f" {B}(vv, {src[0]}, P({key(i,j,'wv')}){BA('wv')}, n, D, {nkv*hd});")
                 if _qk_on(a.get("qk_norm")):
+                    # **eps 传 IR 里的那个**（宏也是按它生成的）——
+                    # 这一行以前没有，于是 qk_norm 里那个写死的 1e-5f
+                    # 和 IR 说的 norm_eps 可以不一致，而没人发现。
                     lb.append(f" qk_norm(q, kk, P({key(i,j,'qn.w')}),"
                               f" P({key(i,j,'kn.w')}), n, {nh}, {nkv}, {hd},"
-                              f" {1 if a.get('norm_one_plus') else 0});")
+                              f" {1 if a.get('norm_one_plus') else 0},"
+                              f" {float(a.get('norm_eps', _DEFAULT_EPS))}f);")
                 _y = a.get("yarn") or {}
                 _ty = _y.get("type") or "yarn"
                 # llama3 的 attention_factor 恒为 1.0，别跟着 YaRN 的公式算
@@ -1096,7 +1115,7 @@ def _emit_c_body(ir, params):
                     f" P({key(i,j,'kv_a_layernorm.w')}),"
                     f" P({key(i,j,'kv_b_proj')}), P({key(i,j,'dense')}),"
                     f" {'P(' + key(i,j,'g_proj') + ')' if hg else 'NULL'},"
-                    f" {float(a.get('norm_eps', 1e-5))}f,"
+                    f" {float(a.get('norm_eps', _DEFAULT_EPS))}f,"
                     f" {1 if a.get('norm_one_plus') else 0},"
                     f" {float(a['rope_base'])}f,"
                     f" {0 if a.get('pairing') == 'half' else 1},"

@@ -27,6 +27,14 @@ import sys
 
 import numpy as np
 
+# **eps 的默认值只有一个地方写**（`by1ir.EPS_DEFAULT`）。
+# 这个文件里原来有 11 处 `1e-5`；那些形状本身没错，
+# 错在"哪一处漏了传参"没有结构性征兆 —— 见 by1ir 里那段注释。
+try:
+    from by1ir import EPS_DEFAULT as _DEFAULT_EPS
+except ImportError:                     # 单独拷一个文件出去时兜底
+    _DEFAULT_EPS = 1e-5
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -144,9 +152,9 @@ def op_norm(P, a, ins, d):
     # **按 kind 分派。** 以前无条件走 rms —— `kind` 这个属性
     # 在 IR 里一直有，这个后端从来没读它。
     if a.get("kind") == "layer":
-        return layer_norm(ins[0], P["w"], P.get("b"), a.get("eps", 1e-5),
+        return layer_norm(ins[0], P["w"], P.get("b"), a.get("eps", _DEFAULT_EPS),
                           a.get("one_plus", False))
-    return rms_norm(ins[0], P["w"], a.get("eps", 1e-5),
+    return rms_norm(ins[0], P["w"], a.get("eps", _DEFAULT_EPS),
                     a.get("one_plus", False))
 
 
@@ -184,8 +192,18 @@ def op_attention(P, a, ins, d):
         v = v.reshape(b, n, a["kv"], a["head_dim"]).transpose(0, 2, 1, 3)
     k = kraw
     if _qk_on(a.get("qk_norm")):
-        q = rms_norm(q, P["qn.w"], one_plus=a.get("norm_one_plus", False))
-        k = rms_norm(k, P["kn.w"], one_plus=a.get("norm_one_plus", False))
+        # **eps 必须传，不能吃默认参数。**
+        # 这里原来调 `rms_norm(q, P["qn.w"], one_plus=...)` —— **不传 eps**，
+        # 于是吃 `rms_norm` 的默认 1e-5。而 by1codegen 那边读的是
+        # `a.get("norm_eps", _DEFAULT_EPS)`。clef-tiny 的 qk_norm 是 per_head、
+        # norm_eps 是 1e-6 —— **同一份 IR，两个后端两个答案**
+        # （相对差 1.05e-05，低于 1e-4 判据所以一直绿）。
+        # 这正是 by1c 的 C_HEAD 里记着"犯过五次"的那一类。
+        _qeps = float(a.get("norm_eps", _DEFAULT_EPS))
+        q = rms_norm(q, P["qn.w"], eps=_qeps,
+                     one_plus=a.get("norm_one_plus", False))
+        k = rms_norm(k, P["kn.w"], eps=_qeps,
+                     one_plus=a.get("norm_one_plus", False))
     hd, part = a["head_dim"], a.get("rope_partial", 1.0)
     # **`rope` 是一个开关，不是一个常量。**
     # 这一段以前无条件转 —— 而 GPT-2 的 `rope = false`
@@ -253,7 +271,7 @@ def op_mla(P, a, ins, d):
     nh, nope, nr = a["q"], a["qk_nope"], a["qk_rope"]
     vd, kvl = a["v_dim"], a["kv_lora"]
     _op = a.get("norm_one_plus", False)
-    _eps = a.get("norm_eps", 1e-5)
+    _eps = a.get("norm_eps", _DEFAULT_EPS)
 
     q = rms_norm(x @ P["q_a_proj"].T, P["q_a_layernorm.w"], _eps, _op)
     q = (q @ P["q_b_proj"].T).reshape(b, n, nh, nope + nr).transpose(0, 2, 1, 3)
@@ -446,7 +464,7 @@ def op_linear(P, a, ins, d):
         out[:, :, i] = (st * q[:, :, i][..., None]).sum(-2)
     out = out.transpose(0, 2, 1, 3).reshape(b, s, nv, dv)
     var = out.astype(np.float64).__pow__(2).mean(-1, keepdims=True)
-    y = out * (1.0 / np.sqrt(var + a.get("norm_eps", 1e-5)))
+    y = out * (1.0 / np.sqrt(var + a.get("norm_eps", _DEFAULT_EPS)))
     y = (P["norm.w"] * y) * silu(z)
     return y.reshape(b, s, vd) @ P["out_proj"].T
 
@@ -631,7 +649,7 @@ class Exec:
         # eps 写死在某个地方，平时看不出来 —— 因为大多数模型的 eps
         # 恰好就是 1e-5。llama-shaped 和 gpt2-tiny 都是 1e-5，
         # 所以它们一直是绿的，**只有偏离默认值的模型才露出来**。
-        _eps = float(self.ir.get("norm_eps", 1e-5))
+        _eps = float(self.ir.get("norm_eps", _DEFAULT_EPS))
         if self.ir.get("norm_kind") == "layer":
             x = layer_norm(x, self.params_global("final_norm.w"),
                            self.params_global("final_norm.b"),

@@ -130,6 +130,12 @@ def main():
         r = subprocess.run([sys.executable, 'by1all.py', '--quick'],
                            capture_output=True, text=True, encoding='utf-8',
                            errors='replace', timeout=1800)
+        # **判据是"输出里的数"，那也得先确认这次跑成功了。**
+        # 退出码非零时 stdout 里照样可能有数（前面的项先印了），
+        # 于是"统计出来的分布"会被读成一个成功的运行。
+        if r.returncode != 0:
+            print('     （by1all --quick 退出码 %d —— 统计不作数）'
+                  % r.returncode)
         got = re.findall(r'相对\s*([\d.]+e[-+]\d+)', r.stdout)
         vals = sorted(float(x) for x in got)
         print('     --quick 里报出的相对差 %d 个' % len(vals))
@@ -173,6 +179,16 @@ def main():
             r = subprocess.run(cmd, capture_output=True,
                                text=True, encoding='utf-8',
                                errors='replace', timeout=600)
+            # **非零退出码不能当成"内容对不上"。**
+            # 生成器的退出码非零时 stdout 往往是空的，而空字符串
+            # 和文件内容一比就是"不一致" —— 于是这条检查会**报一个假的不一致**，
+            # 把一个真问题（这个生成器坏了）伪装成一个假问题（忘了重新生成）。
+            # 两种结论必须分清，这正是 by1skip 存在的理由。
+            if r.returncode != 0:
+                print('     %-14s （生成器退出码 %d，这次比不了）：%s'
+                      % (gen, r.returncode,
+                         ((r.stdout or '') + (r.stderr or '')).strip()[:40]))
+                continue
             same = (r.stdout.strip() ==
                     by1io.read_text(gen_p, encoding='utf-8').strip())
             print('     %-14s 和 `%s` %s'

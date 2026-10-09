@@ -73,6 +73,20 @@ py-modules = [
 version = { file = "VERSION" }
 
 [tool.setuptools.package-data]
-# `ext-demo.c` 跟着代码走 —— `by1extdemo.py` 要在它旁边编译。
-# `*.by1` 在 `models/` 下，不是包数据。
-"*" = ["*.c"]
+# ⚠️ **这一段是空的，而且改不成有用的。**
+#
+# 它原来写的是 `"*" = ["*.c"]`，注释说"ext-demo.c 跟着代码走" ——
+# 而实测（`pip wheel` 之后看 wheel 里的 payload）：**一个 .c 都没有**。
+# 原因：`package-data` 只挂在 **package** 上，而这个项目
+# **一个 package 都没有**（只有 `py-modules`），所以 `"*"` 谁都不匹配。
+# 留着它是为了让"这里出现过 *.c"不再被读成"这件事已经处理过了"。
+#
+# 真正把它装进去的是下面的 `data-files`。
+"*" = []
+
+[tool.setuptools.data-files]
+# **`ext-demo.c` 是 `by1extdemo.py` 的输入** —— 装完不能没有它。
+# 空键 = 安装前缀那一级（实测 `pip install` 之后落在 venv 根）。
+# 这是 `py-modules` 项目里唯一能让非 .py 文件进 wheel 的办法；
+# `by1extdemo._find_src()` 会把这几个布局都找一遍。
+"" = ["src/ext-demo.c"]

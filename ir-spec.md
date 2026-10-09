@@ -32,9 +32,9 @@ python src/by1irentry.py                    # 三个后端只从 IR 跑
 | `vocab` | `int` | 是 | 词表大小 |
 | `ctx` | `int` | 是 | 上下文长度（位置能达到的最大值） |
 | `d_model` | `int` | 是 | 残差流宽度 |
-| `pos_kind` | `enum` | 是 | 位置信息的种类。`rope`=在注意力里旋转；`learned`=在输入上加一张查表。**这两件事不一样**，所以是一个字段而不是一个布尔。 |
+| `pos_kind` | `enum:rope,learned` | 是 | 位置信息的种类。`rope`=在注意力里旋转；`learned`=在输入上加一张查表。**这两件事不一样**，所以是一个字段而不是一个布尔。 |
 | `n_pos` | `int` | 否 | pos_kind=learned 时必填：查表有多少行 |
-| `norm_kind` | `enum` | 是 | 归一化的种类。`rms`=只除均方根；`layer`=减均值+除标准差+有 bias。**名字像，算的不是一回事。** |
+| `norm_kind` | `enum:rms,layer` | 是 | 归一化的种类。`rms`=只除均方根；`layer`=减均值+除标准差+有 bias。**名字像，算的不是一回事。** |
 | `norm_eps` | `float` | 是 | 归一化的 eps。**必须来自这里，不许各后端写死**（这个 bug 犯过三次） |
 | `norm_one_plus` | `bool` | 是 | 归一化权重是乘 `w` 还是乘 `(1+w)` |
 | `globals` | `list[Op]` | 是 | 不属于任何层的算子（embed / final_norm / head） |
@@ -53,7 +53,7 @@ python src/by1irentry.py                    # 三个后端只从 IR 跑
 
 | 字段 | 类型 | 必填 | 语义 |
 |---|---|---|---|
-| `kind` | `enum` | 是 | 算子种类，**闭集** —— 见 KIND_ATTRS |
+| `kind` | `str` | 是 | 算子种类，**闭集** —— 见 KIND_ATTRS |
 | `mech` | `str` | 是 | 机制名（.by1 里写的那个名字）。只用于报错和取名 |
 | `attrs` | `dict` | 是 | 属性。**每种 kind 有自己的必填项** —— 见 KIND_ATTRS |
 | `inputs` | `list[str]` | 是 | 输入的值引用（`hidden` 或 `opN.out`） |
@@ -65,11 +65,12 @@ python src/by1irentry.py                    # 三个后端只从 IR 跑
 
 | 字段 | 类型 | 必填 | 语义 |
 |---|---|---|---|
-| `kind` | `enum` | 是 | recurrent / conv_history / kv_cache / declared_by_impl |
+| `kind` | `enum:recurrent,conv_history,kv_cache,declared_by_impl` | 是 | recurrent / conv_history / kv_cache / declared_by_impl |
 | `bounded_by` | `int?` | 是 | 状态有没有上界。None 表示无界，不是「没有」 |
 | `shape` | `list[int]?` | 否 | 状态张量的形状 |
-| `dtype` | `str?` | 否 | 状态存什么精度 |
-| `reuse` | `enum` | 是 | none / prefix / unknown —— 能不能跨请求复用 |
+| `dtype` | `str?` | 否 | 状态存什么精度（`bf16` / `fp32` …） |
+| `reuse` | `enum:none,prefix,unknown` | 是 | none / prefix / unknown —— 能不能跨请求复用 |
+| `note` | `str?` | 否 | 自由说明（人看的，不参与计算） |
 
 ## 每种算子的属性
 
@@ -222,4 +223,3 @@ python src/by1irentry.py                    # 三个后端只从 IR 跑
 - **`by1-ir` 是必填的。** 没有版本号的 IR 不该被接受：
   读的一方无从判断自己理解的是哪一版。大版本不匹配直接拒，
   不做兼容猜测。
-

@@ -43,6 +43,27 @@ try:
 except ImportError:                     # 单独拷一个文件出去时兜底
     VERSION = "1.0"
 
+#: **归一化 eps 的默认值 —— 唯一一处。**
+#
+# 这个数字原来在 10 个文件里写了约 50 次（`ir.get("norm_eps", 1e-5)`
+# 这种形状），而**每一次"某一个后端写死了它"都是同一个 bug**：
+# `history/ir.md` 数过，`eps` 这一类**犯过五次**，第五次是护栏自己
+# 逼出来的。`by1c` 的 C_HEAD 里还留着那次的注释：
+#
+#     /* eps 必须由调用方传进来 —— 原来写死 1e-5，而 mla-shaped 的
+#        rms_eps 是 1e-6。误差 1.5e-04，而其它四个模型恰好都是 1e-5
+#        所以一直没露。 */
+#
+# 而**那句话没管住 qk_norm 那条路**：`by1exec` 调 `rms_norm` 时
+# 不传 eps（吃默认参数），`by1c` 的 `qk_norm()` 里直接写 `1e-5f`
+# —— 于是 clef-tiny（`qk_norm = per_head`、`norm_eps = 1e-6`）
+# 在三个后端里算出三个不同的值，相对差 1.05e-05，
+# **低于 1e-4 的判据所以一直是绿的**。
+#
+# 默认值本身不是错（大多数模型确实是 1e-5）；错的是**它被写了 50 遍**，
+# 于是"哪一处漏了传参"永远只有出事之后才知道。现在它是一个名字。
+EPS_DEFAULT = 1e-5
+
 # ── 顶层字段 ────────────────────────────────────────────────────────
 # (名字, 类型, 必填, 说明)
 TOP = [
@@ -50,11 +71,16 @@ TOP = [
     ("vocab", "int", True, "词表大小"),
     ("ctx", "int", True, "上下文长度（位置能达到的最大值）"),
     ("d_model", "int", True, "残差流宽度"),
-    ("pos_kind", "enum", True,
+    # **闭集要写在类型里，不能只写 `enum`。**
+    # 这里原来是裸的 `"enum"`，而 `_ty` 只认 `enum:...`（带冒号）——
+    # 于是这两个字段**从来没有被校验过**：`pos_kind = BANANA` 一路通到
+    # 后端，而后端判的是 `== "learned"`，非法值静默落回 rope。
+    # 同一个形状的漏洞还有 STATE.kind / STATE.reuse / STATE.dtype。
+    ("pos_kind", "enum:rope,learned", True,
      "位置信息的种类。`rope`=在注意力里旋转；`learned`=在输入上加一张查表。"
      "**这两件事不一样**，所以是一个字段而不是一个布尔。"),
     ("n_pos", "int", False, "pos_kind=learned 时必填：查表有多少行"),
-    ("norm_kind", "enum", True,
+    ("norm_kind", "enum:rms,layer", True,
      "归一化的种类。`rms`=只除均方根；`layer`=减均值+除标准差+有 bias。"
      "**名字像，算的不是一回事。**"),
     ("norm_eps", "float", True, "归一化的 eps。**必须来自这里，不许各后端写死**"
@@ -72,7 +98,9 @@ LAYER = [
 ]
 
 OP = [
-    ("kind", "enum", True, "算子种类，**闭集** —— 见 KIND_ATTRS"),
+    # `kind` 的闭集是 `KIND_ATTRS` 的键（见下面的表），所以这里用 `str`：
+    # 真正的判定在 `_check_op` 里对着那张表做，一处定义。
+    ("kind", "str", True, "算子种类，**闭集** —— 见 KIND_ATTRS"),
     ("mech", "str", True, "机制名（.by1 里写的那个名字）。只用于报错和取名"),
     ("attrs", "dict", True, "属性。**每种 kind 有自己的必填项** —— 见 KIND_ATTRS"),
     ("inputs", "list[str]", True, "输入的值引用（`hidden` 或 `opN.out`）"),
@@ -80,11 +108,17 @@ OP = [
 ]
 
 STATE = [
-    ("kind", "enum", True, "recurrent / conv_history / kv_cache / declared_by_impl"),
+    ("kind", "enum:recurrent,conv_history,kv_cache,declared_by_impl", True,
+     "recurrent / conv_history / kv_cache / declared_by_impl"),
     ("bounded_by", "int?", True, "状态有没有上界。None 表示无界，不是「没有」"),
     ("shape", "list[int]?", False, "状态张量的形状"),
-    ("dtype", "str?", False, "状态存什么精度"),
-    ("reuse", "enum", True, "none / prefix / unknown —— 能不能跨请求复用"),
+    ("dtype", "str?", False, "状态存什么精度（`bf16` / `fp32` …）"),
+    ("reuse", "enum:none,prefix,unknown", True,
+     "none / prefix / unknown —— 能不能跨请求复用"),
+    # **_spec 里漏了它，而生产者在写。** 4 处（mla-shaped 的压缩潜向量）。
+    # 一个"规格比现实窄"的字段会把合法 IR 判成非法 —— 而这正是
+    # 加"多余字段"检查时冒出来的：先照现实补规格，再让检查成立。
+    ("note", "str?", False, "自由说明（人看的，不参与计算）"),
 ]
 
 # ── 每种算子的属性 ──────────────────────────────────────────────────
@@ -242,6 +276,11 @@ def _ty(name, t, v):
         return None if isinstance(v, bool) else "%s 应当是布尔，实际 %r" % (name, v)
     if t == "str":
         return None if isinstance(v, str) and v else "%s 应当是非空字符串" % name
+    # **`str?` 以前不存在。** 它掉到最后那行 `return None` = 接受，
+    # 于是 `STATE.dtype = {"not": "a string"}` 是"合法 IR"。
+    if t == "str?":
+        return None if v is None or (isinstance(v, str) and v) else \
+            "%s 应当是非空字符串或 null，实际 %r" % (name, v)
     if t == "dict":
         return None if isinstance(v, dict) else "%s 应当是字典" % name
     if t == "dict?":
@@ -251,10 +290,39 @@ def _ty(name, t, v):
             return None if v is None or isinstance(v, list) else \
                 "%s 应当是列表或 null" % name
         return None if isinstance(v, list) else "%s 应当是列表" % name
+    # **不认识的类型字符串 = 这张表自己写错了。**
+    # 原来这里是 `return None`（接受），于是一个拼错的类型名会
+    # **静默地把那个字段变成不校验** —— 这就是 `enum` 丢掉闭集的那次。
+    # 规格表自己坏了必须出声，不能变成"这个字段没规矩"。
+    return ("%s: 规格表里的类型 <%s> 没人认识 —— "
+            "**这是 by1ir 自己的 bug，不是 IR 的**" % (name, t))
+
+
+def _keys_bad(where, obj, allowed):
+    """多余字段 -> 错误。**规格表是"合法的东西"的唯一定义。**
+
+    `_check_fields` 只从表往对象看（查必填、查类型），
+    **从不反着看** —— 于是 `attrs` 里塞一个谁都不认识的键，
+    `validate` 说合法，而 `.by1` 那边写错了属性的行为是"静默走默认值"。
+    规格文档里那句"不在表里的属性 = 不合法"以前没有执行者，这就是它。
+    """
+    extra = [k for k in obj if k not in allowed]
+    if extra:
+        return ("%s: 多出来的字段 %s —— **不在规格表里就是不合法的**"
+                % (where, ", ".join("`%s`" % k for k in sorted(map(str, extra)))))
     return None
 
 
 def _check_fields(where, fields, obj, errs):
+    """**先查类型，再查字段。** 顺序反了的话，一个 `layers=[42]`
+    会在 `_ty` 之前就撞上 `name not in obj`（int 不可迭代）而抛异常。"""
+    if not isinstance(obj, dict):
+        errs.append("%s 应当是字典，实际 %s" % (where, type(obj).__name__))
+        return
+    allowed = {name for name, _t, _r, _d in fields}
+    e = _keys_bad(where, obj, allowed)
+    if e:
+        errs.append(e)
     for name, t, req, _doc in fields:
         if name not in obj:
             if req:
@@ -266,7 +334,16 @@ def _check_fields(where, fields, obj, errs):
 
 
 def validate(ir):
-    """返回错误列表。**空列表 = 合法。**"""
+    """返回错误列表。**空列表 = 合法。**
+
+    ## 这份函数**不许抛异常**
+
+    它是对外入口的一半（`by1ir.py --check <file>.ir.json`），
+    而 [by1ir.py] 的模块说明里写着"有人可以直接写 IR"。
+    契约说"返回错误列表"，那畸形输入就得进列表 —— 以前
+    `layers = [42]` 会在这里抛 `TypeError`，而那个 traceback
+    长得像"by1ir 坏了"，不像"你的 IR 坏了"。
+    """
     errs = []
     if not isinstance(ir, dict):
         return ["IR 的顶层必须是字典"]
@@ -287,18 +364,24 @@ def validate(ir):
         for i, item in enumerate(ir[sec]):
             if sec == "globals":
                 _check_op("globals[%d]" % i, item, errs)
-            else:
-                w = "layers[%d]" % i
-                _check_fields(w, LAYER, item, errs)
-                for j, op in enumerate(item.get("ops") or []):
-                    _check_op("%s.ops[%d]" % (w, j), op, errs)
-                for k, st in enumerate(item.get("state") or []):
-                    _check_fields("%s.state[%d]" % (w, k), STATE, st, errs)
+                continue
+            w = "layers[%d]" % i
+            _check_fields(w, LAYER, item, errs)
+            if not isinstance(item, dict):
+                continue
+            ops = item.get("ops")
+            for j, op in enumerate(ops if isinstance(ops, list) else []):
+                _check_op("%s.ops[%d]" % (w, j), op, errs)
+            sts = item.get("state")
+            for k, st in enumerate(sts if isinstance(sts, list) else []):
+                _check_fields("%s.state[%d]" % (w, k), STATE, st, errs)
     return errs
 
 
 def _check_op(where, op, errs):
     _check_fields(where, OP, op, errs)
+    if not isinstance(op, dict):
+        return
     k = op.get("kind")
     # **跨字段的约束也要在这里查。** IR 现在是入口了 —— 有人可以直接写 IR，
     # 不经过 .by1。所以"编译器会拦"不再是理由：
@@ -315,12 +398,22 @@ def _check_op(where, op, errs):
         errs.append("%s: kind = <%s> 不在闭集 %s 里" % (where, k, KINDS))
         return
     spec = KIND_ATTRS[k]
+    attrs = op.get("attrs")
+    if not isinstance(attrs, dict):
+        errs.append("%s (%s): attrs 应当是字典，实际 %s"
+                    % (where, k, type(attrs).__name__))
+        return
+    # **反着也要查一遍**：规格表里没有的属性就是不合法的。
+    # 规格文档（`--spec` 出的那份）一直这么写着，但在这之前**没有执行者**。
+    e = _keys_bad("%s (%s) 的 attrs" % (where, k), attrs, set(spec))
+    if e:
+        errs.append(e)
     for name, (t, req, _doc) in spec.items():
-        if name not in (op.get("attrs") or {}):
+        if name not in attrs:
             if req:
                 errs.append("%s (%s) 的 attrs 缺必填项 `%s`" % (where, k, name))
             continue
-        e = _ty(name, t, op["attrs"][name])
+        e = _ty(name, t, attrs[name])
         if e:
             errs.append("%s (%s): %s" % (where, k, e))
 

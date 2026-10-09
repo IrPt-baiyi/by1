@@ -32,9 +32,7 @@ import time
 
 import numpy as np
 import torch
-import contextlib
 import by1io
-import by1paths
 import by1skip
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -51,13 +49,31 @@ def _cgroup_gb():
 
     `None` 表示"不知道"。调用方要自己分辨：
     **0 GB 和"不知道"是两件事，混在一起两个都不成立。**
+
+    ## 它以前读的是 `VERSION`
+
+    上面那段话是对的，而函数体里是：
+
+        for f in ('/sys/fs/cgroup/memory.max', ...):
+            with contextlib.suppress(OSError, ValueError):
+                v = int(by1io.read_text(by1paths.root('VERSION')).strip())
+
+    **循环变量 `f` 一次都没被用过** —— 读的是 `VERSION`，内容是
+    `0.9.0`，`int('0.9.0')` 抛 `ValueError`，被 `suppress` 吞掉。
+    于是这个函数**恒返回 `None`**（不是"偶尔读不到"），
+    而调用方 `'%.0f' % None` 当场 `TypeError`。
+
+    一个被 `suppress` 包住的错误 + 一个从不使用的循环变量，
+    合起来长得像一段正常代码。
     """
     for f in ('/sys/fs/cgroup/memory.max',
               '/sys/fs/cgroup/memory/memory.limit_in_bytes'):
-        with contextlib.suppress(OSError, ValueError):
-            v = int(by1io.read_text(by1paths.root('VERSION')).strip())
-            if v < 1 << 50:          # 不是 "max"
-                return v / 1e9
+        try:
+            v = int(by1io.read_text(f).strip())
+        except (OSError, ValueError):
+            continue
+        if v < 1 << 50:          # 不是 "max"
+            return v / 1e9
     return None
 
 
@@ -148,8 +164,14 @@ def main():
     torch.set_default_dtype(torch.bfloat16)
     print()
     print('  ③ 建模型（PyTorch 后端，**bf16**）')
-    print('     cgroup 上限 %.0f GB，权重占 %.0f GB，模型 %.0f GB'
-          % (_cgroup_gb(), _dirsize(root), npar_est(info) * 2 / 1e9))
+    # **`None` 要在这里处理掉。** `_cgroup_gb()` 的契约是
+    # "读不到返回 None"，而这里原来是 `'%.0f' % _cgroup_gb()` ——
+    # 于是"读不到"的那条路不是打印"不知道"，是 `TypeError` 崩掉。
+    # 一个返回值有第二种可能，调用方就得写出第二种分支。
+    _cg = _cgroup_gb()
+    print('     cgroup 上限 %s，权重占 %.0f GB，模型 %.0f GB'
+          % (('%.0f GB' % _cg) if _cg is not None else '**读不到**',
+             _dirsize(root), npar_est(info) * 2 / 1e9))
     t0 = time.time()
     ns = {}
     exec(compile(cg.render_ir(ir, by1f), '<ir>', 'exec'), ns)
