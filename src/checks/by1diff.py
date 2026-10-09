@@ -185,6 +185,16 @@ def main(argv=None):
             """
             return str(attn.get("rope_pairing") or "").lower() not in ("", "half")
 
+        def _qk_norm_style():
+            """这份声明带 qk_norm 吗 —— 带了就走 Qwen3 那一族。
+
+            和 `_qk_unsupported()` 是**同一件事的两面**：那个问
+            "Llama / Mixtral 表示得了吗"，这个问"那谁表示得了"。
+            答案只有 Qwen3（`q_norm` / `k_norm` 是它的内建层）。
+            """
+            _qn = str(attn.get("qk_norm") or "").lower()
+            return _qn not in ("", "off", "false", "0", "none")
+
         def _qk_unsupported():
             """**只有 Llama / Mixtral 的 HF 类没有 qk_norm 这一层。**
 
@@ -266,15 +276,28 @@ def main(argv=None):
                     "这份声明的东西，本脚本的参考实现表示不了："
                     "rope_pairing = %s，而 Llama 的 HF 类用 half 配对"
                     % attn.get("rope_pairing"))
-            if _qk_unsupported():
-                return by1skip.skip(
-                    "这份声明的东西，本脚本的参考实现表示不了："
-                    "注意力带 qk_norm=%s，而 Llama 的 HF 类里没有这一层"
-                    % attn.get("qk_norm"))
+            # **这里原来有一句 `_qk_unsupported()` 就跳过 —— 现在不用了。**
+            # 带 qk_norm 的稠密模型交给下面的 Qwen3 那一支（它的
+            # `q_norm` / `k_norm` 是内建层）。留在这里会把
+            # `minimind-3.by1` 挡在门外，而它正是唯一一个"加一族就能判"的。
             fa = ffn_op["attrs"]
-            cfg = T.LlamaConfig(intermediate_size=fa["hidden"], **common)
-            ref = T.LlamaForCausalLM(cfg).eval()
-            fam = "LlamaForCausalLM"
+            if _qk_norm_style():
+                # **带 qk_norm 的走 Qwen3 那一族。**
+                #
+                # 那是唯一一个"加一族就能多判一个真模型"的情况：
+                # `minimind-3.by1` 的单一位置、全 full 层、rms_eps 都对得上
+                # Llama 形状，**只差 `qk_norm = per_head`** ——
+                # 而 `T.Qwen3Config` 里 q_norm / k_norm 是内建的。
+                #
+                # （"多种位置"那一类不能这么办：那是**不同层用不同的位置
+                # 编码**，HF 里没有任何一个类表示得了 —— 见上面那段。）
+                cfg = T.Qwen3Config(intermediate_size=fa["hidden"], **common)
+                ref = T.Qwen3ForCausalLM(cfg).eval()
+                fam = "Qwen3ForCausalLM"
+            else:
+                cfg = T.LlamaConfig(intermediate_size=fa["hidden"], **common)
+                ref = T.LlamaForCausalLM(cfg).eval()
+                fam = "LlamaForCausalLM"
         else:
             # 到这个分支说明：机制组合我认不出该建哪个 HF 参考实现。
             # **按三态协议说"这台机器上没验"，不要说"验了不对"。**
