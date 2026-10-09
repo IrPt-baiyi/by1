@@ -290,9 +290,17 @@ def boot_ir(cfg, real, name="booted"):
             ops.append({"mech": "Attn", "kind": "Attention", "attrs": attrs,
                         "inputs": ["op0.out"], "outputs": ["op1.out"]})
         else:
-            # 认不出来 —— 说出来，不猜
+            # 认不出来 —— 说出来，不猜。
+            #
+            # **而且要说清楚是哪些张量没认出来。**
+            # 第一版只写了 `{"impl": "unknown"}` —— 于是 triage 能报
+            # "这个模型有 Raw"，但报不出**要加什么机制**。
+            # 那张"待办清单"就没了，而它才是这个流程唯一的产出。
+            #
+            # `ks` 是这一层的张量名，`classify()` 认不出的就在里面。
             ops.append({"mech": "Unknown", "kind": "Raw",
-                        "attrs": {"impl": "unknown"},
+                        "attrs": {"impl": "unknown",
+                                  "tensors": sorted(ks)},
                         "inputs": ["op0.out"], "outputs": ["op1.out"]})
         ops.append({"mech": "Add", "kind": "Add", "attrs": {},
                     "inputs": ["hidden", "op1.out"], "outputs": ["op2.out"]})

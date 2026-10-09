@@ -1,58 +1,49 @@
-加模型：config 和张量名都到手了，34/39 出真机制
+待办清单出来了，而结论是：**一个真新的机制都没有**
 
-## 这一轮的产出
+## 做了什么
 
-  refs/ 里现在 39 个 config + 41 份张量清单（全是免费抓的）
-  by1triage.py  一批 config 过 by1，看谁需要新原语
-  by1index.py   抓张量名清单
+by1boot 在 Raw 那条里**记下了张量名**（原来只写 {"impl": "unknown"}，
+于是 triage 能报"这个模型有 Raw"，但报不出**要加什么机制** ——
+而那张清单才是这个流程唯一的产出）。
 
-## 修了三个真 bug，每个都是"报错指向错的地方"
+triage 现在把认不出来的张量**跨模型合并、按模式分组**。
 
-① **嵌套 config。** 2026 那批把文本配置嵌在 text_config 里
-   （Qwen3.5 / Qwen3-VL / gemma4_unified / embedding_gemma2 / Qwen3-Omni）。
-   老一代是平的。不认它就等于新一代全部描述不了。
-   而且嵌的键不止一个：text_config / thinker_config / llm_config …
-   还有嵌两层的（Omni: thinker_config -> text_config）。
+## 结果：444 种模式，涉及 15 个模型
 
-② **张量清单只有名字，没有形状。**
-   by1boot 直接在 real[k]["shape"] 上取，22 个模型全炸在
-   TypeError: 'NoneType' object is not subscriptable ——
-   **那个报错完全看不出是"形状没有"，看起来像模型坏了。**
-   加了 _shape()：取不到返回 None，不炸。
-   正确做法不是"再去抓形状"，而是**名字够认机制，形状缺了就报猜的**。
+顶部那些（共享最多 = 看起来最该做）：
 
-③ **张量表名对不上。** 9 个报"空壳"，因为 refs/ 里的清单是早年
-   随手起的名字（step37 / laguna-xs-2.1 / nemotron）。
-   **显式表，不推断** —— 按名字猜已经失败过一次。
-   而我写表时又把"本来就对"的映射走了（mamba-130m-hf），
-   于是"本来就对"的那个反而找不到，报的还是假"空壳"。
+  model.visual.blocks.N.*                      8 个模型   视觉塔
+  model.language_model.layers.N.linear_attn.*  7 个模型   GDN
+  mtp.layers.N.self_attn.*                     6 个模型   MTP
 
-## 结果：34/39 出真机制
+## 而逐条查下来，全都已经有了
 
-  gpt-oss-20b            Add+Attention+MoE+Norm
-  gemma-4-26B-A4B        Add+Attention+MoE+Norm
-  Qwen3.8-Flash-Next     Add+Attention+MoE+Norm+Raw
-  Qwen3.5-397B-A17B      Add+Attention+MoE+Norm+Raw
-  Qwen3-VL-30B-A3B       Add+Attention+MoE+Norm
-  Qwen3-Omni-30B-A3B     Add+Attention+MoE+Norm
-  GLM-4.7-Flash          Add+FFN+MoE+Norm+Raw
-  embeddinggemma-2       Add+Attention+FFN+Norm
+  visual.blocks        clef.by1 早就当"盖不到"报着（不是不认，是明确报出来）
+  linear_attn (GDN)    **Linear kind 早就在 IR 里**
+  mtp.layers           qwen38.by1 早就处理
+  mlp_hyper_connection **GLM-5.3-Flash.by1 第 123 行就有**
+  self_attn.indexer    **同一个文件也有**（indexer.* 的契约都写好了）
 
-**而 `Raw` 出现的地方才是要干活的地方** —— 那是没认出来的张量。
-下一版 triage 应该把它们**列出来**，那才是真正的待办清单。
+**所以缺的不是"机制"，是 boot_ir 的识别规则。**
 
-**精英怪已经露头**：
-  LLaDA2.2-flash         Add+FFN+MoE+Norm+Raw   **没有 Attention**（扩散）
-  Ling-3.0-tiny          Add+FFN+MoE+Norm+Raw   KDA
-  DeepSeek-V4.1-Flash    Add+MoE+Norm+Raw       **没有 Attention 认出来**
+  by1 的 IR 有 11 种 kind：
+    Add Attention Embed External FFN Head Linear MLA MoE Norm Raw
+  boot_ir 也能认 Linear / MLA / MoE / FFN / Attention。
+  但它认不出 `model.language_model.layers.N.linear_attn.*` 这种**前缀** ——
+  而 clef 的手写 .by1 认得，因为那是人手写的。
 
-## 还剩 5 个
+## 这对"加大量模型"意味着什么
 
-  amd_Instella-MoE-16B-A3B   config 本身就是坏的（不是目标）
-  mamba-130m-hf              假"空壳"（张量表匹配）
-  nerkyor_* / stepfun-ai_*   int() 报错 —— 还有没打到的取形状处
+**工作量比看上去小得多。**
+不是往 IR 里加 kind（那些早就在了），而是**扩 boot_ir 的识别规则** ——
+那是机械活，而且是本地的，不烧显卡。
 
-## 用户的完整目标（还没做的）
+## 一个诚实的保留
 
-  1. 加入大量模型及其技术      <- 进行中，34/39 出机制
-  2. **支持量化**              <- 完全没开始
+`indexer` 在 GLM-5.3 和 Qwen3.8-Flash-Next 里**名字一样，但没验证过是不是同一个东西**。
+名字相同不等于机制相同 —— 这个项目里吃过好几次这种亏。
+
+## 下一步
+
+  ① 扩 boot_ir 的识别规则（本地、免费）
+  ② **支持量化** —— 完全没开始
