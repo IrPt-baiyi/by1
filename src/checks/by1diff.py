@@ -141,115 +141,160 @@ def main(argv=None):
     # **假绿的反面是假红，而假红同样会让人忽略这个检查。**
     #
     # 判据从 IR 来 —— 它自己声明了这些。
-    _hp = info.get("hparams") or {}
-    _why = []
-    _act = str(_hp.get("act") or "").lower()
-    if _act and _act not in ("silu", "swiglu", "silu_and_mul"):
-        _why.append("FFN 激活是 %s（这几个参考实现都用 silu）" % _act)
-    _nk = str(_hp.get("norm_kind") or "").lower()
-    if _nk and _nk not in ("rmsnorm", "rms"):
-        _why.append("归一化是 %s（参考实现用 RMSNorm）" % _nk)
-    elif "ln_eps" in _hp and "rms_eps" not in _hp:
-        _why.append("声明的是 ln_eps（LayerNorm）而不是 rms_eps")
-    if len(info.get("position") or {}) > 1:
-        _why.append("声明了不止一种位置（%s）—— 说明有逐层不同的排法"
-                    % ", ".join(sorted(info.get("position") or {})))
-    if _why:
-        return by1skip.skip("这份声明的东西，本脚本的参考实现表示不了：%s"
-                            % "；".join(_why))
+    # **建参考实现要按真实维度分配内存。** 35B / 120B 在这台机器上
+    # 建不出来 —— 那不是"算错了"，是"验不了"。
+    #
+    # （`by1gpu.py` 在没显卡的机器上就是这么做的：走 `by1skip`，
+    #   而报告里一直印着「-- by1gpu.py [跳过]」。**先说没验，再说别的。**）
+    #
+    # 只认内存那一种 `RuntimeError`（按消息判），别的原样抛 ——
+    # 把 `RuntimeError` 全归成跳过会把真错误一起吞掉。
+    try:
+        _hp = info.get("hparams") or {}
+        _why = []
+        _act = str(_hp.get("act") or "").lower()
+        if _act and _act not in ("silu", "swiglu", "silu_and_mul"):
+            _why.append("FFN 激活是 %s（这几个参考实现都用 silu）" % _act)
+        _nk = str(_hp.get("norm_kind") or "").lower()
+        if _nk and _nk not in ("rmsnorm", "rms"):
+            _why.append("归一化是 %s（参考实现用 RMSNorm）" % _nk)
+        elif "ln_eps" in _hp and "rms_eps" not in _hp:
+            _why.append("声明的是 ln_eps（LayerNorm）而不是 rms_eps")
+        if len(info.get("position") or {}) > 1:
+            _why.append("声明了不止一种位置（%s）—— 说明有逐层不同的排法"
+                        % ", ".join(sorted(info.get("position") or {})))
+        if _why:
+            return by1skip.skip("这份声明的东西，本脚本的参考实现表示不了：%s"
+                                % "；".join(_why))
 
-    def _qk_unsupported():
-        """**只有 Llama / Mixtral 的 HF 类没有 qk_norm 这一层。**
+        def _pairing_unsupported():
+            """**只有 Llama / Mixtral 的 HF 类用 half 配对。**
 
-        Qwen3Next（`T.Qwen3NextConfig`）和 gpt-oss 自己的类里都有 ——
-        所以这一条不能放进全局守卫：拦了它就会把 `qwen3-next-shaped`
-        从 ok 变成 skip，而那是**误伤真绿**（上一版就是这么错的）。
-        """
-        _qn = str(attn.get("qk_norm") or "").lower()
-        return _qn not in ("", "off", "false", "0", "none")
+            `rope_pairing` 的 interleaved / half 就是这个仓库历史上那个
+            `apply_rope` 交错 bug 的那一对概念。HF 的 Llama 参考实现用 half，
+            所以声明 interleaved 的模型**和它算的不是同一个东西** ——
+            不是一个"错"，是两种不同的位置编码。
 
-    if has_linear and is_moe:
-        lin = next(o["attrs"] for L in ir["layers"] for o in L["ops"]
-                   if o["kind"] == "Linear")
-        ma = ffn_op["attrs"]
-        lt = ["linear_attention" if op_index(L, "Linear") is not None
-              else "full_attention" for L in ir["layers"]]
-        common.pop("rope_theta", None)
-        common.pop("attention_bias", None)
-        cfg = T.Qwen3NextConfig(
-            intermediate_size=ma["hidden"],
-            num_experts=ma["experts"],
-            num_experts_per_tok=ma["top_k"],
-            moe_intermediate_size=ma["hidden"],
-            shared_expert_intermediate_size=ma["shared_hidden"] or ma["hidden"],
-            linear_num_key_heads=lin["k_heads"],
-            linear_num_value_heads=lin["v_heads"],
-            linear_key_head_dim=lin["k_dim"],
-            linear_value_head_dim=lin["v_dim"],
-            linear_conv_kernel_dim=lin["conv_kernel"],
-            layer_types=lt,
-            partial_rotary_factor=float(attn["rope_partial"]),
-            **common)
-        ref = T.Qwen3NextForCausalLM(cfg).eval()
-        fam = "Qwen3NextForCausalLM"
-    elif is_gptoss:
-        ma = ffn_op["attrs"]
-        y = attn.get("yarn") or {}
-        rs = {"rope_type": "yarn", "rope_theta": float(attn["rope_base"]),
-              "factor": float(y.get("factor", 1)),
-              "original_max_position_embeddings": int(y.get("original", 4096)),
-              "beta_fast": float(y.get("beta_fast", 32)),
-              "beta_slow": float(y.get("beta_slow", 1)),
-              "truncate": bool(y.get("truncate", True)),
-              "attention_factor": float(attn.get("rope_scale", 1.0))}
-        win = attn["window"] or ir["ctx"]
-        common.pop("rope_theta")
-        cfg = T.GptOssConfig(intermediate_size=ma["hidden"],
-                             num_experts=ma["experts"],
-                             num_experts_per_tok=ma["top_k"],
-                             layer_types=["sliding_attention"] * len(ir["layers"]),
-                             sliding_window=win, rope_scaling=rs, **common)
-        ref = T.GptOssForCausalLM(cfg).eval()
-        fam = "GptOssForCausalLM"
-    elif is_moe:
-        if _qk_unsupported():
+            实测：`hello.by1` 没声明 position，于是拿到默认的 `interleaved`，
+            和 Llama 参考差 **1.756e-02**；而 `llama-shaped.by1` 声明了
+            `half`，差 4.470e-07。
+
+            （`by1all` 里原来记的理由是"拿它跟一个不存在的东西比" ——
+             **结论对，理由错**。不是"不存在"，是"用了不同的配对"。
+             而理由错了就会修错地方。）
+            """
+            return str(attn.get("rope_pairing") or "").lower() not in ("", "half")
+
+        def _qk_unsupported():
+            """**只有 Llama / Mixtral 的 HF 类没有 qk_norm 这一层。**
+
+            Qwen3Next（`T.Qwen3NextConfig`）和 gpt-oss 自己的类里都有 ——
+            所以这一条不能放进全局守卫：拦了它就会把 `qwen3-next-shaped`
+            从 ok 变成 skip，而那是**误伤真绿**（上一版就是这么错的）。
+            """
+            _qn = str(attn.get("qk_norm") or "").lower()
+            return _qn not in ("", "off", "false", "0", "none")
+
+        if has_linear and is_moe:
+            lin = next(o["attrs"] for L in ir["layers"] for o in L["ops"]
+                       if o["kind"] == "Linear")
+            ma = ffn_op["attrs"]
+            lt = ["linear_attention" if op_index(L, "Linear") is not None
+                  else "full_attention" for L in ir["layers"]]
+            common.pop("rope_theta", None)
+            common.pop("attention_bias", None)
+            cfg = T.Qwen3NextConfig(
+                intermediate_size=ma["hidden"],
+                num_experts=ma["experts"],
+                num_experts_per_tok=ma["top_k"],
+                moe_intermediate_size=ma["hidden"],
+                shared_expert_intermediate_size=ma["shared_hidden"] or ma["hidden"],
+                linear_num_key_heads=lin["k_heads"],
+                linear_num_value_heads=lin["v_heads"],
+                linear_key_head_dim=lin["k_dim"],
+                linear_value_head_dim=lin["v_dim"],
+                linear_conv_kernel_dim=lin["conv_kernel"],
+                layer_types=lt,
+                partial_rotary_factor=float(attn["rope_partial"]),
+                **common)
+            ref = T.Qwen3NextForCausalLM(cfg).eval()
+            fam = "Qwen3NextForCausalLM"
+        elif is_gptoss:
+            ma = ffn_op["attrs"]
+            y = attn.get("yarn") or {}
+            rs = {"rope_type": "yarn", "rope_theta": float(attn["rope_base"]),
+                  "factor": float(y.get("factor", 1)),
+                  "original_max_position_embeddings": int(y.get("original", 4096)),
+                  "beta_fast": float(y.get("beta_fast", 32)),
+                  "beta_slow": float(y.get("beta_slow", 1)),
+                  "truncate": bool(y.get("truncate", True)),
+                  "attention_factor": float(attn.get("rope_scale", 1.0))}
+            win = attn["window"] or ir["ctx"]
+            common.pop("rope_theta")
+            cfg = T.GptOssConfig(intermediate_size=ma["hidden"],
+                                 num_experts=ma["experts"],
+                                 num_experts_per_tok=ma["top_k"],
+                                 layer_types=["sliding_attention"] * len(ir["layers"]),
+                                 sliding_window=win, rope_scaling=rs, **common)
+            ref = T.GptOssForCausalLM(cfg).eval()
+            fam = "GptOssForCausalLM"
+        elif is_moe:
+            if _pairing_unsupported():
+                return by1skip.skip(
+                    "这份声明的东西，本脚本的参考实现表示不了："
+                    "rope_pairing = %s，而 Mixtral 的 HF 类用 half 配对"
+                    % attn.get("rope_pairing"))
+            if _qk_unsupported():
+                return by1skip.skip(
+                    "这份声明的东西，本脚本的参考实现表示不了："
+                    "注意力带 qk_norm=%s，而 Mixtral 的 HF 类里没有这一层"
+                    % attn.get("qk_norm"))
+            ma = ffn_op["attrs"]
+            cfg = T.MixtralConfig(intermediate_size=ma["hidden"],
+                                  num_experts=ma["experts"],
+                                  num_experts_per_tok=ma["top_k"], **common)
+            ref = T.MixtralForCausalLM(cfg).eval()
+            fam = "MixtralForCausalLM"
+        elif not has_linear and not is_moe and not is_gptoss:
+            # **只有"整体就是 Llama 形状"的才走这一支。**
+            #
+            # 原来这里是无条件的 `else` —— 凡是没被前面几支认出来的模型
+            # 都被拿去和 Llama 比。**那不是一个判据，那是"有一个参考实现"
+            # 的错觉**：比出来的差会被当成模型的错，而真相是"没有参考"。
+            if _pairing_unsupported():
+                return by1skip.skip(
+                    "这份声明的东西，本脚本的参考实现表示不了："
+                    "rope_pairing = %s，而 Llama 的 HF 类用 half 配对"
+                    % attn.get("rope_pairing"))
+            if _qk_unsupported():
+                return by1skip.skip(
+                    "这份声明的东西，本脚本的参考实现表示不了："
+                    "注意力带 qk_norm=%s，而 Llama 的 HF 类里没有这一层"
+                    % attn.get("qk_norm"))
+            fa = ffn_op["attrs"]
+            cfg = T.LlamaConfig(intermediate_size=fa["hidden"], **common)
+            ref = T.LlamaForCausalLM(cfg).eval()
+            fam = "LlamaForCausalLM"
+        else:
+            # 到这个分支说明：机制组合我认不出该建哪个 HF 参考实现。
+            # **按三态协议说"这台机器上没验"，不要说"验了不对"。**
+            kinds = sorted({o["kind"] for L in ir["layers"] for o in L["ops"]})
             return by1skip.skip(
-                "这份声明的东西，本脚本的参考实现表示不了："
-                "注意力带 qk_norm=%s，而 Mixtral 的 HF 类里没有这一层"
-                % attn.get("qk_norm"))
-        ma = ffn_op["attrs"]
-        cfg = T.MixtralConfig(intermediate_size=ma["hidden"],
-                              num_experts=ma["experts"],
-                              num_experts_per_tok=ma["top_k"], **common)
-        ref = T.MixtralForCausalLM(cfg).eval()
-        fam = "MixtralForCausalLM"
-    elif not has_linear and not is_moe and not is_gptoss:
-        # **只有"整体就是 Llama 形状"的才走这一支。**
-        #
-        # 原来这里是无条件的 `else` —— 凡是没被前面几支认出来的模型
-        # 都被拿去和 Llama 比。**那不是一个判据，那是"有一个参考实现"
-        # 的错觉**：比出来的差会被当成模型的错，而真相是"没有参考"。
-        if _qk_unsupported():
-            return by1skip.skip(
-                "这份声明的东西，本脚本的参考实现表示不了："
-                "注意力带 qk_norm=%s，而 Llama 的 HF 类里没有这一层"
-                % attn.get("qk_norm"))
-        fa = ffn_op["attrs"]
-        cfg = T.LlamaConfig(intermediate_size=fa["hidden"], **common)
-        ref = T.LlamaForCausalLM(cfg).eval()
-        fam = "LlamaForCausalLM"
-    else:
-        # 到这个分支说明：机制组合我认不出该建哪个 HF 参考实现。
-        # **按三态协议说"这台机器上没验"，不要说"验了不对"。**
-        kinds = sorted({o["kind"] for L in ir["layers"] for o in L["ops"]})
-        return by1skip.skip(
-            # **说这个工具的局限，不说世界的事实。**
-            # `clef` 有真的 HF 对应物（Cloudflare/clef）—— 说"没有对应的
-            # 参考实现"是把"我不认得怎么建"讲成了"那个东西不存在"。
-            '这台机器上没法给这套机制组合建参考实现'
-            '（本脚本只认 Llama / Mixtral / gpt-oss / Qwen3Next 四种；'
-            '这份的算子是 %s）' % ', '.join(kinds))
+                # **说这个工具的局限，不说世界的事实。**
+                # `clef` 有真的 HF 对应物（Cloudflare/clef）—— 说"没有对应的
+                # 参考实现"是把"我不认得怎么建"讲成了"那个东西不存在"。
+                '这台机器上没法给这套机制组合建参考实现'
+                '（本脚本只认 Llama / Mixtral / gpt-oss / Qwen3Next 四种；'
+                '这份的算子是 %s）' % ', '.join(kinds))
 
+    except (RuntimeError, MemoryError) as ex:
+        _m = str(ex).lower()
+        if "memory" in _m or "alloc" in _m:
+            return by1skip.skip(
+                "这台机器装不下这个参考实现（按真实维度要 %.1f GB 量级）"
+                % (ir["d_model"] * ir["d_model"] * len(ir["layers"])
+                   * 12 / 1e9))
+        raise
     ns = {}
     exec(compile(cg.render(info, name), "<by1-generated>", "exec"), ns)
     mine = ns["build"]().eval()
