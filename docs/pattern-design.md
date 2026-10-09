@@ -3,6 +3,12 @@
 > 目的：把 `pattern` 的元素从「机制名」升级为「机制实例」，让调度能排**属性**而不只是排机制。
 > 起因：写 `deepseek-v4.1-flash.by1` 时，20 层全是同一个 `CSA2`，变的只是层上的 `mode ∈ {Full, Reindex, Reuse}`——现有 pattern 表达不了。
 > 状态：**待审**。定稿前不要写后面 4 个模型。
+>
+> **审查意见见 [`pattern-design-review.md`](pattern-design-review.md)。**
+> 一句话结论：立论对，但它关掉的是一个缺口不是十六个 ——
+> §5 的两个原语（`prev` / `shared_from`）代码里没有，
+> §7「六个全部通过」里有三个没有判卷人，§6④ 的 `KDA : Linear` 和代码冲突。
+> **照做之前先读那份审查。**
 
 ---
 
