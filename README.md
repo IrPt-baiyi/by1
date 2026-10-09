@@ -211,13 +211,19 @@ by1 --version
 **A 卡为什么不行** —— 三条都查过：
 
 ```
-ROCm / HIP        Windows 上没有消费级 Radeon 的 PyTorch 轮子；
-                  而且 ROCm 不支持 RDNA1（gfx1010 不在支持列表里）
-torch-directml    **没有 Python 3.12 的发行版**（最后停在 3.8–3.11 /
-                  torch 2.3.1，之后没再更新）—— pip 报 No matching distribution
+ROCm / HIP        官方 ROCm 的 PyTorch 轮子只有 Linux。AMD 现在有
+                  "PyTorch on Windows Edition"，但公开的 Windows ROCm
+                  补丁针对的是 RDNA2（gfx1030-1036）；**RDNA1（gfx1010）
+                  不在官方支持列表里**。社区有非官方的 RDNA1 ROCm 构建
+                  （TheTrustedComputer/ROCm-RDNA1），但那是 Linux。
+torch-directml    **本机实测**：pip 报 No matching distribution ——
+                  Python 3.12 没有发行版（最后停在 3.8-3.11 / torch 2.3.1）
 onnxruntime-dml   在（1.24.4），但那要先**有一个 ONNX 后端**：
                   那是新写一个后端，不是把设备名换一行
 ```
+
+（只有 `torch-directml` 那条是本机实测的；前两条来自公开资料 ——
+这个开发沙箱取不到 `amd.com`，所以标清楚哪条是测的、哪条是读的。）
 
 所以 `by1gpu.py` 在这台机器上是**跳过**（它自己会说"没有可用的 CUDA 设备"），
 **不是失败** —— 而"这一项没验"现在会印在每一轮报告里，

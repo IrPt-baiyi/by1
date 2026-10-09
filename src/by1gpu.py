@@ -177,10 +177,13 @@ def main():
         print()
         # **跳过要说清为什么。** "没有 CUDA"是一个现象；A 卡为什么不行
         # 是三条具体的事 —— 而具体的那部分才是下次有用的部分。
-        print('  如果是 A 卡（AMD），这条路上不行的原因有三条，都查过：')
-        print('    ROCm / HIP       Windows 上没有消费级 Radeon 的 torch 轮子；')
-        print('                     而且 ROCm 不支持 RDNA1（gfx1010 不在支持列表里）')
-        print('    torch-directml   没有 Python 3.12 的发行版（最后停在 3.11 / torch 2.3.1）')
+        print('  如果是 A 卡（AMD），这条路上不行的原因有三条：')
+        print('    ROCm / HIP      官方 ROCm 轮子只有 Linux；Windows 那条'
+              '（公开的补丁）针对 RDNA2+，')
+        print('                    **RDNA1（gfx1010）不在官方支持列表里**'
+              '（社区有非官方的，但是 Linux）')
+        print('    torch-directml   **本机实测**：pip 报 No matching distribution')
+        print('                    （Python 3.12 没有发行版；最后停在 3.11 / torch 2.3.1）')
         print('    onnxruntime-dml  在，但那要先有一个 ONNX 后端 —— 不是换一行设备名')
         return by1skip.skip('没有可用的 CUDA 设备')
 
