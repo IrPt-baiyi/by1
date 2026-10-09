@@ -211,6 +211,63 @@ def main():
                        % (script, r.returncode,
                           '：' + '；'.join(hits[:3]) if hits else ''))
 
+    # ── ⑤ 行尾：工作区必须和 `.gitattributes` 一致 ──────────────
+    #
+    # **这条是补的，因为这件事静默错了很久而没有任何东西在看它。**
+    #
+    # `.gitattributes` 写着 `* text=auto eol=lf`。而实测：
+    #
+    #     i/lf    w/crlf   attr/text eol=lf      history/ir.md
+    #     i/lf    w/crlf   attr/text eol=lf      models/clef.by1
+    #
+    # **索引是 LF、属性要求 LF，而工作区是 CRLF** —— 66 个文件这样子。
+    # 原因是它们在 `.gitattributes` 加上**之前**就签出了，git 知道该改
+    # 但不会自动重签。（修法是 `git rm --cached -r . && git reset --hard`。）
+    #
+    # 为什么值得一条检查：**这些文件正是解析器要读的东西。**
+    # `.by1` 带 CR 和不带 CR，解析出来是不是同一份 IR —— 在那之前
+    # 没有任何东西保证过。
+    #
+    # `refs/` 不查：那是抓来的、能重抓的（25 MB，每次都读太贵）。
+    print()
+    print('  ⑤ 行尾（工作区 vs `.gitattributes`）')
+    crlf = []
+    n_scanned = 0
+    scan = [by1paths.MODELS, by1paths.DOCS, by1paths.HISTORY]
+    for d in (by1paths.SRC,) + tuple(os.path.join(by1paths.SRC, s)
+                                     for s in by1paths.SUBDIRS):
+        scan.append(d)
+    for d in scan:
+        if not os.path.isdir(d):
+            continue
+        for f in sorted(os.listdir(d)):
+            if not f.endswith(('.py', '.by1', '.md', '.tsv')):
+                continue
+            p = os.path.join(d, f)
+            if not os.path.isfile(p):
+                continue
+            n_scanned += 1
+            try:
+                with open(p, 'rb') as fh:
+                    b = fh.read()
+            except OSError as e:
+                bad.append('%s 读不了：%s' % (by1paths.rel(p), e))
+                continue
+            if b'\r\n' in b:
+                crlf.append((by1paths.rel(p), b.count(b'\r\n')))
+    for f in sorted(os.listdir(by1paths.ROOT)):
+        if f.endswith('.md'):
+            p = os.path.join(by1paths.ROOT, f)
+            n_scanned += 1
+            with open(p, 'rb') as fh:
+                b = fh.read()
+            if b'\r\n' in b:
+                crlf.append((f, b.count(b'\r\n')))
+    if crlf:
+        bad.append('行尾是 CRLF 的 %d 个文件（该是 LF）：%s'
+                   % (len(crlf), '；'.join('%s(%d)' % x for x in crlf[:3])))
+    print('     %d 个文件，CRLF %d 个' % (n_scanned, len(crlf)))
+
     # ── 判定 ────────────────────────────────────────────────────
     dt = time.time() - t0
     print()
@@ -221,7 +278,8 @@ def main():
             print('     %s' % b)
     else:
         print('  [PASS] 快速检查：编译 %d · import %d · 解析 %d · 判卷人 %d'
-              % (len(py_mods), len(mods), len(models), len(FAST_JUDGES)))
+              ' · 行尾 %d' % (len(py_mods), len(mods), len(models),
+                              len(FAST_JUDGES), n_scanned))
     print('         %.1f 秒' % dt)
     print()
     return 1 if bad else 0
