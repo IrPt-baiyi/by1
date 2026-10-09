@@ -58,3 +58,8 @@ refs/*.index.json
 # 删数据测试的副本 —— 和仓库里的原件是同一批字节，
 # 收进来 git 会存两遍。测试的**定义**（README/MANIFEST）收在 docs/ 下。
 __delete_test/files/
+
+# 改历史之前的 .git 备份 —— **里面有旧的历史（含已删的 rc.py）**。
+# 确认改完没问题之后删掉它；在那之前不能让它进任何一次提交。
+.git-before-rewrite/
+_rewrite.py
