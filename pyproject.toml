@@ -48,21 +48,23 @@ by1 = "by1ver:main"
 # `models/` `refs/` 不是包数据 —— 分发那一包走 `by1pack.py`，不经过 pip。
 package-dir = {"" = "src"}
 py-modules = [
-    "by1", "by1all", "by1blind", "by1boot",
-    "by1bootir", "by1c", "by1check", "by1cloud",
-    "by1cmp", "by1codegen", "by1contract", "by1debt",
-    "by1dev", "by1diff", "by1docs", "by1e2e",
-    "by1emit", "by1exec", "by1ext", "by1extdemo",
-    "by1fetch", "by1gate", "by1gpt2", "by1gpu",
-    "by1index", "by1instella", "by1io", "by1ir",
-    "by1irentry", "by1lint", "by1load", "by1mem",
-    "by1mla", "by1moe", "by1name", "by1opdiff",
-    "by1oracle", "by1oracles", "by1pack", "by1pat",
-    "by1paths", "by1raw", "by1real", "by1rebuild",
-    "by1refs", "by1rope", "by1skip", "by1smoke",
-    "by1train", "by1triage", "by1ver", "by1verify",
-    "by1vocab",
+    "by1boot", "by1c", "by1check", "by1codegen",
+    "by1exec", "by1ext", "by1io", "by1ir",
+    "by1paths", "by1refs", "by1skip", "by1ver",
 ]
+
+# **子目录是包。** `py-modules` 只在包根（`src/`）找模块，而拆分之后
+# 41 个模块不在那儿了 —— 于是 `pip install -e .` 装不全，而上面那份
+# 清单还在说 53 个。**两句话里有一句是假的。**
+#
+# 装完和没装跑的是同一套逻辑：`by1paths._bootstrap()` 把 `SRC` 和每个
+# 子目录放上 sys.path，两种情况算出来的都是"这些目录"。
+#
+# 已知的粗糙处：`lang` / `data` / `escape` 这几个包名很通用，
+# 装进 site-packages 会和别人的同名包撞。这是私有仓库，先接受；
+# 要改就把目录改名（`by1_lang` 之类）并把 `by1paths.SUBDIRS` 跟着改
+# —— **一处**。
+packages = ["lang", "checks", "data", "modelcheck", "escape"]
 
 [tool.setuptools.dynamic]
 # **从文件读，不从模块读。**
