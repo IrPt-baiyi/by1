@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""by1run -- **推送前的门，以及逐次加深的档位。**
+"""by1run -- **推送前的门，以及每四次一次数值档。**
 
-    python by1run.py --push          门（档 1）+ 加深 + 推 + 记账
+    python by1run.py --push          按轮换跑 → 推 → 记账
     python by1run.py --tier 3        只跑档 3
     python by1run.py --status        现在轮到哪一档
     python by1run.py --reset         重新数
@@ -20,15 +20,32 @@
 （时间是这台机器实测的，不是估的。**档 4 那个大跳**（18.6 → 50.0）
 就是那 6 个要 torch 前向的判卷人。）
 
-## 轮换只走到档 4 —— **档 5/6 要手动**
+## 节奏：**1 · 1 · 1 · 4**
 
-    LADDER = [2, 3, 4]
+    LADDER = [1, 1, 1, 4]
 
-档 5 要 gcc、要下载，档 6 要显卡 —— **它们不是"每次都该跑"的东西**，
-而是"这次想跑就跑"。自动轮换把它们排进去的话，一次推送会从 17 秒
-变成 68 秒，而多跑到的那些**并不对应你刚改的东西**。
+    推送1   档1    11 秒
+    推送2   档1    11 秒
+    推送3   档1    11 秒
+    推送4   **档4**  50 秒   ← 碰得到数值的那一档
+    → 重新数
 
-要全量就明说：
+**为什么跳过档 2 和档 3。** 它们各自只多 6 秒和 2 秒，而**多查到的
+东西和"刚改的东西"关系不大** —— 档 2 是结构类判卷人（文档、引用、
+lint），档 3 是契约（config 逐字段、张量名）。**这两个要么你正在改
+它们，手动 `--tier 2/3` 就行；要么它们不会坏。**
+
+真正有分量的分界是**档 4** —— 那 6 个要 torch 前向的判卷人在那里，
+它是唯一碰得到数值的一档。所以节奏是"三次便宜的一次贵的"，
+不是"每次多一点点"。
+
+**档 4 是累积的**（它含档 1 那一段），所以第四次**只跑档 4**，
+不先跑门 —— 先跑门就是白花 11 秒。
+
+## 档 5/6 不进轮换
+
+档 5 要 gcc、要下载，档 6 要显卡 —— **它们不是"定期该跑"的东西**，
+而是"这次想跑就跑"。排进轮换的话，一次推送会从 11 秒变成 68 秒。
 
     python src/by1run.py --tier 5          只跑档 5
     python src/by1run.py --push --tier 5   推之前先跑档 5
@@ -36,25 +53,14 @@
 **档位是默认值，不是上限。** 改了大东西、或者只是心里没底，
 手动要一次更高的档永远可以。
 
-## 推送时的节奏
-
-**门永远是档 1** —— 10 秒，每次都跑，不过就不推。
-**加深的那部分逐次往上走**：
-
-    推送1   门 + 档2
-    推送2   门 + 档3
-    推送3   门 + 档4      ← 正常用到这里
-    推送4   门 + 档5（全量）
-    → 重新数
-
-也就是"每四次推送里至少有一次全量"。门负责**立刻知道改坏了没有**，
-加深负责**最终不会漏** —— 它碰得到数值，门碰不到。
-
 ## 为什么要装钩子
 
 "每次推送前跑"如果只靠人记得，迟早会变成"我记得的时候跑"。
 `--install-hook` 往 `.git/hooks/pre-push` 写脚本，
 **手动 `git push` 也拦得住** —— 门没过，推不出去。
+
+钩子固定跑档 1（它不知道轮换数到哪了）。`--push` 那条路走
+`--no-verify`，免得同一个检查跑两遍。
 
 钩子不进仓库（`.git/hooks/` 是本机的），所以这里存的是安装器。
 """
@@ -86,15 +92,19 @@ import by1paths                                # noqa: E402
 STATE = os.path.join(ROOT, '.by1run-state')
 HOOK = os.path.join(ROOT, '.git', 'hooks', 'pre-push')
 
-# 门：每一次推送都跑这一档
-GATE_TIER = 1
-# 加深：逐次往上走的那几档，走完一轮回到第一个。
+# 节奏：**1 · 1 · 1 · 4** —— 三次便宜的一次贵的，走完一轮回到第一个。
 #
-# **只到档 4。** 档 5 要 gcc、要下载，档 6 要显卡 —— 它们不是
-# "每次都该跑"的东西。自动轮换把它们排进去的话，一次推送会从
-# 17 秒变成 68 秒，而多跑到的那些**并不对应你刚改的东西**。
-# 要全量手动要：--tier 5 / --push --tier 5。
-LADDER = [2, 3, 4]
+# **为什么跳过档 2 和档 3。** 它们各自只多 6 秒和 2 秒，而多查到的
+# 东西和"刚改的东西"关系不大 —— 档 2 是结构类判卷人（文档、引用、
+# lint），档 3 是契约（config 逐字段、张量名）。这两个要么你正在改
+# 它们（手动 `--tier 2/3`），要么它们不会坏。
+#
+# 真正有分量的分界是**档 4** —— 那 6 个要 torch 前向的判卷人在那里，
+# 它是唯一碰得到数值的一档。
+#
+# **档 5/6 不进轮换**：档 5 要 gcc、要下载，档 6 要显卡 ——
+# 它们不是"定期该跑"的东西，是"这次想跑就跑"。要就手动 `--tier 5`。
+LADDER = [1, 1, 1, 4]
 
 TIER_NAME = {
     1: '静态', 2: '结构', 3: '契约', 4: '数值', 5: '环境', 6: '真机',
@@ -129,14 +139,19 @@ def run_tier(n):
 
 def show(n):
     tier = LADDER[n]
-    print('  这一次加深到 **档 %d（%s）**，约 %.0f 秒'
-          % (tier, TIER_NAME[tier], TIER_SECS[tier]))
-    print('  门是档 %d（%s），每次都跑，约 %.0f 秒'
-          % (GATE_TIER, TIER_NAME[GATE_TIER], TIER_SECS[GATE_TIER]))
+    which = '第 %d 次（共 %d 次）' % (n + 1, len(LADDER))
+    print('  这一次跑 **档 %d（%s）**，约 %.0f 秒   [%s]'
+          % (tier, TIER_NAME[tier], TIER_SECS[tier], which))
+    print('  节奏：%s' % ' · '.join('档%d' % x for x in LADDER))
 
 
 def check(tier=None):
-    """按轮换跑。`tier` 给定时只跑那一档（不跑门 —— 手动指名就是要那一档）。"""
+    """按轮换跑。`tier` 给定时只跑那一档。
+
+    **只跑一档，没有"门 + 加深"两步。** 档位是累积的 ——
+    `--tier 4` 已经含了档 1 那一段（`by1all` 里的"0. 静态"），
+    所以第四次再先跑一遍门就是白花 11 秒。
+    """
     n = read_state()
     if tier is not None:
         print()
@@ -148,14 +163,7 @@ def check(tier=None):
     print('=' * 74)
     show(n)
     print('=' * 74)
-    # **门先跑。** 它便宜，而且它失败时没必要再花 50 秒。
-    rc = run_tier(GATE_TIER)
-    if rc != 0:
-        return rc
-    deep = LADDER[n]
-    if deep <= GATE_TIER:
-        return 0
-    return run_tier(deep)
+    return run_tier(LADDER[n])
 
 
 def push(args, tier=None):
@@ -226,7 +234,7 @@ def install_hook():
     by1io.write_text(HOOK, HOOK_BODY.replace('{py}', sys.executable))
     print('  装了 %s' % os.path.relpath(HOOK, ROOT))
     print('  解释器记的是：%s' % sys.executable)
-    print('  之后每次 `git push`（含手动）都会先跑档 %d。' % GATE_TIER)
+    print('  之后每次 `git push`（含手动）都会先跑档 %d。' % LADDER[0])
     print('  临时绕过：`git push --no-verify`')
     return 0
 
@@ -240,11 +248,9 @@ def main():
     if '--status' in argv:
         n = read_state()
         print()
-        print('  门：档 %d（%s，%.0f 秒，每次推送都跑）'
-              % (GATE_TIER, TIER_NAME[GATE_TIER], TIER_SECS[GATE_TIER]))
-        print('  加深：下一次是档 %d（%s）；这一轮还剩 %d 次'
-              % (LADDER[n], TIER_NAME[LADDER[n]], len(LADDER) - n))
-        print('  梯队：%s' % ' → '.join('档%d' % x for x in LADDER))
+        print('  节奏：%s' % ' · '.join('档%d' % x for x in LADDER))
+        print('  下一次：档 %d（%s，约 %.0f 秒）—— 第 %d 次'
+              % (LADDER[n], TIER_NAME[LADDER[n]], TIER_SECS[LADDER[n]], n + 1))
         print('  钩子：%s' % ('装了' if os.path.exists(HOOK) else '**没装**'))
         print()
         return 0
