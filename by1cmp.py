@@ -29,6 +29,7 @@
 """
 import glob
 import importlib.util
+import io
 import os
 import sys
 from collections import Counter, defaultdict
@@ -112,6 +113,24 @@ def main():
 
     names = sorted(rows, key=lambda n: (rows[n].get('参数') or 0))
 
+    # **表里显示短名，不显示文件名。**
+    #
+    # 文件名现在是 HF 的模型名（按用户定的四条），有的 53 个字符 ——
+    # 塞进表格会把表撑坏，可读性没了。
+    # 而每个 `.by1` 里的 `model <短名> {` 就是给人看的那个名字，
+    # 由 `by1name.py` 从 `models.tsv` 统一生成，不会漂。
+    import io as _io
+    import re as _re
+
+    def label_of(fname):
+        """短名 —— 读文件里的 model 声明，不另存一份。"""
+        try:
+            src = _io.open(os.path.join(HERE, fname), encoding='utf-8').read()
+            m = _re.search(r'^model\s+([\w.\-]+)\s*\{', src, _re.M)
+            return m.group(1) if m else fname[:-4]
+        except Exception:
+            return fname[:-4]
+
     # 连续的数值属性每人一个值，"独苗"没有意义 —— 排除掉，
     # 否则满屏独苗，真独苗就被淹了。
     NUMERIC = {'d_model', 'n_layer', '参数', 'vocab', 'ctx',
@@ -138,7 +157,7 @@ def main():
                 continue
             vals = defaultdict(list)
             for n in names:
-                vals[repr(rows[n].get(k, '—'))].append(n.replace('.by1', ''))
+                vals[repr(rows[n].get(k, '—'))].append(label_of(n))
             if len(vals) < 2:
                 continue
             for v, ns in vals.items():
@@ -154,7 +173,27 @@ def main():
         print('>')
         print('> **只列在模型之间真的不一样的属性。** 全都一样的列出来是噪音，')
         print('> 而噪音会把信号淹掉 —— 这个项目里反复吃过这个亏。')
+        print('>')
+        print('> 表里是**短名**（可读）；**文件名是 HF 的模型名**（可追溯）。')
+        print('> 两者都由 `models.tsv` + `by1name.py` 生成，不会漂。')
         print()
+        # ── 命名对照：短名 / 长名 / HF id ──────────────────────────
+        # **必须放在前面。** 表里只有短名，看的人要能查到它是谁。
+        mtsv = os.path.join(HERE, 'models.tsv')
+        if os.path.exists(mtsv):
+            print('### 命名对照（`models.tsv` 是唯一真相源）')
+            print()
+            print('| 短名（表里用的） | 长名（= 文件名） | HF 仓库 |')
+            print('|---|---|---|')
+            for line in io.open(mtsv, encoding='utf-8'):
+                line = line.rstrip('\n')
+                if not line or line.lstrip().startswith('#'):
+                    continue
+                p = line.split('\t')
+                if len(p) >= 3:
+                    print('| `%s` | `%s` | [%s](https://hf-mirror.com/%s) |'
+                          % (p[1], p[0], p[2], p[2]))
+            print()
         print('## 一、谁是谁')
         print()
         print('| 模型 | 参数 | 层 | d_model | 词表 | 机制 |')
@@ -165,7 +204,7 @@ def main():
             ps = ('%.1fB' % (par / 1e9) if par >= 1e9 else
                   '%.0fM' % (par / 1e6) if par >= 1e6 else str(par))
             print('| `%s` | %s | %d | %d | %s | %s |'
-                  % (n.replace('.by1', ''), ps, d.get('n_layer'),
+                  % (label_of(n), ps, d.get('n_layer'),
                      d.get('d_model'), d.get('vocab'),
                      short_mech(d.get('机制', ''))))
         print()
@@ -199,7 +238,7 @@ def main():
         for k in varies:
             vals = defaultdict(list)
             for n in names:
-                vals[repr(rows[n].get(k, '—'))].append(n.replace('.by1', ''))
+                vals[repr(rows[n].get(k, '—'))].append(label_of(n))
             if len(vals) == 1:
                 continue
             print('### `%s`' % k)
@@ -220,7 +259,7 @@ def main():
     for k in varies:
         vals = defaultdict(list)
         for n in names:
-            vals[repr(rows[n].get(k, '—'))].append(n.replace('.by1', ''))
+            vals[repr(rows[n].get(k, '—'))].append(label_of(n))
         if len(vals) == 1:
             continue
         print('  ── %s' % k)

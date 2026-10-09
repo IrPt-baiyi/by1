@@ -13,8 +13,11 @@
 # 事实来源：
 #   refs/zai-org__GLM-5.3-Flash.config.json 的 text_config
 #   refs/glm53.tensors.json（76108 个张量，62 个分片）
+# by1-model: GLM-5.3-Flash
+# by1-repo:  zai-org/GLM-5.3-Flash
+# by1-short: glm53
 
-model glm5.3-flash {
+model glm53 {
   arch  glm5_next
   ctx   1048576
 

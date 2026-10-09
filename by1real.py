@@ -23,7 +23,7 @@
 
 第一步先证明"能装上、能跑"，那已经是没做过的事。
 
-用法:  python by1real.py [--by1 qwen38.by1] [--dir /dev/shm/qwen38] [--seq 4]
+用法:  python by1real.py [--by1 Qwen3.8-27B.by1] [--dir /dev/shm/qwen38] [--seq 4]
 """
 import glob
 import json
@@ -75,7 +75,7 @@ def npar_est(info):
 
 
 def main():
-    by1f = 'qwen38.by1'
+    by1f = 'Qwen3.8-27B.by1'
     root = '/dev/shm/qwen38'
     seq = 4
     for i, a in enumerate(sys.argv):

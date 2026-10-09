@@ -182,7 +182,7 @@ qwen3-next-shaped   62/62
 
 > **挑一个 llama.cpp 还不支持的架构，写它的 `.by1`，然后展示"五处代码"变成了多少行。**
 
-**材料已备好**：`instella-3b.by1`。
+**材料已备好**：`Instella-3B.by1`。
 
 选 Instella 是因为它同时满足两个条件：
 - llama.cpp 的 arch 表里**没有** instella（src/models/ 下 160 个文件里没有）
@@ -194,7 +194,7 @@ qwen3-next-shaped   62/62
 
 | | 行数 |
 |---|---|
-| `instella-3b.by1`（去掉空行与注释） | **104** |
+| `Instella-3B.by1`（去掉空行与注释） | **104** |
 | AMD 的 `modeling_instella.py` | 1251 |
 | llama.cpp 的 `qwen3next.cpp`（加**一个**架构） | 823 |
 | 外加 `llama-arch.h/.cpp` + `llama-model.cpp` 里 | **15 处引用，跨 3 个文件** |

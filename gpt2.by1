@@ -22,6 +22,9 @@
 #   refs/gpt2.config.json
 #   model.safetensors 的头（160 个张量）
 #   llamacpp/nanogpt_model.py
+# by1-model: gpt2
+# by1-repo:  openai-community/gpt2
+# by1-short: gpt2
 
 model gpt2 {
   arch  gpt2

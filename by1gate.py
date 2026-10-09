@@ -26,11 +26,11 @@ CASE = [
     # ── 该被拒的 ──────────────────────────────────────────────────
     ('gate-probe.by1', False, 'nosuchactivation',
      '故意的反例：act 是个不存在的取值'),
-    ('nemotron-h.by1', False, 'SSM', 'Mamba 整族没实现'),
-    ('ling-3.0-tiny.by1', False, 'KDA', 'KDA 整族没实现'),
+    ('NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16.by1', False, 'SSM', 'Mamba 整族没实现'),
+    ('Ling-3.0-tiny.by1', False, 'KDA', 'KDA 整族没实现'),
     # ── 该通过的 ──────────────────────────────────────────────────
     ('clef-tiny.by1', True, '', '取值全都实现过'),
-    ('nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL.by1', True, '', 'sigmoid_topk 已实现'),
+    ('Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL.by1', True, '', 'sigmoid_topk 已实现'),
     ('gpt2.by1', True, '',
      'gelu / LayerNorm / 学习式位置 / 无门控 MLP 现在都实现了'),
 ]

@@ -10,8 +10,11 @@
 # 与 Gemma 4 相比，这个模型压的是另一条轴：它的两类层（滑窗 / 全量）
 # **结构属性完全相同**，差异纯粹是行为属性（window）。所以它没有等价类，
 # 只有一类 —— 这是对「行为属性 / 结构属性」切分的一次反向检验。
+# by1-model: gpt-oss-120b
+# by1-repo:  openai/gpt-oss-120b
+# by1-short: gptoss120b
 
-model GPT-OSS-120B {
+model gptoss120b {
   arch    gpt_oss
   license apache-2.0
   ctx     131072                    # 原生 4096，YaRN(x32) 外推

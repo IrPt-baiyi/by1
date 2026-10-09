@@ -1,0 +1,31 @@
+# by1 的模型清单 —— **唯一的真相源**
+#
+# 用户定的四条：
+#   ① 只要模型名称      文件名用**模型名**，不带 owner
+#   ② 有长名和短名      **长名 = HF 的模型名**（文件名用）
+#                       **短名 = 手动起的**（model 声明、表格、显示用）
+#   ③ 批量程序生成      这个文件是手动写一次，其余全由 by1name.py 生成
+#   ④ 统一格式          HF 的命名（`owner/Repo-Name` 里的 `Repo-Name`）
+#
+# 列：长名 \t 短名 \t HF id \t 本地文件 \t 说明
+#   · 长名     == 本地文件去掉 .by1
+#   · HF id    带 owner，只记在这里，不进文件名
+#   · 短名     手动起，可读优先
+#
+# **加新模型只改这一个文件**，然后 `python by1name.py --apply`。
+#
+# 长名	短名	HF id	说明
+gpt-oss-120b	gptoss120b	openai/gpt-oss-120b	交替 SWA + learned sink；MXFP4
+gemma-4-31B	gemma31b	google/gemma-4-31B	一个模型内两种 head_dim + K=V
+Laguna-XS-2_1	laguna	poolside/Laguna-XS-2_1	每层头数不同 + 每头门控 + 双 RoPE
+Instella-3B	instella3b	amd/Instella-3B	训练中途的 checkpoint（qk_norm=full）
+Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL	step37-pruned	nerkyor/Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL	**剪枝微调版**：逐层专家数不同（动态）
+Step-3.7-Flash	step37-official	stepfun-ai/Step-3.7-Flash	官方未剪枝，和剪枝版差四行
+Ling-3.0-tiny	lingtiny	inclusionAI/Ling-3.0-tiny	KDA（不是 GDN）
+minimind-3	minimind3	jingyaogong/minimind-3	收敛判卷人：最普通的那种
+clef	clef	Cloudflare/clef	48 层线性 + 16 层全量（Qwen3-Next 时代）
+Qwen3.8-27B	qwen38	Qwen/Qwen3.8-27B	clef + MTP
+Qwen3.6-35B-A3B	qwen36	Qwen/Qwen3.6-35B-A3B	同一个形状换成 MoE，零个新属性
+gpt2	gpt2	openai-community/gpt2	**上一代**：LayerNorm / 查表位置 / 无门控
+NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16	nemotron	nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16	attention 间隔 7,7,7,7,**9**
+GLM-5.3-Flash	glm53	zai-org/GLM-5.3-Flash	mHC + 分组路由 + FP8

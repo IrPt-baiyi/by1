@@ -15,8 +15,11 @@
 # 事实来源：
 #   refs/jingyaogong__minimind-3.config.json
 #   model.safetensors 的头（90 个张量）
+# by1-model: minimind-3
+# by1-repo:  jingyaogong/minimind-3
+# by1-short: minimind3
 
-model minimind-3 {
+model minimind3 {
   arch  qwen3
   ctx   32768
 

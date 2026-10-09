@@ -36,16 +36,16 @@ REAL = [
      'refs/gpt-oss-120b.tensors.json', 'torch.module', []),
     ('gpt-oss-120b.by1', 'refs/gpt-oss-120b.config.json',
      'refs/gpt-oss-120b.gguf-tensors.json', 'ggml', []),
-    ('gemma-4-31b.by1', 'refs/gemma-4-31B.config.json',
+    ('gemma-4-31B.by1', 'refs/gemma-4-31B.config.json',
      'refs/gemma-4-31B.gguf-tensors.json', 'ggml', []),
-    ('laguna-xs-2.1.by1', 'refs/poolside_Laguna-XS-2_1.config.json',
+    ('Laguna-XS-2_1.by1', 'refs/poolside_Laguna-XS-2_1.config.json',
      'refs/laguna-xs-2.1.tensors.json', 'torch.module', []),
-    ('instella-3b.by1', 'refs/amd_Instella-3B.config.json',
+    ('Instella-3B.by1', 'refs/amd_Instella-3B.config.json',
      'refs/instella-3b.tensors.json', 'torch.module', []),
-    ('nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL.by1',
+    ('Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL.by1',
      'refs/nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL.config.json',
      'refs/step37.tensors.json', 'torch.module', []),
-    ('ling-3.0-tiny.by1', 'refs/inclusionAI_Ling-3.0-tiny.config.json',
+    ('Ling-3.0-tiny.by1', 'refs/inclusionAI_Ling-3.0-tiny.config.json',
      'refs/ling-3.0-tiny.tensors.json', 'torch.module', []),
     # **收敛的判卷人**：最普通的那种模型（标准 Qwen3 形状）。
     # 前面几个都是特意挑来压东西的，如果连这一个都要新属性，就是没收敛。
@@ -58,14 +58,14 @@ REAL = [
     # clef + MTP。MTP 是这一族里唯一的新东西，它逼出了三个语言改动：
     # `aux = true`（辅助栈不算解码层）、`name_<栈名>`（各栈物理前缀不同）、
     # 以及**栈内序号**（传全局层号会拼出 mtp.layers.64. 这种名字）。
-    ('qwen38.by1', 'refs/Qwen__Qwen3.8-27B.config.json',
+    ('Qwen3.8-27B.by1', 'refs/Qwen__Qwen3.8-27B.config.json',
      'refs/qwen38.tensors.json', 'torch.module', []),
     # 同一个 Qwen3.5 形状换成 MoE。**零个新属性** —— MoE、共享专家、
     # 共享专家门控、MTP、线性注意力、3+1 混合，全是现成的。
-    ('qwen36.by1', 'refs/Qwen__Qwen3.6-35B-A3B.config.json',
+    ('Qwen3.6-35B-A3B.by1', 'refs/Qwen__Qwen3.6-35B-A3B.config.json',
      'refs/qwen36.tensors.json', 'torch.module', []),
     # 官方 Step-3.7（未剪枝）—— 和剪枝版的差别就是被删掉的那几行。
-    ('stepfun-ai__Step-3.7-Flash.by1', 'refs/stepfun-ai__Step-3.7-Flash.config.json',
+    ('Step-3.7-Flash.by1', 'refs/stepfun-ai__Step-3.7-Flash.config.json',
      'refs/step37-official.tensors.json', 'torch.module', []),
     # **语言的边界**：GPT-2 —— LayerNorm / 学习式位置编码 / 无门控 MLP，
     # 和前面十一个 Llama 家族是**两代人**。nanoGPT 是同一个架构。
@@ -73,7 +73,7 @@ REAL = [
      'refs/gpt2.tensors.json', 'torch.module', []),
     # **唯一真正的新机制族：Mamba（选择性状态空间）。**
     # 顺带逼出两个改动：显式的逐层序列、按栈的专家名字模板。
-    ('nemotron-h.by1',
+    ('NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16.by1',
      'refs/nvidia__NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16.config.json',
      'refs/nemotron.tensors.json', 'torch.module', []),
 ]
@@ -133,7 +133,7 @@ def run(args, tag=None):
 # 已知缺口：(那一项的名字前缀, 为什么)。**仍然打印出来**，只是不算失败 ——
 # 藏起来的缺口和没发现过的缺口一样糟。
 KNOWN = [
-    ('tensors torch.module nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL.by1',
+    ('tensors torch.module Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL.by1',
      '那 25 个张量在 HF 的 model-00009 分片里，而那个分片的头是全零 —— '
      '镜像的问题，不是 by1 的'),
     # **原来这里有一条 `C gpt2-tiny.by1`**（"C 还没有 LayerNorm 和学习式

@@ -1,3 +1,20 @@
+# ── step37-official  （由剪枝版派生）
+#
+# repo: stepfun-ai/Step-3.7-Flash     ← **文件名就是仓库全名，可追溯**
+# model 名是短标签，可读。两者职责不同，不必相同。
+#
+# 和剪枝版的差别**只有被删掉的那三行**：
+#   ① main[3..44] : MoE.experts = [...]    逐层专家数
+#   ② moe_num_experts_by_layer = ...       它在 config 里的对应物
+#   ③ step37_dynamic_prune_plan = "..."    剪枝计划本身
+#
+# 官方那只用 moe_num_experts = 288，**每一层都一样**。
+# 所以"逐层覆盖"这套机制不是为某个特例加的 ——
+# 它是为一整类**剪枝 / 稀疏化之后的已发布 checkpoint** 加的，
+# 而这类东西会越来越多。
+#
+# 事实来源：refs/stepfun-ai__Step-3.7-Flash.config.json 的 text_config
+#           refs/step37-official.tensors.json
 # ── step-3.7-flash.by1 ────────────────────────────────────────────────
 # StepFun Step-3.7-Flash 的社区微调版（180B，LynnStyle / GLM52-SFT / GPT55-RL）。
 #
@@ -11,8 +28,11 @@
 #   以及 5 个分片的头（形状）
 #
 # ⚠️ 这份文件里标了 ⚠️ 的地方，是**当前语言说不出来的**。
+# by1-model: Step-3.7-Flash
+# by1-repo:  stepfun-ai/Step-3.7-Flash
+# by1-short: step37-official
 
-model nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL {
+model step37-official {
   arch    step3p5
   ctx     262144
 
@@ -66,10 +86,8 @@ model nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL {
     main[3..44]  >> MoE
 
     # 逐层覆盖：**每一层的专家数都不一样**（实测 249~288）。
-    # 这不是笔误 —— config 里是 moe_num_experts_by_layer，
     # 张量形状里也是真的：层 3 的 moe.gate_proj.weight 是 [255,1280,4096]，
     # 层 4 的是 [266,1280,4096]。值按被选中的层顺序分配。
-    main[3..44] : MoE.experts = [255, 266, 251, 261, 260, 264, 261, 262, 260, 264, 262, 258, 258, 252, 257, 257, 259, 260, 264, 264, 265, 259, 260, 260, 257, 267, 265, 261, 263, 255, 262, 256, 259, 253, 258, 249, 288, 288, 288, 288, 288, 288]
 
     # 逐层 swiglu_limit：只有 43/44 层夹 7 —— 官方 config 里
     # swiglu_limits 的 48 个值中只有这两个非零。
@@ -144,7 +162,6 @@ model nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL {
   # ⚠️ 缺口 4：`rope_type = "llama3"` —— Llama-3 式频率缩放（high/low_freq_factor），
   #    和 YaRN 不是一回事。我这里有 yarn(...) 的包装，没有 llama3(...) 的。
 
-  # ⚠️ 缺口 5：`step37_dynamic_prune_plan` —— 这个版本是按层剪枝过的。
   #    "哪些专家被剪掉了"属于**权重**，不属于架构，但它改变了张量形状。
 
   emit {
@@ -159,9 +176,6 @@ model nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL {
         intermediate_size           = Dense.hidden
         max_position_embeddings     = ctx
         max_seq_len                 = ctx
-        rms_norm_eps                = rms_eps
-        attention_dropout           = 0.0
-        tie_word_embeddings         = false
         bos_token_id                = 0
         eos_token_id                = [1, 2, 128007]
         vocab_size                  = vocab
@@ -173,7 +187,6 @@ model nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL {
         use_head_wise_attn_gate     = true
         use_mfa                     = false
         attention_other_setting     = attention_other_setting
-        rope_parameters             = rope_parameters_flat
         torch_dtype                 = "bfloat16"
         use_moe_router_bias         = true
         use_rope_layers             = []
@@ -197,13 +210,11 @@ model nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL {
         moe_every_n_layer           = 1
         moe_layer_offset            = 0
         moe_layers_enum             = join(indices_where(attach.layer_kind = sparse), ",")
-        moe_num_experts_by_layer    = by_layer(attach.experts)
         swiglu_limits               = pad(per_layer(attach.swiglu_limit, 0), 48)
         swiglu_limits_shared        = pad(per_layer(attach.swiglu_limit_shared, 0), 48)
         num_nextn_predict_layers    = 3
         # 这个版本是按层剪枝过的 —— 剪枝计划属于**权重**，不属于架构，
         # 但它改变了张量形状，所以写在这里。
-        step37_dynamic_prune_plan   = "conservative_bottom64_1024_dynamic263e"
       }
     }
 

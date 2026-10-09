@@ -15,8 +15,11 @@
 #   24 层 = 6 × (3 KDA + 1 MLA)      ← layer_group_size = 4，MLA 在 3,7,11,15,19,23
 #   层 0 稠密（first_k_dense_replace = 1），层 1-23 MoE
 #   所有 MoE 层都是 128 个专家（384 = 128 × 3，逐专家存）
+# by1-model: Ling-3.0-tiny
+# by1-repo:  inclusionAI/Ling-3.0-tiny
+# by1-short: lingtiny
 
-model Ling-3.0-tiny {
+model lingtiny {
   arch    bailing_hybrid
   ctx     131072
 
