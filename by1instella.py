@@ -110,7 +110,7 @@ def main():
     src = src.replace('n_layer = 36', 'n_layer = %d' % LAYERS)
     src = re.sub(r'pattern\s*=\s*36\s*\*', 'pattern = %d *' % LAYERS, src)
     tmp = os.path.join(HERE, '_instella_shaped.by1')
-    io.open(tmp, 'w', encoding='utf-8').write(src)
+    by1io.write_text(tmp, src)
     _r, info = bc.check(tmp)
     ir = cg.compile_ir(info)
     print('  实际生成 %d 层' % len(ir['layers']))

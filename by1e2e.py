@@ -365,8 +365,7 @@ def main():
         try:
             ctext, order, _t = by1c.emit_c_ir(ir, shapes)
             cp = os.path.join(wd, 'model.c')
-            open(cp, 'w', encoding='utf-8').write(
-                by1c.C_HEAD + '\n' + ctext + '\n' + by1c.C_MAIN)
+            by1io.write_text(cp, by1c.C_HEAD + '\n' + ctext + '\n' + by1c.C_MAIN)
             exe = os.path.join(wd, 'model.exe')
             r = subprocess.run([gcc, '-O2', '-o', exe, cp, '-lm'],
                                capture_output=True, text=True)

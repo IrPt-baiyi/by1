@@ -20,6 +20,7 @@ import subprocess
 import sys
 
 import numpy as np
+import by1io
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 MANGLE = re.compile(r"[^0-9A-Za-z]")
@@ -1179,7 +1180,7 @@ def main(argv=None):
 
     src = C_HEAD + "\n" + decls + "\n" + C_MAIN
     cpath = os.path.join(args.workdir, "model.c")
-    open(cpath, "w", encoding="utf-8").write(src)
+    by1io.write_text(cpath, src)
     print(f"  生成 {cpath}  （{len(src.splitlines())} 行）")
 
     # **绝对路径，不是相对路径。**

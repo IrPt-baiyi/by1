@@ -22,6 +22,7 @@ import re
 import subprocess
 import sys
 import time
+import by1io
 
 os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
@@ -39,7 +40,7 @@ print('  ' + '-' * 74)
 
 bad, envfail, ok = [], [], 0
 for f in files:
-    src = io.open(f, encoding='utf-8').read()
+    src = by1io.read_text(f, encoding='utf-8')
     if 'def main' not in src and 'if __name__' not in src:
         print('  %-22s %-6s %s' % (f, '—', '库（没有入口）'))
         continue

@@ -45,6 +45,7 @@ import struct
 import sys
 import time
 import urllib.request
+import by1io
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 os.chdir(HERE)
@@ -65,7 +66,7 @@ def get(url, nbytes=None, timeout=30):
 def seed():
     """从 models.tsv 读出 (HF id)。**这是唯一的种子。**"""
     out = []
-    for line in io.open('models.tsv', encoding='utf-8'):
+    for line in by1io.iter_lines('models.tsv', encoding='utf-8'):
         line = line.rstrip('\n')
         if not line or line.lstrip().startswith('#'):
             continue

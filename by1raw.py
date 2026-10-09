@@ -83,7 +83,7 @@ src = by1io.read_text(F, encoding='utf-8')
 src = src.replace('    impl       = "scale_mix"\n', '')
 src = src.replace('model raw-escape', 'model raw-noimpl')
 tmp = '_noimpl.by1'
-open(tmp, 'w', encoding='utf-8').write(src)
+by1io.write_text(tmp, src)
 try:
     _r, info = bc.check(tmp)
     try:

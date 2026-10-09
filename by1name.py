@@ -72,7 +72,7 @@ CURRENT = {
 
 def read_manifest():
     out = []
-    for line in io.open(TSV, encoding='utf-8'):
+    for line in by1io.iter_lines(TSV, encoding='utf-8'):
         line = line.rstrip('\n')
         if not line or line.lstrip().startswith('#'):
             continue
@@ -131,7 +131,7 @@ def fix_file(old, 长名, 短名, hf, do):
 
     if t != before:
         if do:
-            io.open(path, 'w', encoding='utf-8').write(t)
+            by1io.write_text(path, t)
         print('        %s model %-16s repo %s'
               % ('改' if do else '[要改]', 短名, hf))
 
@@ -187,7 +187,7 @@ def main():
                 t = t.replace(old, new)
             if n:
                 if do:
-                    io.open(p, 'w', encoding='utf-8').write(t)
+                    by1io.write_text(p, t)
                 print('    %s %s：%d 处' % ('改' if do else '[要改]', fn, n))
 
     # 本地有、manifest 里没有的

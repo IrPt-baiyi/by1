@@ -189,7 +189,7 @@ def main():
             print()
             print('| 短名（表里用的） | 长名（= 文件名） | HF 仓库 |')
             print('|---|---|---|')
-            for line in io.open(mtsv, encoding='utf-8'):
+            for line in by1io.iter_lines(mtsv, encoding='utf-8'):
                 line = line.rstrip('\n')
                 if not line or line.lstrip().startswith('#'):
                     continue

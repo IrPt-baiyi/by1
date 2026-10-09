@@ -19,6 +19,7 @@
 import os
 import subprocess
 import sys
+import by1io
 
 
 # **版本号从 by1ver 来。** 原来这里写死 "1.0"，而另外两个文件也各写了一遍
@@ -155,7 +156,7 @@ def main():
     wd = os.path.join(HERE, 'cgen-ext')
     os.makedirs(wd, exist_ok=True)
     cp = os.path.join(wd, 'model.c')
-    open(cp, 'w', encoding='utf-8').write(by1c.C_HEAD + '\n' + ctext + '\n'
+    by1io.write_text(cp, by1c.C_HEAD + '\n' + ctext + '\n'
                                           + by1c.C_MAIN)
     exe = os.path.join(wd, 'model.exe')
     r = subprocess.run([gcc, '-O2', '-o', exe, cp, '-lm', SO,

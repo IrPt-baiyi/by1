@@ -134,7 +134,7 @@ def main():
     # 粗判：含 `#` 注释的行 = 人的解释；含 `mech`/`stack` 的行 = 声明
     n_comment, n_decl, n_attr = 0, 0, 0
     for f in glob.glob('*.by1'):
-        for line in io.open(f, encoding='utf-8'):
+        for line in by1io.iter_lines(f, encoding='utf-8'):
             s = line.strip()
             if not s:
                 continue
