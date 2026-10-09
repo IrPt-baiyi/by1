@@ -3675,3 +3675,83 @@ Round 4 换了策略：不碰 862-1018 那个大段（11 个输入），改挑�
 **这个理由比原来那句弱，但它是真的。** 而这一轮改的那一处
 （`--seq 16` -> `512`）**比接 llama.cpp 便宜三个数量级，
 而它对着的正是这个仓库真栽过的那一类错。**
+
+
+---
+
+## 76. 判卷人把"我判不了"说成了"错了"
+
+上一轮量出外部判卷人（HF）一直在。这一轮去看**它实际上判了几份** ——
+把 `by1diff`（HF · torch · by1C 三方对拍）对 26 份模型逐个跑：
+
+    ok 4 · skip 5 · timeout 3 · fail 14
+
+**14 个 fail 里一大半不是模型的错。** 消息长这样：
+
+    [注意] 参考实现里少了 72 个张量      Instella-3B
+    [注意] 参考实现里少了 24 个张量      gpt2.by1
+    [注意] 参考实现里少了 16 个张量      minimind-3
+
+`gpt2` 是 LayerNorm + 学习式位置 + Conv1D，而 Llama 是 RMSNorm + RoPE +
+Linear。**拿两个不同的东西对拍，比的不是数学，是"它们本来就不一样"。**
+
+而它为什么会拿 gpt2 和 Llama 比 —— 因为那一支是**无条件的 `else`**：
+
+    if has_linear:   Qwen3Next      # 假设 FFN 一定是 MoE -> clef 崩 KeyError
+    elif is_gptoss:  gpt-oss
+    elif is_moe:     Mixtral
+    else:            Llama          # **凡是没被前面认出来的**
+
+### 假绿的反面是假红
+
+这个仓库记了很多次"假绿"（覆盖掉一半还报 PASS）。而**假红同样会让人
+忽略一个检查** —— 一份说"14 个模型算错了"的报告，读两次之后就没人看了。
+
+**"我没法给它建参考实现"不属于三态里的任何一态。** 这个仓库的协议是
+`0` 验过了 · `30` 这台机器上没验 · `1` 验了不对，而"判不了"是第二种。
+
+### 改了两处
+
+**① `has_linear` 那一支要求 FFN 真是 MoE。** `clef` 有 Linear 层、FFN
+却是稠密的，于是去取 `ma["experts"]` 时 `KeyError: 'experts'` ——
+**一个真模型让工具崩了。**
+
+**② 家族守卫：IR 表示不了的就跳过。** 判据从 IR 自己来（它声明了）：
+
+    llama-shaped   hparams 只有 d_model/n_layer/vocab  <- 默认 = Llama 形状
+    gpt2.by1       hparams: norm_kind, ln_eps          <- LayerNorm
+    gemma-4-31B    hparams: act, position global/local <- 滑窗 + 非 silu
+
+    全局拦（四个分支都表示不了）  LayerNorm · 非 silu 激活 · 多种位置
+    只拦 Llama / Mixtral         qk_norm
+    Qwen3Next / gpt-oss 不拦     它们自己的 HF 类支持
+
+**第三行是改第二遍才对的。** 第一版把 `qk_norm` 放进全局守卫，
+于是 `qwen3-next-shaped` 从 `ok` 变成 `skip` —— **误伤了真绿**，
+而那正是我自己写在文件头的硬要求里说"不许发生"的事。
+
+### 结果
+
+    ok 4 · skip 14 · fail 8      （改前是 ok 4 · skip 5 · fail 14 · timeout 3）
+    **四绿被误伤的：没有**
+
+顺带一个好处：守卫在**昂贵的 HF 建模之前**就返回 —— `Step-3.7-Flash`
+和 180B 原来超时（各 90 秒），现在直接是干净的跳过。
+
+档 4 仍然是 `64 项，0 项失败`。
+
+### 而剩下的 8 个是**同一个形状的第二来源**
+
+随手看一个：
+
+    by1diff GLM-5.3-Flash.by1
+      - 第 28 层没有可用的 token 混合器 —— **生成不出来**
+      ...
+
+**代码生成器不支持，而 `by1diff` 报的是"失败"。** 又是把"我判不了"
+说成了"错了"。
+
+**这一轮只修了第一个来源**（参考实现建错）。第二个来源在
+`by1codegen` 那一侧，形状一样、修法也一样 —— **留给下一轮**。
+
+（判卷人本身也需要判卷人：这一轮做的事就是给"判卷人说的是不是真话"量一次。）

@@ -112,7 +112,51 @@ def main(argv=None):
                   # 基值必须从 .by1 传过来：各有各的默认（Llama 1e4 / Mixtral 1e6），
                   # 不传就是两边在转不同角度 —— 这个坑 Oracle 第一次就抓到了
                   rope_theta=float(attn["rope_base"]))
-    if has_linear:
+    # **`has_linear` 只是必要条件之一。**
+    #
+    # Qwen3Next 是"Linear 层 + MoE"—— 而 `clef` 有 Linear 层的写法、
+    # FFN 却是稠密的。原来这里只看 `has_linear`，于是去取
+    # `ma["experts"]` 时 `KeyError: 'experts'`。
+    #
+    # **"这个家族认不认得"要按机制集合判，不能按"没有别的可能"判。**
+    # ── 家族守卫：**表示不了就不要比** ─────────────────────────────
+    #
+    # 26 份跑下来是 `ok 4 · skip 5 · timeout 3 · fail 14`，而 14 个 fail
+    # 里一大半的消息是"参考实现里少了 N 个张量" —— **那是参考实现建错了，
+    # 不是模型错了**。gpt2 是 LayerNorm + 学习式位置 + Conv1D，而 Llama
+    # 是 RMSNorm + RoPE + Linear：拿两个不同的东西对拍，比的不是数学。
+    #
+    # **假绿的反面是假红，而假红同样会让人忽略这个检查。**
+    #
+    # 判据从 IR 来 —— 它自己声明了这些。
+    _hp = info.get("hparams") or {}
+    _why = []
+    _act = str(_hp.get("act") or "").lower()
+    if _act and _act not in ("silu", "swiglu", "silu_and_mul"):
+        _why.append("FFN 激活是 %s（这几个参考实现都用 silu）" % _act)
+    _nk = str(_hp.get("norm_kind") or "").lower()
+    if _nk and _nk not in ("rmsnorm", "rms"):
+        _why.append("归一化是 %s（参考实现用 RMSNorm）" % _nk)
+    elif "ln_eps" in _hp and "rms_eps" not in _hp:
+        _why.append("声明的是 ln_eps（LayerNorm）而不是 rms_eps")
+    if len(info.get("position") or {}) > 1:
+        _why.append("声明了不止一种位置（%s）—— 说明有逐层不同的排法"
+                    % ", ".join(sorted(info.get("position") or {})))
+    if _why:
+        return by1skip.skip("这份声明的东西，本脚本的参考实现表示不了：%s"
+                            % "；".join(_why))
+
+    def _qk_unsupported():
+        """**只有 Llama / Mixtral 的 HF 类没有 qk_norm 这一层。**
+
+        Qwen3Next（`T.Qwen3NextConfig`）和 gpt-oss 自己的类里都有 ——
+        所以这一条不能放进全局守卫：拦了它就会把 `qwen3-next-shaped`
+        从 ok 变成 skip，而那是**误伤真绿**（上一版就是这么错的）。
+        """
+        _qn = str(attn.get("qk_norm") or "").lower()
+        return _qn not in ("", "off", "false", "0", "none")
+
+    if has_linear and is_moe:
         lin = next(o["attrs"] for L in ir["layers"] for o in L["ops"]
                    if o["kind"] == "Linear")
         ma = ffn_op["attrs"]
@@ -156,17 +200,43 @@ def main(argv=None):
         ref = T.GptOssForCausalLM(cfg).eval()
         fam = "GptOssForCausalLM"
     elif is_moe:
+        if _qk_unsupported():
+            return by1skip.skip(
+                "这份声明的东西，本脚本的参考实现表示不了："
+                "注意力带 qk_norm=%s，而 Mixtral 的 HF 类里没有这一层"
+                % attn.get("qk_norm"))
         ma = ffn_op["attrs"]
         cfg = T.MixtralConfig(intermediate_size=ma["hidden"],
                               num_experts=ma["experts"],
                               num_experts_per_tok=ma["top_k"], **common)
         ref = T.MixtralForCausalLM(cfg).eval()
         fam = "MixtralForCausalLM"
-    else:
+    elif not has_linear and not is_moe and not is_gptoss:
+        # **只有"整体就是 Llama 形状"的才走这一支。**
+        #
+        # 原来这里是无条件的 `else` —— 凡是没被前面几支认出来的模型
+        # 都被拿去和 Llama 比。**那不是一个判据，那是"有一个参考实现"
+        # 的错觉**：比出来的差会被当成模型的错，而真相是"没有参考"。
+        if _qk_unsupported():
+            return by1skip.skip(
+                "这份声明的东西，本脚本的参考实现表示不了："
+                "注意力带 qk_norm=%s，而 Llama 的 HF 类里没有这一层"
+                % attn.get("qk_norm"))
         fa = ffn_op["attrs"]
         cfg = T.LlamaConfig(intermediate_size=fa["hidden"], **common)
         ref = T.LlamaForCausalLM(cfg).eval()
         fam = "LlamaForCausalLM"
+    else:
+        # 到这个分支说明：机制组合我认不出该建哪个 HF 参考实现。
+        # **按三态协议说"这台机器上没验"，不要说"验了不对"。**
+        kinds = sorted({o["kind"] for L in ir["layers"] for o in L["ops"]})
+        return by1skip.skip(
+            # **说这个工具的局限，不说世界的事实。**
+            # `clef` 有真的 HF 对应物（Cloudflare/clef）—— 说"没有对应的
+            # 参考实现"是把"我不认得怎么建"讲成了"那个东西不存在"。
+            '这台机器上没法给这套机制组合建参考实现'
+            '（本脚本只认 Llama / Mixtral / gpt-oss / Qwen3Next 四种；'
+            '这份的算子是 %s）' % ', '.join(kinds))
 
     ns = {}
     exec(compile(cg.render(info, name), "<by1-generated>", "exec"), ns)
