@@ -67,12 +67,17 @@ GROUPS = [
         'by1debt', 'by1pat', 'by1smoke', 'by1pack', 'by1rebuild',
         'by1bootir']),
 
-    ('跑检查', 'src', '''两个入口，按轮换配合：
+    ('跑检查', 'src', '''**每一次推送之前跑一次快速检查**（10 秒），
+**每第 5 次推送改成跑全量**。
 
 ```
-python src/by1run.py     按轮换跑（一次全量 + 四次快速）
-python src/by1fast.py    只跑快速那一半
+python src/by1run.py --push     检查 → 推 → 记账（推之前用这个）
+python src/by1run.py --status   这是第几次推送 / 下次跑哪个
+python src/by1run.py --install-hook   装 pre-push 钩子
 ```
+
+装了钩子之后，**手动 `git push` 也拦得住** —— 检查不过就推不出去。
+"每次推送前跑"如果只靠人记得，迟早会变成"我记得的时候跑"。
 
 全量是分钟级的，改一行字也跑一遍不现实；纯快速碰不到数值。
 **两个都要，但不必每次都要。**''', [
