@@ -76,7 +76,19 @@ def main(argv=None):
     _rep, info = bc.check(args.by1)
     try:
         ir = cg.compile_ir(info)
+    except cg.UnsupportedError as ex:
+        # **"生成器还不认这个机制"不是"验了不对"，是"这台机器上没验"。**
+        # 三态是 0 验过了 / 30 这台机器上没验 / 1 验了不对，而
+        # KDA / SSM / 稀疏索引器 / mHC "只有契约，算不了"（README 原话）
+        # 属于第二种。**假红和假绿一样会让人忽略一个检查。**
+        #
+        # 子类要先捕 —— CodegenError 是它的父类。
+        print(f"\n  [不支持]\n{ex}\n")
+        return by1skip.skip("生成器还不认这套机制：%s"
+                            % str(ex).strip().replace("\n", "；")[:120])
     except cg.CodegenError as ex:
+        # **文件写坏了 —— 那是"验了不对"。**
+        # 属性缺失、取值非法、机制没有类型都属于这一种，而不是"没验"。
         print(f"\n  [不支持]\n{ex}\n")
         return 1
 

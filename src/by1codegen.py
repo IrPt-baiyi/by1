@@ -120,7 +120,21 @@ ATTRS = {
 
 
 class CodegenError(Exception):
-    pass
+    """**这份描述写坏了** —— 属性缺失、取值非法、机制没有类型。"""
+
+
+class UnsupportedError(CodegenError):
+    """**生成器还不认这个机制** —— 和"写坏了"是两回事。
+
+    两者以前都走 `CodegenError`，于是调用方只能一起处理：`by1diff`
+    把它们都算成"验了不对"。而 KDA / SSM 那些
+    "只有契约，算不了"（README 原话）其实是"这台机器上没验"。
+
+    **假红和假绿一样会让人忽略一个检查** —— 所以让它们分家。
+
+    继承 `CodegenError` 是为了不让老的 `except CodegenError` 断掉；
+    调用方要先捕这个子类，再捕父类。
+    """
 
 
 def _num(v, default=None):
@@ -292,8 +306,25 @@ def _yarn_params(info):
 
 # ── 编译：.by1 -> IR ───────────────────────────────────────────────
 
+#: **生成器认得哪些 token 混合器。** 只有这一处定义 —— 判定也只用它。
+#:
+#: 不在这里面的（`KDA` / `SSM` / 稀疏索引器等）**不是模型的错**，
+#: 是生成器还没实现。README 里就是这么写的：
+#: "KDA / SSM / 稀疏索引器 / mHC 只有契约，算不了"。
+#:
+#: 这个常量的用处是让调用方**在渲染之前**就知道，从而按三态协议
+#: 说"这台机器上没验"，而不是报一个看起来像"模型算错了"的失败。
+MIXER_KINDS = ("Attention", "Linear", "MLA", "Raw", "External")
+
+
 def compile_ir(info: Dict[str, Any]) -> Dict[str, Any]:
     errs: List[str] = []
+    #: **"生成器还不认"单独一个桶。** 它和"写坏了"要分开报 ——
+    #: 一份文件里两样都有时，**写坏了优先**（那就是一份坏文件）。
+    unsup: List[str] = []
+
+    def unsupported(msg):
+        unsup.append(msg)
 
     def _ck(key, value, name, kind):
         """取值校验：不合法就 err 并返回 False。
@@ -339,13 +370,22 @@ def compile_ir(info: Dict[str, Any]) -> Dict[str, Any]:
             err(f"机制 '{name}' 没有类型，无法生成")
             return None
         if kind not in SUPPORTED_KINDS:
-            err(f"机制 '{name}' 的类型是 '{kind}'，codegen 还不支持"
-                f"（目前支持：{', '.join(sorted(SUPPORTED_KINDS))}）")
+            unsupported(f"机制 '{name}' 的类型是 '{kind}'，codegen 还不支持"
+                        f"（目前支持：{', '.join(sorted(SUPPORTED_KINDS))}）")
             return None
         for k in attrs:
             if k not in ATTRS[kind]:
-                err(f"机制 '{name}' 的属性 '{k}' codegen 不认识"
-                    f"（{kind} 支持：{', '.join(sorted(ATTRS[kind]))}）")
+                # **"属性不认识"也是"不认"，不是"写坏了"。**
+                #
+                # 它有两种可能：① 生成器没实现这个特性；② 属性名拼错了。
+                # **② 由 `by1check` 在上游抓**（它有声明式的属性表），
+                # 所以到这一层时属性名已经是"合法但我不支持"。
+                #
+                # 实测：`SparseMLA` 的 index_heads / index_dim / index_topk、
+                # `MoE` 的 scoring 都落在这里 —— 而 README 原话就是
+                # "KDA / SSM / **稀疏索引器** / mHC 只有契约，算不了"。
+                unsupported(f"机制 '{name}' 的属性 '{k}' codegen 还不支持"
+                            f"（{kind} 支持：{', '.join(sorted(ATTRS[kind]))}）")
 
         if kind == "Attention":
             h = {k: _num(attrs.get(k)) for k in ("q", "kv", "head_dim")}
@@ -644,7 +684,10 @@ def compile_ir(info: Dict[str, Any]) -> Dict[str, Any]:
     layers = []
     _ov_all = info.get("overrides") or {}
     for li, (_s, m, a, _k, atts) in enumerate(info["layer_seq"]):
+        # **记下"报之前"的条数** —— 用来判 `one_mech` 有没有说话。
+        _before = len(errs) + len(unsup)
         mixer = one_mech(m, a, li)
+        _spoke = (len(errs) + len(unsup)) > _before
 
         def _with_ov(am, _s=_s, li=li):
             """挂在层上的机制，属性要合并这一层的逐层覆盖。
@@ -659,9 +702,36 @@ def compile_ir(info: Dict[str, Any]) -> Dict[str, Any]:
         # **逃生舱也算 token 混合器。** 这里原来只认 Attention / Linear / MLA
         # —— 于是 `Raw` 会被判成"没有混合器"，而理由是错的
         # （看起来像"这层没写混合器"，实际是"codegen 不认这个种类"）。
-        if mixer is None or mixer["kind"] not in ("Attention", "Linear", "MLA",
-                                                  "Raw", "External"):
-            err(f"第 {li} 层没有可用的 token 混合器 —— 生成不出来")
+        if mixer is None:
+            # **`one_mech` 已经说过原因了，就别再说一遍。**
+            #
+            # 它返回 None 有两种可能：
+            #   ① 它报过（机制种类不认 / 属性不认识 / 取值非法）—— 那原因
+            #      已经在 errs 或 unsup 里了，这里再说一句是**一个原因报两次**
+            #   ② 它一个字都没说 —— 机制名在 `mechs` 里找不到，
+            #      那"这层没有混合器"才是真的新信息
+            #
+            # 不分开的后果实测过：GLM-5.3-Flash 报了 34 句
+            # "第 N 层没有可用的 token 混合器"，而根因只有一句
+            # "机制 'KDA' 的类型是 'KDA'，codegen 还不支持" ——
+            # 那一句在 unsup 桶里，被这 34 句挤掉了。
+            if not _spoke:
+                err(f"第 {li} 层没有可用的 token 混合器 —— 生成不出来")
+            continue
+        if mixer["kind"] not in MIXER_KINDS:
+            # **种类认得出来、但它不是 token 混合器 —— 这是"处理不了"，
+            # 不是"描述写错了"。**
+            #
+            # 我一开始把它归成 err（描述的问题），于是 `by1gate` 立刻红了：
+            # 它要求 Nemotron 被拒时**理由里提到 SSM**，而这一句
+            # "第 1 层的主机制是 'MoE'，不是 token 混合器" 把
+            # `unsup` 里那句 SSM 遮住了（`errs` 优先）。
+            #
+            # 想清楚是这样：Nemotron 的层是 Attn / MoE / SSM 混排的
+            # （MTP 那条辅助栈的第一层主机制就是 MoE）——**那不是写错，
+            # 是 codegen 处理不了这种层。**
+            unsupported(f"第 {li} 层的主机制是 '{mixer['kind']}'，"
+                        f"codegen 不把它当 token 混合器")
             continue
         state = []
         if mixer["kind"] == "MLA":
@@ -707,7 +777,11 @@ def compile_ir(info: Dict[str, Any]) -> Dict[str, Any]:
                        "state": state})
 
     if errs:
+        # **写坏了优先。** 一份文件里既有语法/属性错、又有不认的机制时，
+        # 它是"坏文件"，不是"没验"。
         raise CodegenError("\n".join("  - " + e for e in errs))
+    if unsup:
+        raise UnsupportedError("\n".join("  - " + e for e in unsup))
 
     return {
         # **版本号。** 没有它的 IR 不该被接受 —— 读的一方无从判断
@@ -754,6 +828,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import by1skip
+
 
 # ⚠️ **从这里往下的 `1e-05` 是"写进产物"的字面量，不是可引用的常量。**
 #
