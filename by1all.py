@@ -32,25 +32,25 @@ GCC_GLOBS = [
 
 # 六个真实模型：(by1, config, tensors, backend, 额外参数)
 REAL = [
-    ('gpt-oss-120b.by1', 'refs/gpt-oss-120b.config.json',
-     'refs/gpt-oss-120b.tensors.json', 'torch.module', []),
-    ('gpt-oss-120b.by1', 'refs/gpt-oss-120b.config.json',
-     'refs/gpt-oss-120b.gguf-tensors.json', 'ggml', []),
-    ('gemma-4-31B.by1', 'refs/gemma-4-31B.config.json',
-     'refs/gemma-4-31B.gguf-tensors.json', 'ggml', []),
+    ('gpt-oss-120b.by1', 'refs/openai__gpt-oss-120b.config.json',
+     'refs/openai__gpt-oss-120b.tensors.json', 'torch.module', []),
+    ('gpt-oss-120b.by1', 'refs/openai__gpt-oss-120b.config.json',
+     'refs/openai__gpt-oss-120b.gguf-tensors.json', 'ggml', []),
+    ('gemma-4-31B.by1', 'refs/google__gemma-4-31B.config.json',
+     'refs/google__gemma-4-31B.gguf-tensors.json', 'ggml', []),
     ('Laguna-XS-2_1.by1', 'refs/poolside_Laguna-XS-2_1.config.json',
      'refs/laguna-xs-2.1.tensors.json', 'torch.module', []),
-    ('Instella-3B.by1', 'refs/amd_Instella-3B.config.json',
-     'refs/instella-3b.tensors.json', 'torch.module', []),
+    ('Instella-3B.by1', 'refs/amd__Instella-3B.config.json',
+     'refs/amd__Instella-3B.tensors.json', 'torch.module', []),
     ('Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL.by1',
      'refs/nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL.config.json',
      'refs/step37.tensors.json', 'torch.module', []),
-    ('Ling-3.0-tiny.by1', 'refs/inclusionAI_Ling-3.0-tiny.config.json',
-     'refs/ling-3.0-tiny.tensors.json', 'torch.module', []),
+    ('Ling-3.0-tiny.by1', 'refs/inclusionAI__Ling-3.0-tiny.config.json',
+     'refs/inclusionAI__Ling-3.0-tiny.tensors.json', 'torch.module', []),
     # **收敛的判卷人**：最普通的那种模型（标准 Qwen3 形状）。
     # 前面几个都是特意挑来压东西的，如果连这一个都要新属性，就是没收敛。
     ('minimind-3.by1', 'refs/jingyaogong__minimind-3.config.json',
-     'refs/minimind-3.tensors.json', 'torch.module', []),
+     'refs/jingyaogong__minimind-3.tensors.json', 'torch.module', []),
     # 第二个收敛判卷人，比 minimind 严格得多：48 层线性注意力 + 16 层全量，
     # 而这一整套 Qwen3-Next 时代就有了（GDN + 3+1 混合 + q_gate + qk_norm）。
     ('clef.by1', 'refs/Cloudflare__clef.config.json',
@@ -91,7 +91,16 @@ SHAPED = ['llama-shaped.by1', 'mixtral-shaped.by1', 'gpt-oss-shaped.by1',
           # （还不认 bias）。它是怎么被发现的：改 C 后端让它支持无门控，
           # 然后拿 gpt2 本体对拍，差 3.9e-01。
           # 这个文件是让那条检查**留下来**：162M 参数的进不了 --quick。
-          'gpt2-tiny.by1']
+          'gpt2-tiny.by1',
+          # ── **最小例子也要回归。** ────────────────────────────────
+          #
+          # `hello.by1` 是语言的第一课（README 里就指着它）——
+          # 而它**从来没被任何测试跑到过**。
+          #
+          # 用户提的"兼容性：你好"就是这个：**最小例子必须一直能跑。**
+          # 一个语言最先坏的地方，永远是它最简单的那个例子 ——
+          # 因为所有新功能都拿它试手，而没人回头跑它。
+          'hello.by1']
 
 # 三个判卷人脚本
 JUDGES = ['by1mla.py', 'by1moe.py', 'by1rope.py',
@@ -221,21 +230,55 @@ def main():
         fails.append('selftest')
 
     # ---- 2. config 逐字段 ----
+    #
+    # **路径从 `.by1` 推，不用 REAL 清单里那两个字符串。**
+    #
+    # 那两个字符串会**各自过期**：我把 refs 统一命名之后，
+    # 改名脚本知道，**但这里 27 处字符串不知道**。
+    # 于是 11 个检查被 `if not os.path.exists(...)` **静默跳过** ——
+    # `--quick` 从 55 项掉到 45 项，而报的是「45 项，0 项失败」。
+    #
+    # **跳过和通过，在输出里长得一样。那是最坏的一种绿。**
+    #
+    # 所以：路径由规则推（by1refs），**推不出来就报错**，不跳过。
+    import by1refs as _refs
+
     seen = set()
-    for f, cfg, _t, _b, _x in REAL:
-        if f in seen or not os.path.exists(cfg):
+    derived_fail = []
+    for f, _cfg, _t, _b, _x in REAL:
+        if f in seen:
             continue
         seen.add(f)
+        cfg = _refs.paths(f, 'config')
+        if cfg is None:
+            if _refs.repo_of(f):
+                derived_fail.append(f)
+            continue                     # 合成模型没有 config，正常
         ok, out = run(['by1verify.py', f, cfg, '--config'], 'config ' + f)
         line = [l.strip() for l in out.splitlines() if '逐字段' in l]
         note = line[-1] if line else '（没有 field 映射）'
         rows.append(('config ' + f, ok and bool(line), note))
         if not (ok and line):
             fails.append('config ' + f)
+    if derived_fail:
+        # **不静默。** 有 by1-repo 却推不出 config，是引用坏了。
+        print('  !! **%d 个模型的 refs 引用推不出来**（不是合成模型）：'
+              % len(derived_fail))
+        for f in sorted(set(derived_fail)):
+            print('       %s' % f)
+        fails.extend('refs ' + f for f in sorted(set(derived_fail)))
 
     # ---- 3. 张量名与形状 ----
-    for f, cfg, ten, backend, extra in REAL:
-        if not os.path.exists(ten):
+    ten_fail = []
+    for f, _cfg, _t, backend, extra in REAL:
+        cfg = _refs.paths(f, 'config')
+        # ggml 那一路的张量清单名字不同（`.gguf-tensors.json`），
+        # 由 REAL 里的第三个字段指定 —— 那是**数据**，不是路径规则。
+        want = _t
+        ten = want if os.path.exists(want) else _refs.paths(f, 'tensors')
+        if cfg is None or ten is None or not os.path.exists(ten):
+            if _refs.repo_of(f):
+                ten_fail.append((f, backend))
             continue
         ok, out = run(['by1verify.py', f, cfg, '--tensors', ten,
                        '--backend', backend] + extra, 'tensors ' + f)
@@ -244,13 +287,29 @@ def main():
                      (line[-1] if line else '').replace('   ', ' ')))
         if not ok:
             fails.append('tensors %s %s' % (backend, f))
+    if ten_fail:
+        print('  !! **%d 个张量检查找不到文件**（不是合成模型）：' % len(ten_fail))
+        for f, b in ten_fail:
+            print('       %s  [%s]' % (f, b))
+        fails.extend('tensors-refs %s %s' % (f, b) for f, b in ten_fail)
 
     # ---- 4. 前向：参考实现 ----
     # **先收集，再并行，最后按顺序解析。**
     # 判据没变 —— 顺序只影响打印，不影响判定。
+    #
+    # **`hello.by1` 不在这里。** 这一步是拿**参考实现**（按 config 建的
+    # 那份 HF 模型）对拍的 —— 而 `hello.by1` 是一个教学用的最小模型，
+    # **没有 config，也没有参考实现**。
+    #
+    # 我一开始把它塞进 SHAPED，于是它掉进这一步，报
+    # "前向 hello.by1 最大绝对差 1.756e-02" ——
+    # **看起来像最小例子算错了**，其实是**拿它跟一个不存在的东西比**。
+    #
+    # 它该验的是"三个后端自洽"（第 5 步 `by1exec --compare`
+    # 和后面的 C 后端），那不依赖任何外部参考。
     _todo = [f for f in SHAPED
              if f not in ('mla-shaped.by1', 'llama3-shaped.by1',
-                          'clef-tiny.by1', 'gpt2-tiny.by1')]
+                          'clef-tiny.by1', 'gpt2-tiny.by1', 'hello.by1')]
     for f, (ok, out) in zip(_todo, run_many(
             [(['by1diff.py', f], 'diff ' + f) for f in _todo])):
         line = [l.strip() for l in out.splitlines() if '最大绝对差' in l]

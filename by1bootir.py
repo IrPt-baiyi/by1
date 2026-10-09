@@ -37,16 +37,23 @@ def main():
     # **无参数 = 跑默认那三对**（给 by1all 用）。
     # 三个模型横跨两代：minimind-3 / instella-3b 是现代 config，
     # gpt2 是上一代 —— 字段名、归一化、位置全都不同。
-    PAIRS = [
-        ('minimind-3.by1', 'refs/jingyaogong__minimind-3.config.json',
-         'refs/minimind-3.tensors.json'),
-        ('instella-3b.by1', 'refs/amd_Instella-3B.config.json',
-         'refs/instella-3b.tensors.json'),
-        ('gpt2.by1', 'refs/gpt2.config.json', 'refs/gpt2.tensors.json'),
-    ]
+    #
+    # **路径不再写死，从 `.by1` 头部的 `# by1-repo:` 推。**
+    # 写死的话会各自过期：我把 `refs/minimind-3.tensors.json` 改名成
+    # `refs/jingyaogong__minimind-3.tensors.json`，改名脚本知道，
+    # **但这里的三行字符串不知道** ——
+    # 症状是 `FileNotFoundError: refs/minimind-3.tensors.json`，
+    # **看起来像文件丢了，其实是引用没跟上。**
     import os as _os
-    pairs = ([tuple(sys.argv[1:4])] if len(sys.argv) >= 4 else
-             [p for p in PAIRS if _os.path.exists(p[1])])
+    import by1refs as _refs
+
+    def _pair(by1):
+        c, t = _refs.paths(by1, 'config'), _refs.paths(by1, 'tensors')
+        return (by1, c, t) if (c and t) else None
+
+    PAIRS = [p for p in (_pair('minimind-3.by1'), _pair('Instella-3B.by1'),
+                         _pair('gpt2.by1')) if p]
+    pairs = ([tuple(sys.argv[1:4])] if len(sys.argv) >= 4 else PAIRS)
     bad = 0
     for f, cfg_p, ten_p in pairs:
         bad |= _one(f, cfg_p, ten_p)

@@ -72,32 +72,27 @@ def main():
         # **张量名才是判据。** classify() 从名字认机制；
         # 只给 config 的话什么机制都认不出来（见下面"空壳拒了"那段）。
         #
-        # refs/ 里的张量清单是**早年下载时随手起的名字**，和 config 的
-        # `<owner>__<Repo>` 对不上。**显式表，不推断** —— 按名字猜
-        # 已经失败过一次（9 个假"空壳"）。
-        TENSOR_ALIAS = {
-            # 这几个的 config 名和早年的张量清单名对不上
-            'nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL':
-                'step37',
-            'stepfun-ai__Step-3.7-Flash': 'step37-official',
-            'stepfun-ai_Step-3_7-Flash': 'step37-official',
-            'poolside_Laguna-XS-2_1': 'laguna-xs-2.1',
-            'poolside_Laguna-XS_2': 'laguna-xs-2.1',
-            # config 没有 owner 前缀，张量清单有
-            'gemma-4-12B': 'google__gemma-4-12B',
-            'gemma-4-26B-A4B': 'google__gemma-4-26B-A4B',
-            # **`state-spaces__mamba-130m-hf` 本来就有，别再映射走。**
-            # 第一版写了个 'mamba-130m'，而 refs/ 里根本没有那个文件 ——
-            # 于是"本来就对"的那个反而找不到，报的是假"空壳"。
-        }
+        # 这里原来有一张 `TENSOR_ALIAS` 表，把模型名映射到早年随手起的
+        # 张量清单名（`stepfun-ai__Step-3.7-Flash` -> `step37-official`）。
+        #
+        # **那是"这个模型 -> 那个文件"的硬编码，不该有。** 用户指出得对。
+        #
+        # 正确的做法是让 `refs/` 遵循同一条规则：
+        #     refs/<owner>__<Repo>.config.json
+        #     refs/<owner>__<Repo>.tensors.json     <- 同名，只差后缀
+        #
+        # 文件名统一之后表就是多余的 —— 已经删了。
+        # **规则能解决的事，不要用表；表只能解决规则解决不了的事。**
         real = {}
-        cands = [TENSOR_ALIAS.get(name), name, name.split('__')[-1],
-                 name.split('__')[-1].split('_', 1)[-1]]
-        for cand in cands:
-            if not cand:
-                continue
-            p = os.path.join(HERE, 'refs', cand + '.tensors.json')
-            if os.path.exists(p):
+        _p = os.path.join(HERE, 'refs',
+                          os.path.basename(f)[:-len('.config.json')]
+                          + '.tensors.json')
+        if os.path.exists(_p):
+            try:
+                real = json.load(io.open(_p, encoding='utf-8'))
+            except Exception:
+                real = {}
+
                 try:
                     real = json.load(io.open(p, encoding='utf-8'))
                 except Exception:
