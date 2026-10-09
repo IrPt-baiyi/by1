@@ -125,12 +125,19 @@ def main():
             note = '+'.join(sorted(k for k in kinds if k))[:40]
 
             # **把认不出来的张量名捞出来 —— 那才是待办清单。**
-            # boot_ir 在 Raw 那条里记了 attrs["tensors"]。
+            # boot_ir 在 Raw 那条里记了 attrs["tensors"]，
+            # 以及 attrs["detected"]（classify 认出来的机制，可能为 None）。
+            #
+            # **两者要分开统计**：detected 有值 = 认出来了但 boot 不会展开
+            # （是 boot 的活）；detected 为 None = 可能真是新机制。
             raw = []
             for L in (ir.get('layers') or []):
                 for o in (L.get('ops') or []):
                     if o.get('kind') == 'Raw':
-                        raw.extend((o.get('attrs') or {}).get('tensors') or [])
+                        a = o.get('attrs') or {}
+                        det = a.get('detected')
+                        for t in (a.get('tensors') or []):
+                            raw.append((t, det))
             rows2.append((name, '', note, raw))
 
             if not mechs:
@@ -175,20 +182,45 @@ def main():
         return t
 
     groups = {}
+    unknown_mech = {}
     for name, verdict, note, raw in rows2:
-        for t in raw:
+        for t, det in raw:
             groups.setdefault(canon(t), set()).add(name)
+            if not det:
+                unknown_mech.setdefault(canon(t), set()).add(name)
+
     if groups:
+        print('  **① 认出来了，但 boot 还不会展开**')
+        print('     （`classify()` 返回了机制名 —— 是 **boot_ir 的活**，')
+        print('      不是 by1 缺机制。加一个分支就行。）')
+        print()
+        n1 = 0
         for pat, models in sorted(groups.items(),
                                   key=lambda kv: (-len(kv[1]), kv[0])):
-            print('  %-58s %d 个模型' % (pat[:58], len(models)))
-            if len(models) <= 3:
-                print('      %s' % ', '.join(sorted(models)))
+            if pat in unknown_mech:
+                continue
+            n1 += 1
+            print('  %-54s %2d 个模型' % (pat[:54], len(models)))
+        if not n1:
+            print('  （没有）')
+        print()
+        print('  **② `classify()` 也认不出**（才可能是真新机制）')
+        print()
+        if unknown_mech:
+            for pat, models in sorted(unknown_mech.items(),
+                                      key=lambda kv: (-len(kv[1]), kv[0])):
+                print('  %-54s %2d 个模型' % (pat[:54], len(models)))
+        else:
+            print('  **（没有 —— 一个真新机制都没有）**')
+        print()
+        print('  **① 是 boot_ir 没写完，② 才是 by1 可能要加的。**')
+        print('  第一版把两者混成一句"444 种认不出来的张量"，')
+        print('  读起来像 by1 缺一大堆机制 —— 而真相是 ① 占绝大多数。')
     else:
         print('  （没有认不出来的张量）')
     print()
-    print('  认不出来的张量一共 %d 种模式，涉及 %d 个模型'
-          % (len(groups), len({m for ms in groups.values() for m in ms})))
+    print('  ① %d 种模式  ·  ② %d 种模式'
+          % (len(groups) - len(unknown_mech), len(unknown_mech)))
     print()
     print('  **"✓" 不等于"能算"** —— 那只是 boot 能出 IR。')
     print('  要证明能算，还得走 codegen / exec / C 三后端。')

@@ -50,6 +50,62 @@ def layer_of(k):
     return int(m.group(1)) if m else None
 
 
+# **一个 checkpoint 里不止一个塔。**
+#
+# 实测：`model.visual.blocks.0.*`（视觉块 0）和
+# `model.language_model.layers.0.*`（文本层 0）**层号都是 0**。
+#
+# 第一版按层号分组，于是 `per[0]` 里同时装着视觉块 0 和文本层 0 ——
+# `classify()` 看到的是混合的一堆，谁都不像，判成 `Raw`。
+#
+# **而症状是"444 种认不出来的张量、涉及 15 个模型"，看起来像
+# by1 缺一大堆机制。** 真相是**两层的张量混在了一起**。
+# 这不是"认不出前缀"，是**分组分错了**。
+#
+# 所以：先按塔切开，再在各自塔里按层分组。
+TOWER_PAT = [
+    ('视觉', r'(^|\.)(visual|vision|vision_tower|image_encoder|patch_embed'
+             r'|merger|multi_modal_projector|img_|image_newline'
+             r'|vision_model|vit)'),
+    ('音频', r'(^|\.)(audio|sound|speech|whisper|audio_tower)'),
+    ('视频', r'(^|\.)(video|temporal)'),
+]
+
+
+def tower_of(k):
+    """这个张量属于哪个塔。**返回 None 表示"文本塔"**（这个 IR 描述的）。"""
+    for name, pat in TOWER_PAT:
+        if re.search(pat, k, re.I):
+            return name
+    return None
+
+
+# **辅助栈也是另一个命名空间。**
+#
+# `mtp.layers.0.*`（多 token 预测）和 `model.language_model.layers.0.*`
+# （主干的第 0 层）**层号也都是 0** —— 和视觉塔那个坑一模一样。
+#
+# by1 里这叫 `aux` 栈（`aux = true`，辅助栈不算解码层），
+# qwen38.by1 早就写过。所以这里不该判成 Raw，该**分到辅助栈去**。
+#
+# 各家叫法：
+#     mtp.layers.*        Qwen3.5 / Qwen3.8 / Nemotron
+#     nextn.layers.*      DeepSeek 的 MTP
+#     multi_token.*       …
+AUX_PAT = [
+    ('mtp', r'(^|\.)(mtp|nextn|multi_token|mtp_layers)\.'),
+    ('draft', r'(^|\.)(draft|eagle|medusa)\.'),
+]
+
+
+def aux_of(k):
+    """这个张量属不属于辅助栈。返回栈名或 None。"""
+    for name, pat in AUX_PAT:
+        if re.search(pat, k, re.I):
+            return name
+    return None
+
+
 def classify(names):
     """一层里的张量名 -> 大概是哪种机制。**说不出就说不说。**"""
     s = " ".join(names)
@@ -235,11 +291,43 @@ def boot_ir(cfg, real, name="booted"):
         return val
 
     # ── 每层是什么 ─────────────────────────────────────────────────
-    per = {}
+    #
+    # **先按塔切开，再按层分组。** 见 tower_of() 上面那段 ——
+    # 不切的话视觉块 0 和文本层 0 会挤进同一个 per[0]，
+    # 于是两层都不像任何机制，一起判成 Raw。
+    towers = {}
+    auxes = {}
+    others = []
     for k in real:
+        tw = tower_of(k)
+        if tw:
+            towers.setdefault(tw, []).append(k)
+            continue
+        ax = aux_of(k)
+        if ax:
+            auxes.setdefault(ax, []).append(k)
+            continue
+        others.append(k)
+
+    per = {}
+    for k in others:
         li = layer_of(k)
         if li is not None:
             per.setdefault(li, []).append(k)
+
+    if towers:
+        # **要说出来。** 不说的话，用的人会以为这个 IR 是整个模型的，
+        # 而它只描述了文本塔。
+        print('  （数据里还有别的塔，它们**不在这个 IR 里**：%s）'
+              % ', '.join('%s %d 个张量' % (t, len(v))
+                          for t, v in sorted(towers.items())))
+    if auxes:
+        # **辅助栈也一样要说。** 它们**是**这个模型的一部分
+        # （qwen38.by1 里就写了 `aux = true`），但不在主干层序里。
+        print('  （还有辅助栈 —— 它们不在主干层序里，'
+              '但这个 IR **没有描述它们**：%s）'
+              % ', '.join('%s %d 个张量' % (t, len(v))
+                          for t, v in sorted(auxes.items())))
 
     q = pick(cfg, "num_attention_heads")
     kv = pick(cfg, "num_key_value_heads") or q
@@ -292,14 +380,24 @@ def boot_ir(cfg, real, name="booted"):
         else:
             # 认不出来 —— 说出来，不猜。
             #
-            # **而且要说清楚是哪些张量没认出来。**
-            # 第一版只写了 `{"impl": "unknown"}` —— 于是 triage 能报
-            # "这个模型有 Raw"，但报不出**要加什么机制**。
-            # 那张"待办清单"就没了，而它才是这个流程唯一的产出。
+            # **但"认不出来"有两件事，必须分开说：**
             #
-            # `ks` 是这一层的张量名，`classify()` 认不出的就在里面。
-            ops.append({"mech": "Unknown", "kind": "Raw",
+            #   ① `classify()` 认出来了（是 Linear / MLA），
+            #      但 boot 还不会展开它 —— **是 boot 的活**。
+            #   ② `classify()` 也认不出 —— **才可能是真新机制**。
+            #
+            # 第一版只有 `Attention` 一个分支，于是 Linear / MLA
+            # **全掉进这里**，报的是 `impl: unknown`。
+            # 于是 clef 那 48 层线性注意力被报成"认不出来" ——
+            # 而 `classify()` 明明返回了 "Linear"。
+            #
+            # **症状是"444 种认不出来的张量"，看起来像 by1 缺一大堆
+            # 机制。真相是 boot 的分支没写完。**
+            detected = classify(ks)
+            ops.append({"mech": detected or "Unknown",
+                        "kind": "Raw",
                         "attrs": {"impl": "unknown",
+                                  "detected": detected,
                                   "tensors": sorted(ks)},
                         "inputs": ["op0.out"], "outputs": ["op1.out"]})
         ops.append({"mech": "Add", "kind": "Add", "attrs": {},
