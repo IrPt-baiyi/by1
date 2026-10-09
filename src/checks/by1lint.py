@@ -62,6 +62,11 @@ class V(ast.NodeVisitor):
     def __init__(self, fname, src):
         self.f = fname
         self.src = src
+        # **逐行的原文。** 规则⑧ 要认 `# noqa` —— 那是标准逃生口。
+        # 不认它的后果不是"多报一条"，是**逼人把故意的 import 删掉**
+        # （`by1paths` 里 `import by1io` 就是靠它的副作用把 stdout
+        # 钉成 UTF-8）。删掉之后没有检查会红 —— 那个副作用就静默没了。
+        self.lines = src.split('\n')
         self.hits = defaultdict(list)
         self.imported = {}      # 名字 -> 行号
         self.used = set()
@@ -266,6 +271,11 @@ class V(ast.NodeVisitor):
     def visit_Import(self, n):
         for a in n.names:
             nm = (a.asname or a.name).split('.')[0]
+            # **`# noqa` 那一行不算。** 标准逃生口 —— 不认它的后果
+            # 不是"多报一条"，是逼人把故意的 import 删掉
+            # （`by1paths` 里 `import by1io` 就是靠它的副作用）。
+            if 'noqa' in self.lines[n.lineno - 1]:
+                return
             self.imported[nm] = n.lineno
             if a.name == 'subprocess' and a.asname:
                 self.sp_alias.add(a.asname)
@@ -383,8 +393,21 @@ def main():
     if '--selftest' in sys.argv:
         return _selftest()
 
-    files = sorted(f for f in os.listdir('.')
-                   if f.startswith('by1') and f.endswith('.py'))
+    # **从 `by1paths` 走全部子目录，不是 `listdir('.')`。**
+    #
+    # 这个脚本原来 `os.chdir(HERE)` 然后 `listdir('.')` ——
+    # 在 `src/` 平铺时代那是对的。搬进 `src/checks/` 之后
+    # 它只看得见自己那个目录：**扫的文件从 55 个掉到 22 个，
+    # 而判定行照旧 PASS。**
+    import by1paths as _p
+    files = []
+    for _d in (_p.SRC,) + tuple(os.path.join(_p.SRC, _s)
+                                  for _s in _p.SUBDIRS):
+        if not os.path.isdir(_d):
+            continue
+        files += [_d + os.sep + f for f in os.listdir(_d)
+                  if f.startswith('by1') and f.endswith('.py')]
+    files.sort()
     allhits = defaultdict(list)
     for f in files:
         try:

@@ -75,8 +75,13 @@ GROUPS = [
         'by1paths', 'by1io', 'by1codegen', 'by1skip', 'by1ir', 'by1ver',
         'by1exec', 'by1c', 'by1refs', 'by1check', 'by1boot', 'by1ext']),
 
-    ('`lang/` —— 语言本身', 'lang', '''把 `.by1` 变成一份能算的东西。''', [
-        'by1', 'by1contract', 'by1emit', 'by1name', 'by1vocab']),
+    ('`lang/` —— 语言本身', 'lang', '''把 `.by1` 变成一份能算的东西。
+
+`by1export` 是**导出策略层** —— 把算好的语义变成 HF config 的字段。
+它原来是 `by1check.check()` 里嵌着的 13 个 `gen_*` / `name_*`
+（那个函数因此有 1243 行）。**劈开的理由写在那个文件的头注里。**''', [
+        'by1', 'by1contract', 'by1emit', 'by1name', 'by1vocab',
+        'by1export']),
 
     ('`checks/` —— 判卷人 · 神谕 · 跑检查', 'checks', '''这个项目最核心的资产。
 
@@ -297,6 +302,12 @@ def generate():
         if not os.path.isdir(full):
             continue
         for f in sorted(os.listdir(full)):
+            # **`__init__.py` 不算模块。** 它只有一个用途：
+            # 让 setuptools 装得上那个子目录（见 pyproject 里的
+            # `packages`）。把它列进 FILES.md 只会让"这个文件干什么的"
+            # 多五行噪音。
+            if f == '__init__.py':
+                continue
             if f.endswith('.py') or f.endswith('.c'):
                 src_list.append(d + '/' + f)
     by_dir['src'] = src_list

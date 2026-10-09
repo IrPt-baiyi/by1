@@ -95,9 +95,15 @@ def main():
     print()
     print('  ① 编译 src/ 下每个 .py')
     # **走 `src/` 和每个子目录** —— 搬家之后模块不都在同一层了。
+    # **从 `by1paths.SRC` 走，不是 `HERE`。**
+    #
+    # `HERE` 现在是自己那个目录（`src/checks/`）—— 而"所有模块住在
+    # 哪些目录"这件事只有 `by1paths` 知道。写成 `HERE` 的后果是
+    # **静默丢掉大部分模块**：编译数从 56 掉到 23，而判定行照旧 PASS。
+    # 一个覆盖掉了一半还报绿的检查，比没有检查更坏。
     py_files = []
-    for d in (HERE,) + tuple(os.path.join(HERE, s)
-                             for s in by1paths.SUBDIRS):
+    for d in (by1paths.SRC,) + tuple(os.path.join(by1paths.SRC, s)
+                                     for s in by1paths.SUBDIRS):
         if os.path.isdir(d):
             py_files += [os.path.join(d, f) for f in sorted(os.listdir(d))
                          if f.endswith('.py')]
@@ -122,8 +128,13 @@ def main():
     print('  ② import 每个模块（查得出"少了一个依赖"）')
     mods = [m for _p, m in py_mods
             if not m.startswith('_') and m != '__init__']
+    # **`cwd` 要是 `src/`，不是自己那个目录。**
+    #
+    # 子进程跑的是 `import by1ir` 这种裸名 —— 它靠 `cwd` 在 `sys.path`
+    # 上找。写成 `HERE`（= `src/checks/`）的话，顶层那 12 个模块
+    # 一个都 import 不了，**而它们恰恰是被所有人 import 的底座**。
     r = subprocess.run([sys.executable, '-c', IMPORT_ALL, json.dumps(mods)],
-                       cwd=HERE, capture_output=True, text=True,
+                       cwd=by1paths.SRC, capture_output=True, text=True,
                        encoding='utf-8', errors='replace', timeout=300)
     try:
         fails = json.loads((r.stdout or '').strip().split('\n')[-1])

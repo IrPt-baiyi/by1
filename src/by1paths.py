@@ -51,7 +51,6 @@
     import os as _os
     import sys as _sys
     _sys.path.insert(0, _os.path.dirname(_os.path.dirname(...)))
-    import by1paths
 
    为什么需要它：**Python 没有"在 import 之前就生效"的钩子**，
    而入口脚本必须能被直接 `python src/checks/by1diff.py` 跑起来。
@@ -74,7 +73,6 @@ import os
 # 而这个模块几乎每个脚本都会 import —— 所以放在这里，钉一次全都沾光。
 # （不要因此把 by1io 变成"什么都往里塞"的模块：它只管读写和这一条约定。）
 import by1io  # noqa: F401
-import by1paths
 
 # ── src/ 下的子目录 ────────────────────────────────────────────────
 #
@@ -128,12 +126,13 @@ def check_boot():
                 continue
             p = os.path.join(d, f)
             try:
-                head = io.open(p, encoding='utf-8', errors='replace').read(2000)
+                with io.open(p, encoding='utf-8', errors='replace') as fh:
+                    body = fh.read()
             except OSError:
                 continue
-            if "__main__" not in io.open(p, encoding='utf-8',
-                                         errors='replace').read():
+            if "__main__" not in body:
                 continue                      # 不是入口，不需要
+            head = body[:2000]
             if '_sys.path.insert' not in head:
                 missing.append(rel(p))
     return missing
