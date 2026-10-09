@@ -15,8 +15,8 @@ by1 0.9.0 · by1-ir 1.0
 | | 从哪来 | 怎么重建 |
 |---|---|---|
 | `by1*.py` | 手写的代码 | —— 这就是源码本身 |
-| `refs/*.json` | **从 HuggingFace / ModelScope 抓的模型元数据** | `python by1fetch.py`（种子是 `models.tsv`） |
-| `*.by1` · `models.tsv` | **手写的知识** | 手写的；可交叉验证（`.by1` 头部的 `by1-repo` 和 `models.tsv` 互为参照） |
+| `refs/*.json` | **从 HuggingFace / ModelScope 抓的模型元数据** | `python src/by1fetch.py`（种子是 `models.tsv`） |
+| `models/*.by1` · `models.tsv` | **手写的知识** | 手写的；可交叉验证（`.by1` 头部的 `by1-repo` 和 `models.tsv` 互为参照） |
 | `models.md` · `ir-spec.md` · `VERSION` | 生成的 | `by1cmp.py --md` · `by1ir.py --spec` · `by1ver.py --write` |
 
 `refs/` 里的东西**不是这个项目的作品** —— 它们是各个模型发布方的公开
@@ -49,7 +49,7 @@ by1 让它变成一句话，而且**这句话能被验证**。
 ### ① 把一份已发布的 checkpoint 描述出来，并**证明**描述是对的
 
 ```bash
-python by1verify.py clef.by1 refs/Cloudflare__clef.config.json --config \
+python src/by1verify.py models/clef.by1 refs/Cloudflare__clef.config.json --config \
                     --tensors refs/Cloudflare__clef.tensors.json --backend torch.module
 ```
 
@@ -59,7 +59,7 @@ python by1verify.py clef.by1 refs/Cloudflare__clef.config.json --config \
 ### ② 从产物**反推**一份草稿，不用先懂这门语言
 
 ```bash
-python by1boot.py <config.json> <tensors.json> --run
+python src/by1boot.py <config.json> <tensors.json> --run
 ```
 
 ```
@@ -74,7 +74,7 @@ python by1boot.py <config.json> <tensors.json> --run
 ### ③ 端到端：真产物 → IR → 三个后端 → 对官方实现
 
 ```bash
-python by1e2e.py
+python src/by1e2e.py
 ```
 
 ```
@@ -87,7 +87,7 @@ C                   编译成功
 ### ④ 一条命令看整个项目还活着没有
 
 ```bash
-python by1all.py
+python src/by1all.py
 ```
 
 ```
@@ -102,17 +102,17 @@ python by1all.py
 **IR 才是接口。** `.by1` 只是前端之一。
 
 ```bash
-python by1ir.py --spec          # 生成规格（字段、必填、语义、闭集）
-python by1ir.py --emit x.by1    # 出一份规范化 JSON
-python by1ir.py --check x.json  # 校验
+python src/by1ir.py --spec          # 生成规格（字段、必填、语义、闭集）
+python src/by1ir.py --emit models/hello.by1    # 出一份规范化 JSON
+python src/by1ir.py --check x.json  # 校验
 ```
 
 **写第四个后端**：读规格 → 读懂 JSON → 实现。
 三个现有后端都能**只拿 IR 跑**，这条路由判卷人守着：
 
 ```bash
-python by1irentry.py    # 三个后端从 IR 入口跑 + JSON 往返
-python by1opdiff.py     # 逐算子比 NumPy 和 PyTorch
+python src/by1irentry.py    # 三个后端从 IR 入口跑 + JSON 往返
+python src/by1opdiff.py     # 逐算子比 NumPy 和 PyTorch
 ```
 
 ---
@@ -155,7 +155,7 @@ by1 --version
 > 所以**一个空包在这台机器上也装不上** —— 验过。
 > `pyproject.toml` 本身是对的，只是在这台机器上没法证。
 >
-> 能用的分发方式是打包：`python by1pack.py`（不需要 pip）。
+> 能用的分发方式是打包：`python src/by1pack.py`（不需要 pip）。
 
 ---
 
@@ -166,7 +166,7 @@ by1 --version
 最先炸的那一类：
 
 ```bash
-python by1dev.py
+python src/by1dev.py
 ```
 
 ```
@@ -250,17 +250,18 @@ pip install transformers==5.15.1 safetensors     # 和本机一致
 ## 目录里有什么
 
 ```
-规格         ir-spec.md      **从 by1ir.py 生成的**，不是手写的
-            by1ir.py        schema + 校验 + JSON 往返
-入口         by1boot.py      产物 -> IR（不用 .by1）
-            by1check.py     .by1 -> 检查 + IR
-后端         by1codegen.py   PyTorch      by1exec.py  NumPy      by1c.py  C
-判卷人       by1all.py       一次跑完全部
-            by1verify.py    对着官方产物验
-            by1e2e.py · by1irentry.py · by1opdiff.py · by1bootir.py
-            by1gate.py      取值门的可证伪对照
-            by1raw.py · by1extdemo.py   逃生舱的两层
-描述         *.by1           26 份，其中 14 份对真实 checkpoint 验过
+规格         ir-spec.md       **从 src/by1ir.py 生成的**，不是手写的
+            src/by1ir.py     schema + 校验 + JSON 往返
+入口         src/by1boot.py   产物 -> IR（不用 .by1）
+            src/by1check.py  .by1 -> 检查 + IR
+后端         src/by1codegen.py PyTorch   src/by1exec.py NumPy   src/by1c.py C
+判卷人       src/by1all.py    一次跑完全部
+            src/by1verify.py 对着官方产物验
+            src/by1e2e.py · src/by1irentry.py · src/by1opdiff.py
+            src/by1bootir.py
+            src/by1gate.py   取值门的可证伪对照
+            src/by1raw.py · src/by1extdemo.py   逃生舱的两层
+描述         models/*.by1     26 份，其中 14 份对真实 checkpoint 验过
 ```
 
 ---
@@ -295,6 +296,6 @@ pip install transformers==5.15.1 safetensors     # 和本机一致
 
 ---
 
-深处的账在 [`ir.md`](ir.md)（1600+ 行）· 主张与现实的对照在 [`1.md`](1.md)。
+深处的账在 [`history/ir.md`](history/ir.md)（2800+ 行）· 主张与现实的对照在 [`1.md`](1.md)。
 
 **语言名称暂定 by1。**

@@ -17,7 +17,7 @@ Sources (HuggingFace):
     poolside/Laguna-XS-2.1-GGUF                    -> refs/poolside__Laguna-XS-2_1.gguf-tensors.json
 
 Two paths are hand-written, not fetched, and carry no upstream to derive from:
-    mixtral-shaped.by1, models.tsv
+    models/mixtral-shaped.by1, models.tsv
 They must be authored against the by1 sources, which are not present here, so
 this script takes them verbatim from `handwritten/`; see README-rebuild.md.
 

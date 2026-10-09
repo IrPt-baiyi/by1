@@ -33,7 +33,7 @@ except Exception as e:
 EOF
 
 say "1. 本包自洽（CPU 就够）"
-$PY by1all.py --quick || die "这一包本身有问题，先别往下走"
+$PY src/by1all.py --quick || die "这一包本身有问题，先别往下走"
 
 say "2. KDA —— 判卷人立起来，并把参考的中间量 dump 出来"
 if $PY -c "import fla" 2>/dev/null; then
@@ -44,7 +44,7 @@ fi
 
 say "3. 真实模型的前向（真实维度，只降层数）"
 echo "  instella-3b 是六个里唯一连 CPU 都跑得动的 —— **这一步在本地就该过**。"
-$PY by1instella.py || echo "  instella-3b 没过，先查这个再往下"
+$PY src/by1instella.py || echo "  instella-3b 没过，先查这个再往下"
 echo
 echo "  其余五个要的显存见 gpu/README.md §3。"
 echo "  它们各自需要一份「by1 内部参数名 -> 契约逻辑名」的对照表"

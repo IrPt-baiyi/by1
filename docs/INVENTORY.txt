@@ -34,9 +34,9 @@
 【C】单机制判卷人脚本
   脚本           机制               判卷人                                          结果
   ------------------------------------------------------------------------------------------------
-  by1mla.py    MLA              transformers DeepseekV3Attention             PASS
-  by1moe.py    noaux_tc 分组路由    transformers DeepseekV3TopkRouter            PASS
-  by1rope.py   llama3 RoPE      transformers _compute_llama3_parameters      PASS
+  src/by1mla.py    MLA              transformers DeepseekV3Attention             PASS
+  src/by1moe.py    noaux_tc 分组路由    transformers DeepseekV3TopkRouter            PASS
+  src/by1rope.py   llama3 RoPE      transformers _compute_llama3_parameters      PASS
 
 【D】反向梯度 · 四个合成模型，对 transformers 参考
   llama 39/39 · mixtral 35/35 · gpt-oss 31/31 · qwen3-next 62/62  —— 全在阈值内

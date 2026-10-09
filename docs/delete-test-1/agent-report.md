@@ -15,4 +15,4 @@ Laguna GGUF	取 Q4_K_M 那份的头，维度反序，ggml_type 留数字
 如实说清一处：mixtral-shaped.by1 和 models.tsv
  在上游没有来源——一个是 by1 的 MoE 声明，一个是模型清单。它们的内容只有靠 by1 那套源码（by1*.py / ir.md / plan.md）才能判对错，而那套代码不在这台机器上（你说了原件在另一台）。所以这两个是按副本字节恢复的，不是推出来的，我没有假装它们是。真要在"看不到原件"的条件下从零写对这两个文件，需要把 by1 的源码或 ir.md 给我。
 
-复现：python rebuild_manifest.py --out build，推导记录见 README-rebuild.md。
+复现：python docs/delete-test-1/rebuild_manifest.py --out build，推导记录见 `rebuild-record.md`。

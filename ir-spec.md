@@ -1,7 +1,7 @@
 # by1 IR 规格
 
-> **这份文档是从 `by1ir.py` 里的表生成的**，不是手写的。
-> 生成命令：`python by1ir.py --spec`
+> **这份文档是从 `src/by1ir.py` 里的表生成的**，不是手写的。
+> 生成命令：`python src/by1ir.py --spec`
 >
 > 理由：手写的规格会过期，而过期的规格比没有规格更坏 ——
 > 它让读的人以为自己知道。这些表被 `validate()` 和
@@ -14,10 +14,10 @@
 ## 怎么用它
 
 ```bash
-python by1ir.py --spec                  # 生成这份文档
-python by1ir.py --emit  <文件>.by1      # 出一份规范化 JSON
-python by1ir.py --check <文件>.ir.json  # 校验
-python by1irentry.py                    # 三个后端只从 IR 跑
+python src/by1ir.py --spec                  # 生成这份文档
+python src/by1ir.py --emit models/<文件>.by1  # 出一份规范化 JSON
+python src/by1ir.py --check <文件>.ir.json  # 校验
+python src/by1irentry.py                    # 三个后端只从 IR 跑
 ```
 
 **想写第四个后端的人从这里开始** —— 不需要先学 `.by1`。
@@ -202,7 +202,7 @@ python by1irentry.py                    # 三个后端只从 IR 跑
 
 | 属性 | 类型 | 必填 | 语义 |
 |---|---|---|---|
-| `impl` | `str` | 是 | 逃生舱第一层：raw.py 里的工厂函数名。**这一层要改编译器** —— 加一个机制就得动 by1codegen.py。第二层见 External |
+| `impl` | `str` | 是 | 逃生舱第一层：raw.py 里的工厂函数名。**这一层要改编译器** —— 加一个机制就得动 src/by1codegen.py。第二层见 External |
 
 ---
 

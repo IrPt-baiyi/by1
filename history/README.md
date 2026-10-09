@@ -27,4 +27,4 @@
 
 ## 怎么引用它
 
-代码里要读它的话，路径是 `history/ir.md`（`by1debt.py` 就是这么用的）。
+代码里要读它的话，路径是 `history/ir.md`（`src/by1debt.py` 就是这么用的）。

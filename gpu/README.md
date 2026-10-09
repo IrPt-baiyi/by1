@@ -8,14 +8,14 @@
 
 ```bash
 pip install -r gpu/requirements.txt
-python by1all.py --quick      # 跳过 C 后端（要 gcc）
+python src/by1all.py --quick      # 跳过 C 后端（要 gcc）
 ```
 
 期望：**34 项里除了一步之外全过**。那一步是：
 
 ```
 已知缺口（不算失败，但仍然存在）:
-  - tensors torch.module step-3.7-flash.by1
+  - tensors torch.module Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL.by1
     那 25 个张量在 HF 的 model-00009 分片里，而那个分片的头是全零 ——
     镜像的问题，不是 by1 的
 ```
@@ -29,7 +29,7 @@ python by1all.py --quick      # 跳过 C 后端（要 gcc）
 **`instella-3b` 的前向。** 它稠密、3B，是六个真实模型里唯一在这台机器上也跑得动的。
 
 ```bash
-python by1instella.py
+python src/by1instella.py
 ```
 
 判卷人是官方仓库里的 `modeling_instella.py`。**这一步在租卡之前就该在这里做完** ——
@@ -83,7 +83,7 @@ python gpu/by1kda.py
 | `gpt-oss-120b` | 130B(MXFP4) | ~65 GB | 1×80G，但要 mxfp4 反量化 |
 
 ```bash
-python gpu/by1realfwd.py --model gemma-4-31b --layers 4
+python src/by1real.py --by1 models/gemma-4-31B.by1 --layers 4
 ```
 
 **`--layers N` 是关键**：真实维度、真实头数、真实 FFN，只跑前 N 层。

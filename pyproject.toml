@@ -38,8 +38,11 @@ by1 = "by1ver:main"
 "by1-e2e" = "by1e2e:main"
 
 [tool.setuptools]
-# **全都摊在根目录。** 这不是一个"包" —— 它是一堆能单独跑的小工具
-# 加一份规格。所以用 py-modules 而不是 packages。
+# **代码摊在 `src/` 下 —— 它仍然不是一个"包"**，是一堆能单独跑的小工具
+# 加一份规格。所以还是 py-modules，只是告诉 setuptools 它们在 src/。
+#
+# `models/` `refs/` 不是包数据 —— 分发那一包走 `by1pack.py`，不经过 pip。
+package-dir = {"" = "src"}
 py-modules = [
     "by1ver", "by1ir",
     "by1check", "by1codegen", "by1exec", "by1c",
@@ -52,8 +55,10 @@ py-modules = [
 # `attr = "by1ver.TOOL_VERSION"` 会让 setuptools 去导入 ——
 # 而它一旦开始导入就会摸到别的模块，其中几个在模块级 import
 # transformers（判卷人必需的）。**打包不该需要跑得动 torch。**
-# VERSION 是 `python by1ver.py --write` 生成的，真相源仍是 TOOL_VERSION。
+# VERSION 是 `python src/by1ver.py --write` 生成的，真相源仍是 TOOL_VERSION。
 version = { file = "VERSION" }
 
 [tool.setuptools.package-data]
-"*" = ["*.md", "*.by1", "*.c"]
+# `ext-demo.c` 跟着代码走 —— `by1extdemo.py` 要在它旁边编译。
+# `*.by1` 在 `models/` 下，不是包数据。
+"*" = ["*.c"]

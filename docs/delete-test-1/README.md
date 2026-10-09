@@ -10,7 +10,7 @@
 
 ## 怎么测的
 
-`test-definition/MANIFEST.txt` 里那 10 个路径，
+`test-definition/MANIFEST.txt` 里那 9 个路径，
 占全部数据（25.99 MB）的 **4.75%** —— 按字节挑的，
 而且**每一类至少一个**（纯按大小挑的话，
 一个 `refs/*.tensors.json` 就能占满 5%，而 `*.by1` 一个都进不去）。
@@ -18,8 +18,12 @@
 一个**完全无记忆的 agent** 拿到的是：
 
     test-definition/README.md      任务书（只说做什么、怎么算做完）
-    test-definition/MANIFEST.txt   10 条：路径 + 字节
-    __delete_test/files/...        那 10 个文件的副本
+    test-definition/MANIFEST.txt   9 条：路径 + 字节
+    files/                         那 9 个文件的副本
+
+（**这份测试包不放在仓库里。** 副本和上面两个文件在测试环境里另存 ——
+仓库里只留 `test-definition/` 那份定义。它自己末条写的就是这件事：
+出现在被测仓库里，就不是重建，是照抄。）
 
 **没有源码、没有别的 24 个 `.by1`、没有别的 26 个 `refs/`。**
 这一点很重要 —— 它比原设计难得多（原设计是"仓库拷贝减 10 个路径"）。

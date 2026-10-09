@@ -5,9 +5,9 @@
 这个仓库是一个**声明式语言**的实现，用来描述 LLM 架构。
 它把"模型的描述"和"模型的产物"分开：
 
-    代码    by1*.py          语言、IR、三个后端
+    代码    src/by1*.py      语言、IR、三个后端
     数据    refs/*.json      从 HuggingFace / ModelScope 抓下来的产物描述
-            *.by1            手写的模型声明
+            models/*.by1     手写的模型声明
             models.tsv       手写的模型清单
             *.md / VERSION   派生的
 
@@ -25,7 +25,7 @@
 
 ## 怎么算成功
 
-    ① python by1all.py        全绿（0 项失败，除已知缺口）
+    ① python src/by1all.py        全绿（0 项失败，除已知缺口）
     ② 你新建或改动的每一个路径，都在 MANIFEST.txt 里
 
 **两条都要。** 只满足一条不算。
@@ -36,8 +36,8 @@
 
 ## 你可以用的
 
-- 整个仓库的代码（`by1*.py`）
-- 仓库里的文档（`README.md` / `ir.md` / `plan.md`）
+- 整个仓库的代码（`src/by1*.py`）
+- 仓库里的文档（`README.md` / `history/ir.md` / `history/plan.md`）
 - 网络
 - `files/` 里的东西 —— **但那是答案，不是方法**
 
