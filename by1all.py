@@ -229,6 +229,18 @@ def main():
     if n == 0:
         fails.append('selftest')
 
+    # ---- 1.4 模式分类：**想象 vs 数据** ----
+    #
+    # `by1boot` 的识别词分两张表：数据里有的、和一次都没出现的。
+    # 这个检查确认那张分类是对的 —— **分类一旦错了，
+    # 把想象的放进已验证，它就永远不会被发现**（死模式不出声）。
+    ok, out = run(['by1pat.py'], 'patterns')
+    line = [l.strip() for l in out.splitlines() if '分类' in l]
+    rows.append(('模式分类 by1pat.py', ok and bool(line),
+                 line[-1] if line else '（没有判定行）'))
+    if not (ok and line):
+        fails.append('patterns')
+
     # ---- 1.5 神谕：**不依赖 by1 的期望值** ----
     #
     # 放在这里而不是最后：三后端互拍只能证明**自洽** ——

@@ -63,18 +63,88 @@ def layer_of(k):
 # 这不是"认不出前缀"，是**分组分错了**。
 #
 # 所以：先按塔切开，再在各自塔里按层分组。
-TOWER_PAT = [
-    ('视觉', r'(^|\.)(visual|vision|vision_tower|image_encoder|patch_embed'
-             r'|merger|multi_modal_projector|img_|image_newline'
-             r'|vision_model|vit)'),
-    ('音频', r'(^|\.)(audio|sound|speech|whisper|audio_tower)'),
-    ('视频', r'(^|\.)(video|temporal)'),
+# **模式分两类，因为它们的可信度不一样。**
+#
+# 用 34 份张量清单（369966 个真实物理名）数过每一条：
+#
+#   已验证    在真实数据里出现过 —— 有据可依
+#   未验证    一次都没出现 —— **是我的想象**
+#
+# 未验证的那些**不一定错**（`nextn` 是 DeepSeek 的 MTP 叫法，
+# `whisper` / `eagle` / `medusa` 也都真实存在）——
+# **但它们从没被验证过，所以不该和验证过的混在一起、用同样的语气。**
+#
+# 之前的问题正是这个：26 条分支里 14 条是想象的，
+# 而它们不报错、不警告、不影响输出 —— 只是永远不匹配。
+# **活的规则和死的规则，跑起来是一样的。**
+#
+# 数它们的工具：`python by1pat.py`（已进 by1all）。
+# **模式写成词表，不写正则。**
+#
+# ## 为什么改结构，而不是再修一次正则
+#
+# 原来的写法是一整条正则字符串：
+#     r'(^\|\.)(visual|vision|vision_tower|merger|...)'
+# 我想知道"哪几个词是我想象的"，于是去数 —— **数了四次，四个数**：
+#
+#   第一次  拿整条正则去数        -> 死的分支藏在活的正则里，看不出来
+#   第二次  按 `|` 切开，当子串测  -> `(^\|\.)visual` 剥壳剩 `)(visual`
+#   第三次  剥得更"干净"一点       -> 剥掉的东西更多，更不对
+#   第四次  按 `|` 切开，当正则编  -> **`(^\|\.)` 这个组内的 `|` 也被切了**
+#
+# 四次都测的是同一件事。**问题不在量法，在写法** ——
+# 把词和正则混在一个字符串里，"哪些词"这个信息就被编码掉了，
+# 想拿回来只能靠拆字符串，而拆字符串永远拆不干净。
+#
+# 所以：**词是数据，正则是渲染。**
+# 这样 `by1pat.py` 直接遍历词表就行，不需要猜。
+#
+# ## 两类
+#
+#   已验证    在 34 份张量清单（369966 个真实物理名）里出现过
+#   未验证    **一次都没出现** —— 是我的想象
+#
+# 未验证的不一定错（`nextn` 是 DeepSeek 的 MTP 叫法，真的存在），
+# 但它从没被验证过，所以**分开放**，不和验证过的混在一起。
+#
+# 数它们的工具：`python by1pat.py`（已进 by1all）。
+
+# (名字, [词...], 注释里有几个模型)
+TOWER_WORDS = [
+    ('视觉', ['visual', 'vision', 'vision_tower', 'merger', 'patch_embed',
+              'image_newline', 'vision_model', 'vit']),  # 12/7/4/12/17/1/1/1
+    ('音频', ['audio', 'audio_tower']),               # 4/3
+]
+
+# **一次都没在真实数据里出现过。** 保留是因为它们描述的是
+# 真实存在的**别的家族**的命名，不是编的 —— 但这 34 个模型里没有。
+TOWER_WORDS_UNVERIFIED = [
+    # `vit` 原来在这里，而实测有 1 个模型命中 —— **是 by1pat 自己抓出来的**。
+    # 它太薄（1 个模型）不足以写死，但它是**数据里的**，
+    # 不该和"一次都没出现"的混在一起。
+    ('视觉', ['image_encoder', 'multi_modal_projector', 'img_']),
+    ('音频', ['sound', 'speech', 'whisper']),
+    ('视频', ['video', 'temporal']),
 ]
 
 
-def tower_of(k):
-    """这个张量属于哪个塔。**返回 None 表示"文本塔"**（这个 IR 描述的）。"""
-    for name, pat in TOWER_PAT:
+def _render(words):
+    """词表 -> 正则。**渲染放在一处**，这样"有哪些词"始终是数据。"""
+    words = [re.escape(w) for w in words if w]
+    return r'(^|\.)(' + '|'.join(words) + r')'
+
+
+TOWER_PAT = [(n, _render(w)) for n, w in TOWER_WORDS]
+TOWER_PAT_UNVERIFIED = [(n, _render(w)) for n, w in TOWER_WORDS_UNVERIFIED]
+
+def tower_of(k, unverified=True):
+    """这个张量属于哪个塔。**返回 None 表示"文本塔"**。
+
+    `unverified=False` 时只认已验证的那批 —— 用来量
+    "光靠有据可依的规则能覆盖多少"。
+    """
+    pats = TOWER_PAT + (TOWER_PAT_UNVERIFIED if unverified else [])
+    for name, pat in pats:
         if re.search(pat, k, re.I):
             return name
     return None
@@ -92,15 +162,22 @@ def tower_of(k):
 #     mtp.layers.*        Qwen3.5 / Qwen3.8 / Nemotron
 #     nextn.layers.*      DeepSeek 的 MTP
 #     multi_token.*       …
-AUX_PAT = [
-    ('mtp', r'(^|\.)(mtp|nextn|multi_token|mtp_layers)\.'),
-    ('draft', r'(^|\.)(draft|eagle|medusa)\.'),
+# 同上：已验证 / 未验证分开。
+# 同上：词表 + 渲染。
+AUX_WORDS = [
+    ('mtp', ['mtp']),                                 # 8 个模型
 ]
+AUX_WORDS_UNVERIFIED = [
+    ('mtp', ['nextn', 'multi_token', 'mtp_layers']),  # DeepSeek 的叫法
+    ('draft', ['draft', 'eagle', 'medusa']),          # 投机解码
+]
+AUX_PAT = [(n, _render(w)) for n, w in AUX_WORDS]
+AUX_PAT_UNVERIFIED = [(n, _render(w)) for n, w in AUX_WORDS_UNVERIFIED]
 
-
-def aux_of(k):
+def aux_of(k, unverified=True):
     """这个张量属不属于辅助栈。返回栈名或 None。"""
-    for name, pat in AUX_PAT:
+    pats = AUX_PAT + (AUX_PAT_UNVERIFIED if unverified else [])
+    for name, pat in pats:
         if re.search(pat, k, re.I):
             return name
     return None
