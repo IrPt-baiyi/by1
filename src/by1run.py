@@ -1,45 +1,47 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""by1run -- **推送前的门，以及全量的轮换。**
+"""by1run -- **推送前的门，以及逐次加深的档位。**
 
-    python by1run.py --push     跑快速检查 → 推 → 记账（**推之前用这个**）
-    python by1run.py            只跑检查（按轮换决定跑哪个）
-    python by1run.py --status   现在轮到谁
-    python by1run.py --reset    重置（下一次是全量）
-    python by1run.py --full     强制全量
-    python by1run.py --quick    强制快速
-    python by1run.py --deep     全量时连真权重 / 显卡一起
-    python by1run.py --install-hook   装 git pre-push 钩子
+    python by1run.py --push          门（档 1）+ 加深 + 推 + 记账
+    python by1run.py --tier 3        只跑档 3
+    python by1run.py --status        现在轮到哪一档
+    python by1run.py --reset         重新数
+    python by1run.py --install-hook  装 pre-push 钩子
 
-## 节奏
+## 六档：**每加一档，多要一样东西**
 
-**每一次推送之前跑一次快速检查**（`by1fast`，10 秒）。
-**每第 5 次推送改成跑全量**（`by1all --quick`，分钟级）。
+    档1  10.7 秒   静态        什么都不用       编译 · import · 解析 · 文档
+    档2  16.7 秒   结构        + numpy          检查器 · 模式 · lint · 取值门 · 结构判卷人
+    档3  18.6 秒   契约        + refs/ 产物      config 逐字段 · 张量名与形状
+    档4  50.0 秒   数值        + torch           神谕 · 三后端 · 数值判卷人
+    档5  68.3 秒   环境        + gcc / 下载      前向对拍 · C 后端 · 逃生舱第二层 · 端到端
+    档6  69.6 秒   真机        + 显卡 / 真权重    （在这台机器上和档 5 一样）
 
-    推送1  快
-    推送2  快
-    推送3  快
-    推送4  快
-    推送5  **全量**   ← 然后重新数
-    …
+（时间是这台机器实测的，不是估的。**档 4 那个大跳**（18.6 → 50.0）
+就是那 6 个要 torch 前向的判卷人。）
 
-也就是"每五次推送里至少有一次真跑"。快速检查负责**立刻知道改坏了
-没有**，全量负责**最终不会漏** —— 它碰得到数值，快速检查碰不到。
+## 推送时的节奏
+
+**门永远是档 1** —— 10 秒，每次都跑，不过就不推。
+**加深的那部分逐次往上走**：
+
+    推送1   门 + 档2
+    推送2   门 + 档3
+    推送3   门 + 档4      ← 正常用到这里
+    推送4   门 + 档5（全量）
+    → 重新数
+
+也就是"每四次推送里至少有一次全量"。门负责**立刻知道改坏了没有**，
+加深负责**最终不会漏** —— 它碰得到数值，门碰不到。
 
 ## 为什么要装钩子
 
-"每次推送前跑"如果只靠人记得，那它迟早会变成"我记得的时候跑"。
-`--install-hook` 往 `.git/hooks/pre-push` 写一个脚本，
-**手动 `git push` 也拦得住** —— 钩子没过，推不出去。
+"每次推送前跑"如果只靠人记得，迟早会变成"我记得的时候跑"。
+`--install-hook` 往 `.git/hooks/pre-push` 写脚本，
+**手动 `git push` 也拦得住** —— 门没过，推不出去。
 
 钩子不进仓库（`.git/hooks/` 是本机的），所以这里存的是安装器。
-
-## 状态存在哪
-
-仓库根的 `.by1run-state`，一个整数：**这是第几次推送**（0..4）。
-gitignore 的 —— 这是本机的节奏，不该跟着仓库走。
 """
-import contextlib
 import os
 import subprocess
 import sys
@@ -49,17 +51,27 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 
 import by1io                                   # noqa: E402
+import by1paths                                # noqa: E402
 
 STATE = os.path.join(ROOT, '.by1run-state')
 HOOK = os.path.join(ROOT, '.git', 'hooks', 'pre-push')
 
-# 每几次推送里安排一次全量
-PUSHES_PER_FULL = 5
+# 门：每一次推送都跑这一档
+GATE_TIER = 1
+# 加深：逐次往上走的那几档，走完一轮回到第一个
+LADDER = [2, 3, 4, 5]
+
+TIER_NAME = {
+    1: '静态', 2: '结构', 3: '契约', 4: '数值', 5: '环境', 6: '真机',
+}
+TIER_SECS = {1: 10.7, 2: 16.7, 3: 18.6, 4: 50.0, 5: 68.3, 6: 69.6}
 
 
 def read_state():
+    """还差几步走完这一轮。0 = 下一次是 LADDER[0]。"""
     try:
-        return max(0, int(by1io.read_text(STATE).strip()))
+        return max(0, min(len(LADDER) - 1,
+                          int(by1io.read_text(STATE).strip())))
     except (OSError, ValueError):
         return 0
 
@@ -70,47 +82,62 @@ def write_state(n):
 
 def run(script, args=()):
     print()
-    print('  ── 跑 %s %s' % (script, ' '.join(args)))
+    print('  ── 跑 %s %s' % (os.path.basename(script), ' '.join(args)))
     return subprocess.run([sys.executable, script] + list(args), cwd=HERE).returncode
 
 
-def check(forced=None, deep=False):
-    """按轮换跑检查。返回退出码。**不动计数** —— 记账是 push 的事。"""
+def run_tier(n):
+    """跑某一档。档 1 只是 `by1all --tier 1`（它内部调 `by1fast`），
+    所以这里没有第二条路 —— 同一个意思不写两遍。"""
+    return run('by1all.py', ['--tier', str(n)])
+
+
+def show(n):
+    tier = LADDER[n]
+    print('  这一次加深到 **档 %d（%s）**，约 %.0f 秒'
+          % (tier, TIER_NAME[tier], TIER_SECS[tier]))
+    print('  门是档 %d（%s），每次都跑，约 %.0f 秒'
+          % (GATE_TIER, TIER_NAME[GATE_TIER], TIER_SECS[GATE_TIER]))
+
+
+def check(tier=None):
+    """按轮换跑。`tier` 给定时只跑那一档（不跑门 —— 手动指名就是要那一档）。"""
     n = read_state()
-    if forced:
-        which = forced
-    else:
-        # 第 PUSHES_PER_FULL 次推送（计数到顶）时跑全量，其余跑快速。
-        which = 'full' if n >= PUSHES_PER_FULL - 1 else 'quick'
+    if tier is not None:
+        print()
+        print('=' * 74)
+        print('  手动指定：档 %d（%s）' % (tier, TIER_NAME.get(tier, '?')))
+        print('=' * 74)
+        return run_tier(tier)
     print()
     print('=' * 74)
-    if which == 'full':
-        print('  全量（这是第 %d 次推送，每 %d 次一次全量）'
-              % (n + 1, PUSHES_PER_FULL))
-    else:
-        print('  快速（第 %d 次推送，离全量还有 %d 次）'
-              % (n + 1, PUSHES_PER_FULL - 1 - n))
+    show(n)
     print('=' * 74)
-    if which == 'full':
-        return run('by1all.py', [] if deep else ['--quick'])
-    return run('by1fast.py')
+    # **门先跑。** 它便宜，而且它失败时没必要再花 50 秒。
+    rc = run_tier(GATE_TIER)
+    if rc != 0:
+        return rc
+    deep = LADDER[n]
+    if deep <= GATE_TIER:
+        return 0
+    return run_tier(deep)
 
 
-def push(args, deep=False):
+def push(args, tier=None):
     """**推送前的门。** 检查不过就不推。"""
-    rc = check(deep=deep)
+    n = read_state()
+    rc = check(tier=tier)
     if rc != 0:
         print()
         print('  **检查没过，不推。** 修完再来。')
         print()
         return rc
 
-    n = read_state()
     print()
-    # **`--no-verify`：钩子会再跑一遍同一个检查。**
+    # **`--no-verify`：钩子会再跑一遍同一个门。**
     #
-    # 上面刚跑过 `check()`，而裸 `git push` 会触发 pre-push 钩子 ——
-    # 不挡住的话快速检查跑两次，10 秒变 20 秒（第一次实测就是这样）。
+    # 上面刚跑过档 1，而裸 `git push` 会触发 pre-push 钩子 ——
+    # 不挡住的话门跑两次，10 秒变 20 秒（第一次实测就是这样）。
     #
     # 钩子仍然有用：**手动 `git push` 走的正是钩子那条路**，
     # 它管的就是"忘了用 `--push` 的时候"。
@@ -118,14 +145,13 @@ def push(args, deep=False):
     r = subprocess.run(['git', 'push', '--no-verify'] + list(args), cwd=ROOT)
     if r.returncode == 0:
         # 只有推成功了才记账 —— 推失败不该消耗轮换。
-        write_state(0 if n >= PUSHES_PER_FULL - 1 else n + 1)
-        nxt = read_state()
+        # **手动指定档位也不记账**：那是一次性的，不改变节奏。
+        if tier is None:
+            write_state(0 if n >= len(LADDER) - 1 else n + 1)
+        nxt = LADDER[read_state()]
         print()
-        if nxt == 0:
-            print('  推上去了。下一次是**全量**。')
-        else:
-            print('  推上去了。下一次是快速（离全量还有 %d 次）'
-                  % (PUSHES_PER_FULL - 1 - nxt))
+        print('  推上去了。下一次加深到档 %d（%s）。'
+              % (nxt, TIER_NAME[nxt]))
     else:
         print()
         print('  **推送失败**（网络？）—— 不记账，重推即可。')
@@ -136,7 +162,7 @@ def push(args, deep=False):
 HOOK_BODY = '''#!/bin/sh
 # 由 `python src/by1run.py --install-hook` 装。
 #
-# **推送前的门。** 检查不过就推不出去 —— 这样"每次推送前跑一次"
+# **推送前的门。** 门不过就推不出去 —— 这样"每次推送前跑档 1"
 # 不依赖"我记得"。
 #
 # 想临时绕过：git push --no-verify
@@ -149,11 +175,11 @@ cd "$(git rev-parse --show-toplevel)" || exit 1
 PY="{py}"
 [ -x "$PY" ] || PY="$(command -v python3 || command -v python || true)"
 if [ -z "$PY" ]; then
-  echo "  !! 找不到 python，推送前的检查没跑成"
+  echo "  !! 找不到 python，推送前的门没跑成"
   exit 1
 fi
 
-exec "$PY" src/by1run.py --hook-check
+exec "$PY" src/by1all.py --tier 1
 '''
 
 
@@ -163,13 +189,9 @@ def install_hook():
         print('  找不到 .git/hooks/ —— 这不是一个 git 仓库？')
         return 1
     by1io.write_text(HOOK, HOOK_BODY.replace('{py}', sys.executable))
-    # Windows 上 chmod 基本是空操作，失败不影响 git 执行 ——
-    # 用 `suppress` 而不是 `try/except/pass`：后者读起来像"没想好"。
-    with contextlib.suppress(OSError):
-        os.chmod(HOOK, 0o755)
     print('  装了 %s' % os.path.relpath(HOOK, ROOT))
     print('  解释器记的是：%s' % sys.executable)
-    print('  之后每次 `git push`（含手动）都会先跑快速检查。')
+    print('  之后每次 `git push`（含手动）都会先跑档 %d。' % GATE_TIER)
     print('  临时绕过：`git push --no-verify`')
     return 0
 
@@ -183,10 +205,11 @@ def main():
     if '--status' in argv:
         n = read_state()
         print()
-        print('  这是第 %d 次推送；下一次：%s'
-              % (n + 1,
-                 '**全量**' if n >= PUSHES_PER_FULL - 1 else
-                 '快速（离全量还有 %d 次）' % (PUSHES_PER_FULL - 1 - n)))
+        print('  门：档 %d（%s，%.0f 秒，每次推送都跑）'
+              % (GATE_TIER, TIER_NAME[GATE_TIER], TIER_SECS[GATE_TIER]))
+        print('  加深：下一次是档 %d（%s）；这一轮还剩 %d 次'
+              % (LADDER[n], TIER_NAME[LADDER[n]], len(LADDER) - n))
+        print('  梯队：%s' % ' → '.join('档%d' % x for x in LADDER))
         print('  钩子：%s' % ('装了' if os.path.exists(HOOK) else '**没装**'))
         print()
         return 0
@@ -194,23 +217,21 @@ def main():
     if '--reset' in argv:
         write_state(0)
         print()
-        print('  重置了：下一次是快速（离全量还有 %d 次）' % (PUSHES_PER_FULL - 1))
+        print('  重新数了：下一次加深到档 %d' % LADDER[0])
         print()
         return 0
 
-    if '--hook-check' in argv:
-        # 钩子调的就是这个：只跑快速，不推、不记账。
-        # **钩子里不跑全量** —— 一次 push 卡几分钟没人受得了。
-        # 全量由 `--push` 那条路负责。
-        return run('by1fast.py')
+    tier = None
+    if '--tier' in argv:
+        tier = max(1, min(6, int(argv[argv.index('--tier') + 1])))
 
     if '--push' in argv:
-        rest = [a for a in argv if a not in ('--push', '--deep')]
-        return push(rest or ['origin', 'main'], deep='--deep' in argv)
+        FLAGS = ('--push', '--tier', str(tier) if tier else '--tier')
+        rest = [a for a in argv
+                if a not in FLAGS and not a.startswith('--')]
+        return push(rest or ['origin', 'main'], tier=tier)
 
-    forced = ('full' if '--full' in argv or '--deep' in argv else
-              'quick' if '--quick' in argv else None)
-    return check(forced=forced, deep='--deep' in argv)
+    return check(tier=tier)
 
 
 if __name__ == '__main__':
