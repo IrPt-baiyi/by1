@@ -125,7 +125,26 @@ def main(argv=None):
                   num_attention_heads=attn["q"], num_key_value_heads=attn["kv"],
                   head_dim=attn["head_dim"],
                   max_position_embeddings=max(ir["ctx"], args.seq + 8),
-                  rms_norm_eps=1e-5, tie_word_embeddings=False,
+                  # **这两个从前是写死的，而写死的那两个都是错的。**
+                  #
+                  # `rms_norm_eps=1e-5` 写死 -> 而 `minimind-3` 声明的是
+                  # **1e-6**（官方 config 的 `rms_norm_eps`）。同一个输入、
+                  # 同一份权重、不同的 eps，输出差 **1.09e-02** ——
+                  # 而报出来是"这个模型算错了"。**又一个假红，超参写死造成的。**
+                  # （定位它的过程：`--layers` 说第一层之后偏了、`--probe`
+                  #   说偏在注意力、二分到第一个算子 `op0`，然后量出
+                  #   输入差 0.000e+00、权重差 0.000e+00、**eps 差 10 倍**。）
+                  #
+                  # `tie_word_embeddings=False` 写死同样是错的：
+                  # `minimind-3` 官方是真 tied 的（产物里只有
+                  # `model.embed_tokens.weight`，没有 `lm_head.weight`）。
+                  #
+                  # **用 `or` 不用 `.get(k, default)`** —— 后者的默认值只在
+                  # **键缺失**时生效；键存在而值是 `None` 时拿到 `None`，
+                  # eps 就变成 None、参考实现全红。（第一版就是那样写的：
+                  # 修好了 minimind-3，把四个 shaped 全弄崩了。）
+                  rms_norm_eps=ir.get("norm_eps") or 1e-5,
+                  tie_word_embeddings=bool(ir.get("tie_word_embeddings")),
                   attention_bias=attn["bias"],
                   # 基值必须从 .by1 传过来：各有各的默认（Llama 1e4 / Mixtral 1e6），
                   # 不传就是两边在转不同角度 —— 这个坑 Oracle 第一次就抓到了
