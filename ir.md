@@ -2336,3 +2336,23 @@ ModelScope  阿里的源，Qwen 也是阿里的                        72 MB/s
 ③ 只把"非显卡不可"的带上去               —— by1gpu.py
 ④ 真要跑大模型，第一步先用 ModelScope 下  —— 13 分钟，几分钱
 ```
+
+---
+
+## 57. 改名：两个 step-3.7 用仓库全名
+
+用户的判断是对的：`step-3.7-flash` 会**误导** —— 听起来像官方的
+Step-3.7-Flash，而它是社区的**剪枝微调版**（`nerkyor/...`）。
+而且两个的命名规范还不一样。
+
+对齐 `refs/` 里已有的约定 `owner_Repo-Name`：
+
+```
+step-3.7-flash.by1  ->  nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL.by1
+step37-official.by1 ->  stepfun-ai__Step-3.7-Flash.by1
+```
+
+**从文件名就能追回是哪个仓库。**
+
+> **上面 57 节之前的老条目里还用旧名字** —— 那是历史事实，不改。
+> 日志改了就变成"当初就是这么写的"，那是假的。

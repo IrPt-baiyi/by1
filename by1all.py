@@ -42,7 +42,7 @@ REAL = [
      'refs/laguna-xs-2.1.tensors.json', 'torch.module', []),
     ('instella-3b.by1', 'refs/amd_Instella-3B.config.json',
      'refs/instella-3b.tensors.json', 'torch.module', []),
-    ('step-3.7-flash.by1',
+    ('nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL.by1',
      'refs/nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL.config.json',
      'refs/step37.tensors.json', 'torch.module', []),
     ('ling-3.0-tiny.by1', 'refs/inclusionAI_Ling-3.0-tiny.config.json',
@@ -65,7 +65,7 @@ REAL = [
     ('qwen36.by1', 'refs/Qwen__Qwen3.6-35B-A3B.config.json',
      'refs/qwen36.tensors.json', 'torch.module', []),
     # 官方 Step-3.7（未剪枝）—— 和剪枝版的差别就是被删掉的那几行。
-    ('step37-official.by1', 'refs/stepfun-ai__Step-3.7-Flash.config.json',
+    ('stepfun-ai__Step-3.7-Flash.by1', 'refs/stepfun-ai__Step-3.7-Flash.config.json',
      'refs/step37-official.tensors.json', 'torch.module', []),
     # **语言的边界**：GPT-2 —— LayerNorm / 学习式位置编码 / 无门控 MLP，
     # 和前面十一个 Llama 家族是**两代人**。nanoGPT 是同一个架构。
@@ -133,7 +133,7 @@ def run(args, tag=None):
 # 已知缺口：(那一项的名字前缀, 为什么)。**仍然打印出来**，只是不算失败 ——
 # 藏起来的缺口和没发现过的缺口一样糟。
 KNOWN = [
-    ('tensors torch.module step-3.7-flash.by1',
+    ('tensors torch.module nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL.by1',
      '那 25 个张量在 HF 的 model-00009 分片里，而那个分片的头是全零 —— '
      '镜像的问题，不是 by1 的'),
     # **原来这里有一条 `C gpt2-tiny.by1`**（"C 还没有 LayerNorm 和学习式

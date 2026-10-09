@@ -19,8 +19,8 @@
 | `laguna-xs-2.1` | 33.4B | 40 | 2048 | 100352 | Attn×40+FFN×1+MoE×39 |
 | `qwen36` | 35.5B | 41 | 2048 | 248320 | Attn×11+Lin×30+MoE×41 |
 | `gpt-oss-120b` | 116.8B | 36 | 2880 | 201088 | Attn×36+MoE×36 |
-| `step-3.7-flash` | 180.8B | 45 | 4096 | 128896 | Attn×45+FFN×3+MoE×42 |
-| `step37-official` | 197.0B | 45 | 4096 | 128896 | Attn×45+FFN×3+MoE×42 |
+| `nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL` | 180.8B | 45 | 4096 | 128896 | Attn×45+FFN×3+MoE×42 |
+| `stepfun-ai__Step-3.7-Flash` | 197.0B | 45 | 4096 | 128896 | Attn×45+FFN×3+MoE×42 |
 
 ## 二、**独苗** —— 只有它这样的
 
@@ -49,7 +49,7 @@
 | `norm_kind` | `'layer'` | **gpt2** |
 | `pos_kind` | `'learned'` | **gpt2** |
 
-**11 个模型里，5 个一个独苗都没有**：minimind-3, clef, qwen38, step-3.7-flash, step37-official
+**11 个模型里，5 个一个独苗都没有**：minimind-3, clef, qwen38, nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL, stepfun-ai__Step-3.7-Flash
 
 > 这就是"原语集合收敛"这句话的可数形式 ——
 > 说"收敛了"是感觉，说"这几个模型贡献 0 个新原语"是账。
@@ -62,13 +62,13 @@
 
 ### `Attention.bias`
 
-- `False` — minimind-3, instella-3b, clef, qwen38, gemma-4-31b, laguna-xs-2.1, qwen36, step-3.7-flash, step37-official
+- `False` — minimind-3, instella-3b, clef, qwen38, gemma-4-31b, laguna-xs-2.1, qwen36, nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL, stepfun-ai__Step-3.7-Flash
 - `True` — gpt2, gpt-oss-120b
 
 ### `Attention.head_dim`
 
 - `256` — clef, qwen38, gemma-4-31b, qwen36
-- `128` — laguna-xs-2.1, step-3.7-flash, step37-official
+- `128` — laguna-xs-2.1, nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL, stepfun-ai__Step-3.7-Flash
 - `64` — gpt2, gpt-oss-120b
 - `96` — minimind-3 ← **独苗**
 - `80` — instella-3b ← **独苗**
@@ -76,11 +76,11 @@
 ### `Attention.head_gate`
 
 - `'off'` — minimind-3, gpt2, instella-3b, clef, qwen38, gemma-4-31b, qwen36, gpt-oss-120b
-- `'per_head'` — laguna-xs-2.1, step-3.7-flash, step37-official
+- `'per_head'` — laguna-xs-2.1, nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL, stepfun-ai__Step-3.7-Flash
 
 ### `Attention.kv`
 
-- `8` — laguna-xs-2.1, gpt-oss-120b, step-3.7-flash, step37-official
+- `8` — laguna-xs-2.1, gpt-oss-120b, nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL, stepfun-ai__Step-3.7-Flash
 - `4` — minimind-3, clef, qwen38
 - `12` — gpt2 ← **独苗**
 - `32` — instella-3b ← **独苗**
@@ -90,19 +90,19 @@
 ### `Attention.norm_eps`
 
 - `1e-06` — minimind-3, clef, qwen38, gemma-4-31b, laguna-xs-2.1, qwen36
-- `1e-05` — gpt2, instella-3b, gpt-oss-120b, step-3.7-flash, step37-official
+- `1e-05` — gpt2, instella-3b, gpt-oss-120b, nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL, stepfun-ai__Step-3.7-Flash
 
 ### `Attention.out_dim`
 
 - `6144` — clef, qwen38, laguna-xs-2.1
-- `8192` — gemma-4-31b, step-3.7-flash, step37-official
+- `8192` — gemma-4-31b, nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL, stepfun-ai__Step-3.7-Flash
 - `768` — minimind-3, gpt2
 - `4096` — qwen36, gpt-oss-120b
 - `2560` — instella-3b ← **独苗**
 
 ### `Attention.q`
 
-- `64` — gpt-oss-120b, step-3.7-flash, step37-official
+- `64` — gpt-oss-120b, nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL, stepfun-ai__Step-3.7-Flash
 - `32` — instella-3b, gemma-4-31b
 - `24` — clef, qwen38
 - `8` — minimind-3 ← **独苗**
@@ -112,82 +112,82 @@
 
 ### `Attention.q_gate`
 
-- `False` — minimind-3, gpt2, instella-3b, gemma-4-31b, laguna-xs-2.1, gpt-oss-120b, step-3.7-flash, step37-official
+- `False` — minimind-3, gpt2, instella-3b, gemma-4-31b, laguna-xs-2.1, gpt-oss-120b, nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL, stepfun-ai__Step-3.7-Flash
 - `True` — clef, qwen38, qwen36
 
 ### `Attention.qk_norm`
 
-- `'per_head'` — minimind-3, clef, qwen38, gemma-4-31b, laguna-xs-2.1, qwen36, step-3.7-flash, step37-official
+- `'per_head'` — minimind-3, clef, qwen38, gemma-4-31b, laguna-xs-2.1, qwen36, nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL, stepfun-ai__Step-3.7-Flash
 - `'off'` — gpt2, gpt-oss-120b
 - `'full'` — instella-3b ← **独苗**
 
 ### `Attention.rope`
 
-- `True` — minimind-3, instella-3b, clef, qwen38, gemma-4-31b, laguna-xs-2.1, qwen36, gpt-oss-120b, step-3.7-flash, step37-official
+- `True` — minimind-3, instella-3b, clef, qwen38, gemma-4-31b, laguna-xs-2.1, qwen36, gpt-oss-120b, nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL, stepfun-ai__Step-3.7-Flash
 - `False` — gpt2 ← **独苗**
 
 ### `Attention.rope_base`
 
 - `10000` — gpt2, instella-3b, gemma-4-31b
 - `10000000` — clef, qwen38, qwen36
-- `5000000` — step-3.7-flash, step37-official
+- `5000000` — nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL, stepfun-ai__Step-3.7-Flash
 - `1000000` — minimind-3 ← **独苗**
 - `500000` — laguna-xs-2.1 ← **独苗**
 - `150000` — gpt-oss-120b ← **独苗**
 
 ### `Attention.rope_pairing`
 
-- `'half'` — minimind-3, instella-3b, clef, qwen38, laguna-xs-2.1, qwen36, step-3.7-flash, step37-official
+- `'half'` — minimind-3, instella-3b, clef, qwen38, laguna-xs-2.1, qwen36, nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL, stepfun-ai__Step-3.7-Flash
 - `'interleaved'` — gpt2, gemma-4-31b, gpt-oss-120b
 
 ### `Attention.rope_partial`
 
 - `1.0` — minimind-3, gpt2, instella-3b, clef, qwen38, gemma-4-31b, qwen36, gpt-oss-120b
-- `0.5` — laguna-xs-2.1, step-3.7-flash, step37-official
+- `0.5` — laguna-xs-2.1, nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL, stepfun-ai__Step-3.7-Flash
 
 ### `Attention.rope_scale`
 
-- `1.0` — minimind-3, gpt2, instella-3b, clef, qwen38, gemma-4-31b, qwen36, gpt-oss-120b, step-3.7-flash, step37-official
+- `1.0` — minimind-3, gpt2, instella-3b, clef, qwen38, gemma-4-31b, qwen36, gpt-oss-120b, nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL, stepfun-ai__Step-3.7-Flash
 - `1.3465735902799727` — laguna-xs-2.1 ← **独苗**
 
 ### `Attention.sink`
 
-- `False` — minimind-3, gpt2, instella-3b, clef, qwen38, gemma-4-31b, laguna-xs-2.1, qwen36, step-3.7-flash, step37-official
+- `False` — minimind-3, gpt2, instella-3b, clef, qwen38, gemma-4-31b, laguna-xs-2.1, qwen36, nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL, stepfun-ai__Step-3.7-Flash
 - `True` — gpt-oss-120b ← **独苗**
 
 ### `Attention.window`
 
-- `None` — minimind-3, gpt2, instella-3b, clef, qwen38, laguna-xs-2.1, qwen36, step-3.7-flash, step37-official
+- `None` — minimind-3, gpt2, instella-3b, clef, qwen38, laguna-xs-2.1, qwen36, nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL, stepfun-ai__Step-3.7-Flash
 - `1024` — gemma-4-31b ← **独苗**
 - `128` — gpt-oss-120b ← **独苗**
 
 ### `Attention.yarn`
 
 - `None` — minimind-3, gpt2, instella-3b, clef, qwen38, gemma-4-31b, qwen36
-- `{'type': 'llama3', 'factor': 2.0, 'original': 131072, 'beta_fast': 32.0, 'beta_slow': 1.0, 'high_freq': 32.0, 'low_freq': 1.0, 'truncate': True}` — step-3.7-flash, step37-official
+- `{'type': 'llama3', 'factor': 2.0, 'original': 131072, 'beta_fast': 32.0, 'beta_slow': 1.0, 'high_freq': 32.0, 'low_freq': 1.0, 'truncate': True}` — nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL, stepfun-ai__Step-3.7-Flash
 - `{'type': 'yarn', 'factor': 32.0, 'original': 8192, 'beta_fast': 64.0, 'beta_slow': 1.0, 'high_freq': 4.0, 'low_freq': 1.0, 'truncate': True}` — laguna-xs-2.1 ← **独苗**
 - `{'type': 'yarn', 'factor': 32.0, 'original': 4096, 'beta_fast': 32.0, 'beta_slow': 1.0, 'high_freq': 4.0, 'low_freq': 1.0, 'truncate': False}` — gpt-oss-120b ← **独苗**
 
 ### `FFN.act`
 
-- `'silu'` — minimind-3, instella-3b, clef, qwen38, gemma-4-31b, laguna-xs-2.1, step-3.7-flash, step37-official
+- `'silu'` — minimind-3, instella-3b, clef, qwen38, gemma-4-31b, laguna-xs-2.1, nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL, stepfun-ai__Step-3.7-Flash
 - `'—'` — qwen36, gpt-oss-120b
 - `'gelu_new'` — gpt2 ← **独苗**
 
 ### `FFN.alpha`
 
-- `1.702` — minimind-3, gpt2, instella-3b, clef, qwen38, gemma-4-31b, laguna-xs-2.1, step-3.7-flash, step37-official
+- `1.702` — minimind-3, gpt2, instella-3b, clef, qwen38, gemma-4-31b, laguna-xs-2.1, nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL, stepfun-ai__Step-3.7-Flash
 - `'—'` — qwen36, gpt-oss-120b
 
 ### `FFN.bias`
 
-- `False` — minimind-3, instella-3b, clef, qwen38, gemma-4-31b, laguna-xs-2.1, step-3.7-flash, step37-official
+- `False` — minimind-3, instella-3b, clef, qwen38, gemma-4-31b, laguna-xs-2.1, nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL, stepfun-ai__Step-3.7-Flash
 - `'—'` — qwen36, gpt-oss-120b
 - `True` — gpt2 ← **独苗**
 
 ### `FFN.gate`
 
-- `True` — minimind-3, instella-3b, clef, qwen38, gemma-4-31b, laguna-xs-2.1, step-3.7-flash, step37-official
+- `True` — minimind-3, instella-3b, clef, qwen38, gemma-4-31b, laguna-xs-2.1, nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL, stepfun-ai__Step-3.7-Flash
 - `'—'` — qwen36, gpt-oss-120b
 - `False` — gpt2 ← **独苗**
 
@@ -195,7 +195,7 @@
 
 - `17408` — clef, qwen38
 - `'—'` — qwen36, gpt-oss-120b
-- `11264` — step-3.7-flash, step37-official
+- `11264` — nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL, stepfun-ai__Step-3.7-Flash
 - `2432` — minimind-3 ← **独苗**
 - `3072` — gpt2 ← **独苗**
 - `6912` — instella-3b ← **独苗**
@@ -204,71 +204,71 @@
 
 ### `FFN.limit`
 
-- `None` — minimind-3, gpt2, instella-3b, clef, qwen38, gemma-4-31b, laguna-xs-2.1, step-3.7-flash, step37-official
+- `None` — minimind-3, gpt2, instella-3b, clef, qwen38, gemma-4-31b, laguna-xs-2.1, nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL, stepfun-ai__Step-3.7-Flash
 - `'—'` — qwen36, gpt-oss-120b
 
 ### `Linear.act`
 
-- `'—'` — minimind-3, gpt2, instella-3b, gemma-4-31b, laguna-xs-2.1, gpt-oss-120b, step-3.7-flash, step37-official
+- `'—'` — minimind-3, gpt2, instella-3b, gemma-4-31b, laguna-xs-2.1, gpt-oss-120b, nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL, stepfun-ai__Step-3.7-Flash
 - `'silu'` — clef, qwen38, qwen36
 
 ### `Linear.conv_kernel`
 
-- `'—'` — minimind-3, gpt2, instella-3b, gemma-4-31b, laguna-xs-2.1, gpt-oss-120b, step-3.7-flash, step37-official
+- `'—'` — minimind-3, gpt2, instella-3b, gemma-4-31b, laguna-xs-2.1, gpt-oss-120b, nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL, stepfun-ai__Step-3.7-Flash
 - `4` — clef, qwen38, qwen36
 
 ### `Linear.k_dim`
 
-- `'—'` — minimind-3, gpt2, instella-3b, gemma-4-31b, laguna-xs-2.1, gpt-oss-120b, step-3.7-flash, step37-official
+- `'—'` — minimind-3, gpt2, instella-3b, gemma-4-31b, laguna-xs-2.1, gpt-oss-120b, nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL, stepfun-ai__Step-3.7-Flash
 - `128` — clef, qwen38, qwen36
 
 ### `Linear.k_heads`
 
-- `'—'` — minimind-3, gpt2, instella-3b, gemma-4-31b, laguna-xs-2.1, gpt-oss-120b, step-3.7-flash, step37-official
+- `'—'` — minimind-3, gpt2, instella-3b, gemma-4-31b, laguna-xs-2.1, gpt-oss-120b, nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL, stepfun-ai__Step-3.7-Flash
 - `16` — clef, qwen38, qwen36
 
 ### `Linear.l2_eps`
 
-- `'—'` — minimind-3, gpt2, instella-3b, gemma-4-31b, laguna-xs-2.1, gpt-oss-120b, step-3.7-flash, step37-official
+- `'—'` — minimind-3, gpt2, instella-3b, gemma-4-31b, laguna-xs-2.1, gpt-oss-120b, nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL, stepfun-ai__Step-3.7-Flash
 - `1e-06` — clef, qwen38, qwen36
 
 ### `Linear.norm_eps`
 
-- `'—'` — minimind-3, gpt2, instella-3b, gemma-4-31b, laguna-xs-2.1, gpt-oss-120b, step-3.7-flash, step37-official
+- `'—'` — minimind-3, gpt2, instella-3b, gemma-4-31b, laguna-xs-2.1, gpt-oss-120b, nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL, stepfun-ai__Step-3.7-Flash
 - `1e-06` — clef, qwen38, qwen36
 
 ### `Linear.out_dim`
 
-- `'—'` — minimind-3, gpt2, instella-3b, gemma-4-31b, laguna-xs-2.1, gpt-oss-120b, step-3.7-flash, step37-official
+- `'—'` — minimind-3, gpt2, instella-3b, gemma-4-31b, laguna-xs-2.1, gpt-oss-120b, nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL, stepfun-ai__Step-3.7-Flash
 - `6144` — clef, qwen38
 - `4096` — qwen36 ← **独苗**
 
 ### `Linear.v_dim`
 
-- `'—'` — minimind-3, gpt2, instella-3b, gemma-4-31b, laguna-xs-2.1, gpt-oss-120b, step-3.7-flash, step37-official
+- `'—'` — minimind-3, gpt2, instella-3b, gemma-4-31b, laguna-xs-2.1, gpt-oss-120b, nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL, stepfun-ai__Step-3.7-Flash
 - `128` — clef, qwen38, qwen36
 
 ### `Linear.v_heads`
 
-- `'—'` — minimind-3, gpt2, instella-3b, gemma-4-31b, laguna-xs-2.1, gpt-oss-120b, step-3.7-flash, step37-official
+- `'—'` — minimind-3, gpt2, instella-3b, gemma-4-31b, laguna-xs-2.1, gpt-oss-120b, nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL, stepfun-ai__Step-3.7-Flash
 - `48` — clef, qwen38
 - `32` — qwen36 ← **独苗**
 
 ### `MoE.act`
 
 - `'—'` — minimind-3, gpt2, instella-3b, clef, qwen38, gemma-4-31b
-- `'silu'` — laguna-xs-2.1, qwen36, step-3.7-flash, step37-official
+- `'silu'` — laguna-xs-2.1, qwen36, nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL, stepfun-ai__Step-3.7-Flash
 - `'gptoss'` — gpt-oss-120b ← **独苗**
 
 ### `MoE.alpha`
 
 - `'—'` — minimind-3, gpt2, instella-3b, clef, qwen38, gemma-4-31b
-- `1.702` — laguna-xs-2.1, qwen36, gpt-oss-120b, step-3.7-flash, step37-official
+- `1.702` — laguna-xs-2.1, qwen36, gpt-oss-120b, nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL, stepfun-ai__Step-3.7-Flash
 
 ### `MoE.expert_bias`
 
 - `'—'` — minimind-3, gpt2, instella-3b, clef, qwen38, gemma-4-31b
-- `False` — laguna-xs-2.1, qwen36, step-3.7-flash, step37-official
+- `False` — laguna-xs-2.1, qwen36, nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL, stepfun-ai__Step-3.7-Flash
 - `True` — gpt-oss-120b ← **独苗**
 
 ### `MoE.experts`
@@ -276,91 +276,91 @@
 - `'—'` — minimind-3, gpt2, instella-3b, clef, qwen38, gemma-4-31b
 - `256` — laguna-xs-2.1, qwen36
 - `128` — gpt-oss-120b ← **独苗**
-- `255` — step-3.7-flash ← **独苗**
-- `288` — step37-official ← **独苗**
+- `255` — nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL ← **独苗**
+- `288` — stepfun-ai__Step-3.7-Flash ← **独苗**
 
 ### `MoE.hidden`
 
 - `'—'` — minimind-3, gpt2, instella-3b, clef, qwen38, gemma-4-31b
 - `512` — laguna-xs-2.1, qwen36
-- `1280` — step-3.7-flash, step37-official
+- `1280` — nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL, stepfun-ai__Step-3.7-Flash
 - `2880` — gpt-oss-120b ← **独苗**
 
 ### `MoE.limit`
 
 - `'—'` — minimind-3, gpt2, instella-3b, clef, qwen38, gemma-4-31b
-- `None` — laguna-xs-2.1, qwen36, step-3.7-flash, step37-official
+- `None` — laguna-xs-2.1, qwen36, nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL, stepfun-ai__Step-3.7-Flash
 - `7.0` — gpt-oss-120b ← **独苗**
 
 ### `MoE.limit_shared`
 
 - `'—'` — minimind-3, gpt2, instella-3b, clef, qwen38, gemma-4-31b
-- `None` — laguna-xs-2.1, qwen36, gpt-oss-120b, step-3.7-flash, step37-official
+- `None` — laguna-xs-2.1, qwen36, gpt-oss-120b, nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL, stepfun-ai__Step-3.7-Flash
 
 ### `MoE.n_group`
 
 - `'—'` — minimind-3, gpt2, instella-3b, clef, qwen38, gemma-4-31b
-- `0` — laguna-xs-2.1, qwen36, gpt-oss-120b, step-3.7-flash, step37-official
+- `0` — laguna-xs-2.1, qwen36, gpt-oss-120b, nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL, stepfun-ai__Step-3.7-Flash
 
 ### `MoE.routed_scale`
 
 - `'—'` — minimind-3, gpt2, instella-3b, clef, qwen38, gemma-4-31b
 - `1.0` — qwen36, gpt-oss-120b
-- `3.0` — step-3.7-flash, step37-official
+- `3.0` — nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL, stepfun-ai__Step-3.7-Flash
 - `2.5` — laguna-xs-2.1 ← **独苗**
 
 ### `MoE.router_bias`
 
 - `'—'` — minimind-3, gpt2, instella-3b, clef, qwen38, gemma-4-31b
-- `True` — gpt-oss-120b, step-3.7-flash, step37-official
+- `True` — gpt-oss-120b, nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL, stepfun-ai__Step-3.7-Flash
 - `False` — laguna-xs-2.1, qwen36
 
 ### `MoE.routing`
 
 - `'—'` — minimind-3, gpt2, instella-3b, clef, qwen38, gemma-4-31b
 - `'softmax_topk'` — laguna-xs-2.1, qwen36
-- `'sigmoid_topk'` — step-3.7-flash, step37-official
+- `'sigmoid_topk'` — nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL, stepfun-ai__Step-3.7-Flash
 - `'topk_softmax'` — gpt-oss-120b ← **独苗**
 
 ### `MoE.score_bias`
 
 - `'—'` — minimind-3, gpt2, instella-3b, clef, qwen38, gemma-4-31b
-- `False` — qwen36, gpt-oss-120b, step-3.7-flash, step37-official
+- `False` — qwen36, gpt-oss-120b, nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL, stepfun-ai__Step-3.7-Flash
 - `True` — laguna-xs-2.1 ← **独苗**
 
 ### `MoE.shared`
 
 - `'—'` — minimind-3, gpt2, instella-3b, clef, qwen38, gemma-4-31b
-- `1` — laguna-xs-2.1, qwen36, step-3.7-flash, step37-official
+- `1` — laguna-xs-2.1, qwen36, nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL, stepfun-ai__Step-3.7-Flash
 - `0` — gpt-oss-120b ← **独苗**
 
 ### `MoE.shared_gate`
 
 - `'—'` — minimind-3, gpt2, instella-3b, clef, qwen38, gemma-4-31b
-- `False` — laguna-xs-2.1, gpt-oss-120b, step-3.7-flash, step37-official
+- `False` — laguna-xs-2.1, gpt-oss-120b, nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL, stepfun-ai__Step-3.7-Flash
 - `True` — qwen36 ← **独苗**
 
 ### `MoE.shared_hidden`
 
 - `'—'` — minimind-3, gpt2, instella-3b, clef, qwen38, gemma-4-31b
 - `512` — laguna-xs-2.1, qwen36
-- `1280` — step-3.7-flash, step37-official
+- `1280` — nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL, stepfun-ai__Step-3.7-Flash
 - `0` — gpt-oss-120b ← **独苗**
 
 ### `MoE.top_k`
 
 - `'—'` — minimind-3, gpt2, instella-3b, clef, qwen38, gemma-4-31b
-- `8` — laguna-xs-2.1, qwen36, step-3.7-flash, step37-official
+- `8` — laguna-xs-2.1, qwen36, nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL, stepfun-ai__Step-3.7-Flash
 - `4` — gpt-oss-120b ← **独苗**
 
 ### `MoE.topk_group`
 
 - `'—'` — minimind-3, gpt2, instella-3b, clef, qwen38, gemma-4-31b
-- `0` — laguna-xs-2.1, qwen36, gpt-oss-120b, step-3.7-flash, step37-official
+- `0` — laguna-xs-2.1, qwen36, gpt-oss-120b, nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL, stepfun-ai__Step-3.7-Flash
 
 ### `ctx`
 
-- `262144` — clef, qwen38, gemma-4-31b, laguna-xs-2.1, qwen36, step-3.7-flash, step37-official
+- `262144` — clef, qwen38, gemma-4-31b, laguna-xs-2.1, qwen36, nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL, stepfun-ai__Step-3.7-Flash
 - `32768` — minimind-3 ← **独苗**
 - `1024` — gpt2 ← **独苗**
 - `4096` — instella-3b ← **独苗**
@@ -371,7 +371,7 @@
 - `768` — minimind-3, gpt2
 - `5120` — clef, qwen38
 - `2048` — laguna-xs-2.1, qwen36
-- `4096` — step-3.7-flash, step37-official
+- `4096` — nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL, stepfun-ai__Step-3.7-Flash
 - `2560` — instella-3b ← **独苗**
 - `5376` — gemma-4-31b ← **独苗**
 - `2880` — gpt-oss-120b ← **独苗**
@@ -379,7 +379,7 @@
 ### `n_layer`
 
 - `36` — instella-3b, gpt-oss-120b
-- `45` — step-3.7-flash, step37-official
+- `45` — nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL, stepfun-ai__Step-3.7-Flash
 - `8` — minimind-3 ← **独苗**
 - `12` — gpt2 ← **独苗**
 - `64` — clef ← **独苗**
@@ -391,22 +391,22 @@
 ### `norm_eps`
 
 - `1e-06` — minimind-3, clef, qwen38, gemma-4-31b, laguna-xs-2.1, qwen36
-- `1e-05` — gpt2, instella-3b, gpt-oss-120b, step-3.7-flash, step37-official
+- `1e-05` — gpt2, instella-3b, gpt-oss-120b, nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL, stepfun-ai__Step-3.7-Flash
 
 ### `norm_kind`
 
-- `'rms'` — minimind-3, instella-3b, clef, qwen38, gemma-4-31b, laguna-xs-2.1, qwen36, gpt-oss-120b, step-3.7-flash, step37-official
+- `'rms'` — minimind-3, instella-3b, clef, qwen38, gemma-4-31b, laguna-xs-2.1, qwen36, gpt-oss-120b, nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL, stepfun-ai__Step-3.7-Flash
 - `'layer'` — gpt2 ← **独苗**
 
 ### `pos_kind`
 
-- `'rope'` — minimind-3, instella-3b, clef, qwen38, gemma-4-31b, laguna-xs-2.1, qwen36, gpt-oss-120b, step-3.7-flash, step37-official
+- `'rope'` — minimind-3, instella-3b, clef, qwen38, gemma-4-31b, laguna-xs-2.1, qwen36, gpt-oss-120b, nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL, stepfun-ai__Step-3.7-Flash
 - `'learned'` — gpt2 ← **独苗**
 
 ### `vocab`
 
 - `248320` — clef, qwen38, qwen36
-- `128896` — step-3.7-flash, step37-official
+- `128896` — nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL, stepfun-ai__Step-3.7-Flash
 - `6400` — minimind-3 ← **独苗**
 - `50257` — gpt2 ← **独苗**
 - `50304` — instella-3b ← **独苗**
@@ -425,12 +425,12 @@
 - `33442617088` — laguna-xs-2.1 ← **独苗**
 - `35496856704` — qwen36 ← **独苗**
 - `116829156672` — gpt-oss-120b ← **独苗**
-- `180845807680` — step-3.7-flash ← **独苗**
-- `196956130368` — step37-official ← **独苗**
+- `180845807680` — nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL ← **独苗**
+- `196956130368` — stepfun-ai__Step-3.7-Flash ← **独苗**
 
 ### `机制`
 
-- `'Attention×45+FFN×3+MoE×42'` — step-3.7-flash, step37-official
+- `'Attention×45+FFN×3+MoE×42'` — nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL, stepfun-ai__Step-3.7-Flash
 - `'Attention×8+FFN×8'` — minimind-3 ← **独苗**
 - `'Attention×12+FFN×12'` — gpt2 ← **独苗**
 - `'Attention×36+FFN×36'` — instella-3b ← **独苗**

@@ -1,26 +1,18 @@
-by1cmp：所有模型的架构对比表，从 IR 生成
+改名：两个 step-3.7 用仓库全名
 
-用户要的，而且它兑现了 1.md 里那句话：config.json 是平的 JSON，
-做不了这件事。
+用户的判断：`step-3.7-flash` 会误导 —— 听起来像官方的 Step-3.7-Flash，
+而它是社区的剪枝微调版（nerkyor/...）。而且两个的命名规范还不一样
+（step-3.7-flash vs step37-official）。
 
-三段：谁是谁 / 独苗 / 逐属性的全部取值。
+对齐 refs/ 里已有的约定 owner_Repo-Name：
 
-独苗那一节是重点 —— 只有它这样的属性才是需要新原语的地方。
-20 行，每行都有意义：
+  step-3.7-flash.by1  ->  nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL.by1
+  step37-official.by1 ->  stepfun-ai__Step-3.7-Flash.by1
 
-  gpt2          6 个（rope=False / gate=False / act=gelu_new /
-                    bias=True / norm=layer / pos=learned）
-                全是那一代的做法
-  gpt-oss-120b  8 个（sink / window=128 / yarn / gptoss 激活 /
-                    expert_bias / limit / topk_softmax / shared=0）
-  laguna        2 个     instella/gemma/qwen36  各 1 个
-  clef / qwen38 / minimind-3 / step-3.7 / step37-official  0 个
+从文件名就能追回是哪个仓库 —— 这正是最该做到的事。
 
-最后一行才是落点：11 个模型里 5 个贡献 0 个新原语 ——
-这是原语集合收敛的可数形式。说收敛了是感觉，这是账。
+老名字会误导的地方具体在哪：剪枝版才是"有动态专家数量"的那个
+（用户找它就是这个原因），而它的旧名字看起来像官方版。
 
-而独苗集中在 gpt2（另一个时代）和 gpt-oss-120b（最特殊的那个）——
-新原语是从另一个时代和最特殊的那个来的，不是从又一个 Llama 变体来的。
-
-顺带：机制那一列本来是废话（每个模型的组合本来就唯一），
-10 行淹掉了真独苗，排除了。
+ir.md 里 57 节之前的老条目保留旧名字 —— 那是历史事实。
+日志改了就变成"当初就是这么写的"，那是假的。

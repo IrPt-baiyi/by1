@@ -26,7 +26,7 @@
 #
 # ⚠️ 这份文件里标了 ⚠️ 的地方，是**当前语言说不出来的**。
 
-model Step-3.7-Flash-180B-LynnStyle {
+model stepfun-ai__Step-3.7-Flash {
   arch    step3p5
   ctx     262144
 

@@ -30,7 +30,7 @@ CASE = [
     ('ling-3.0-tiny.by1', False, 'KDA', 'KDA 整族没实现'),
     # ── 该通过的 ──────────────────────────────────────────────────
     ('clef-tiny.by1', True, '', '取值全都实现过'),
-    ('step-3.7-flash.by1', True, '', 'sigmoid_topk 已实现'),
+    ('nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL.by1', True, '', 'sigmoid_topk 已实现'),
     ('gpt2.by1', True, '',
      'gelu / LayerNorm / 学习式位置 / 无门控 MLP 现在都实现了'),
 ]
