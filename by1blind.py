@@ -205,8 +205,26 @@ def main():
     sec('H.', '生成的输出：只验了 logits')
     gens = [f for f in glob.glob('by1*.py') if 'gen' in f or 'sample' in f]
     print('     有采样/生成的脚本：%s' % (gens or '**一个都没有**'))
-    print('     `by1train.py` 存在，而**训练对不对从来没验过**')
-    print('     —— 前向验得很细，反向传播一行没验')
+    # **这一条我第一版写错了，而且错得最坏。**
+    #
+    # 原来写的是"反向传播一行没验"。而 `plan.md` 的 P3 明明白白
+    # 写着 ✅ 完成，还给了四个模型逐个参数的数：
+    #     llama-shaped 39/39 · mixtral-shaped 35/35
+    #     gpt-oss-shaped 31/31 · qwen3-next-shaped 62/62
+    #
+    # 查了才知道两边说的是两件事：
+    #     by1train.py:158   loss.backward()            <- PyTorch 的 autograd
+    #     by1diff.py:341    ra.pow(2).sum().backward() <- 比 by1 的和 HF 的梯度
+    #
+    # **`by1train.py` 没有自己的反向** —— 它用的就是那套被验过的 autograd。
+    #
+    # > 一个说"已经验过的东西没验"的工具，比一个说"没验的东西验了"
+    # > 的工具更坏 —— 前者的修法是"再验一遍"（浪费），
+    # > 后者的修法是"什么都不做"（出事）。
+    print('     反向：`by1diff --backward` 管着（4 个模型逐个参数对过）')
+    print('     **`by1train.py` 用的是 PyTorch 的 autograd，没有自己的反向**')
+    print('     真正没验的是**训练循环本身**（优化器 / lr / 数据）——')
+    print('     而那不是 by1 承诺的东西。1.md 承诺的是"前向与反向数值一致"。')
     print()
     return 0
 
