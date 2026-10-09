@@ -107,8 +107,15 @@ def push(args, deep=False):
 
     n = read_state()
     print()
-    print('  ── git push %s' % ' '.join(args))
-    r = subprocess.run(['git', 'push'] + list(args), cwd=ROOT)
+    # **`--no-verify`：钩子会再跑一遍同一个检查。**
+    #
+    # 上面刚跑过 `check()`，而裸 `git push` 会触发 pre-push 钩子 ——
+    # 不挡住的话快速检查跑两次，10 秒变 20 秒（第一次实测就是这样）。
+    #
+    # 钩子仍然有用：**手动 `git push` 走的正是钩子那条路**，
+    # 它管的就是"忘了用 `--push` 的时候"。
+    print('  ── git push --no-verify %s' % ' '.join(args))
+    r = subprocess.run(['git', 'push', '--no-verify'] + list(args), cwd=ROOT)
     if r.returncode == 0:
         # 只有推成功了才记账 —— 推失败不该消耗轮换。
         write_state(0 if n >= PUSHES_PER_FULL - 1 else n + 1)
