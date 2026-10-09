@@ -1,0 +1,26 @@
+by1cmp：所有模型的架构对比表，从 IR 生成
+
+用户要的，而且它兑现了 1.md 里那句话：config.json 是平的 JSON，
+做不了这件事。
+
+三段：谁是谁 / 独苗 / 逐属性的全部取值。
+
+独苗那一节是重点 —— 只有它这样的属性才是需要新原语的地方。
+20 行，每行都有意义：
+
+  gpt2          6 个（rope=False / gate=False / act=gelu_new /
+                    bias=True / norm=layer / pos=learned）
+                全是那一代的做法
+  gpt-oss-120b  8 个（sink / window=128 / yarn / gptoss 激活 /
+                    expert_bias / limit / topk_softmax / shared=0）
+  laguna        2 个     instella/gemma/qwen36  各 1 个
+  clef / qwen38 / minimind-3 / step-3.7 / step37-official  0 个
+
+最后一行才是落点：11 个模型里 5 个贡献 0 个新原语 ——
+这是原语集合收敛的可数形式。说收敛了是感觉，这是账。
+
+而独苗集中在 gpt2（另一个时代）和 gpt-oss-120b（最特殊的那个）——
+新原语是从另一个时代和最特殊的那个来的，不是从又一个 Llama 变体来的。
+
+顺带：机制那一列本来是废话（每个模型的组合本来就唯一），
+10 行淹掉了真独苗，排除了。
