@@ -135,17 +135,55 @@ def _unwrap_text(cfg):
         return cfg, False, []
     if pick(cfg, "hidden_size") is not None:
         return cfg, False, []
-    tc = cfg.get('text_config')
-    if isinstance(tc, dict):
-        # **递进去的时候要把 model_type 带下去** —— 不然 classify() 认不出
-        inner = dict(tc)
-        if 'model_type' not in inner and cfg.get('model_type'):
-            inner['model_type'] = cfg['model_type']
-        towers = [k for k in cfg
-                  if k.endswith('_config') and k != 'text_config'
-                  and isinstance(cfg[k], dict)]
-        return inner, True, towers
+    towers = [k for k in cfg
+              if k.endswith('_config') and isinstance(cfg[k], dict)]
+    # **嵌的键不止 `text_config` 一个。** 各家叫法不同：
+    #     text_config      Qwen3.5 / Qwen3-VL / gemma4_unified / embedding_gemma2
+    #     thinker_config   Qwen3-Omni（思考塔才是语言模型）
+    #     llm_config / language_config / text_model_config  …
+    for key in ('text_config', 'thinker_config', 'llm_config',
+                'language_config', 'text_model_config'):
+        tc = cfg.get(key)
+        if isinstance(tc, dict) and pick(tc, 'hidden_size') is not None:
+            inner = dict(tc)
+            if 'model_type' not in inner and cfg.get('model_type'):
+                inner['model_type'] = cfg['model_type']
+            return inner, True, [k for k in towers if k != key]
+    # 有的嵌两层（Omni: thinker_config -> text_config）
+    for key in towers:
+        inner, nested, more = _unwrap_text(cfg[key])
+        if nested and pick(inner, 'hidden_size') is not None:
+            if 'model_type' not in inner and cfg.get('model_type'):
+                inner['model_type'] = cfg['model_type']
+            return inner, True, [k for k in towers if k != key] + more
     return cfg, False, []
+
+
+def _shape(real, key):
+    """取形状。**取不到就返回 None，不炸。**
+
+    ## 为什么会有取不到的时候
+
+    `by1index.py` 是从 `model.safetensors.index.json` 抓张量清单的 ——
+    那里面**只有名字，没有形状**（形状在分片文件里）。
+
+    而名字**够 `classify()` 认机制了**：
+        self_attn.q_proj   -> Attention
+        mlp.experts        -> MoE
+        linear_attn.*      -> Linear (GDN)
+
+    所以正确的做法不是"再去抓一遍形状"（那要下整个头，慢），
+    而是：**名字用，形状缺了就报"这是猜的"。**
+
+    第一版直接在 `real[kk]["shape"]` 上取，于是 22 个模型全炸在
+    `TypeError: 'NoneType' object is not subscriptable` ——
+    **而那个报错完全看不出是"形状没有"，看起来像模型坏了。**
+    """
+    v = real.get(key)
+    if not isinstance(v, dict):
+        return None
+    s = v.get('shape')
+    return s if isinstance(s, list) and s else None
 
 
 def boot_ir(cfg, real, name="booted"):
@@ -226,7 +264,7 @@ def boot_ir(cfg, real, name="booted"):
             out_dim = None
             for kk in ks:
                 if kk.endswith("o_proj.weight") or kk.endswith("c_proj.weight"):
-                    out_dim = int(real[kk]["shape"][-1])
+                    out_dim = int((_shape(real, kk) or [0])[-1])
                     break
             lt = lts[li] if li < len(lts) else "full_attention"
             w = (win if "sliding" in str(lt) else None)
@@ -274,7 +312,7 @@ def boot_ir(cfg, real, name="booted"):
                     if re.search(r"(gate_proj|up_proj|c_fc)\.weight$", kk):
                         # Conv1D 是 [in, out]，nn.Linear 是 [out, in] ——
                         # 取大的那一维，两种布局都对
-                        hid = int(max(real[kk]["shape"]))
+                        hid = int(max(_shape(real, kk) or [0]))
                         break
             ops.append({"mech": "FFN_", "kind": "FFN",
                         "attrs": {"hidden": hid,
@@ -494,13 +532,13 @@ def main():
             short = re.sub(r'^(model|backbone|language_model)\.', '', short)
             short = re.sub(r'^layers\.\d+\.', '', short)
             if MIX.match(short):
-                groups[kmain].setdefault(short, real[nm]['shape'])
+                groups[kmain].setdefault(short, _shape(real, nm))
             elif FFN.match(short) and kffn:
-                groups[kffn].setdefault(short, real[nm]['shape'])
+                groups[kffn].setdefault(short, _shape(real, nm))
             elif re.search(r'norm|layernorm', short):
-                layern.setdefault(short, real[nm]['shape'])
+                layern.setdefault(short, _shape(real, nm))
             else:
-                layern.setdefault(short, real[nm]['shape'])
+                layern.setdefault(short, _shape(real, nm))
     for key in sorted(groups):
         print('    %s {' % key)
         for nm in sorted(groups[key]):
@@ -514,7 +552,7 @@ def main():
     print('    }')
     print('    global {')
     for nm in sorted(globals_):
-        shp = ', '.join(str(x) for x in real[nm]['shape'])
+        shp = ', '.join(str(x) for x in _shape(real, nm))
         print('      %-40s (%s)' % (nm + ' :', shp))
     print('    }')
     print('  }')

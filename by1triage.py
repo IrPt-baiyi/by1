@@ -68,8 +68,43 @@ def main():
         if not isinstance(cfg, dict) or 'model_type' not in cfg:
             rows.append((name, '文件错', '没有 model_type（可能是错误页）'))
             continue
+        # **张量名才是判据。** classify() 从名字认机制；
+        # 只给 config 的话什么机制都认不出来（见下面"空壳拒了"那段）。
+        #
+        # refs/ 里的张量清单是**早年下载时随手起的名字**，和 config 的
+        # `<owner>__<Repo>` 对不上。**显式表，不推断** —— 按名字猜
+        # 已经失败过一次（9 个假"空壳"）。
+        TENSOR_ALIAS = {
+            # 这几个的 config 名和早年的张量清单名对不上
+            'nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL':
+                'step37',
+            'stepfun-ai__Step-3.7-Flash': 'step37-official',
+            'stepfun-ai_Step-3_7-Flash': 'step37-official',
+            'poolside_Laguna-XS-2_1': 'laguna-xs-2.1',
+            'poolside_Laguna-XS_2': 'laguna-xs-2.1',
+            # config 没有 owner 前缀，张量清单有
+            'gemma-4-12B': 'google__gemma-4-12B',
+            'gemma-4-26B-A4B': 'google__gemma-4-26B-A4B',
+            # **`state-spaces__mamba-130m-hf` 本来就有，别再映射走。**
+            # 第一版写了个 'mamba-130m'，而 refs/ 里根本没有那个文件 ——
+            # 于是"本来就对"的那个反而找不到，报的是假"空壳"。
+        }
+        real = {}
+        cands = [TENSOR_ALIAS.get(name), name, name.split('__')[-1],
+                 name.split('__')[-1].split('_', 1)[-1]]
+        for cand in cands:
+            if not cand:
+                continue
+            p = os.path.join(HERE, 'refs', cand + '.tensors.json')
+            if os.path.exists(p):
+                try:
+                    real = json.load(io.open(p, encoding='utf-8'))
+                except Exception:
+                    real = {}
+                if real:
+                    break
         try:
-            out = boot.boot_ir(cfg, {}, name)
+            out = boot.boot_ir(cfg, real, name)
             ir, guessed, gkeys = out if isinstance(out, tuple) else (out, [], [])
             kinds = set()
             for L in (ir.get('layers') or []):

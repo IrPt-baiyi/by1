@@ -102,25 +102,41 @@ def main():
 
         got = None
         # ① index 文件（最省）
-        for fn in ('model.safetensors.index.json',
-                   'pytorch_model.bin.index.json'):
-            try:
-                t = get('https://www.modelscope.cn/api/v1/models/%s/repo'
-                        '?FilePath=%s' % (mid, fn)).decode('utf-8', 'replace')
-                j = json.loads(t)
-                if j.get('weight_map'):
-                    got = {k: None for k in j['weight_map']}
-                    break
-            except Exception:
-                continue
-        # ② safetensors 头（单文件模型）
-        if not got:
-            for shard in ('model.safetensors', 'pytorch_model.bin'):
+        for where in ('MS', 'HF'):
+            for fn in ('model.safetensors.index.json',
+                       'pytorch_model.bin.index.json'):
                 try:
-                    got = tensors_from_header(mid, 'MS', shard)
-                    break
+                    if where == 'MS':
+                        u = ('https://www.modelscope.cn/api/v1/models/%s/repo'
+                             '?FilePath=%s' % (mid, fn))
+                    else:
+                        u = ('https://hf-mirror.com/%s/resolve/main/%s'
+                             % (mid, fn))
+                    t = get(u).decode('utf-8', 'replace')
+                    j = json.loads(t)
+                    if j.get('weight_map'):
+                        got = {k: None for k in j['weight_map']}
+                        break
                 except Exception:
                     continue
+            if got:
+                break
+        # ② safetensors 头（单文件模型）—— **两个源都要试**
+        #
+        # 第一版只试了 ModelScope，于是 10 个"没抓到" ✗ ——
+        # 而它们只是**在 HF 上、不在 MS 上**（gpt-oss-20b / mamba /
+        # GLM-4.7 / poolside / stepfun 那几个）。
+        # 报错是"没抓到"，看起来像"这些模型有问题"。
+        if not got:
+            for where in ('MS', 'HF'):
+                for shard in ('model.safetensors', 'pytorch_model.bin'):
+                    try:
+                        got = tensors_from_header(mid, where, shard)
+                        break
+                    except Exception:
+                        continue
+                if got:
+                    break
         if got:
             p = os.path.join(REF, base + '.tensors.json')
             io.open(p, 'w', encoding='utf-8').write(

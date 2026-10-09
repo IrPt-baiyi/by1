@@ -1,56 +1,58 @@
-加模型：先查、再抓、最后诚实地判
+加模型：config 和张量名都到手了，34/39 出真机制
 
-用户给了 22 个模型的清单（20 个"纯属闲的" + 4 个精英怪），
-外加一个新目标：**支持量化**。
+## 这一轮的产出
 
-这一轮做的全是**免费的部分**（上次 20 块钱的教训：免费的先做完）。
+  refs/ 里现在 39 个 config + 41 份张量清单（全是免费抓的）
+  by1triage.py  一批 config 过 by1，看谁需要新原语
+  by1index.py   抓张量名清单
 
-## 新增三个工具
+## 修了三个真 bug，每个都是"报错指向错的地方"
 
-  by1triage.py   一批 config 过 by1，看谁需要新原语
-  by1index.py    抓张量名清单（index 文件，几十 KB）
-  （_survey/_grab 是一次性的，没留下）
+① **嵌套 config。** 2026 那批把文本配置嵌在 text_config 里
+   （Qwen3.5 / Qwen3-VL / gemma4_unified / embedding_gemma2 / Qwen3-Omni）。
+   老一代是平的。不认它就等于新一代全部描述不了。
+   而且嵌的键不止一个：text_config / thinker_config / llm_config …
+   还有嵌两层的（Omni: thinker_config -> text_config）。
 
-## 查存在性：20/22
+② **张量清单只有名字，没有形状。**
+   by1boot 直接在 real[k]["shape"] 上取，22 个模型全炸在
+   TypeError: 'NoneType' object is not subscriptable ——
+   **那个报错完全看不出是"形状没有"，看起来像模型坏了。**
+   加了 _shape()：取不到返回 None，不炸。
+   正确做法不是"再去抓形状"，而是**名字够认机制，形状缺了就报猜的**。
 
-  ✓ 19 个从 ModelScope 抓到 config（+ LLaDA 在 inclusionAI/ 下）
-  ✗ NVIDIA-Nemotron-3-Ultra —— 四个候选 org 名都没有
-  ✗ Wan2.2-I2V-A14B —— ModelScope 报 500
+③ **张量表名对不上。** 9 个报"空壳"，因为 refs/ 里的清单是早年
+   随手起的名字（step37 / laguna-xs-2.1 / nemotron）。
+   **显式表，不推断** —— 按名字猜已经失败过一次。
+   而我写表时又把"本来就对"的映射走了（mamba-130m-hf），
+   于是"本来就对"的那个反而找不到，报的还是假"空壳"。
 
-## 架构名透露的（新机制在哪）
+## 结果：34/39 出真机制
 
-  已有：GptOss / Gemma4 / Qwen3_5 / Qwen3_5Moe / Qwen3Next / Qwen2 / Glm4Moe
-  新的：Qwen4Exp / Gemma4Unified / DeepseekV41
-  精英怪：MambaForCausalLM（纯 SSM）/ EmbeddingGemma2Model（编码器）
-          Wan2.2（视频）/ LLaDA（扩散）/ Qwen3VL+Omni（多模态）
+  gpt-oss-20b            Add+Attention+MoE+Norm
+  gemma-4-26B-A4B        Add+Attention+MoE+Norm
+  Qwen3.8-Flash-Next     Add+Attention+MoE+Norm+Raw
+  Qwen3.5-397B-A17B      Add+Attention+MoE+Norm+Raw
+  Qwen3-VL-30B-A3B       Add+Attention+MoE+Norm
+  Qwen3-Omni-30B-A3B     Add+Attention+MoE+Norm
+  GLM-4.7-Flash          Add+FFN+MoE+Norm+Raw
+  embeddinggemma-2       Add+Attention+FFN+Norm
 
-## 修了一个真缺口：嵌套 config
+**而 `Raw` 出现的地方才是要干活的地方** —— 那是没认出来的张量。
+下一版 triage 应该把它们**列出来**，那才是真正的待办清单。
 
-实测 2026 那批的 config **把文本配置嵌在 `text_config` 里**：
+**精英怪已经露头**：
+  LLaDA2.2-flash         Add+FFN+MoE+Norm+Raw   **没有 Attention**（扩散）
+  Ling-3.0-tiny          Add+FFN+MoE+Norm+Raw   KDA
+  DeepSeek-V4.1-Flash    Add+MoE+Norm+Raw       **没有 Attention 认出来**
 
-  qwen3_5 / qwen3_vl / gemma4_unified / embedding_gemma2 / qwen3_omni
-  顶层只有 model_type + text_config + vision_config（+ audio），
-  而 hidden_size / num_layers / vocab_size **全在里面**。
+## 还剩 5 个
 
-老一代（llama/qwen2/mamba/llada2_moe）是平的。
-**这不是某个模型的怪癖，是多模态成了默认之后的通用做法。**
-不认它就等于新一代全部描述不了 —— 而那正是"加大量模型"要覆盖的。
+  amd_Instella-MoE-16B-A3B   config 本身就是坏的（不是目标）
+  mamba-130m-hf              假"空壳"（张量表匹配）
+  nerkyor_* / stepfun-ai_*   int() 报错 —— 还有没打到的取形状处
 
-by1boot 加了 _unwrap_text()：取出 text_config，**并且报出外层还有哪些塔**
-（那些不在这个 IR 里，不说的话用的人会以为整个模型都描述了）。
+## 用户的完整目标（还没做的）
 
-修完：37/39 能出 IR。
-
-## 而那个 37/39 是**假的**
-
-全是 `Add+Norm+Raw` —— 连 gpt-oss-120b 都是。
-因为 classify() 是**从张量名认机制**的，我只传了 config，
-一个机制都认不出来，退化成 Raw。
-
-**一个什么机制都没认出来的 IR，和"不支持"没区别，但报的是"✓"。**
-那正是这个项目一直在防的那种谎 —— 而我自己刚写出来一个。
-
-triage 加了判据：机制集合里没有 Attention/FFN/MoE/MLA/Linear
-就报"空壳拒了"，并说明"没给张量名，认不出机制"。
-
-改完：**0/39 已覆盖** —— 这才是实话。
+  1. 加入大量模型及其技术      <- 进行中，34/39 出机制
+  2. **支持量化**              <- 完全没开始
