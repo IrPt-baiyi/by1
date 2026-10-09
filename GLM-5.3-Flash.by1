@@ -15,9 +15,9 @@
 #   refs/glm53.tensors.json（76108 个张量，62 个分片）
 # by1-model: GLM-5.3-Flash
 # by1-repo:  zai-org/GLM-5.3-Flash
-# by1-short: glm53
+# by1-short: GLM-5.3-Flash
 
-model glm53 {
+model GLM-5.3-Flash {
   arch  glm5_next
   ctx   1048576
 

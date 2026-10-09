@@ -17,9 +17,9 @@
 #   所有 MoE 层都是 128 个专家（384 = 128 × 3，逐专家存）
 # by1-model: Ling-3.0-tiny
 # by1-repo:  inclusionAI/Ling-3.0-tiny
-# by1-short: lingtiny
+# by1-short: Ling-3.0-tiny
 
-model lingtiny {
+model Ling-3.0-tiny {
   arch    bailing_hybrid
   ctx     131072
 

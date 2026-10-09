@@ -17,9 +17,9 @@
 #   refs/nemotron.tensors.json（6513 个张量，14 个分片全读）
 # by1-model: NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16
 # by1-repo:  nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16
-# by1-short: nemotron
+# by1-short: Nemotron-3.5-Lightning
 
-model nemotron {
+model Nemotron-3.5-Lightning {
   arch  nemotron_h
   ctx   262144
 

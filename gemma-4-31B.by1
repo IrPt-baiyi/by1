@@ -9,9 +9,9 @@
 # 下面一行 pattern 与一个 position 块就是它们的等价物。
 # by1-model: gemma-4-31B
 # by1-repo:  google/gemma-4-31B
-# by1-short: gemma31b
+# by1-short: gemma-4-31B
 
-model gemma31b {
+model gemma-4-31B {
   arch    gemma4
   license apache-2.0
   ctx     262144

@@ -14,9 +14,9 @@
 #   python by1verify.py instella-3b.by1 refs/amd_Instella-3B.config.json --config
 # by1-model: Instella-3B
 # by1-repo:  amd/Instella-3B
-# by1-short: instella3b
+# by1-short: Instella-3B
 
-model instella3b {
+model Instella-3B {
   arch    instella
   license amd
   ctx     4096

@@ -30,9 +30,9 @@
 # ⚠️ 这份文件里标了 ⚠️ 的地方，是**当前语言说不出来的**。
 # by1-model: Step-3.7-Flash
 # by1-repo:  stepfun-ai/Step-3.7-Flash
-# by1-short: step37-official
+# by1-short: Step-3.7-Flash
 
-model step37-official {
+model Step-3.7-Flash {
   arch    step3p5
   ctx     262144
 

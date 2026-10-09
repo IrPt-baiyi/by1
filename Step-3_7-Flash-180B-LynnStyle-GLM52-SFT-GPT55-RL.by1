@@ -17,9 +17,9 @@
 # ⚠️ 这份文件里标了 ⚠️ 的地方，是**当前语言说不出来的**。
 # by1-model: Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL
 # by1-repo:  nerkyor/Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL
-# by1-short: step37-pruned
+# by1-short: nerkyor/Step-3_7-Flash
 
-model step37-pruned {
+model nerkyor/Step-3_7-Flash {
   arch    step3p5
   ctx     262144
 

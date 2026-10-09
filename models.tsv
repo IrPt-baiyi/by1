@@ -1,31 +1,63 @@
 # by1 的模型清单 —— **唯一的真相源**
 #
-# 用户定的四条：
-#   ① 只要模型名称      文件名用**模型名**，不带 owner
-#   ② 有长名和短名      **长名 = HF 的模型名**（文件名用）
-#                       **短名 = 手动起的**（model 声明、表格、显示用）
-#   ③ 批量程序生成      这个文件是手动写一次，其余全由 by1name.py 生成
-#   ④ 统一格式          HF 的命名（`owner/Repo-Name` 里的 `Repo-Name`）
+# 长名   = HF 的**模型名**（不带 owner）   -> **文件名**
+# 短名   = **手动起的**                    -> model 声明、表格、显示
 #
-# 列：长名 \t 短名 \t HF id \t 本地文件 \t 说明
-#   · 长名     == 本地文件去掉 .by1
-#   · HF id    带 owner，只记在这里，不进文件名
-#   · 短名     手动起，可读优先
+# ## 短名为什么是这样（用户给的 14 条，逐条读出来的规矩）
+#
+# ① **不做任何缩写。** `gpt-oss-120b` 不是 `gptoss120b`，`Qwen3.8-27B`
+#    不是 `qwen38`。**短名要能贴回 HF 搜得到** —— `qwen38` 搜不到。
+#    而且 `qwen38` 还丢掉了 `27B`，那是**有用的信息**，不是噪音。
+#
+# ② **只能用 HF 上真实存在的字拼成。** 我第一版写的是 `step37-pruned`、
+#    `gemma31b` —— **那是我发明的名字**，别人搜不到。
+#
+# ③ **同名冲突时加 owner，而不是自己起个新名。**
+#        Step-3_7-Flash            官方
+#        nerkyor/Step-3_7-Flash    剪枝版 —— **同名，不同源**
+#    `step37-pruned` 掩盖了"这是 nerkyor 那个"；而
+#    `nerkyor/Step-3_7-Flash` 指明"这是**谁的** Step-3_7-Flash"。
+#    **官方不加前缀** —— 它是正主。
+#
+# ④ **去掉的是 owner 前缀和配置后缀，不是名字里的词。**
+#        NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16
+#        ^^^^^^ owner  ^^^^^^^^^^^^^^^^^^ 名字      ^^^^^^^^^ 配置
+#        -> Nemotron-3.5-Lightning
+#
+#    **`Lightning` 是名字的一部分，`30B-A3B-BF16` 才是配置。**
+#    我第一版砍成了 `Nemotron-3.5` —— 砍多了。
+#
+#    而 `Qwen3.6-35B-A3B` **保留** `35B-A3B`，因为那就是它的正式名；
+#    `gpt-oss-120b` 的 `120b` 同理。**两者不是一回事。**
+#
+# ⑤ **"哪个是后缀、哪个是名字"要人判断** —— 这就是短名手动的理由。
+#    `Nemotron-3.5` 还是 `Nemotron-3.5-Lightning`？**没有人判断就会砍错。**
+#
+# ## 一句话
+#
+# **短名回答的是"这个模型叫什么"，不是"我怎么方便怎么看"。**
+# 前者不能发明。
+#
+# ## 列
+#
+# 长名 \t 短名 \t HF id \t 说明
+#   · 长名 == 本地文件去掉 .by1
+#   · HF id 带 owner，记在这里，**不进文件名**
 #
 # **加新模型只改这一个文件**，然后 `python by1name.py --apply`。
 #
 # 长名	短名	HF id	说明
-gpt-oss-120b	gptoss120b	openai/gpt-oss-120b	交替 SWA + learned sink；MXFP4
-gemma-4-31B	gemma31b	google/gemma-4-31B	一个模型内两种 head_dim + K=V
-Laguna-XS-2_1	laguna	poolside/Laguna-XS-2_1	每层头数不同 + 每头门控 + 双 RoPE
-Instella-3B	instella3b	amd/Instella-3B	训练中途的 checkpoint（qk_norm=full）
-Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL	step37-pruned	nerkyor/Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL	**剪枝微调版**：逐层专家数不同（动态）
-Step-3.7-Flash	step37-official	stepfun-ai/Step-3.7-Flash	官方未剪枝，和剪枝版差四行
-Ling-3.0-tiny	lingtiny	inclusionAI/Ling-3.0-tiny	KDA（不是 GDN）
-minimind-3	minimind3	jingyaogong/minimind-3	收敛判卷人：最普通的那种
+gpt-oss-120b	gpt-oss-120b	openai/gpt-oss-120b	交替 SWA + learned sink；MXFP4
+gemma-4-31B	gemma-4-31B	google/gemma-4-31B	一个模型内两种 head_dim + K=V
+Laguna-XS-2_1	Laguna-XS-2_1	poolside/Laguna-XS-2_1	每层头数不同 + 每头门控 + 双 RoPE
+Instella-3B	Instella-3B	amd/Instella-3B	训练中途的 checkpoint（qk_norm=full）
+Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL	nerkyor/Step-3_7-Flash	nerkyor/Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL	**剪枝微调版**：逐层专家数不同（动态）。和官方**同名不同源**，所以短名带 owner
+Step-3.7-Flash	Step-3.7-Flash	stepfun-ai/Step-3.7-Flash	官方未剪枝。正主，短名不加前缀
+Ling-3.0-tiny	Ling-3.0-tiny	inclusionAI/Ling-3.0-tiny	KDA（不是 GDN）
+minimind-3	minimind-3	jingyaogong/minimind-3	收敛判卷人：最普通的那种
 clef	clef	Cloudflare/clef	48 层线性 + 16 层全量（Qwen3-Next 时代）
-Qwen3.8-27B	qwen38	Qwen/Qwen3.8-27B	clef + MTP
-Qwen3.6-35B-A3B	qwen36	Qwen/Qwen3.6-35B-A3B	同一个形状换成 MoE，零个新属性
+Qwen3.8-27B	Qwen3.8-27B	Qwen/Qwen3.8-27B	clef + MTP
+Qwen3.6-35B-A3B	Qwen3.6-35B-A3B	Qwen/Qwen3.6-35B-A3B	同一个形状换成 MoE，零个新属性
 gpt2	gpt2	openai-community/gpt2	**上一代**：LayerNorm / 查表位置 / 无门控
-NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16	nemotron	nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16	attention 间隔 7,7,7,7,**9**
-GLM-5.3-Flash	glm53	zai-org/GLM-5.3-Flash	mHC + 分组路由 + FP8
+NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16	Nemotron-3.5-Lightning	nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16	attention 间隔 7,7,7,7,**9**
+GLM-5.3-Flash	GLM-5.3-Flash	zai-org/GLM-5.3-Flash	mHC + 分组路由 + FP8

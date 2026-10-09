@@ -1,52 +1,36 @@
-统一模型命名：长名做文件名，短名手动，全部程序生成
+短名修正：从 HF 里取，不自己发明
 
-用户定的四条：
-  ① 文件名只要模型名称，不带 owner
-  ② 模型名 = 长名（HF 的模型名）；短名是手动的
-  ③ 批量程序生成
-  ④ 统一格式（HF 命名）
+用户给了 14 个短名，并说"想一想为什么要这样"。读出来的五条：
 
-  文件名     Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL.by1
-  model 声明 step37-pruned
+① 不做任何缩写。gpt-oss-120b 不是 gptoss120b，Qwen3.8-27B 不是 qwen38。
+   短名要能**贴回 HF 搜得到**；qwen38 搜不到，而且丢掉了 27B 这个有用信息。
 
-新增两个东西：
+② 只能用 HF 上真实存在的字拼成。我第一版写的 step37-pruned、gemma31b
+   **都是我发明的名字**，别人搜不到。
 
-  models.tsv   唯一的真相源。14 条，列：长名 / 短名 / HF id / 说明
-               **加新模型只改这一个文件**
-  by1name.py   执行者。--apply 时改名 + 改 model 声明 + 改头部三行标签
-               + 改各处引用。不带参数只报告。
+③ **同名冲突时加 owner，而不是自己起个新名。**
+       Step-3_7-Flash            官方
+       nerkyor/Step-3_7-Flash    剪枝版 —— 同名，不同源
+   step37-pruned 掩盖了"这是 nerkyor 那个"；
+   nerkyor/Step-3_7-Flash 指明"这是**谁的** Step-3_7-Flash"。
+   **官方不加前缀** —— 它是正主。
 
-改之前的问题是文件名随手起：
+④ 去掉的是 owner 前缀和配置后缀，**不是名字里的词**。
+       NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16
+       → Nemotron-3.5-Lightning
+   我第一版砍成 Nemotron-3.5 —— **砍多了**，Lightning 是名字的一部分。
+   而 Qwen3.6-35B-A3B 保留 35B-A3B、gpt-oss-120b 保留 120b，
+   因为**那就是它们的正式名**。两者不是一回事。
 
-  qwen38.by1  vs  gemma-4-31b.by1        一个缩写一个全名
-  step-3.7-flash.by1                     **误导**：听起来像官方，
-                                         实际是社区的剪枝版
+⑤ 所以"哪个是后缀、哪个是名字"要人判断 —— 这就是短名手动的理由。
+   Nemotron-3.5 还是 Nemotron-3.5-Lightning？没有人判断就会砍错，
+   而我自己就砍错了一次。
 
-而"从文件名追回是哪个仓库"这件事不该靠记性。
+一句话：**短名回答的是"这个模型叫什么"，不是"我怎么方便怎么看"。**
+前者不能发明。
 
-这次改了 10 个文件名：
-  qwen38 -> Qwen3.8-27B        qwen36 -> Qwen3.6-35B-A3B
-  glm53  -> GLM-5.3-Flash      gemma-4-31b -> gemma-4-31B
-  instella-3b -> Instella-3B   laguna-xs-2.1 -> Laguna-XS-2_1
-  ling-3.0-tiny -> Ling-3.0-tiny
-  nemotron-h -> NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16
-  nerkyor_... -> Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL
-  stepfun-ai__Step-3.7-Flash -> Step-3.7-Flash
-
-每个 .by1 头部现在有三行标签，互相对得上：
-  # by1-model: 长名
-  # by1-repo:  owner/name
-  # by1-short: 短名
-
-ir.md **不改** —— 那是日志。老条目里的老名字是历史事实；
-日志改了就变成"当初就是这么写的"，那是假的。by1name.py 里写明了这条。
-
-models.md 重新生成，加了命名对照表（短名 / 长名 / HF 链接）。
-表里显示短名（可读），文件名是长名（可追溯）。
-
-写 by1name.py 时踩了自己的坑两次：想从 refs/ 的 config 名反查
-"它现在叫什么"，结果 8 个找不到，报错还长得像 manifest 写错了。
-最后改成**显式表，不推断** —— 改名是一次性的，写清楚就行。
-（讽刺的是文件头那条"不猜"的纪律是我自己写的。）
+顺带修了一个"看起来能用"的解析：by1check 的 model 名正则没有 `/`，
+于是 nerkyor/Step-3_7-Flash 会被**切到 nerkyor 就停**，
+而因为它不报错，看起来像是支持的。已加上，by1name/by1cmp 两处同步。
 
 by1all --quick：55 项 0 失败，1 项已知缺口。全绿。

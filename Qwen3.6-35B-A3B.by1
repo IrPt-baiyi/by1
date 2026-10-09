@@ -15,9 +15,9 @@
 #   refs/qwen36.tensors.json（1045 个张量，26 个分片全读）
 # by1-model: Qwen3.6-35B-A3B
 # by1-repo:  Qwen/Qwen3.6-35B-A3B
-# by1-short: qwen36
+# by1-short: Qwen3.6-35B-A3B
 
-model qwen36 {
+model Qwen3.6-35B-A3B {
   arch  qwen3_5_moe
   ctx   262144
 

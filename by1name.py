@@ -112,7 +112,10 @@ def fix_file(old, 长名, 短名, hf, do):
     before = t
 
     # model 声明 -> 短名
-    t = re.sub(r'^model\s+[\w.\-]+\s*\{', 'model %s {' % 短名, t,
+    # **正则要允许 `/`** —— 同名不同源时短名带 owner
+    # （`nerkyor/Step-3_7-Flash`）。不允许的话会被**切到 `nerkyor` 就停**，
+    # 而它不报错，看起来像成功了。
+    t = re.sub(r'^model\s+[\w.\-/]+\s*\{', 'model %s {' % 短名, t,
                count=1, flags=re.M)
 
     # 头部三行标签（**文件名是长名，看的人未必知道它指什么**）

@@ -17,9 +17,9 @@
 #   refs/qwen38.tensors.json（1199 个张量，18 个分片全读）
 # by1-model: Qwen3.8-27B
 # by1-repo:  Qwen/Qwen3.8-27B
-# by1-short: qwen38
+# by1-short: Qwen3.8-27B
 
-model qwen38 {
+model Qwen3.8-27B {
   arch  qwen3_5
   ctx   262144
 

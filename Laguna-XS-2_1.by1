@@ -10,9 +10,9 @@
 # 这份文件里标了 ⚠️ 的地方，都是**当前语言说不出来的**。如实留着，不绕。
 # by1-model: Laguna-XS-2_1
 # by1-repo:  poolside/Laguna-XS-2_1
-# by1-short: laguna
+# by1-short: Laguna-XS-2_1
 
-model laguna {
+model Laguna-XS-2_1 {
   arch    laguna
   license apache-2.0
   ctx     262144

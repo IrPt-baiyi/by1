@@ -407,7 +407,16 @@ def classify(head: str) -> Tuple[str, str, str, str, Optional[int]]:
     m = re.match(r"^optimizer\s+([A-Za-z_][\w.]*)", h)
     if m:
         return "optimizer", m.group(1), "", "", None
-    m = re.match(r"^(model)\s+([A-Za-z_][\w.\-]*)", h)
+    # **model 名允许 `/`。**
+    #
+    # 短名在"同名不同源"时要带 owner：
+    #     Step-3_7-Flash            官方
+    #     nerkyor/Step-3_7-Flash    剪枝版（同名，不同源）
+    #
+    # 原来的正则没有 `/`，于是 `nerkyor/Step-3_7-Flash` 会被**切到
+    # `nerkyor` 就停** —— 而因为它不报错，看起来像是支持的。
+    # **一个"看起来能用"的解析比直接报错更坏。**
+    m = re.match(r"^(model)\s+([A-Za-z_][\w.\-]*(?:/[\w.\-]+)?)", h)
     if m:
         return "model", m.group(2), "", "", None
     for kw in ("hparams", "state", "position", "tensors", "emit", "schedule",

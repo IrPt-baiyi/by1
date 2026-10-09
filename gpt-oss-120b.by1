@@ -12,9 +12,9 @@
 # 只有一类 —— 这是对「行为属性 / 结构属性」切分的一次反向检验。
 # by1-model: gpt-oss-120b
 # by1-repo:  openai/gpt-oss-120b
-# by1-short: gptoss120b
+# by1-short: gpt-oss-120b
 
-model gptoss120b {
+model gpt-oss-120b {
   arch    gpt_oss
   license apache-2.0
   ctx     131072                    # 原生 4096，YaRN(x32) 外推

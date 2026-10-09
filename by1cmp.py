@@ -123,10 +123,14 @@ def main():
     import re as _re
 
     def label_of(fname):
-        """短名 —— 读文件里的 model 声明，不另存一份。"""
+        """短名 —— 读文件里的 model 声明，不另存一份。
+
+        **正则要允许 `/`** —— 同名不同源时短名带 owner
+        （`nerkyor/Step-3_7-Flash`）。
+        """
         try:
             src = _io.open(os.path.join(HERE, fname), encoding='utf-8').read()
-            m = _re.search(r'^model\s+([\w.\-]+)\s*\{', src, _re.M)
+            m = _re.search(r'^model\s+([\w.\-/]+)\s*\{', src, _re.M)
             return m.group(1) if m else fname[:-4]
         except Exception:
             return fname[:-4]
