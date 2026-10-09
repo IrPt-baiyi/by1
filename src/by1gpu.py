@@ -174,6 +174,14 @@ def main():
         print('  这个脚本要在有 NVIDIA 卡的机器上跑 —— 用法见 by1cloud.py。')
         print('  没有卡也能验的那一半在 by1dev.py 里。')
         print('  **挑模型那一段没有卡也能看**：python src/by1gpu.py --plan 16')
+        print()
+        # **跳过要说清为什么。** "没有 CUDA"是一个现象；A 卡为什么不行
+        # 是三条具体的事 —— 而具体的那部分才是下次有用的部分。
+        print('  如果是 A 卡（AMD），这条路上不行的原因有三条，都查过：')
+        print('    ROCm / HIP       Windows 上没有消费级 Radeon 的 torch 轮子；')
+        print('                     而且 ROCm 不支持 RDNA1（gfx1010 不在支持列表里）')
+        print('    torch-directml   没有 Python 3.12 的发行版（最后停在 3.11 / torch 2.3.1）')
+        print('    onnxruntime-dml  在，但那要先有一个 ONNX 后端 —— 不是换一行设备名')
         return by1skip.skip('没有可用的 CUDA 设备')
 
     dev = torch.device('cuda')
