@@ -236,6 +236,34 @@ def main():
                 claimed, unit = int(pm.group(1)), pm.group(2)
                 win = line[max(0, pm.start() - 60):pm.end() + 20]
                 for rm in re.finditer(r'`([^`]+)`', win):
+                    # **主语必须"紧挨着"这个数字。**
+                    #
+                    # 原来只要求路径出现在前 60 字符的窗口里 —— 于是新写的
+                    # `docs/check-map.md` 里两处被误读：
+                    #
+                    #   `src/by1check.py` 的 `check()`，833 行
+                    #       -> "by1check.py 是 833 行"（它 1692 行）
+                    #      主语其实是 `check()`
+                    #
+                    #   | `by1export.py` | 1243 行 | 1064 行 |
+                    #       -> "by1export.py 是 1243 行"（它 512 行）
+                    #      那两个数是"切之前 / 切之后"的 `check()`
+                    #
+                    # **改文档去迎合检查器，等于让判据决定事实** ——
+                    # 而这个检查器存在的理由正是"文档里的数字会烂"。
+                    # 它误报一次，下次真烂就没人看了。所以收窄判据。
+                    #
+                    # 正确的形状是原注释点名的那个：`history/ir.md`（73 节）
+                    # —— 反引号后面**紧跟**括号。所以这里要求路径到数字
+                    # 之间只有括号 / 判定词 / 空白。
+                    # **还要放开 markdown 记号。** 第一版只允许
+                    # `\s（(是为：:`，结果全仓库 **0 处**被查到 ——
+                    # 因为真实写法是 `` `history/ir.md`（**74 节**）``，
+                    # 中间隔着 `**`。**一个什么都不查的检查，比一个
+                    # 误报的检查更坏**：误报会吵，全漏会让人以为查过了。
+                    if not re.fullmatch(r'[\s（(是为：:*_`\[\]]*',
+                                        win[rm.end():pm.start()]):
+                        continue
                     tgt = rm.group(1).strip()
                     if tgt.startswith(SKIP_LINK) or ' ' in tgt:
                         continue
