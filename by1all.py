@@ -229,6 +229,22 @@ def main():
     if n == 0:
         fails.append('selftest')
 
+    # ---- 1.5 神谕：**不依赖 by1 的期望值** ----
+    #
+    # 放在这里而不是最后：三后端互拍只能证明**自洽** ——
+    # 而 pply_rope 的 docstring 里记着一次真实的事故：
+    #
+    #   > 曾经这里写成 np.stack（交错出）而 PyTorch 那边也写成 stack ——
+    #   > **两边"一致地错"**，所以四个模型的 NumPy<->PyTorch 对拍全是绿的。
+    #
+    # 神谕验的是**对**。它慢一点，但它是唯一能抓到"一致地错"的东西。
+    ok, out = run(['by1oracles.py'], 'oracles')
+    line = [l.strip() for l in out.splitlines() if '/ 10' in l]
+    rows.append(('神谕 by1oracles.py', ok and bool(line),
+                 line[-1] if line else '（没有判定行）'))
+    if not (ok and line):
+        fails.append('oracles')
+
     # ---- 2. config 逐字段 ----
     #
     # **路径从 `.by1` 推，不用 REAL 清单里那两个字符串。**
