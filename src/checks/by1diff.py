@@ -63,6 +63,12 @@ def main(argv=None):
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--backward", action="store_true",
                     help="同时对比梯度（1.md 说前向与反向都要一致）")
+    ap.add_argument("--probe", action="store_true",
+                    help="给第 0 层的注意力挂 hook，比 by1 和 HF 的**注意力输出**"
+                         "（逐层说'第 1 层之后偏了'，这一步说'偏在注意力还是前馈'）")
+    ap.add_argument("--layers", action="store_true",
+                    help="逐层对比：整模型的 logits 差 2e-02 时看不出差在哪，"
+                         "这一步说得出是**哪一层**先偏离参考实现")
     args = ap.parse_args(argv)
 
     import torch
@@ -481,6 +487,116 @@ def main(argv=None):
     with torch.no_grad():
         a = ref(ids).logits.float()
         b = mine(ids).float()
+
+    # ── 逐层（`--layers`）：哪一层的输出**先**偏离参考实现 ──────────
+    #
+    # 为什么要有这一步：整模型的 logits 差 2e-02 时，**看不出差在哪**。
+    # 逐算子全过（`by1opdiff`）说明不是某个算子算错 —— 那剩下的可能
+    # 就只有"组合方式"：norm 的位置、残差的接法、rope 挂在哪一步。
+    #
+    # 两边都取得到逐层：
+    #   HF   `output_hidden_states=True` -> (嵌入, 每层输出…)  共 N+1 个
+    #   by1  生成模型有 `embed` / `layers`(ModuleList) -> 手动逐层前向
+    #
+    # **HF 的 `hidden_states[-1]` 是最后一层输出、在 final_norm 之前** ——
+    # 所以 by1 这边也**不加** `final_norm`，两边才对得齐。
+    if args.layers:
+        print("\n  逐层对比（第一个明显偏离的层就是线索）")
+        try:
+            with torch.no_grad():
+                ra = ref(ids, output_hidden_states=True).hidden_states
+                x = mine.embed(ids)
+                rb = [x]
+                for L in mine.layers:
+                    x = L(x)
+                    rb.append(x)
+            print("    %-8s %-14s %-14s %s" % ('层', '最大绝对差', '相对', '参考幅度'))
+            print("    " + '-' * 62)
+            first_bad = None
+            for i in range(min(len(ra), len(rb))):
+                A, B = ra[i].float(), rb[i].float()
+                if A.shape != B.shape:
+                    print("    %-8d **形状不同** %s vs %s"
+                          % (i, tuple(A.shape), tuple(B.shape)))
+                    continue
+                dd = (A - B).abs().max().item()
+                rel = dd / max(A.abs().max().item(), 1e-12)
+                mark = ''
+                if rel > 1e-4 and first_bad is None:
+                    first_bad = i
+                    mark = '   <- **从这里开始**'
+                print("    %-8d %-14.3e %-14.3e %.3e%s"
+                      % (i, dd, rel, A.abs().max().item(), mark))
+            if first_bad is None:
+                print("    每一层都在 1e-4 以内 —— 差异出在层之外"
+                      "（嵌入 / final_norm / head）")
+            else:
+                print("    第 %d 个（0 是嵌入、1 是第一层之后）先偏离" % first_bad)
+        except (AttributeError, TypeError, RuntimeError) as ex:
+            # 生成模型的层签名可能不是 `(x)` —— 说清楚是哪一步不行，
+            # 而不是崩掉。**"量不了"和"量出来不对"是两件事。**
+            print("    量不了：%s: %s" % (type(ex).__name__, str(ex)[:90]))
+            print("    （多半是生成模型的层签名不是 `(x)` 单参）")
+
+    # ── 探针（`--probe`）：第 0 层的注意力，两边各挂一个 hook ──────
+    #
+    # 逐层说"第 1 层之后偏了"。而一层里有注意力和前馈两块 ——
+    # 这一步把它们分开：比**注意力子模块的输出**。
+    #
+    #   HF    `ref.model.layers[0].self_attn`
+    #   by1   `mine.layers[0].op1`   （参数名 `layers.0.op1.wq.weight`
+    #                                  就是这么来的）
+    if args.probe:
+        print("\n  探针：第 0 层的注意力输出")
+        cap = {}
+
+        def _mk(tag):
+            def _h(mod, inp, out):
+                # **HF 的注意力返回元组** `(attn_output, attn_weights, past)`
+                # —— 而 by1 的返回张量。取第一个张量就好。
+                o = out[0] if isinstance(out, (tuple, list)) else out
+                i = inp[0] if inp else None
+                cap[tag] = (i.detach().float() if i is not None else None,
+                            o.detach().float())
+            return _h
+
+        hs = [ref.model.layers[0].self_attn.register_forward_hook(_mk("ref")),
+              mine.layers[0].op1.register_forward_hook(_mk("by1"))]
+        try:
+            with torch.no_grad():
+                ref(ids)
+                mine(ids)
+        finally:
+            for h in hs:
+                h.remove()
+        for tag in ("ref", "by1"):
+            if tag in cap:
+                xi, xo = cap[tag]
+                si = ("%s 幅度 %.3e" % (tuple(xi.shape), xi.abs().max().item())
+                      if xi is not None else "（取不到）")
+                print("    %-4s 输入 %-28s  输出 %s 幅度 %.3e"
+                      % (tag, si, tuple(xo.shape), xo.abs().max().item()))
+        if "ref" in cap and "by1" in cap:
+            xi_a, xo_a = cap["ref"]
+            xi_b, xo_b = cap["by1"]
+            # **输出总是能比的。** 输入那边可能取不到（HF 用关键字参数调
+            # `self_attn(hidden_states=..., position_embeddings=...)`，
+            # 于是 hook 的 `inp` 是空的）—— 但那不该挡住输出对比：
+            # 上一版就是卡在这里，白跑一次。
+            do = (xo_a - xo_b).abs().max().item()
+            print("    **注意力输出差 %.3e**   相对 %.3e"
+                  % (do, do / max(xo_a.abs().max().item(), 1e-12)))
+            if xi_a is not None and xi_b is not None:
+                di = (xi_a - xi_b).abs().max().item()
+                print("    注意力输入差 %.3e" % di)
+                print("    " + ("输入一致而输出不一致 —— **差在注意力内部**"
+                                if di < 1e-5 < do
+                                else "输入就已经不一样 —— 差在这一层之前"
+                                if di >= 1e-5 else "注意力这一步是一致的"))
+            else:
+                print("    " + ("注意力的输出就是不一样的 —— **差在它内部或之前**"
+                                if do > 1e-5 else "注意力这一步是一致的"))
+
     d = (a - b).abs()
     print(f"\n  前向对比（seq={args.seq}）")
     print(f"    logits 形状        {tuple(a.shape)}  vs  {tuple(b.shape)}")
