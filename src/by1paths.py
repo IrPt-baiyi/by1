@@ -21,15 +21,22 @@
 所以布局也只写一处。`by1refs.py` 管的是 **refs/ 里面的命名规则**，
 这里管的是**这些东西各自在哪个目录**。两件事，两个文件。
 
-## 两条规矩
+## 三条规矩
 
-① **`HERE` 仍然是对的 —— 只是它的意思变了。**
+① **`HERE` 现在只能回答一件事："我的代码在哪"。**
 
-    HERE   回答"我的代码在哪"          -> 兄弟脚本用 HERE 拼，**不用改**
-    ROOT   回答"仓库在哪"              -> 仓库数据用 by1paths，**要改**
+    HERE       我的代码在哪      -> 只用来拼**和自己同目录**的东西
+    by1paths   别人在哪、仓库在哪  -> 其余一律问它
 
-   搬家前这两件事的答案是同一个目录，所以从来没人需要区分它们。
-   现在不是了。
+    `src/` 平铺的时候这两件事的答案是同一个目录，所以从来没人需要
+    区分它们。**分了子目录之后又裂开一层**：
+
+        os.path.join(HERE, 'by1check.py')      # 错 —— 兄弟在别的目录
+
+    而这个错**不是 `ImportError`，是 `FileNotFoundError`**，
+    路径里写的是 `src/checks/by1check.py` —— 看起来像"那个文件丢了"，
+    不像"它在 `src/` 而不在 `src/checks/`"。所以兄弟一律用 `tool()`。
+    （全仓库 28 处一起改的，见 `ir.md`。）
 
 ② **`model()` 收裸名，也收路径。**
 
@@ -39,18 +46,46 @@
    于是 `by1all` 内部传的仍然是裸名 —— **输出里的模型名不会突然多一截
    `models/`**，而搬家前的输出和搬家后的输出可以直接逐行对。
 
+③ **每个入口脚本开头那几行引导是生成的，别手改。**
+
+    import os as _os
+    import sys as _sys
+    _sys.path.insert(0, _os.path.dirname(_os.path.dirname(...)))
+    import by1paths
+
+   为什么需要它：**Python 没有"在 import 之前就生效"的钩子**，
+   而入口脚本必须能被直接 `python src/checks/by1diff.py` 跑起来。
+   包（`from by1.core import ...`）能免掉它，但那要改 200 处 import，
+   而这个仓库的入口就是"跑一个脚本"。
+
+   判据在 `check_boot()` —— **重复的东西必须能被检查**，
+   否则新加一个脚本忘了加，症状是 `No module named 'by1paths'`。
+
 ## 只依赖标准库
 
 这个模块会被几乎所有 `by1*.py` import，所以它和 `by1io.py` 一样
 **不能**引入 numpy / torch / transformers。
 """
 import glob as _glob
+import io
 import os
 
 # **只为编码。** `by1io` 在 import 时把 stdout/stderr 钉成 UTF-8，
 # 而这个模块几乎每个脚本都会 import —— 所以放在这里，钉一次全都沾光。
 # （不要因此把 by1io 变成"什么都往里塞"的模块：它只管读写和这一条约定。）
 import by1io  # noqa: F401
+import by1paths
+
+# ── src/ 下的子目录 ────────────────────────────────────────────────
+#
+# **每一个都要在 `sys.path` 上。** 这个仓库的模块互相 `import by1check`
+# 这样的裸名 —— 平铺的时候它们碰巧都在一个目录里，所以能用。
+# 搬进子目录之后，"碰巧"没有了，得显式放上去。
+#
+# 顶层那 12 个**必须**留在 `SRC` 本身：它们是**被 import 的底座**
+# （`by1io` 被 39 个模块用、`by1paths` 被 33 个用）。
+# 搬它们就得先有引导，而引导又得先找得到它们。
+SUBDIRS = ('checks', 'modelcheck', 'lang', 'data', 'escape')
 
 # ── 五个目录，各一个名字 ────────────────────────────────────────────
 SRC = os.path.dirname(os.path.abspath(__file__))
@@ -61,16 +96,66 @@ DOCS = os.path.join(ROOT, 'docs')
 HISTORY = os.path.join(ROOT, 'history')
 
 
+def _bootstrap():
+    """把 `SRC` 和每个子目录放上 `sys.path`。**import 本模块时自动跑。**
+
+    顺序无所谓 —— 这些目录里的模块名不重名（有重名的话，
+    谁在前面谁赢，那才是真的会静默出错）。
+    """
+    import sys
+    for d in (SRC,) + tuple(os.path.join(SRC, s) for s in SUBDIRS):
+        if os.path.isdir(d) and d not in sys.path:
+            sys.path.insert(0, d)
+
+
+_bootstrap()
+
+
+def check_boot():
+    """每个"入口脚本"开头有没有那两行引导。**返回缺的那些。**
+
+    那两行是重复的（44 份），所以必须**能被检查** ——
+    否则哪天有人新加一个脚本、忘了加引导，症状是
+    `ModuleNotFoundError: No module named 'by1paths'`，
+    看起来像"文件丢了"，不像"少了引导"。
+    """
+    missing = []
+    for d in (SRC,) + tuple(os.path.join(SRC, s) for s in SUBDIRS):
+        if not os.path.isdir(d):
+            continue
+        for f in sorted(os.listdir(d)):
+            if not f.endswith('.py'):
+                continue
+            p = os.path.join(d, f)
+            try:
+                head = io.open(p, encoding='utf-8', errors='replace').read(2000)
+            except OSError:
+                continue
+            if "__main__" not in io.open(p, encoding='utf-8',
+                                         errors='replace').read():
+                continue                      # 不是入口，不需要
+            if '_sys.path.insert' not in head:
+                missing.append(rel(p))
+    return missing
+
+
 def root(*parts):
     """仓库根下的路径。"""
     return os.path.join(ROOT, *parts)
 
 
 def tool(name):
-    """兄弟脚本的路径。
+    """兄弟脚本的路径。**在 `src/` 和每个子目录里找。**
 
-    **不是 `HERE` 的替代品** —— 只是让调用处读起来是意图而不是拼接。
+    调用处写的是裸名（`by1check.py`），**不关心它现在住在哪个子目录** ——
+    搬过一次家就是这个理由：路径只在这一处推。
     """
+    for d in (SRC,) + tuple(os.path.join(SRC, s) for s in SUBDIRS):
+        p = os.path.join(d, name)
+        if os.path.exists(p):
+            return p
+    # **找不到就给出期望的位置**，不是 None ——
+    # 一个指向错误路径的报错比一个指向 None 的强。
     return os.path.join(SRC, name)
 
 

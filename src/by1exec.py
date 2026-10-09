@@ -26,6 +26,7 @@ import os
 import sys
 
 import numpy as np
+import by1paths
 
 # **eps 的默认值只有一个地方写**（`by1ir.EPS_DEFAULT`）。
 # 这个文件里原来有 11 处 `1e-5`；那些形状本身没错，
@@ -40,7 +41,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 def load(name):
     spec = importlib.util.spec_from_file_location(
-        name, os.path.join(HERE, name + ".py"))
+        name, by1paths.tool(name + ".py"))
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod

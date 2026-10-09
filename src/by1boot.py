@@ -559,7 +559,8 @@ def boot_ir(cfg, real, name="booted"):
 def main():
     if len(sys.argv) < 3:
         print(__doc__)
-        return 2
+        # 少给 config / tensors -> by1skip.CALLER
+        return by1skip.CALLER
     cfg_p, ten_p = sys.argv[1], sys.argv[2]
     name = None
     out_p = None

@@ -21,6 +21,7 @@ import sys
 
 import numpy as np
 import by1io
+import by1paths
 
 # **eps 的默认值只有一个地方写**（`by1ir.EPS_DEFAULT`）。
 # 这个文件里原来有 9 处 `1e-5`；C_HEAD 里那段"eps 必须由调用方传进来"
@@ -49,7 +50,7 @@ def _qk_on(v):
 
 def load(name):
     spec = importlib.util.spec_from_file_location(
-        name, os.path.join(HERE, name + ".py"))
+        name, by1paths.tool(name + ".py"))
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod

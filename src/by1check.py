@@ -21,6 +21,7 @@ from typing import Optional, List, Dict, Tuple, Any
 
 import by1io          # noqa: F401  —— import 它就够：它在 import 时钉 UTF-8
 import by1paths
+import by1skip
 
 #: **"这个 field 映射指不到东西"的占位符。**
 #
@@ -2055,12 +2056,14 @@ def main(argv=None):
             # 一个 traceback 而不是一句用法。用法错误要长得像用法错误。
             print("  --emit-config 后面要给一个输出路径：\n"
                   "      python src/by1check.py --emit-config out.json <file.by1>")
-            return 2
+            # --emit-config 少给了路径 -> by1skip.CALLER
+            return by1skip.CALLER
         emit_to = args[i + 1]
         args = args[:i] + args[i + 2:]
     if not args:
         print(__doc__)
-        return 2
+        # 一个参数都没有 -> by1skip.CALLER
+        return by1skip.CALLER
 
     if emit_to:
         # **报告不能丢。** 原来这里是 `_rep, info = check(...)`，`_rep`
@@ -2078,7 +2081,8 @@ def main(argv=None):
         cfg = info.get("config") or {}
         if not cfg:
             print(f"{args[0]}: 没有 transformers.config 的 field 映射，无法生成")
-            return 2
+            # 这份 config 没有 field 映射 -> by1skip.CODE
+            return by1skip.CODE
         with open(emit_to, "w", encoding="utf-8") as f:
             json.dump(cfg, f, ensure_ascii=False, indent=2)
             f.write("\n")

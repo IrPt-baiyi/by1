@@ -62,7 +62,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 def load_checker():
     spec = importlib.util.spec_from_file_location(
-        "by1check", os.path.join(HERE, "by1check.py"))
+        "by1check", by1paths.tool("by1check.py"))
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
@@ -753,6 +753,7 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import by1skip
 
 # ⚠️ **从这里往下的 `1e-05` 是"写进产物"的字面量，不是可引用的常量。**
 #
@@ -1574,7 +1575,8 @@ def build(info: Dict[str, Any]):
 def main(argv):
     if len(argv) < 1:
         print(__doc__)
-        return 2
+        # 没给 .by1 -> by1skip.CALLER
+        return by1skip.CALLER
     out = None
     args = list(argv)
     if "-o" in args:

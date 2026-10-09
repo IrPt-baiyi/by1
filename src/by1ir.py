@@ -33,6 +33,7 @@
 import json
 import by1io
 import by1paths
+import by1skip
 
 # **从 by1ver 来，不在这里写死。**
 # 这里原来是 `VERSION = "1.0"`，而 by1codegen / by1boot / by1extdemo
@@ -582,7 +583,8 @@ def _cli():
         print("  [%s] %d 个问题" % ("PASS" if not errs else "FAIL", len(errs)))
         return 0 if not errs else 1
     print(__doc__)
-    return 2
+    # 子命令不全 -> by1skip.CALLER
+    return by1skip.CALLER
 
 
 if __name__ == '__main__':
