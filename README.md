@@ -6,6 +6,8 @@
 by1 0.9.0 · by1-ir 1.0
 ```
 
+**先读哪三份**：这份（是什么）· [`history/ir.md`](history/ir.md)（开发日志，73 节，记的是错过什么）· [`FILES.md`](FILES.md)（每个文件是干什么的）
+
 ---
 
 ## 这份仓库是怎么来的
@@ -32,7 +34,7 @@ by1 0.9.0 · by1-ir 1.0
 
 | | 从哪来 | 怎么重建 |
 |---|---|---|
-| `by1*.py` | 手写的代码 | —— 这就是源码本身 |
+| `src/by1*.py` | 手写的代码 | —— 这就是源码本身 |
 | `refs/*.json` | **从 HuggingFace / ModelScope 抓的模型元数据** | `python src/by1fetch.py`（种子：`models.tsv` + `refs/SOURCES.tsv`） |
 | `models/*.by1` · `models.tsv` | **手写的知识** | 手写的；可交叉验证（`.by1` 头部的 `by1-repo` 和 `models.tsv` 互为参照） |
 | `models.md` · `ir-spec.md` · `VERSION` | 生成的 | `by1cmp.py --md` · `by1ir.py --spec` · `by1ver.py --write` |
