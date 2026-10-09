@@ -112,12 +112,55 @@ def pick(cfg, key, default=None):
     return default
 
 
+def _unwrap_text(cfg):
+    """**新一带的 config 把文本部分嵌在 `text_config` 里。**
+
+    实测（2026 那批）：
+        qwen3_5 / qwen3_vl / gemma4_unified / embedding_gemma2 / qwen3_omni
+        顶层只有 `model_type` + `text_config` + `vision_config`（+ audio）
+        而 `hidden_size` / `num_hidden_layers` / `vocab_size` **全在
+        `text_config` 里面**。
+
+    老一代（llama / qwen2 / mamba / llada2_moe）是平的，顶层就有。
+
+    ## 为什么要在这层解决
+
+    这不是某个模型的怪癖，是**多模态成了默认**之后的通用做法：
+    一个 config 描述好几个塔，文本只是其中一个。
+    不认它就等于**新一代全部描述不了** —— 而那正是"加大量模型"要覆盖的。
+
+    返回 (文本 config, 有没有被嵌过, 外层的塔名列表)。
+    """
+    if not isinstance(cfg, dict):
+        return cfg, False, []
+    if pick(cfg, "hidden_size") is not None:
+        return cfg, False, []
+    tc = cfg.get('text_config')
+    if isinstance(tc, dict):
+        # **递进去的时候要把 model_type 带下去** —— 不然 classify() 认不出
+        inner = dict(tc)
+        if 'model_type' not in inner and cfg.get('model_type'):
+            inner['model_type'] = cfg['model_type']
+        towers = [k for k in cfg
+                  if k.endswith('_config') and k != 'text_config'
+                  and isinstance(cfg[k], dict)]
+        return inner, True, towers
+    return cfg, False, []
+
+
 def boot_ir(cfg, real, name="booted"):
     """config + 张量头 -> **规范化的 IR**。
 
     返回 (ir, guessed)。`guessed` 是"产物里看不出来、填了默认值"的属性 ——
     **必须报出来**，否则用的人会以为它是读出来的。
     """
+    cfg, was_nested, towers = _unwrap_text(cfg)
+    if was_nested:
+        # **嵌过就要说。** 不说的话，用的人会以为这个 IR 是整个模型的，
+        # 而它只是文本塔 —— 视觉/音频那些张量在契约里是"多出来的"。
+        print('  （文本配置嵌在 `text_config` 里，已取出；'
+              '外层还有 %s —— 那些不在这个 IR 里）'
+              % (', '.join(towers) if towers else '没有别的塔'))
     d = pick(cfg, "hidden_size")
     L = pick(cfg, "num_hidden_layers", 0)
     V = pick(cfg, "vocab_size")
@@ -128,7 +171,8 @@ def boot_ir(cfg, real, name="booted"):
         raise SystemExit(
             "这个 config 里认不出：%s\n"
             "  **这是字段名的问题，不是模型的问题。** 认得的别名在 "
-            "FIELD_ALIASES 里 —— 加一个就行。" % "、".join(miss))
+            "FIELD_ALIASES 里 —— 加一个就行。\n"
+            "  （顶层和 `text_config` 都找过了。）" % "、".join(miss))
     d, L, V, ctx = int(d), int(L), int(V), int(ctx)
     # GPT-2 的 n_inner 常常是 null，含义是 4 倍宽
     if pick(cfg, "intermediate_size") is None and "n_inner" in cfg:

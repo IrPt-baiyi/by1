@@ -1,36 +1,56 @@
-短名修正：从 HF 里取，不自己发明
+加模型：先查、再抓、最后诚实地判
 
-用户给了 14 个短名，并说"想一想为什么要这样"。读出来的五条：
+用户给了 22 个模型的清单（20 个"纯属闲的" + 4 个精英怪），
+外加一个新目标：**支持量化**。
 
-① 不做任何缩写。gpt-oss-120b 不是 gptoss120b，Qwen3.8-27B 不是 qwen38。
-   短名要能**贴回 HF 搜得到**；qwen38 搜不到，而且丢掉了 27B 这个有用信息。
+这一轮做的全是**免费的部分**（上次 20 块钱的教训：免费的先做完）。
 
-② 只能用 HF 上真实存在的字拼成。我第一版写的 step37-pruned、gemma31b
-   **都是我发明的名字**，别人搜不到。
+## 新增三个工具
 
-③ **同名冲突时加 owner，而不是自己起个新名。**
-       Step-3_7-Flash            官方
-       nerkyor/Step-3_7-Flash    剪枝版 —— 同名，不同源
-   step37-pruned 掩盖了"这是 nerkyor 那个"；
-   nerkyor/Step-3_7-Flash 指明"这是**谁的** Step-3_7-Flash"。
-   **官方不加前缀** —— 它是正主。
+  by1triage.py   一批 config 过 by1，看谁需要新原语
+  by1index.py    抓张量名清单（index 文件，几十 KB）
+  （_survey/_grab 是一次性的，没留下）
 
-④ 去掉的是 owner 前缀和配置后缀，**不是名字里的词**。
-       NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16
-       → Nemotron-3.5-Lightning
-   我第一版砍成 Nemotron-3.5 —— **砍多了**，Lightning 是名字的一部分。
-   而 Qwen3.6-35B-A3B 保留 35B-A3B、gpt-oss-120b 保留 120b，
-   因为**那就是它们的正式名**。两者不是一回事。
+## 查存在性：20/22
 
-⑤ 所以"哪个是后缀、哪个是名字"要人判断 —— 这就是短名手动的理由。
-   Nemotron-3.5 还是 Nemotron-3.5-Lightning？没有人判断就会砍错，
-   而我自己就砍错了一次。
+  ✓ 19 个从 ModelScope 抓到 config（+ LLaDA 在 inclusionAI/ 下）
+  ✗ NVIDIA-Nemotron-3-Ultra —— 四个候选 org 名都没有
+  ✗ Wan2.2-I2V-A14B —— ModelScope 报 500
 
-一句话：**短名回答的是"这个模型叫什么"，不是"我怎么方便怎么看"。**
-前者不能发明。
+## 架构名透露的（新机制在哪）
 
-顺带修了一个"看起来能用"的解析：by1check 的 model 名正则没有 `/`，
-于是 nerkyor/Step-3_7-Flash 会被**切到 nerkyor 就停**，
-而因为它不报错，看起来像是支持的。已加上，by1name/by1cmp 两处同步。
+  已有：GptOss / Gemma4 / Qwen3_5 / Qwen3_5Moe / Qwen3Next / Qwen2 / Glm4Moe
+  新的：Qwen4Exp / Gemma4Unified / DeepseekV41
+  精英怪：MambaForCausalLM（纯 SSM）/ EmbeddingGemma2Model（编码器）
+          Wan2.2（视频）/ LLaDA（扩散）/ Qwen3VL+Omni（多模态）
 
-by1all --quick：55 项 0 失败，1 项已知缺口。全绿。
+## 修了一个真缺口：嵌套 config
+
+实测 2026 那批的 config **把文本配置嵌在 `text_config` 里**：
+
+  qwen3_5 / qwen3_vl / gemma4_unified / embedding_gemma2 / qwen3_omni
+  顶层只有 model_type + text_config + vision_config（+ audio），
+  而 hidden_size / num_layers / vocab_size **全在里面**。
+
+老一代（llama/qwen2/mamba/llada2_moe）是平的。
+**这不是某个模型的怪癖，是多模态成了默认之后的通用做法。**
+不认它就等于新一代全部描述不了 —— 而那正是"加大量模型"要覆盖的。
+
+by1boot 加了 _unwrap_text()：取出 text_config，**并且报出外层还有哪些塔**
+（那些不在这个 IR 里，不说的话用的人会以为整个模型都描述了）。
+
+修完：37/39 能出 IR。
+
+## 而那个 37/39 是**假的**
+
+全是 `Add+Norm+Raw` —— 连 gpt-oss-120b 都是。
+因为 classify() 是**从张量名认机制**的，我只传了 config，
+一个机制都认不出来，退化成 Raw。
+
+**一个什么机制都没认出来的 IR，和"不支持"没区别，但报的是"✓"。**
+那正是这个项目一直在防的那种谎 —— 而我自己刚写出来一个。
+
+triage 加了判据：机制集合里没有 Attention/FFN/MoE/MLA/Linear
+就报"空壳拒了"，并说明"没给张量名，认不出机制"。
+
+改完：**0/39 已覆盖** —— 这才是实话。
