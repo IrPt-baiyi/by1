@@ -8,6 +8,25 @@ by1 0.9.0 · by1-ir 1.0
 
 ---
 
+## 数据从哪来
+
+仓库里的文件分三种，**删掉任何一种都能重建**（这是设计目标，不是巧合）：
+
+| | 从哪来 | 怎么重建 |
+|---|---|---|
+| `by1*.py` | 手写的代码 | —— 这就是源码本身 |
+| `refs/*.json` | **从 HuggingFace / ModelScope 抓的模型元数据** | `python by1fetch.py`（种子是 `models.tsv`） |
+| `*.by1` · `models.tsv` | **手写的知识** | 手写的；可交叉验证（`.by1` 头部的 `by1-repo` 和 `models.tsv` 互为参照） |
+| `models.md` · `ir-spec.md` · `VERSION` | 生成的 | `by1cmp.py --md` · `by1ir.py --spec` · `by1ver.py --write` |
+
+`refs/` 里的东西**不是这个项目的作品** —— 它们是各个模型发布方的公开
+元数据（配置 + 张量名/形状清单，**不是权重**），各自适用各自的许可证。
+对应关系见 `models.tsv`。
+
+**删数据测试**：有人真的拿走过 5%（按字节）的数据，
+交给一个完全无记忆的 agent 重建。结果、以及它是怎么把
+四种 JSON writer 的规则逐字节试出来的，记在 `docs/delete-test-1/`。
+
 ## 三十秒
 
 今天给 llama.cpp 添加一个新架构，要在五个地方改代码、写上千行 C++ 建图函数、
@@ -31,7 +50,7 @@ by1 让它变成一句话，而且**这句话能被验证**。
 
 ```bash
 python by1verify.py clef.by1 refs/Cloudflare__clef.config.json --config \
-                    --tensors refs/clef.tensors.json --backend torch.module
+                    --tensors refs/Cloudflare__clef.tensors.json --backend torch.module
 ```
 
 **14 个真实模型**，config 逐字段 + 张量逐名字逐形状，判卷人是官方产物。
