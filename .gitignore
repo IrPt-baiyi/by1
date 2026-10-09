@@ -5,6 +5,26 @@ __pycache__/
 # 临时探针（用完就删，不进历史）
 _*.py
 
+# **下划线开头的其他临时文件也要挡。**
+# `_m.txt` 是我 `git commit -F` 的输入，写完就 Remove-Item ——
+# **但删的是工作区，commit 里那份还在。** 结果它被提交了 12 次，
+# 还混进了"最近改了哪些文件"的统计里，看着像个重要文件。
+_*.txt
+_*.json
+_*.sh
+_sh/
+
+# **编译产物。** by1c / by1extdemo 会现场编 .so 和 .exe ——
+# 提交它们等于每跑一次测试就往仓库里塞二进制，
+# 而且 diff 永远是非人类的。
+*.so
+*.o
+*.exe
+*.dll
+*.dylib
+*.obj
+*.pdb
+
 # 由 by1 生成的示例，可重新生成
 hello_model.py
 
@@ -15,8 +35,22 @@ hello_model.py
 # 从 llama.cpp 拉的参照源码（可重新下载）
 llamacpp/
 
+# **每个模型一个工作目录**（by1c --workdir cgen-<模型>）
+# 原来说只挡了 `cgen/`，而并行化之后用的是 `cgen-<模型>/` ——
+# 于是 8 个目录的 model.exe 全进来了。
 cgen/
-
-_sh/
+cgen-*/
+cgen-*/*
 
 _lh/
+
+# ── 大文件：不该进仓库 ────────────────────────────────────────────
+# refs/ 里的 **config** 和**张量名清单**要留（几十 KB，是描述的一部分），
+# 但那两种大文件不留 —— 它们能重新下，而且一份几十上百 MB。
+*.safetensors
+*.bin
+*.gguf
+*.pt
+*.pth
+refs/*.index.json
+
