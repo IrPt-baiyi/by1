@@ -136,7 +136,7 @@ def main():
     # ── ④ 前向跑过没有 ───────────────────────────────────────────
     print()
     print('  ④ 真模型前向')
-    ir = by1io.read_text('ir.md', encoding='utf-8') if os.path.exists('ir.md') \
+    ir = by1io.read_text('history/ir.md', encoding='utf-8') if os.path.exists('history/ir.md') \
         else ''
     never = []
     for f, repo in reals:
@@ -152,7 +152,7 @@ def main():
     # ── ⑤ 数不出来的 ─────────────────────────────────────────────
     print()
     print('  ⑤ **数不出来的**（列出来，但不假装它们可验收）')
-    src = by1io.read_text('ir.md', encoding='utf-8') if ir else ''
+    src = by1io.read_text('history/ir.md', encoding='utf-8') if ir else ''
     print('     llama.cpp 后端：提到 %d 次，**没有实现**'
           % len(re.findall(r'llama\.?cpp', src, re.I)))
     q = len(re.findall(r'量化|quant', src, re.I))

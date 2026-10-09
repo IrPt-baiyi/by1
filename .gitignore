@@ -63,3 +63,6 @@ __delete_test/files/
 # 确认改完没问题之后删掉它；在那之前不能让它进任何一次提交。
 .git-before-rewrite/
 _rewrite.py
+
+# 清根目录时补的
+tools/remote/*.out
