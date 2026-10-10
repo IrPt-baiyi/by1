@@ -252,11 +252,19 @@ def instantiate(*, _mod, _):
     # 于是 `layer_rows_by_stack['vision']` 里仍然是 `(5376)`，
     # 而表现是"改了跟没改一样" ✓。
     _['layer_rows_by_stack']: Dict[str, list] = {}
-    for _['_sn'], _['_dm'] in (_['stack_d_model'] or {}).items():
+    # ⚠ **原来只遍历 `stack_d_model`** —— 也就是"声明了自己宽度的栈"。
+    #   于是 `layer mtp { ... }` 对没写 `d_model` 的栈**根本不被读到**，
+    #   而表现是那一栈照旧拿模型级的 `layer` 那一份：多发 6 个 `hc_*`、
+    #   少发 4 个 MTP 专属张量，一声不响。**按栈的层内张量和宽度是两件事**，
+    #   不该由"有没有声明宽度"来决定。现在所有栈都算，宽度没有就用模型级的。
+    for _['_st'] in _['stacks']:
+        _['_sn'] = _['_st'].name
+        _['_dm'] = (_['stack_d_model'] or {}).get(_['_sn'])
         _['_sav_hp'] = _['hp']
-        _['_hp2'] = dict(_['hp'])
-        _['_hp2']["d_model"] = _fmt(_['_dm'])
-        _['hp'] = _['_hp2']
+        if _['_dm']:
+            _['_hp2'] = dict(_['hp'])
+            _['_hp2']["d_model"] = _fmt(_['_dm'])
+            _['hp'] = _['_hp2']
         # **这一栈有没有自己的一套层内张量。** 有就用它，没有就用
         # 模型级那份 `layer` —— 两处都要按这一栈的宽度求值。
         _['layer_rows_by_stack'][_['_sn']] = _['_flat_rows'](

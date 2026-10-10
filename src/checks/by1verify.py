@@ -16,6 +16,16 @@ by1 verify -- 差分验证：把 .by1 的展开结果与官方产物对拍。
 用法:
   python by1verify.py <file.by1> <config.json> [--tensors a.json | --gguf b.bin]
                       [--backend torch.module|ggml] [--sub text_config]
+                      [--uncovered]
+
+`--uncovered` 把「契约未覆盖」的分类**整张列完**（默认各截到 6 / 20 类），
+并带上代表张量的形状和真名。补契约的时候要看的是完整清单 ——
+截断的那几行正好是最长尾的，而"是哪一层"只有真名里有。
+
+emit 里的 `quant { }` 有两种导出布局，用有没有 `scale` 区分：
+  没有 `scale`  ->  MXFP4：权重根本不存在，换成 <名>_blocks / <名>_scales
+  有 `scale`    ->  FP8 块量化：权重留着，另发一份 <名>.<scale>，
+                   形状 (out/block, in/block) **从权重形状推**
 
 约定:
   .by1 层实例带 window = <n>   -> config 的 sliding_attention
@@ -259,20 +269,39 @@ def parse_shape(txt):
 
 def check_tensors(info, real, render, rule_desc, scope_map, out,
                   render_e=None, experts_of=None,
-                  render_g=None, global_rows=None, quant=None):
+                  render_g=None, global_rows=None, quant=None, full=False):
     out.append(f"  命名规则来源: {rule_desc}")
     experts_of = experts_of or {}
     booll = lambda v: str(v).lower() in ("true", "1", "yes", "on")
     # 量化导出：被点名的专家张量在 HF 侧不存在，取而代之的是
     #   <名>_blocks / <名>_scales / <名>_bias
     q_members, q_fuse, q_block = set(), {}, 32
+    q_scale = None
     if quant:
         q_block = int(quant.get("block", 32))
+        # **两种导出布局，`scale` 是分水岭。**
+        #   没有 `scale`  -> MXFP4：权重**根本不存在**，换成 <名>_blocks / <名>_scales
+        #   有 `scale`    -> FP8 块量化：权重**留着**，另发一份 <名>.<scale>，
+        #                   形状是 (out/block, in/block) —— **从权重形状推**，
+        #                   不许手写第二遍（写第二遍就一定会和权重对不上）。
+        q_scale = (quant.get("scale") or "").strip().strip('"') or None
         q_members = set(re.findall(r"[A-Za-z_][\w.]*", quant.get("tensor", "")))
         for _nm, _v in (quant.get("fuse") or {}).items():
             _ms = re.findall(r"[A-Za-z_][\w.]*", _v)
             for _m in _ms:
                 q_fuse[_m] = (_nm, _ms)
+
+    def _is_member(owner, lname, lb):
+        """`tensor` 点名一个张量的三种写法：
+             `gate_exps`               —— 逻辑名的最后一段（老写法，照旧）
+             `q_a_proj.weight`         —— 完整逻辑名
+             `SparseMLA.o_proj.weight` —— 机制打头
+        **带机制前缀才说得清的情况是有的**：GLM 的 KDA 和 SparseMLA 都有一个
+        `o_proj.weight`，而只有 SparseMLA 那个是 FP8 量化的。写裸的 `o_proj`
+        会两个都命中 —— 而多出来的那个会当场报「契约声明了、实际不存在」，
+        不是静默错。"""
+        return lname in q_members or lb in q_members \
+            or (owner + "." + lname) in q_members
 
     def q_shapes(fused, block, kind):
         """weight 是 MXFP4 打包（blocks + scales）；bias 不量化，只是被融合。"""
@@ -286,6 +315,23 @@ def check_tensors(info, real, render, rule_desc, scope_map, out,
     details, samples, generated = [], [], set()
     qdone = set()
 
+    def _rec(nm, exp, tag):
+        """一个 (名字, 形状) 对拍。**这条检查只有这一份** ——
+        原来量化 / 主路径 / 全局三处各写了一遍，再加 FP8 就是第四遍。"""
+        nonlocal total, mismatch, missing
+        total += 1
+        if nm not in real:
+            missing += 1
+            details.append(f"{tag} {nm}\n        契约声明 {exp}，实际不存在")
+        elif real[nm]["shape"] != exp:
+            mismatch += 1
+            details.append(f"{tag} {nm}\n        契约 {exp}   实际 {real[nm]['shape']}")
+
+    def _scale_of(exp, block):
+        """FP8 块量化的 scale_inv 形状：每个维度按 block 上取整。
+        实测 GLM 的块是 128x128，所有维度都整除 —— 上取整在这里就是整除。"""
+        return [(d + block - 1) // block for d in exp]
+
     # **传"栈内序号"，不是全局层号。**
     # 一个模型可以有多个栈（Qwen3.5 有主干 64 层 + MTP 1 层），
     # 而物理名字里的层号是**各栈从 0 起**：主干 model.layers.0..63、
@@ -297,11 +343,8 @@ def check_tensors(info, real, render, rule_desc, scope_map, out,
     #   GLM-5.3  **都在 model.language_model.layers.{i}.** 里，
     #            MTP 是第 45 层 —— 层号接着数（全局序号）
     # 两种都有，所以在 .by1 里显式声明 `index = global`，不猜。
-    _glob = set()
-    for _st in (info.get("stacks") or []):
-        _as = getattr(_st, "assigns", None) or {}
-        if (_as.get("index") or "").strip().lower() == "global":
-            _glob.add(getattr(_st, "name", ""))
+    _glob = set(_k for _k, _v in (info.get("stack_index") or {}).items()
+                if _v == "global")
     _loc = {}
     for i, (stack, mech, attrs, rows) in enumerate(info["layer_out"]):
         if stack in _glob:
@@ -317,7 +360,7 @@ def check_tensors(info, real, render, rule_desc, scope_map, out,
             use_e = booll(pe) and render_e is not None
             _lb = lname.rsplit(".", 1)[0] if "." in lname else lname
             _kd = lname.rsplit(".", 1)[1] if "." in lname else ""
-            if quant and _lb in q_members:
+            if quant and not q_scale and _is_member(owner, lname, _lb):
                 _fn, _ms = q_fuse.get(_lb, (_lb, [_lb]))
                 if (_fn, _kd) in qdone:
                     continue
@@ -336,14 +379,7 @@ def check_tensors(info, real, render, rule_desc, scope_map, out,
                     generated.add(_nm)
                     if len(samples) < 6:
                         samples.append(f"      L{i:<3} 量化 {_fn:<10} -> {_nm}")
-                    total += 1
-                    if _nm not in real:
-                        missing += 1
-                        details.append(f"L{i:<3} {_nm}\n        契约 {tuple(_bs)}，实际不存在")
-                    elif real[_nm]["shape"] != _bs:
-                        mismatch += 1
-                        details.append(f"L{i:<3} {_nm}\n        契约 {tuple(_bs)}"
-                                       f"   实际 {real[_nm]['shape']}")
+                    _rec(_nm, _bs, f"L{i:<3} ")
                 continue
             exps = range(experts_of.get(owner, 1)) if use_e else [None]
             for e in exps:
@@ -367,14 +403,16 @@ def check_tensors(info, real, render, rule_desc, scope_map, out,
                     continue
                 if use_e and len(exp) > 1:
                     exp = exp[1:]          # 逐专家存储：专家维落在名字里，不在形状里
-                total += 1
-                if nm not in real:
-                    missing += 1
-                    details.append(f"L{i:<3} {nm}\n        契约声明 {exp}，实际不存在")
-                elif real[nm]["shape"] != exp:
-                    mismatch += 1
-                    details.append(
-                        f"L{i:<3} {nm}\n        契约 {exp}   实际 {real[nm]['shape']}")
+                _rec(nm, exp, f"L{i:<3} ")
+                # ── FP8 块量化的伴随张量 ──────────────────────────────
+                # 权重本身留在原处，另发一份 `<基名>.<scale>`。**形状从权重
+                # 的形状推**，所以它不可能和权重对不上。
+                if q_scale and _is_member(owner, lname, _lb) and _kd == "weight":
+                    snm = nm.rsplit(".", 1)[0] + "." + q_scale
+                    generated.add(snm)
+                    if len(samples) < 6:
+                        samples.append(f"      L{i:<3} 量化 {lname:<10} -> {snm}")
+                    _rec(snm, _scale_of(exp, q_block), f"L{i:<3} ")
 
     # 全局张量：不属于任何层，名字里通常没有层号
     for (lname, shape_txt, note, _pe) in (global_rows or []):
@@ -400,13 +438,7 @@ def check_tensors(info, real, render, rule_desc, scope_map, out,
         if exp is None:
             symbolic += 1
             continue
-        total += 1
-        if nm not in real:
-            missing += 1
-            details.append(f"global {nm}\n        契约声明 {exp}，实际不存在")
-        elif real[nm]["shape"] != exp:
-            mismatch += 1
-            details.append(f"global {nm}\n        契约 {exp}   实际 {real[nm]['shape']}")
+        _rec(nm, exp, "global ")
 
     out.append("  生成的名字示例:")
     out.extend(samples)
@@ -438,9 +470,9 @@ def check_tensors(info, real, render, rule_desc, scope_map, out,
         out.append(f"  契约**未覆盖**的实物张量: {len(uncovered)} 个"
                    f"（共 {len(real)} 个里的 "
                    f"{100.0 * len(uncovered) / max(len(real), 1):.0f}%）")
-        for k in sorted(groups, key=lambda x: -groups[x])[:6]:
+        for k in sorted(groups, key=lambda x: -groups[x])[:None if full else 6]:
             out.append(f"        {groups[k]:5d}  {k}")
-        if len(groups) > 6:
+        if len(groups) > 6 and not full:
             out.append(f"        …另有 {len(groups) - 6} 类")
         out.append("      （这是**范围边界**，不是失败 —— 但必须看得见）")
 
@@ -449,14 +481,23 @@ def check_tensors(info, real, render, rule_desc, scope_map, out,
     for k in real:
         if k in generated:
             continue
-        residue[re.sub(r"\.\d+\.", ".N.", k)] = residue.get(
-            re.sub(r"\.\d+\.", ".N.", k), 0) + 1
+        _g = re.sub(r"\.\d+\.", ".N.", k)
+        if _g not in residue:
+            residue[_g] = (0, k)
+        residue[_g] = (residue[_g][0] + 1, residue[_g][1])
     if residue:
         out.append("")
         out.append(f"  [覆盖缺口] 参考产物里有 {len(residue)} 类张量没有契约对应物:")
-        for k, c in sorted(residue.items(), key=lambda x: -x[1])[:20]:
-            out.append(f"      {c:>4}  {k}")
-        if len(residue) > 20:
+        for k, (c, sample) in sorted(residue.items(), key=lambda x: -x[1][0])[
+                :None if full else 20]:
+            # `--uncovered` 时带上代表张量的形状和真名 —— 补契约要看的正是它，
+            # 而"是哪一层"只有真名里有（分类已经把层号抹成 `.N.` 了）。
+            shp = (real.get(sample) or {}).get("shape")
+            tail = f"   {'[' + ', '.join(str(d) for d in shp) + ']' if shp else ''}"
+            if full:
+                tail += f"   例 {sample}"
+            out.append(f"      {c:>4}  {k}{tail}")
+        if len(residue) > 20 and not full:
             out.append(f"      ... 另有 {len(residue) - 20} 类")
     return (mismatch + missing + absent_but_present) == 0
 
@@ -561,7 +602,8 @@ def main(argv=None):
             ok2 = check_tensors(info, real, render, rule_desc, scope_map, out,
                                 render_e=render_e, experts_of=experts_of,
                                 render_g=render_g, global_rows=info.get("global_rows"),
-                                quant=_r.get("quant") or None)
+                                quant=_r.get("quant") or None,
+                                full="--uncovered" in argv)
 
     out.append("")
     out.append("  等价类")

@@ -164,10 +164,22 @@ ATTRS = {
             "l2_eps", "norm_eps", "act", "structural"},
     # MLA：低秩压缩的注意力（DeepSeek 提出）。
     # kv 被压到 c_kv，k_rot 是**单头**共享的 —— 这是它和 GQA 的根本区别。
+    #
+    # `qk_head` 是**声明的别名**，不是一个新维度：官方 config 里同时有
+    # `qk_head_dim` 和 `qk_nope_head_dim` / `qk_rope_head_dim`，而前者必须
+    # 等于后两者之和。Ling 的 `.by1` 照抄了它（`qk_head = 192`）——
+    # 在这之前 codegen 因为属性表没收它而**拒掉了整个模型**。
+    # **收它，但要验它**：对不上就报错。不验的话它就是个"写了不报错、
+    # 也什么都没做"的属性，而那正是这个仓库最忌讳的一类。
     "MLA": {"heads", "q", "head_dim", "q_lora", "kv_lora",
-            "qk_nope", "qk_rope", "v_dim", "out_dim",
+            "qk_nope", "qk_rope", "qk_head", "v_dim", "out_dim",
             "head_gate", "gate_act", "bias", "structural",
-            "rope", "rope_base", "pairing", "norm_eps"},
+            "rope", "rope_base", "pairing", "norm_eps",
+            # `ltype` 是**导出关键字**，不是计算属性：config 的
+            # `layer_types` 里那一层叫什么（GLM 的稀疏层叫
+            # `deepseek_sparse_attention`）。读它的是 `by1export._ltype_of_attrs`，
+            # 实测它决定了 `layer_types` 数组里 45 项的取值。
+            "ltype"},
     # Block 1.3：线性 / 递归注意力。第一个**真的带状态**的机制。
     "Linear": {"k_heads", "v_heads", "k_dim", "v_dim", "conv_kernel",
                "act", "norm_eps", "l2_eps", "out_dim", "structural",
@@ -563,6 +575,32 @@ def compile_ir(info: Dict[str, Any]) -> Dict[str, Any]:
                 err(f"机制 '{name}': head_dim={int(h['head_dim'])} 但 "
                     f"qk_nope({qn}) + qk_rope({kr}) = {qn + kr}")
                 return None
+            # `qk_head` 是**别名**，不是新维度 —— 官方 config 的 `qk_head_dim`。
+            # 它自己不参与计算（计算用的是 qk_nope + qk_rope），所以唯一的
+            # 作用就是**被校验**：写错了必须报，不许静默过。
+            _qkh = _num(attrs.get("qk_head"))
+            if _qkh is not None and int(_qkh) != qn + kr:
+                err(f"机制 '{name}': qk_head={int(_qkh)} 但 "
+                    f"qk_nope({qn}) + qk_rope({kr}) = {qn + kr}")
+                return None
+            # ── 稀疏索引器（DSA）的三个形状 ──────────────────────────
+            # `index_heads` / `index_dim` 是索引器自己的 q/k 头数和头维，
+            # `index_topk` 是每层挑多少个 key。**三个一起出现** ——
+            # 少一个就是"只说了一半"，宁可报错也不猜。
+            # 取值门：都是正整数，`index_topk` 尤其不能是 0（0 = 一个都不挑，
+            # 那不是"稀疏"，是"什么都不要"）。
+            _ik = {k: _num(attrs.get(k)) for k in
+                   ("index_heads", "index_dim", "index_topk")}
+            _have = [k for k, v in _ik.items() if v is not None]
+            if _have and len(_have) != 3:
+                err(f"机制 '{name}': 稀疏索引器要 index_heads / index_dim / "
+                    f"index_topk **三个一起给**，现在只给了 {', '.join(sorted(_have))}")
+                return None
+            for _k, _v in _ik.items():
+                if _v is not None and int(_v) <= 0:
+                    err(f"机制 '{name}': {_k}={int(_v)} —— 必须是正整数"
+                        f"（取 0 不是稀疏，是什么都不要）")
+                    return None
             rs = (_rope_spec(info, li) if li is not None else
                   {"base": base, "pairing": pairing})
             # **逐机制也可以改 `pairing`**（MLA 的 ATTRS 里有它）——
@@ -570,7 +608,7 @@ def compile_ir(info: Dict[str, Any]) -> Dict[str, Any]:
             # 而逐机制的非法值会静默落进 `apply_rope` 的默认分支。
             if not _ck("pairing", attrs.get("pairing"), name, kind):
                 return None
-            return {"kind": "MLA", "mech": name, "attrs": {
+            return {"kind": "MLA", "mech": name, "attrs": dict({
                 "q": q, "q_lora": int(h["q_lora"]), "kv_lora": int(h["kv_lora"]),
                 "qk_nope": qn, "qk_rope": kr, "v_dim": int(h["v_dim"]),
                 "head_dim": qn + kr,
@@ -588,7 +626,10 @@ def compile_ir(info: Dict[str, Any]) -> Dict[str, Any]:
                 # （原来写死 1e-6，而 RMSNorm 是 1e-5），MLA 这里又犯了一遍。
                 "norm_eps": float(_num(attrs.get("norm_eps"),
                                        _num(hp.get("rms_eps"), _DEFAULT_EPS))),
-                "norm_one_plus": norm_1p}}
+                "norm_one_plus": norm_1p},
+                **({"index_heads": int(_ik["index_heads"]),
+                    "index_dim": int(_ik["index_dim"]),
+                    "index_topk": int(_ik["index_topk"])} if _have else {}))}
 
         if kind == "FFN":
             hid = _num(attrs.get("hidden"))
@@ -1130,6 +1171,73 @@ def apply_rope(x, cos, sin, pairing="interleaved"):
     return torch.cat([x1 * c - x2 * s, x1 * s + x2 * c], dim=-1)
 
 
+class DSAIndexer(nn.Module):
+    """DSA 稀疏索引器：给每个 query 挑 top-k 个 key。
+
+    **判卷人是 transformers 的 `GlmMoeDsaIndexer`**（DeepSeek Sparse Attention
+    那一支），逐行对齐 —— 见 `src/modelcheck/by1sparse.py`。它自己有一套
+    轻量投影，和主 MLA 的 q/k 是分开的：
+
+        wq_b  : q_lora -> index_heads * index_dim      索引器自己的 query
+        wk    : d      -> index_dim                    索引器自己的 key
+        k_norm: LayerNorm(index_dim, eps=1e-6)         **带 bias**
+        weights_proj : d -> index_heads                每头一个权重
+
+        q = wq_b(q_a_layernorm(q_a_proj(x)))           q_resid
+        k = k_norm(wk(x))
+        scores      = relu( (q @ k^T) * index_dim^-0.5 )
+        index_scores = sum_h  w_h * scores_h            w = weights_proj(x) * nh^-0.5
+        top-k 个 key（因果之外）
+
+    **`index_kpool_compress_*` 不在这里。** GLM-5.3-Flash 的 checkpoint 上
+    还有两个张量（`index_kpool_compress_gate` / `index_kpool_compress_ape`），
+    而**整套依赖里找不到任何官方实现可比**（实测 transformers 5.15.1
+    全库 0 处命中）—— 所以那两个**没实现、也没验**，见 `1.md` 的已知缺口。
+    """
+
+    def __init__(self, a, d):
+        super().__init__()
+        self.nh = a["index_heads"]
+        self.hd = a["index_dim"]
+        self.topk = a["index_topk"]
+        self.qk_rope = a.get("qk_rope", 0) or 0
+        self.pairing = a.get("pairing", "interleaved")
+        self.base = a.get("rope_base", 10000)
+        self.wq_b = nn.Linear(a["q_lora"], self.nh * self.hd, bias=False)
+        self.wk = nn.Linear(d, self.hd, bias=False)
+        self.k_norm = nn.LayerNorm(self.hd, eps=1e-6)
+        self.weights_proj = nn.Linear(d, self.nh, bias=False)
+        self.scale = self.hd ** -0.5
+
+    def forward(self, x, q_resid, cos=None, sin=None):
+        b, n, _ = x.shape
+        q = self.wq_b(q_resid).view(b, n, self.nh, self.hd)
+        # **rope 那一半在前** —— 参考是 `split(q, [qk_rope, hd - qk_rope])`，
+        # 和主 MLA 的 `[qk_nope | qk_rope]` **正好相反**。照抄会算出另一个东西。
+        q_rot, q_pass = q.split([self.qk_rope, self.hd - self.qk_rope], dim=-1)
+        k = self.k_norm(self.wk(x)).unsqueeze(2)          # [b, n, 1, hd]
+        k_rot, k_pass = k.split([self.qk_rope, self.hd - self.qk_rope], dim=-1)
+        if self.qk_rope:
+            if cos is None:
+                cos, sin = rope_tables(self.qk_rope, n, self.base, x.device)
+            # apply_rope 吃 [b, h, n, d]；参考是 [b, n, h, d]，转一下再转回来
+            q_rot = apply_rope(q_rot.transpose(1, 2), cos, sin,
+                               self.pairing).transpose(1, 2)
+            k_rot = apply_rope(k_rot.transpose(1, 2), cos, sin,
+                               self.pairing).transpose(1, 2)
+        q = torch.cat([q_rot, q_pass], dim=-1)            # [b, n, nh, hd]
+        k = torch.cat([k_rot, k_pass], dim=-1).squeeze(2)  # [b, n, hd]
+        scores = torch.matmul(q.float(),
+                              k.float().transpose(-1, -2).unsqueeze(1)) * self.scale
+        scores = torch.relu(scores)                        # [b, n, nh, n]
+        w = self.weights_proj(x).float() * (self.nh ** -0.5)
+        idx = torch.matmul(w.unsqueeze(-2), scores).squeeze(-2)   # [b, n, n]
+        pos = torch.arange(n, device=x.device)
+        idx = idx.masked_fill(pos[None, :] > pos[:, None], float("-inf"))
+        t = min(self.topk, n)
+        return idx.topk(t, dim=-1).indices                  # [b, n, t]
+
+
 class MLAttention(nn.Module):
     """MLA：低秩压缩的注意力（DeepSeek 提出，Ling 用同一套）。
 
@@ -1139,6 +1247,9 @@ class MLAttention(nn.Module):
 
     和 GQA 的根本区别：**k_rot 是单头的**，RoPE 只作用在那 qk_rope 维上，
     然后广播到所有头。qk_head_dim = qk_nope + qk_rope，scaling 用前者。
+
+    带 `index_heads` 的时候，这一层是 **SparseMLA**：先用 DSA 索引器挑出
+    top-k 个 key，注意力只在被挑中的那些上算（其余填 -inf）。
     """
 
     def __init__(self, a, d):
@@ -1165,10 +1276,13 @@ class MLAttention(nn.Module):
         if self.head_gate != "off":
             self.g_proj = nn.Linear(d, self.nh, bias=False)
         self.scaling = self.qk_head ** -0.5
+        # 稀疏索引器（DSA）：三个形状给了才有，缺一个都不建
+        self.indexer = DSAIndexer(a, d) if a.get("index_heads") else None
 
     def forward(self, x):
         b, n, _ = x.shape
-        q = self.q_b_proj(self.q_a_layernorm(self.q_a_proj(x)))
+        q_resid = self.q_a_layernorm(self.q_a_proj(x))
+        q = self.q_b_proj(q_resid)
         q = q.view(b, n, self.nh, self.qk_head).transpose(1, 2)
         q_pass, q_rot = q.split([self.qk_nope, self.qk_rope], dim=-1)
         c_kv, k_rot = self.kv_a_proj_with_mqa(x).split(
@@ -1186,7 +1300,16 @@ class MLAttention(nn.Module):
         att = (qq @ kk.transpose(-2, -1)) * self.scaling
         idx = torch.arange(n, device=x.device)
         att = att.masked_fill(~(idx[None, :] <= idx[:, None]),
-                              float("-inf")).softmax(-1)
+                              float("-inf"))
+        if self.indexer is not None:
+            # 稀疏：只有索引器挑中的 key 留着。**因果之外的被挑中也不算** ——
+            # 参考是 `index_mask | (key_pos > query_pos)`，两件事是"或"。
+            top = self.indexer(x, q_resid, cos, sin)          # [b, n, k]
+            keep = torch.zeros(b, n, n, dtype=torch.bool, device=x.device)
+            keep.scatter_(-1, top, True)
+            keep = keep & (idx[None, :] <= idx[:, None])
+            att = att.masked_fill(~keep.unsqueeze(1), float("-inf"))
+        att = att.softmax(-1)
         o = (att @ v).transpose(1, 2).reshape(b, n, self.nh * self.v_dim)
         if self.head_gate != "off":
             g = self.g_proj(x).float()

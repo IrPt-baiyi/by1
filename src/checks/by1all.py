@@ -187,6 +187,13 @@ JUDGES = [
     ('by1mla.py', 4),
     ('by1moe.py', 4),
     ('by1rope.py', 4),
+    # DSA 稀疏索引器：对着 transformers 的 GlmMoeDsaIndexer 比"挑中了哪些 key"，
+    # 带 8 条反例。**它必须在门里** —— 不在门里的判卷人等于没写。
+    ('by1sparse.py', 4),
+    # KDA / SSM 的判卷人。**它们原来不在这个表里** —— 于是"绿"没有任何东西
+    # 在守。KDA 那个还要 `fla` 当参照物：拿不到就干净跳过（不是崩）。
+    ('by1kda.py', 4),
+    ('by1ssm.py', 4),
     # 前向，**真实维度**（14 个真实模型里唯一在这台机器上跑得动的）
     ('by1instella.py', 4),
     # 真实维度、官方 config 的前向 —— **另一代**

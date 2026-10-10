@@ -73,6 +73,31 @@ model Step-3.7-Flash {
     structural    = [ experts, hidden, shared_hidden ]
   }
 
+  # ── 视觉塔（47 层）────────────────────────────────────────────────
+  # **只描述，不算前向** —— 这批视觉张量的现状是"描述得住、算不了"。
+  # 官方 `vision_config`（实测，不是猜）：
+  #   model_type perception_encoder · width 1536 · layers 47 · heads 16 ·
+  #   patch_size 14 · image_size 728 · pool_type none · use_cls_token false ·
+  #   **ls_init_value 0.1** · use_ln_post false · hidden_act quick_gelu
+  # `ls_init_value` 就是 `ls_1` / `ls_2` 的出处 —— **LayerScale**，
+  # 每层两个，形状 (width,)。2704 = (728/14)^2 个位置嵌入 ✓。
+  #
+  # 和文本主干不是一套：**融合 qkv**（`in_proj_weight` 是 qkv 拼在一起）、
+  # 带 bias、每层两个 LayerNorm（**带 bias**）+ 两个 LayerScale、
+  # MLP 是 `c_fc` / `c_proj` 两层（**没有门控**）、宽度 1536（主干 4096）。
+  mech Vis : Attention {
+    heads      = { q = 16, kv = 16, head_dim = 96 }
+    bias       = true
+    structural = [ head_dim ]
+  }
+  mech VisMlp : FFN {
+    hidden = 8960
+    # **两层，没有门控。** 不写 `gate` 是"有门"（见 by1contract._ffn），
+    # 所以这里必须显式关掉 —— 实测只有 c_fc / c_proj 两个权重。
+    gate = none
+    bias = true
+  }
+
   schedule {
     full  = 1 * Attn(q = 64,  window = none, out_dim = 8192)
     slide = 3 * Attn(q = 96,  window = 512,  out_dim = 12288)
@@ -95,6 +120,33 @@ model Step-3.7-Flash {
     main[43..44] : MoE.swiglu_limit = [7, 7]
     # 共享专家的夹取值**独立**：路由专家夹 7、共享专家夹 16。
     main[43..44] : MoE.swiglu_limit_shared = [16, 16]
+  }
+
+  # ── MTP（3 层）───────────────────────────────────────────────────
+  # `num_nextn_predict_layers = 3` —— 它**在权重文件里**，所以描述要能表达。
+  # 实测那三层就在 `model.layers.45/46/47.` 下面：和主干同一个前缀、
+  # **层号接着数**，所以是 `index = global`（不是各栈从 0 起）。
+  #
+  # 每层是「一个注意力 + 一个稠密 FFN + 4 个 MTP 专属张量」。注意力那七个
+  # 张量逐个形状都落在滑窗那一个等价类里（q=96 · head_dim=128 · qk_norm ·
+  # head_gate · out_dim=12288），所以**不另写一套契约** —— 共用 `Attn`。
+  # FFN 就是 `Dense`（hidden 11264），也是共用。
+  #
+  # ⚠ **顺序要紧**：`index = global` 取的是"所有栈合起来的序号"，
+  #   所以 mtp 必须紧跟在主干后面（45 层之后正好是 45）。
+  stack mtp {
+    aux     = true
+    index   = global
+    pattern = 3 * Attn(q = 96, out_dim = 12288)
+    mtp[:]  >> Dense
+  }
+
+  # 视觉塔：47 层，自己的宽度 1536（主干 4096），`aux = true`。
+  stack visual {
+    d_model = 1536
+    aux     = true
+    pattern = 47 * Vis
+    visual[:] >> VisMlp
   }
 
   position {
@@ -137,6 +189,22 @@ model Step-3.7-Flash {
       up_proj.weight    : (experts, hidden, d_model)
       down_proj.weight  : (experts, d_model, hidden)
     }
+    # ── 视觉块。`d_model` 在这个栈里是 1536（见 `stack visual`）。──
+    # 融合 qkv：`in_proj_weight` 是 q/k/v 拼在一起，每份宽 `q * head_dim`
+    # = 16 x 96 = 1536，所以总宽 3 x 1536 = 4608 ✓（实测）。
+    Vis {
+      in_proj_weight : (3 * q * head_dim, d_model)
+      in_proj_bias   : (3 * q * head_dim,)
+      out_proj.weight : (d_model, q * head_dim)
+      out_proj.bias   : (d_model,)
+    }
+    # 两层、无门控：`c_fc` 升到 hidden，`c_proj` 降回来，都带 bias。
+    VisMlp {
+      c_fc.weight   : (hidden, d_model)
+      c_fc.bias     : (hidden,)
+      c_proj.weight : (d_model, hidden)
+      c_proj.bias   : (d_model,)
+    }
     layer {
       input_layernorm.weight           : (d_model,)
       post_attention_layernorm.weight  : (d_model,)
@@ -146,10 +214,49 @@ model Step-3.7-Flash {
       share_expert.up_proj.weight   : (d_ff_shared, d_model) unless MoE
       share_expert.down_proj.weight : (d_model, d_ff_shared) unless MoE
     }
+    # ── MTP 那三层的层内张量（第 45/46/47 层）───────────────────────
+    # `layer <栈名>` 是**整块替换**、不是追加（by1tens：取到按栈的就用它），
+    # 所以主干那两个 norm 得在这里再写一遍。多出来的 4 个是 MTP 专属的。
+    # `transformer.shared_head.output` 是这一层自己的输出投影，
+    # 形状 (vocab, d_model) —— 和顶层 `lm_head` **同形同义但是另一个张量**
+    # （实测两个都在，128896 x 4096）。
+    layer mtp {
+      input_layernorm.weight           : (d_model,)
+      post_attention_layernorm.weight  : (d_model,)
+      enorm.weight   : (d_model,)
+      hnorm.weight   : (d_model,)
+      eh_proj.weight : (d_model, 2 * d_model)
+      transformer.shared_head.norm.weight   : (d_model,)
+      transformer.shared_head.output.weight : (vocab, d_model)
+    }
+    # 视觉塔的层内张量：两个 LayerNorm（**带 bias**）+ 两个 **LayerScale**。
+    # `ls_1` / `ls_2` 就是 `vision_config.ls_init_value` 那两个可学习缩放，
+    # 形状 (width,) —— 1.md 里点名的"LayerScale"是它们。
+    layer visual {
+      ln_1.weight : (d_model,)
+      ln_1.bias   : (d_model,)
+      ln_2.weight : (d_model,)
+      ln_2.bias   : (d_model,)
+      ls_1.gamma  : (d_model,)
+      ls_2.gamma  : (d_model,)
+    }
     global {
       embed.weight      : (vocab, d_model)
       final_norm.weight : (d_model,)
       lm_head.weight    : (vocab, d_model)
+      # ── 视觉塔里不属于任何层的那 8 个，加那个投影 ────────────────
+      # 逻辑名直接写官方全名；`global_name = "{physical}"` 于是原样渲染。
+      # 形状逐个对着产物量过（出处是官方 vision_config）。
+      # `vit_large_projector` 在视觉塔外面，把 6144 接回主干的 4096。
+      vision_model.conv1.weight        : (1536, 3, 14, 14)
+      vision_model.ln_pre.weight       : (1536,)
+      vision_model.ln_pre.bias         : (1536,)
+      vision_model.positional_embedding : (2704, 1536)
+      vision_model.vit_downsampler1.weight : (3072, 1536, 3, 3)
+      vision_model.vit_downsampler1.bias   : (3072,)
+      vision_model.vit_downsampler2.weight : (6144, 3072, 3, 3)
+      vision_model.vit_downsampler2.bias   : (6144,)
+      vit_large_projector.weight       : (4096, 6144)
     }
   }
 
@@ -220,8 +327,14 @@ model Step-3.7-Flash {
 
     train -> torch.module {
       name        = "model.layers.{i}.{scope}{physical}"
+      # **视觉塔的物理前缀和主干不同** —— 它在 `vision_model.transformer.resblocks.`
+      # 下面。主干和 MTP 共用 `name`（同一个前缀，MTP 的层号接着数，见 `index`）。
+      name_visual = "vision_model.transformer.resblocks.{i}.{scope}{physical}"
       global_name = "{physical}"
-      scope { Attn = self_attn., Dense = mlp., MoE = moe., layer = "", global = "" }
+      # ⚠ **`scope` 那一行不能折行** —— 花括号不参与续行判定
+      #   （by1check._cont_depth），折行之后整张映射表**空着**，
+      #   渲染出来的名字静默丢掉前缀。**现在 by1check 会直接报错** ✓。
+      scope { Attn = self_attn., Dense = mlp., MoE = moe., Vis = attn., VisMlp = mlp., layer = "", global = "" }
       rename {
         gate.weight       = gate.weight,
         router_bias       = router_bias,

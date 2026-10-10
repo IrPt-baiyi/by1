@@ -122,7 +122,63 @@ def main():
     ok = same and dd < 1e-6
     print("\n  [%s] noaux_tc %s" % ("PASS" if ok else "FAIL",
                                     "与参考一致" if ok else "对不上"))
-    return 0 if ok else 1
+    ok2 = routing_vs_config()
+    return 0 if (ok and ok2) else 1
+
+
+def routing_vs_config():
+    """第二把尺子：**`.by1` 的路由编码 vs 官方 config 的 `scoring_func`**。
+
+    上一把尺子只证明"`sigmoid_group_topk` 这一支的数学对"。它证明不了
+    **模型写的是不是这一支** —— 而 GLM-5.3-Flash 就是写错的那个：
+    `.by1` 里 `routing = softmax_topk` 加一个 `scoring = sigmoid`，
+    而 `scoring` **没有任何人读它**（全库只有注释提到），于是前向走的是
+    softmax 打分，官方却是 sigmoid（config `scoring_func = "sigmoid"`，
+    实现 `GlmMoeDsaTopkRouter`：`scores = router_logits.sigmoid()`）。
+
+    这一类错**契约看不出来、config 逐字段也看不出来** —— 那两处都是对的。
+    只有"编码 ↔ 官方字段"这条对拍看得见。所以它进判卷人，不进注释。
+    """
+    print("\n  路由编码 vs 官方 config 的 scoring_func:")
+    import importlib.util
+    import by1io
+    import by1refs
+    sp = importlib.util.spec_from_file_location('bcm', by1paths.tool('by1check.py'))
+    bc = importlib.util.module_from_spec(sp)
+    sp.loader.exec_module(bc)
+    bad, seen = [], 0
+    for f in by1paths.names():
+        try:
+            p = by1refs.paths(f, 'config')   # 返回字符串或 None，不是列表
+        except Exception:
+            continue
+        if not p:
+            continue
+        raw = by1io.read_json(p, encoding='utf-8')
+        tc = raw.get('text_config', raw)
+        sf = str(tc.get('scoring_func', '')).strip().lower()
+        if not sf:
+            continue
+        seen += 1
+        _r, info = bc.check(f)
+        for mech, a in (info.get('mech_attrs') or {}).items():
+            rt = str(a.get('routing', '')).strip().lower()
+            if not rt:
+                continue
+            # `routing` 的前缀就是打分函数：sigmoid_* -> sigmoid，
+            # softmax_topk / topk_softmax -> softmax
+            got = 'sigmoid' if rt.startswith('sigmoid') else 'softmax'
+            mark = 'ok' if got == sf else '!!'
+            if got != sf:
+                bad.append(f)
+            print("     %s %-26s %-22s routing=%-20s -> %s / config %s"
+                  % (mark, f, mech, rt, got, sf))
+    if not seen:
+        print("     （没有带 scoring_func 的官方 config —— 这一项没验）")
+        return True
+    print("     -> %s" % ("逐个一致" if not bad else
+                          "**不一致：%s**" % ', '.join(sorted(set(bad)))))
+    return not bad
 
 
 if __name__ == "__main__":

@@ -7923,3 +7923,235 @@ Gemma 的视觉塔恰好和文本用同一组名字（`input_layernorm` 那一�
 
 （30 份 `.by1` 里只有 `selftest.by1` 有错 ✓ —— 而它**正好 9 个** ✓，
 那是 `by1fast` 拿来当"反向确认"的对照 ✓。）
+
+---
+
+## 125. 多模态"能描述"收尾：**83 / 718 / 38574 一次归零**，而路上有两处"写了等于没写"
+
+### 一、数字（全部这轮现量，`by1verify --backend torch.module`）
+
+    模型                    契约      一致     未覆盖
+    Laguna-XS-2_1        30513    30513      0        （原来是 30430 / 83）
+    Step-3.7-Flash        1471     1471      0        （原来是 753 / 718）
+    GLM-5.3-Flash        76108    76108      0        （原来是 37534 / 38574）
+
+**「现量」不是客套。** 这三个数我原来记的是 83 / 718 / 38574 —— 而那是
+**上一轮**的。动手前重跑了，没对上就以新的为准。
+
+### 二、怎么补的
+
+**Laguna（83）**：40 个 `input_layernorm` + 40 个 `post_attention_layernorm`
++ `embed` / `final_norm` / `lm_head`。用的是 `layer {}` 和 `global {}` ——
+而 `.by1` 里那条 ⚠️ 说"层内两个 norm 写不进 tensors"**已经过期**：
+`layer` 块是为 clef 的视觉塔加的，这里正好用上。
+
+顺手修了命名模板：`{scope}.{physical}` 里那个点挪进 scope
+（`self_attn` -> `self_attn.`），否则 `layer` / `global` 的空 scope 会渲染出
+`model.layers.0..input_layernorm.weight`。**改前改后逐个名字不变**，
+只是空 scope 现在是对的。ggml 侧同一个理由（`{scope}_{physical}` ->
+`{scope}{physical}`），未覆盖 122 -> **39**，剩的是 `exp_bias` 的前缀不对称
+（GGUF 里叫 `blk.N.exp_probs_b.bias`，没有 `ffn_`）——**一个机制一个 scope，
+表达不了"这一个不带前缀"**，如实留着。
+
+**Step-3.7（718）**：`vision_model.transformer.resblocks.{0..46}` 47 层 ×
+14 个 = 658（含 `ls_1.gamma` / `ls_2.gamma` —— **LayerScale**，
+出处是官方 `vision_config.ls_init_value = 0.1`）+ 层外 8 个 +
+`vit_large_projector` 1 个 = 666 + 1；再加 3 层 MTP（`model.layers.45/46/47`）
+× 17 个 = 51。**718 = 667 + 51** ✓。
+
+MTP 那三层的注意力**逐个形状落在滑窗那一个等价类里**（q=96 · head_dim=128 ·
+qk_norm · head_gate · out_dim=12288），所以**不另写一套契约** —— 共用 `Attn`。
+FFN 就是 `Dense`，也是共用。
+
+**GLM-5.3（38574）**：37340 个 FP8 `weight_scale_inv` + 347 个视觉塔 +
+887 个 MTP 那一层。
+
+FP8 那批**走 `emit` 的 `quant`，不走契约** —— 和 gpt-oss 的 MXFP4 同一个
+理由（"量化与融合是发布决策，不是架构"）。`quant` 的 `scale` 就是两种布局
+的分水岭：没有 `scale` 是 MXFP4（权重根本不存在、换成 `_blocks`/`_scales`），
+有 `scale` 是 FP8 块量化（权重留着、另发一份伴随张量）。
+**伴随张量的形状从权重形状推**（`(out/128, in/128)`）—— 写第二遍一定会
+和权重对不上。
+
+**谁被量化了是逐个量出来的**：76108 个张量里带 `weight_scale_inv` 的只有
+10 个逻辑名 / 13 个等价类。**KDA 的 9 个投影、`kv_b_proj`、整个 indexer、
+路由器、视觉塔、embed / lm_head 都没有。** 第一版按"2-D 权重"推，
+当场多出 25 类。
+
+⚠️ 成员表要能带机制前缀：`SparseMLA.o_proj.weight` 必须写全 ——
+KDA 也有一个 `o_proj.weight`，而它**没有**被量化。写裸的 `o_proj` 会给 KDA
+也发一份，那会当场报「契约声明了、实际不存在」（不是静默错）。
+
+### 三、两处"写了等于没写"，都是撞出来的
+
+**① `index = global` 是死代码。** `by1verify` 里早有一段在读它
+（`getattr(st, "assigns", ...)`），而 `info["stacks"]` 是 `(名字, 别名, 层数)`
+的**元组** —— `getattr` 永远取到 `{}`，于是 `_glob` 永远是空集，
+`index = global` 写了等于没写。**第一个用它的人（GLM 的 MTP）就撞上了**：
+报出来是 1753 个「契约声明了、实际不存在」，名字全是 `layers.0`。
+
+不写规矩、写检查器：`by1stacks` 现在验 `index` 的取值（只有 `local` / `global`），
+`by1check` 把 `stack_index` 显式放进 `info`。
+
+**② `layer <栈名>` 只对声明了 `d_model` 的栈生效。** `layer_rows_by_stack`
+原来是**遍历 `stack_d_model`** 建的 —— 于是 `layer mtp { ... }` 对没写
+`d_model` 的栈根本不被读到，那一栈照旧拿模型级的 `layer` 那一份：
+多发 6 个 `hc_*`、少发 4 个 MTP 专属张量。**按栈的层内张量和宽度是两件事**，
+不该由"有没有声明宽度"来决定。现在所有栈都算。
+
+### 四、反例（四条，逐条实测）
+
+**一条只会通过的规则不是规则。** 这轮新加的三样各拿一份好的描述改坏一处：
+
+    反例                                        结果
+    A  FP8 块大小 128 -> 64                    形状不符 37338   红 ✓
+    B  拿掉 `index = global`                   缺失 1757       红 ✓
+    C  拿掉 `layer mtp`                        缺失 6          红 ✓
+    D  `index = global` 拼成 `globl`           by1check 直接拦 ✓
+
+**反例不另写 fixture**：`by1gate.py` 的 `PROBE` 表把它写成"改哪一行 ->
+改成什么"，读的人一眼看得见错在哪，也不会多出一份谁都不跑的 `.by1`。
+
+档 5：**76 项，0 项失败，1 项跳过（显卡），1 项已知缺口**（那 25 个张量在
+HF 的 model-00009 分片里，镜像的问题）。
+
+---
+
+## 126. 两个机制、一个真错、一个说不清的缺口
+
+### 一、`qk_head` —— 不是新维度，是**别名 + 校验**
+
+挡住 `Ling-3.0-tiny` 的是 `MLA` 的属性 `qk_head`。而它**不是一个新维度**：
+官方 config 里 `qk_head_dim` 就等于 `qk_nope_head_dim + qk_rope_head_dim`，
+`.by1` 照抄了它。所以做的是**收它、并验它**：
+
+    qk_head != qk_nope + qk_rope  ->  报错，不许静默过
+
+**不验的话它就是"写了不报错、什么也不做"的属性** —— 而那是这个仓库
+最忌讳的一类（KDA 的 `gate_act` 就是这么被删掉的）。
+
+判据：`by1gate` 里 `Ling-3.0-tiny` 从"该被拒"搬到"该通过"（**改方向，不删**），
+外加两条反例（`qk_head = 193` / `= 0`）实测被拒、理由里点得出 `qk_head`。
+
+### 二、`index_heads` / `index_dim` / `index_topk` —— **DSA 稀疏索引器**
+
+这三个是**真机制**，不是别名。判卷人 `src/modelcheck/by1sparse.py`，
+对着 transformers 的 **`GlmMoeDsaIndexer`**（别人写的）比
+**"每个 query 挑中了哪些 key"**。
+
+    4 组正例（rope=0 的 GLM 形状 × 2 · rope=64 · rope=16）：
+        pairing=interleaved   4/4 挑选集合逐个相同
+        pairing=half          2/4（只在 rope 不起作用的两组碰巧一致）
+    8 条反例，逐条改坏一处：**8/8 当场变红**
+
+**`interleaved` 是量出来的，不是猜的** —— 和 GLM config 的
+`indexer_rope_interleave = true` 是同一句话。
+
+**踩到的两个坑，都记下来：**
+
+① **`topk` 必须远小于 `seq`**，否则判据瞎了。第一版 topk=8 / seq=12，
+把 `k_norm` 改坏居然照样一致 —— 因为因果窗口里根本没得挑。
+改成 topk=3 / seq=32 才看得见。
+
+② **有一类改动是"挑选集合"这条尺子天生看不见的**：
+top-k 对**正的整体缩放**不变。所以 `scale = index_dim^-0.5` 和
+`weights_proj(x) * index_heads^-0.5` **写错了也挑出同一批 key** ——
+它们只调大小、不调次序。**所以不拿它们当反例**：假的反例比没有反例更糟。
+
+### 三、**一个真错**：GLM 的 MoE 路由编码是错的
+
+`GLM-5.3-Flash.by1` 里写的是 `routing = softmax_topk` 加一个
+`scoring = sigmoid`。而 **`scoring` 没有任何人读它**（全库 grep 只有注释提到），
+于是前向走的是 **softmax 打分**，官方是 **sigmoid** ——
+
+    判据是 transformers 的 GlmMoeDsaTopkRouter：
+        scores = router_logits.sigmoid()
+        scores_for_choice = scores + e_score_correction_bias
+        按组取前 2 求和 -> 选 topk_group 个组 -> 组内选 top_k
+        norm_topk_prob -> * routed_scaling_factor
+
+这逐行就是本库 `routing = sigmoid_group_topk` 那一支（Ling 用的同一个）。
+config 也对得上：`scoring_func = "sigmoid"` · `topk_method = "noaux_tc"`。
+
+**这一类错最难看**：契约对（张量名字形状全对）、config 对（57/57）、
+`by1verify` 也对 —— 而生成出来是另一个模型。**因为前向从来没跑过。**
+和 README 里"`routing = sigmoid_topk` 一直在走 softmax"是同一个病。
+
+**所以加了第二把尺子**：`by1moe` 的「路由编码 vs 官方 config 的 `scoring_func`」，
+逐个 `.by1` 对拍。反例（把 GLM 改回 `softmax_topk`）实测 **红** ✓。
+`scoring` 这个属性**不加** —— 它和 `routing` 说的是同一件事，
+两个地方说同一件事就一定会不一致（这次就是）。
+
+### 四、`index_kpool_compress_*` —— **说不清的那一个**
+
+GLM-5.3-Flash 的 `indexer.` 下面除了 DSA 那四个投影，还有两个：
+`index_kpool_compress_gate` [128, 4096] 和 `index_kpool_compress_ape` [4, 128]。
+**整套依赖里找不到任何官方实现可比**（实测 transformers 5.15.1 全库
+搜 `kpool` / `compress_ape` / `Glm5Next` **0 处命中**）。
+
+所以：**不实现，也不假装验过。** 它们**描述得出来**（契约里有、名字形状验过），
+**算不了**。这一条挡住的是 GLM-5.3-Flash 的**完整**前向 ——
+不是索引器本身（索引器验过 ✓）。
+
+### 五、视觉前向：**决定不做，停在「描述」**
+
+结论写进 `1.md` 的「视觉前向：决定不做」，一句话：
+
+> **视觉那批张量的状态是「描述得住、算不了」。**
+
+理由三条，第一条最硬：**本地找不到这些视觉塔的官方实现**（实测 0 处命中），
+手写一遍再和自己比，正好是这个仓库最贵的那条教训。
+描述这一半已经把价值取走了（逐张量同名同形状 = 没漏）；
+剩下的"算不算得对"在没有判卷人的情况下**问不出可证伪的答案**。
+
+**要重开这件事，先要一样东西**：这些视觉塔的官方实现（或一份官方数值产物）。
+在那之前，任何"视觉前向做了一半"的说法都是没有判据的。
+
+---
+
+## 127. **判卷人没人跑** —— 而 KDA 那个连跑都跑不起来
+
+这轮加 `by1sparse.py` 的时候顺手查了一件事：**判卷人是不是都在门里**。
+
+    在 by1all 的 JUDGES 里的：by1refs docs files bootir raw dev opdiff
+                                mla moe rope instella gpt2 irentry
+                                extdemo e2e gpu        （+ 这轮的 sparse）
+    **不在的：by1kda · by1ssm · by1real · by1load · by1mem · by1train**
+
+**一个没人跑的判卷人，和没写是一回事。** 它可以一直红着而报告全绿 ——
+而这正是 README 里"一份工具报了假的绿"那一类。
+
+**更难看的是 `by1kda` 本身**：这台机器上跑它，报的是
+
+    AttributeError: 'NoneType' object has no attribute 'naive_recurrent_kda'
+
+根因有两层：
+
+① **`fla` 没装**（`fla-core`）。而 KDA 的判卷人是**对着 fla 的
+   `naive_recurrent_kda` + `rms_norm_ref`** 比的 —— 参照物拿不到，
+   判卷人就跑不了。**"KDA 验过"这句在这台机器上当时是"没验"。**
+② **它是崩，不是跳过。** `by1skip.skip()` 的语义是"打印并给退出码"，
+   **不是"打印并退出"** —— 调用处要写 `return by1skip.skip(...)`。
+   少了 `return` 就继续往下跑，然后在 `naive.naive_recurrent_kda` 上炸。
+   `by1kda` 两处都是这么写的（`naive` 和 `rms_ref` 各一处）。
+
+**修法是撞出来的那一类**：装 `fla-core` + `einops` 之后它当场
+**PASS（4 正例 + 8 反例全红）** ✓ —— 也就是说判卷人是好的，
+**坏的是"拿不到参照物时的退路"**。现在两处都 `return by1skip.skip(...)`，
+而且 `load_fla_naive` 拿到文件但 import 不了时（实测：装了 `fla-core`
+之后报 `No module named 'einops'`）也按"没装"处理，不炸。
+
+**判卷人进表了**：`by1kda` / `by1ssm` / `by1sparse` 都进了 `JUDGES`。
+档 5 从 **76 项 -> 79 项，0 项失败**。
+
+**没进表的还剩 4 个**（`by1real` / `by1load` / `by1mem` / `by1train`）——
+它们不是判卷人、是要命令行参数的工具（实测：后两个直接报
+`the following arguments are required`），所以不进表是对的；
+`by1real` 要先从 ModelScope 下产物（它自己跳过 ✓）。
+
+### 还有一件没复现的红
+
+这一轮某次档 5 报过 `exec llama-shaped.by1` 和 `NumPy gpt-oss-shaped.by1`
+两处失败（后者还被归成"检查器自己坏了"）。**重跑两次都是 0 失败**，
+单跑这两个也都绿。**没复现 ≠ 没发生** —— 记在这里，
+下次再见到就不是第一次了。（怀疑是并行判卷人和前向争 CPU。）

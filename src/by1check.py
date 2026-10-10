@@ -918,6 +918,15 @@ def check(path: str) -> Tuple[Report, dict]:
     # ---- 汇报 -----------------------------------------------------
     return _['rep'], {
         "stacks": [(s.name, s.alias, len(_['expansion'].get(s.name, []))) for s in _['stacks']],
+        # **层号按栈还是按全局数。** 默认各栈从 0 起（`local`）；写了
+        # `index = global` 的栈接着前面的数 —— GLM 的 MTP 就是第 45 层，
+        # 而它和主干同一个前缀 `model.language_model.layers.{i}.`。
+        # ⚠ 这个键原来**根本没暴露**，而 by1verify 里已经有一段代码在读它
+        #   （`getattr(st, "assigns", ...)`，而 `stacks` 是元组、永远取到 {}）。
+        #   于是 `index = global` 写了等于没写、一声不响。**第一个用它的人
+        #   就撞上了。** 说出来才有得查。
+        "stack_index": {s.name: ((s.assigns.get("index") or "local").strip().lower())
+                        for s in _['stacks']},
         "expansion": _['expansion'],
         "states": _['states'],
         "mechs": {n: b.mtype for n, b in _['mechs'].items()},

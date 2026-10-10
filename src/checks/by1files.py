@@ -99,8 +99,8 @@ GROUPS = [
 
     ('`modelcheck/` —— 一个模型一个判卷人', 'modelcheck', '''每个都用自己的官方产物当真相源。''', [
         'by1gpt2', 'by1instella', 'by1mla', 'by1moe', 'by1rope',
-        'by1ssm', 'by1kda', 'by1real', 'by1load', 'by1mem', 'by1train',
-        'by1dev']),
+        'by1ssm', 'by1kda', 'by1sparse', 'by1real', 'by1load', 'by1mem',
+        'by1train', 'by1dev']),
 
     ('`data/` —— 抓数据 / 推模型', 'data', '''从一个已发布的 checkpoint 反推描述，以及把 `refs/` 抓回来。''', [
         'by1fetch', 'by1index', 'by1boot', 'by1triage', 'by1cmp',
@@ -150,6 +150,8 @@ OVERRIDE = {
     'run.sh': '入口',
     'requirements.txt': '依赖（和本地不同：要 CUDA 版的 torch）',
     'by1kda.py': 'KDA（Kimi Delta Attention）的验证。它在 `by1check` 里是独立种类，不是 GDN',
+    'by1sparse.py': 'DSA 稀疏索引器的验证（对着 transformers 的 `GlmMoeDsaIndexer`）。'
+                    '**`index_kpool_compress_*` 那两个张量没验** —— 没有可比的官方实现',
     'rebuild_manifest.py': '复现脚本',
     'INVENTORY.txt': '验证清单：每个模型验到了什么、判卷人是谁',
     'pattern-design.md': '设计草案 v0，**状态：待审**。它挡着 4 个模型',

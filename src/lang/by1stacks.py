@@ -113,6 +113,22 @@ def read_stacks(*, _mod, _):
 
     _['_main_stack_names'] = {st.name for st in _['stacks'] if not _['_is_aux'](st)}
 
+    # ---- 层号怎么数：`index = local | global` -----------------------
+    # 默认 `local` —— 每个栈的层号都从 0 起。`global` 是接着前面的栈往下数：
+    # GLM-5.3 的 MTP 就在 `model.language_model.layers.45.` 下面，和主干
+    # 同一个前缀、层号接着数。
+    #
+    # **取值必须验。** 不验的话写错一个字母它静默退回 `local`，而表现是
+    # "一整栈的张量名字全对不上" —— 看起来像契约写错了，不像命名写错了。
+    # 这一条是被撞出来的：`index = global` 这个机制**曾经只存在于注释里**，
+    # by1verify 读它的那段代码拿到的是个元组、永远取到空 —— 写了等于没写。
+    for _['st'] in _['stacks']:
+        _['_ik'] = (_['st'].assigns.get("index") or "").strip().lower()
+        if _['_ik'] and _['_ik'] not in ("local", "global"):
+            _['rep'].add(E, _['st'].line, "stack",
+                    f"stack {_['st'].name} 的 index = '{_['_ik']}' 不认识 —— "
+                    f"只有 local（各栈从 0 起）和 global（接着前面的栈往下数）")
+
     # ---- 栈自己的宽度 ----------------------------------------------
     #
     # **一个栈可以有和模型不同的宽度。** 实测：Gemma-4-31B 的视觉塔宽

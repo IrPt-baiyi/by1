@@ -71,14 +71,47 @@ model GLM-5.3-Flash {
     routed_scale  = 2.5
     n_group       = 1
     topk_group    = 1
-    scoring       = sigmoid
-    routing       = softmax_topk
+    # **这里原来写的是 `routing = softmax_topk` 加一个 `scoring = sigmoid` ✗。**
+    # 那是**错的**，而且是那种"契约全对、config 全对、生成出来是另一个模型"
+    # 的错 —— 因为 `scoring` **没有任何人读它**（grep 全库只有注释提到），
+    # 于是前向走的是 softmax 打分，而官方是 **sigmoid 打分 + noaux_tc 分组**。
+    #
+    # 判据是官方实现（transformers 的 `GlmMoeDsaTopkRouter`）：
+    #     scores = router_logits.sigmoid()
+    #     scores_for_choice = scores + e_score_correction_bias
+    #     按组取前 2 求和 -> 选 topk_group 个组 -> 组内选 top_k
+    #     norm_topk_prob -> * routed_scaling_factor
+    # 这逐行就是本库里 `routing = sigmoid_group_topk` 那一支（和 Ling 同一个）。
+    # config 也对得上：`scoring_func = "sigmoid"` · `topk_method = "noaux_tc"`。
+    #
+    # **`scoring` 这个属性不加** —— 它和 `routing` 说的是同一件事，
+    # 两个地方说同一件事就一定会不一致（这次就是）。
+    routing       = sigmoid_group_topk
     swiglu_limit  = 10.0
     layer_kind    = sparse
     structural    = [ experts, hidden, shared, n_group, topk_group ]
   }
 
   mech Dense : FFN { hidden = 12288 }
+
+  # ── 视觉塔（24 层）────────────────────────────────────────────────
+  # **只描述，不算前向** —— 这一批视觉张量的现状是"描述得住、算不了"。
+  # 官方 `vision_config`：hidden_size 1024 · depth 24 · num_heads 16 ·
+  # intermediate_size 4096 · out_hidden_size 4096 ·
+  # projection_intermediate_size 10240 · attention_bias true ·
+  # spatial_merge_size 2 · temporal_patch_size 2 · patch_size 14。
+  # 和文本主干**不是一套**：融合 qkv、带 bias、MLP 三线性（gate/up/down）
+  # 也带 bias、每层两个 norm **不带** bias、宽度 1024（主干 4096）。
+  # 16 头 x 64 = 1024 ✓（`q_norm` / `k_norm` 实测 [64] ✓）。
+  mech Vis : Attention {
+    heads      = { q = 16, kv = 16, head_dim = 64 }
+    bias       = true
+    structural = [ head_dim ]
+  }
+  mech VisMlp : FFN {
+    hidden = 4096
+    bias   = true
+  }
 
   schedule {
     kda   = 3 * KDA
@@ -93,6 +126,29 @@ model GLM-5.3-Flash {
     pattern       = 11 * block + 1 * KDA
     model[0..2]   >> Dense
     model[3..44]  >> MoE
+  }
+
+  # ── MTP（1 层）───────────────────────────────────────────────────
+  # `num_nextn_predict_layers = 1`。它**在权重文件里**，所以描述要能表达它。
+  # 官方那层就在 `model.language_model.layers.45.` 下面 —— 和主干同一个前缀、
+  # **层号接着数**，所以是 `index = global`（不是各栈从 0 起）。
+  # 这一层是 SparseMLA + MoE，另外多 4 个 MTP 专属张量（见 `layer mtp`）。
+  #
+  # ⚠ **顺序要紧**：`index = global` 取的是"所有栈合起来的序号"，
+  #   所以 mtp 必须紧跟在主干后面（45 层之后正好是 45）。
+  stack mtp {
+    aux     = true
+    index   = global
+    pattern = 1 * SparseMLA
+    mtp[:]  >> MoE
+  }
+
+  # 视觉塔：24 层，自己的宽度 1024（主干 4096），`aux = true`。
+  stack visual {
+    d_model = 1024
+    aux     = true
+    pattern = 24 * Vis
+    visual[:] >> VisMlp
   }
 
   position {
@@ -172,6 +228,23 @@ model GLM-5.3-Flash {
       up_proj.weight   : (12288, d_model)
       down_proj.weight : (d_model, 12288)
     }
+    # ── 视觉块。`d_model` 在这个栈里是 1024（见 `stack visual`）。──
+    Vis {
+      qkv.weight    : (3 * q * head_dim, d_model)
+      qkv.bias      : (3 * q * head_dim,)
+      q_norm.weight : (head_dim,)
+      k_norm.weight : (head_dim,)
+      proj.weight   : (d_model, q * head_dim)
+      proj.bias     : (d_model,)
+    }
+    VisMlp {
+      gate_proj.weight : (hidden, d_model)
+      gate_proj.bias   : (hidden,)
+      up_proj.weight   : (hidden, d_model)
+      up_proj.bias     : (hidden,)
+      down_proj.weight : (d_model, hidden)
+      down_proj.bias   : (d_model,)
+    }
     layer {
       input_layernorm.weight          : (d_model,)
       post_attention_layernorm.weight : (d_model,)
@@ -184,10 +257,42 @@ model GLM-5.3-Flash {
       hc_ffn_fn     : (24, 16384)
       hc_ffn_scale  : (3,)
     }
+    # ── MTP 那一层的层内张量（第 45 层）──────────────────────────────
+    # `layer <栈名>` 是**整块替换**、不是追加（by1tens：取到按栈的就用它），
+    # 所以主干那两个 norm 得在这里再写一遍。多出来的 4 个是 MTP 专属的：
+    # enorm / hnorm / eh_proj / shared_head.norm。
+    # **这一层实测没有 mHC** —— `hc_*` 在未覆盖清单里一个都没有。
+    layer mtp {
+      input_layernorm.weight          : (d_model,)
+      post_attention_layernorm.weight : (d_model,)
+      enorm.weight          : (d_model,)
+      hnorm.weight          : (d_model,)
+      eh_proj.weight        : (d_model, 2 * d_model)
+      shared_head.norm.weight : (d_model,)
+    }
+    # 视觉塔的层内张量**和主干不是一套**：两个 norm，都不带 bias。
+    layer visual {
+      norm1.weight : (d_model,)
+      norm2.weight : (d_model,)
+    }
     global {
       embed.weight      : (vocab, d_model)
       final_norm.weight : (d_model,)
       lm_head.weight    : (vocab, d_model)
+      # ── 视觉塔里不属于任何层的那 11 个 ──────────────────────────
+      # 逻辑名直接写官方全名；`global_name = "{physical}"` 于是原样渲染。
+      # 形状逐个对着产物量过（vision_config 里的数字是它们的出处）。
+      model.visual.patch_embed.proj.weight  : (1024, 3, 2, 14, 14)
+      model.visual.patch_embed.proj.bias    : (1024,)
+      model.visual.post_layernorm.weight    : (1024,)
+      model.visual.downsample.weight        : (4096, 1024, 2, 2)
+      model.visual.downsample.bias          : (4096,)
+      model.visual.merger.gate_proj.weight  : (10240, 4096)
+      model.visual.merger.up_proj.weight    : (10240, 4096)
+      model.visual.merger.down_proj.weight  : (4096, 10240)
+      model.visual.merger.proj.weight       : (4096, 4096)
+      model.visual.merger.post_projection_norm.weight : (4096,)
+      model.visual.merger.post_projection_norm.bias   : (4096,)
     }
   }
 
@@ -271,14 +376,52 @@ model GLM-5.3-Flash {
       # 共享专家、全局张量 —— 1245 个，一个都没验。
       # **百分比是张量个数，不是覆盖率。**
       name        = "model.language_model.layers.{i}.{scope}{physical}"
+      # **视觉塔的物理前缀和主干不同** —— 它在 `model.visual.blocks.` 下面。
+      # 主干和 MTP 共用 `name`（同一个前缀，MTP 的层号接着数，见 `index`）。
+      # 优先级是 `expert_name > name_<栈名> > name`（见 by1check.render_name）。
+      name_visual = "model.visual.blocks.{i}.{scope}{physical}"
       global_name = "{physical}"
-      scope { KDA = self_attn., SparseMLA = self_attn., MoE = mlp., Dense = mlp., layer = "", global = "" }
+      # ⚠ **`scope` 那一行不能折行** —— 花括号不参与续行判定
+      #   （`by1check._cont_depth`），折行之后整张映射表**空着**，
+      #   渲染出来的名字静默丢掉前缀（报出来是"NNNN 个张量实际不存在"，
+      #   看起来像契约写错了）。**现在 by1check 会直接报错** ✓。
+      scope { KDA = self_attn., SparseMLA = self_attn., MoE = mlp., Dense = mlp., Vis = attn., VisMlp = mlp., layer = "", global = "" }
       expert_name = "model.language_model.layers.{i}.mlp.experts.{expert}.{physical}"
       rename {
         # 官方这两个不叫 `embed.weight` / `final_norm.weight`：
         embed.weight      = model.language_model.embed_tokens.weight,
         final_norm.weight = model.language_model.norm.weight
         # `lm_head.weight` 不在 rename 里 —— 官方就叫这个名字。
+      }
+      # ── 导出布局：FP8 块量化（**不是架构！**）───────────────────────
+      # 这个 checkpoint 的一部分权重是 FP8 (e4m3) 存的，每 128x128 一块伴
+      # 一份 `weight_scale_inv`。**权重本身留着** —— 所以它和 gpt-oss 的
+      # MXFP4（权重根本不存在、换成 `_blocks`/`_scales`）是两种布局，
+      # `scale` 就是那个分水岭。块大小实测 128x128，所有维度整除。
+      # 换一份 BF16 发布就没有这些张量 —— 所以它在 emit 里，不在契约里。
+      #
+      # **谁被量化了是逐个量出来的，不是按"2-D 权重"推的。** 76108 个张量里
+      # 带 `weight_scale_inv` 的只有下面这 10 个逻辑名（13 个等价类）：
+      #   · MoE 的 gate/up/down（逐专家）+ 三个共享专家投影
+      #   · SparseMLA 的 q_a_proj / q_b_proj / kv_a_proj_with_mqa / o_proj
+      #   · Dense 的 gate/up/down
+      # **没有**（量过，别顺手加上）：KDA 的全部 9 个投影 · SparseMLA 的
+      # `kv_b_proj` 和整个 indexer · 路由器 `gate` · 视觉塔 · embed / lm_head。
+      #
+      # ⚠ `SparseMLA.o_proj.weight` **必须带机制前缀** —— KDA 也有一个
+      # `o_proj.weight`，而它没有被量化。写裸的 `o_proj` 会给 KDA 也发一份，
+      # 那会当场报「契约声明了、实际不存在」。
+      quant {
+        scale  = weight_scale_inv
+        block  = 128
+        tensor = [SparseMLA.q_a_proj.weight, SparseMLA.q_b_proj.weight,
+                  SparseMLA.kv_a_proj_with_mqa.weight, SparseMLA.o_proj.weight,
+                  MoE.gate_proj.weight, MoE.up_proj.weight, MoE.down_proj.weight,
+                  MoE.shared_experts.gate_proj.weight,
+                  MoE.shared_experts.up_proj.weight,
+                  MoE.shared_experts.down_proj.weight,
+                  Dense.gate_proj.weight, Dense.up_proj.weight,
+                  Dense.down_proj.weight]
       }
     }
   }

@@ -170,7 +170,15 @@ def load_fla_naive():
         return None, None
     spec = importlib.util.spec_from_file_location('kda_naive', p)
     m = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(m)
+    try:
+        spec.loader.exec_module(m)
+    except Exception as e:
+        # **装了 fla 不等于这份参考能跑。** 实测过一次：装上 `fla-core`
+        # 之后这里报 `No module named 'einops'` —— 那是崩，不是"没验"。
+        # 按"参考拿不到"处理，让调用方走 by1skip。
+        print('  （fla 的 naive 参考 import 不了：%s: %s —— 当成"没装"处理）'
+              % (type(e).__name__, e))
+        return None, None
     return m, p
 
 
@@ -417,12 +425,17 @@ def main(argv):
     only_red = '--selftest' in argv
     naive, p_naive = load_fla_naive()
     if naive is None:
-        by1skip.skip('找不到 fla 的 naive 参考 —— 这一项在这台机器上验不了\n'
-                     '    装它：pip install --no-deps fla-core')
+        # **`by1skip.skip` 是"打印并给退出码"，不是"打印并退出"。**
+        # 少一个 `return` 的话它照样往下跑，然后在 `naive.naive_recurrent_kda`
+        # 上 AttributeError —— 报出来是崩溃，不是"这台机器上没验"。
+        return by1skip.skip(
+            '找不到 fla 的 naive 参考 —— 这一项在这台机器上验不了\n'
+            '    装它：pip install --no-deps fla-core einops')
     rms_ref, p_norm = load_fla_rms_norm_ref()
     if rms_ref is None:
-        by1skip.skip('找不到 fla 的 rms_norm_ref —— 这一项在这台机器上验不了\n'
-                     '    装它：pip install --no-deps fla-core')
+        return by1skip.skip(
+            '找不到 fla 的 rms_norm_ref —— 这一项在这台机器上验不了\n'
+            '    装它：pip install --no-deps fla-core einops')
     R = runtime(torch)
     if not only_red:
         print('  参照物 ①  %s' % p_naive)

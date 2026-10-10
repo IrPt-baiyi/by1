@@ -112,6 +112,21 @@ model Laguna-XS-2_1 {
       up_exps    : (experts, hidden, d_model) per_expert
       down_exps  : (experts, d_model, hidden) per_expert
     }
+    # ── 层内两个 norm ────────────────────────────────────────────────
+    # **不属于任何机制**（缺口 3 说的"写不进 tensors"已经不成立 ——
+    # `layer` 块是为 clef 的视觉塔加的，这里正好用得上）。
+    # 写进 GQA 会给挂 Dense / MoE 的层也发一份，写进 MoE 会给稠密层发，
+    # 所以是 `layer`：每个层实例一份。
+    # 实测 40 + 40 个，形状都是 (d_model,)。
+    layer {
+      input_layernorm.weight          : (d_model,)
+      post_attention_layernorm.weight : (d_model,)
+    }
+    global {
+      embed.weight      : (vocab, d_model)
+      final_norm.weight : (d_model,)
+      lm_head.weight    : (vocab, d_model)
+    }
   }
   # ⚠️ 缺口 2：专家在 HF 侧是**一个专家一个张量**（30513 个权重里 29952 个是它），
   #    名字形如 mlp.experts.{e}.gate_proj.weight —— 名字模板需要一个 {expert} 占位符。
@@ -121,8 +136,9 @@ model Laguna-XS-2_1 {
   # ── 附属 ──────────────────────────────────────────────────────────
   head LmHead { tie_embedding = false }
 
-  # ⚠️ 缺口 3：eos_token_id 是个数组 [2, 24]；层内两个 norm（attn_norm / ffn_norm）
-  #    仍然不属于任何机制，写不进 tensors。
+  # ⚠️ 缺口 3：eos_token_id 是个数组 [2, 24]。
+  #    ~~层内两个 norm（attn_norm / ffn_norm）写不进 tensors~~ —— **已经写得进了**，
+  #    见下面的 `layer` 块（`layer` 块是为 clef 的视觉塔加的，这里正好用上）。
 
   # ── 后端 ──────────────────────────────────────────────────────────
   emit {
@@ -169,9 +185,14 @@ model Laguna-XS-2_1 {
     }
 
     train -> torch.module {
-      name        = "model.layers.{i}.{scope}.{physical}"
+      # **模板里那个 `.` 挪进 scope** —— 原来是 `{scope}.{physical}`，
+      # 而 `layer` / `global` 的 scope 是空的，那样会渲染成 `..`。
+      # 改成 `{scope}{physical}`、每个 scope 自带结尾的点，名字逐个不变
+      # （`self_attn` -> `self_attn.`），只是空 scope 现在是对的。
+      name        = "model.layers.{i}.{scope}{physical}"
       expert_name = "model.layers.{i}.mlp.experts.{expert}.{physical}"
-      scope { GQA = self_attn, Dense = mlp, MoE = mlp }
+      global_name = "{physical}"
+      scope { GQA = self_attn., Dense = mlp., MoE = mlp., layer = "", global = "" }
       rename {
         q_proj = q_proj.weight, k_proj = k_proj.weight,
         v_proj = v_proj.weight, o_proj = o_proj.weight,
@@ -184,25 +205,43 @@ model Laguna-XS-2_1 {
         shexp_up = shared_expert.up_proj.weight,
         shexp_down = shared_expert.down_proj.weight,
         gate_exps = gate_proj.weight, up_exps = up_proj.weight,
-        down_exps = down_proj.weight
+        down_exps = down_proj.weight,
+        input_layernorm.weight          = input_layernorm.weight,
+        post_attention_layernorm.weight = post_attention_layernorm.weight,
+        embed.weight      = model.embed_tokens.weight,
+        final_norm.weight = model.norm.weight
+        # `lm_head.weight` 不在 rename 里 —— 官方就叫这个名字。
       }
     }
 
     infer -> ggml {
-      name  = "blk.{i}.{scope}_{physical}"
-      scope { GQA = attn, Dense = ffn, MoE = ffn }
+      # 和 torch.module 同一个理由：`{scope}_{physical}` 里的那个 `_` 挪进 scope，
+      # 否则 `layer` / `global` 的空 scope 会渲染出 `blk.0._...`。
+      name  = "blk.{i}.{scope}{physical}"
+      global_name = "{physical}"
+      scope { GQA = attn_, Dense = ffn_, MoE = ffn_, layer = "", global = "" }
       rename {
         q_proj = q.weight, k_proj = k.weight,
         v_proj = v.weight, o_proj = output.weight,
         g_proj = gate.weight, q_norm = q_norm.weight, k_norm = k_norm.weight,
         gate_proj = gate.weight, up_proj = up.weight, down_proj = down.weight,
         gate = gate_inp.weight,
+        # ⚠️ **已知缺口（这一处不是这次引入的）**：GGUF 里这个张量没有 `ffn_`
+        #    前缀（`blk.N.exp_probs_b.bias`），而 MoE 的别的张量都有。
+        #    于是它渲染成 `blk.N.ffn_exp_probs_b.bias` —— 报出来是
+        #    「契约声明了、实际不存在」。**一个机制一个 scope，表达不了
+        #    "同一机制里这一个不带前缀"**，所以先如实留着。
         exp_bias = exp_probs_b.bias,
         shexp_gate = gate_shexp.weight,
         shexp_up = up_shexp.weight,
         shexp_down = down_shexp.weight,
         gate_exps = gate_exps.weight, up_exps = up_exps.weight,
-        down_exps = down_exps.weight
+        down_exps = down_exps.weight,
+        input_layernorm.weight          = attn_norm.weight,
+        post_attention_layernorm.weight = ffn_norm.weight,
+        embed.weight      = token_embd.weight,
+        final_norm.weight = output_norm.weight,
+        lm_head.weight    = output.weight
       }
     }
   }

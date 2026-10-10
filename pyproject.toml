@@ -24,7 +24,14 @@ dependencies = []
 
 [project.optional-dependencies]
 # 对拍用的。判卷人要跟外部实现比，所以这一坨是必需的。
-verify = ["numpy", "torch", "transformers", "safetensors"]
+#
+# **`fla-core` 不在里面**，虽然 `by1kda.py` 要它当参照物 —— 因为它带着
+# triton 那一串（GPU 才用得上），在 CPU 机器上 `pip install -e '.[verify]'`
+# 会被它拖垮。**照 by1kda 的提示单独装**：
+#     pip install --no-deps fla-core einops
+# 装不上的时候 by1kda 会**干净跳过**（`by1skip`），不是崩 ——
+# 这一条是撞出来的：原来它少一个 `return`，报出来是 AttributeError。
+verify = ["numpy", "torch", "transformers", "safetensors", "einops"]
 # 编译 C 后端用的（Windows 上也可以走 mingw）
 #
 # **这里以前是空的 `c = []`**，而 `by1c.py` / `by1exec.py` 在**模块级**

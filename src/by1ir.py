@@ -169,6 +169,15 @@ KIND_ATTRS = {
         "norm_eps": ("float", False, ""), "norm_one_plus": ("bool", False, ""),
         "head_gate": ("enum:off,per_head", True, ""),
         "gate_act": ("enum:softplus,sigmoid", True, ""),
+        # ── 稀疏索引器（DSA）。**这三个是它的形状，不是装饰** ────────
+        # `index_heads`/`index_dim` 是索引器自己的 q/k 头数和头维，
+        # `index_topk` 是每层挑多少个 key。三个一起出现，一个都不能少
+        # （缺一个就是"只说了一半"，宁可报错）。
+        # 实测出处：GLM-5.3-Flash 的 config `index_n_heads` /
+        # `index_head_dim` / `index_topk`，张量是 `self_attn.indexer.*`。
+        "index_heads": ("int", False, "索引器的头数（GLM-5.3 是 32）"),
+        "index_dim": ("int", False, "索引器的头维（128）"),
+        "index_topk": ("int", False, "每层挑多少个 key（2048）"),
     },
     "FFN": {
         "hidden": ("int", True, ""),
