@@ -6130,3 +6130,85 @@ GGUF 里它们叫 `blk.N.attn_q_norm.weight` ✓，而我的规则渲染成
 
 **一行实现代码都还没写** ✓ —— 而这一轮之后，
 写实现不再需要任何外部信息 ✓。**这正是"先把判卷人立起来"的意思** ✓。
+
+
+---
+
+## 108. KDA 最后一块：`g_proj` 是**输出门**，而 GLM 的契约少了 5 个张量
+
+### 一、先量了两个模型的**真实** KDA 布局
+
+    GLM-5.3-Flash 第 0 层，29 个张量，其中 KDA 相关 15 个：
+      self_attn.A_log · b_proj.weight · dt_bias
+      self_attn.f_a_proj.weight · f_b_proj.weight
+      self_attn.**g_a_proj.weight · g_b_proj.weight**      <- 契约里没有 ✗
+      self_attn.q/k/v_proj.weight · q/k/v_conv1d.weight
+      self_attn.o_norm.weight · o_proj.weight
+
+    Ling-3.0-tiny 第 0 层，18 个张量，KDA 相关 13 个：
+      attention.A_log · b_proj.weight · dt_bias
+      attention.f_proj.weight · g_proj.weight              <- 契约里有 ✓
+      attention.q/k/v_proj.weight · q/k/v_conv1d.weight
+      attention.o_norm.weight · o_proj.weight
+
+**Ling 的契约和产物逐字对上** ✓（所以它 100% 覆盖 ✓）；
+**GLM 的契约少 5 个** ✗ —— `b_proj` 和两对 `f_*` / `g_*` ✓。
+
+**而 `by1verify` 一直在说**：GLM 的"契约未覆盖"是 **51%** ✗。
+它没说谎 ✓ —— 它说的是"**声明过的 37534 个全对**" ✓，
+而**没声明的它按规矩只报"未覆盖"，不报失败** ✓。
+
+（这正是那套设计的意思：`缺失 0` 和"覆盖多少"是两件事 ✓。
+ 但**读的人要把两个数一起看** ✗ —— 我前面几轮就没看 ✓。）
+
+### 二、`g_proj` 是什么 —— `kda.py:309`
+
+    o = self.o_norm(o, rearrange(self.g_proj(hidden_states), "... (h d) -> ... h d", d=...))
+    o = rearrange(o, "b t h d -> b t (h d)")
+    o = o_proj(o)
+
+**`g_proj` 是 `o_norm` 的门** ✓ —— 而 `o_norm` 是 `FusedRMSNormGated` ✓，
+**它需要一个门** ✓。所以 KDA 有**三个**投影组，不是一个：
+
+    f_proj  -> delta 规则里的衰减门 g
+    g_proj  -> o_norm 的输出门
+    b_proj  -> beta
+
+### 三、`__init__` 里的原样（`kda.py:168-189`）
+
+    f_proj = Sequential(Linear(hidden, head_v_dim, bias=False),
+                        Linear(head_v_dim, gate_dim,  bias=False))
+    b_proj = Linear(hidden, num_v_heads, bias=False)
+    A_log  = Parameter(zeros(num_v_heads))              # safe_gate 时
+           = Parameter(log(uniform(1, 16, num_v_heads)))  # 否则
+    dt_bias= Parameter(inv_dt)                          # gate_dim = num_v_heads * head_k_dim
+    g_proj = Sequential(Linear(hidden, head_v_dim, bias=False),
+                        Linear(head_v_dim, value_dim, bias=True))    # <- 第二层**带 bias**
+    o_norm = FusedRMSNormGated(head_v_dim)
+
+**`g_proj` 第二层带 bias** ✗ —— **没有任何 config 会告诉你这一条** ✓。
+这就是"从源码读"和"从 config 猜"的差别 ✓。
+
+### 四、所以两个模型是**两个变体**
+
+    Ling   f_proj / g_proj 各**一层**（契约: (d_attn, d_model) 单行 ✓）
+    GLM    f_a/f_b / g_a/g_b 各**两层**（和 fla 一致 ✓）
+
+**它们不是同一个东西** ✗ —— 而两边**都对着官方产物验过** ✓
+（Ling 9283/9283、GLM 37534/37534 ✓）。**不能用一个实现糊过去** ✓。
+
+### 五、item 1 现在的位置
+
+    语义   **全量拿到了** ✓（五处出处，见 `gpu/by1kda.py` 的 docstring）
+    障碍   **不是 codegen** ✗ —— 是 **GLM 的 `.by1` 契约少了 5 个张量/层** ✗
+
+    下一步（按顺序）：
+      ① 补 GLM 的契约（5 个张量 x KDA 层数），再跑 by1verify 看未覆盖掉多少
+      ② by1codegen 加 KDA 分支 —— **Ling 先做**（它的契约是完整的 ✓）
+      ③ by1exec 加 op_kda（两个变体：门一层 / 门两层）
+      ④ 判卷人：对 `fla` 的 naive_recurrent_kda（+ naive_kda_gate），
+         并把"门写成一层"、"beta 不做 sigmoid"、"q 不除 sqrt(K)"
+         都做成反例 —— 每一条都该红
+
+**先补契约、再动 codegen** ✓ —— 因为契约不全的时候，
+codegen 生成的模块**没法验** ✓，而"没法验的实现"正是这个项目一直拒绝的东西 ✓。
