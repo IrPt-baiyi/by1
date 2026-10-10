@@ -5223,3 +5223,87 @@ Nemotron 是 30B，**这台机器上建不出来**：
 而 `by1irentry` 现在会印出每一份 `.by1` 走到了哪一步 ——
 `GLM-5.3-Flash` / `Ling-3.0-tiny` 仍然停在 `[不支持] KDA` ✓，
 **那是"不支持"，不是"失败"** ✓。
+
+
+---
+
+## 96. 多模态"没建模"到底是**哪一种没建模** —— 量出来是一段**死声明**
+
+目标第 3 项要求"先量清楚'没建模'具体指什么"。量完了，答案是三者都不是，
+而是更坏的一种。
+
+### 一、官方那边有什么
+
+    config                                 张量总数   多模态相关
+    ---------------------------------------------------------------
+    google__gemma-4-12B                        677         **11**
+    stepfun-ai__Step-3.7-Flash                1471        **667**
+    google__embeddinggemma-2                  1376        **963**（几乎全是 audio_tower）
+
+Gemma 的 config 里有 `vision_config` / `audio_config` /
+`image_token_id` / `vision_soft_tokens_per_image` ✓；
+Step-3.7 有 `vision_config` / `image_token_len` / `vision_select_layer`
+/ `understand_projector_stride` ✓。
+
+### 二、`.by1` 那边：**一行都没有解出来**
+
+    gemma-4-31B.by1      mechs = {GQA: Attention, Dense: FFN}
+    Step-3.7-Flash.by1   mechs = {Attn, Dense, MoE}
+    GLM-5.3-Flash.by1    mechs = {KDA, SparseMLA, MoE}
+    **多模态相关的键：一个都没有**
+
+### 三、而 `gemma-4-31B.by1` 里**写着**一段 `vision ViT {`
+
+    94|   vision ViT {
+    95|     n_layer  = 27
+    96|     d_model  = 1152
+    97|     head_dim = 72
+    98|     patch    = 16
+    99|     pooling  = 3
+   100|   }
+
+**它看起来像是在声明视觉塔的规模** ✓ —— 而它没有变成任何东西 ✗。
+
+### 四、决定性的一问：删掉它，有没有任何输出会变
+
+不能靠读代码判断"谁读了它" ✗ —— 做法是**删掉再比**：
+
+    info 的 24 个键；有差异的 1 个：emit
+      而 `emit` 里每一处差异都只是 `'line': 153 -> 146`
+      —— **正好差 7**，就是我删掉的行数 ✓
+
+**也就是说：那段声明的语义贡献是零** ✗✓✓。
+
+而 `.by1` 里另一处提到 `vision` 的是
+`use_bidirectional_attention = "vision"` —— 那是个**字符串取值**，不是引用 ✓。
+
+### 五、泛化：全部 27 份扫一遍
+
+解析器认的顶层关键字（从 `by1check` 的正则里读出来）只有六个：
+
+    head · mech · memory · optimizer · residual · stack
+
+而逐份扫"缩进 2 的 `词 词 {`"：
+
+    27 份里，**不认识的顶层块只有一处** —— `gemma-4-31B.by1:94` 那 7 行 ✓
+
+**所以这不是普遍现象，是一处孤例** —— 但它是**最坏的那一种"不出声"**：
+**写了、看起来生效、而实际是零** ✗。读的人（包括写的人）会以为
+视觉塔的规模已经声明过了。
+
+### 六、和另外两个模型不是一回事
+
+    gemma-4-31B      **写了一段死的** ✗
+    Step-3.7-Flash   **根本没写**（视觉塔 667 个张量，一行没有）
+    GLM-5.3-Flash    **根本没写**
+
+**这两种要分开说** ✓ —— 一种要加规则让它出声，另一种是要真的建模。
+
+### 七、"支持到哪一层"：这里先**说清楚做到哪一步**
+
+    能描述（by1check / by1verify 覆盖）  —— 可做 ✓
+    能算前向（patch embed + ViT 那些算子）—— **是另一件事**，且大得多 ✗
+
+而**第一件事的前置**不是"加一个 vision 构造" ✗ ——
+是**先让这类死声明出声** ✓。`by1lint` 有"十类不出声的写法"，
+这该是第十一类：**顶层块的关键字不认识** —— 现在它是静默的 ✓。
