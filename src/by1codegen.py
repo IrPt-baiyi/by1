@@ -77,6 +77,25 @@ SUPPORTED_KINDS = {"Attention", "FFN", "MoE", "Linear", "MLA",
                     # 判卷人：`src/modelcheck/by1ssm.py`（对官方的
                     # `NemotronHMamba2Mixer`，两种尺寸 + 三条反例）。
                     "SSM",
+                    # Kimi Delta Attention —— **它不是新的算法族** ✓，
+                    # 而是 GDN 那套 delta 规则的一个变体 ✓：
+                    #
+                    #     S = S * exp(g_i)
+                    #     S = S + (beta_i * k_i) ⊗ (v_i - (k_i ⊗ S).sum(-2))
+                    #     o_i = q_i @ S
+                    #
+                    # 这段**已经在 `gated_delta_rule` 里了** ✓
+                    # （连核里的 L2 归一化和 `q * (dk ** -0.5)` 都在 ✓），
+                    # 所以这里不重写第二遍 ✓ —— 只接投影和门。
+                    #
+                    # 和 GDN 的四处差别（都是量出来的，见
+                    # `gpu/by1kda.py` 的 docstring）：
+                    #   ① q/k/v 是**分开**的投影（GDN 是融在一起的 qkvz）
+                    #   ② `dt_bias` 按**维**（num_heads * head_dim），GDN 按头
+                    #   ③ v_proj 之后还有一个 `g_proj` 当输出门
+                    #   ④ 门可以是**低秩**两层（GLM 的 f_a/f_b），也可以一层
+                    #      （Ling 的 f_proj）
+                    "KDA",
                     # 逃生舱第一层 —— 计算在 raw.py 里，契约照旧。
                     # **这一层要改编译器。**
                     "Raw",
@@ -122,6 +141,20 @@ ATTRS = {
     "SSM": {"heads", "head_dim", "ssm_state", "n_groups", "conv_kernel",
             "expand", "chunk_size", "conv_bias", "proj_bias", "act",
             "norm_eps", "structural"},
+    # KDA：delta 规则 + 逐维衰减门。
+    #
+    # **两套写法都收** ✓ —— 因为两个真实模型各用一套，而两边的契约
+    # 都对着官方产物验过（Ling 9283/9283、GLM 37534/37534）✓：
+    #     Ling  k_heads / v_heads / k_dim / v_dim
+    #     GLM   num_heads / head_dim
+    # 名字不同、**指的是同一个东西**（`num_heads = k_heads = v_heads`，
+    # `head_dim = k_dim = v_dim`）✓。
+    "KDA": {"k_heads", "v_heads", "k_dim", "v_dim",
+            "num_heads", "head_dim",
+            "conv_kernel", "conv_bias",
+            # 门是两层还是三层 —— GLM 的 f_a/f_b 是两层，Ling 的 f_proj 一层
+            "gate_lowrank", "gate_lower", "gate_act",
+            "l2_eps", "norm_eps", "act", "structural"},
     # MLA：低秩压缩的注意力（DeepSeek 提出）。
     # kv 被压到 c_kv，k_rot 是**单头**共享的 —— 这是它和 GQA 的根本区别。
     "MLA": {"heads", "q", "head_dim", "q_lora", "kv_lora",
@@ -339,7 +372,7 @@ def _yarn_params(info):
 #: （它把 token 之间混起来，而不是只逐 token 变宽）。
 #: 加上它不影响别的模型：混合器是**按位置挑**的，只有那一层的主机制
 #: 才会走到这个判断。
-MIXER_KINDS = ("Attention", "Linear", "MLA", "MoE", "SSM", "Raw",
+MIXER_KINDS = ("Attention", "Linear", "MLA", "MoE", "SSM", "KDA", "Raw",
                "External")
 
 
@@ -680,6 +713,51 @@ def compile_ir(info: Dict[str, Any]) -> Dict[str, Any]:
                 "act": str(attrs.get("act", "silu")),
                 # 跟着模型的 rms_norm_eps 走 —— 这个 bug 在 GDN 和 MLA
                 # 上各犯过一次，写死 1e-6 而模型是 1e-5。
+                "norm_eps": float(_num(attrs.get("norm_eps"),
+                                       _num(hp.get("rms_eps"), _DEFAULT_EPS)))}}
+
+        if kind == "KDA":
+            # **Kimi Delta Attention。** 它不是新的算法族 ✓ ——
+            # 递推和 GDN 是同一个（`gated_delta_rule`，那个函数里连
+            # L2 归一化和 `q * (dk ** -0.5)` 都写好了 ✓），
+            # 所以这里**不重写第二遍** ✓，只接投影和门。
+            #
+            # 两个真实模型各用一套属性名，指的是同一个东西 ✓：
+            #     Ling  k_heads / v_heads / k_dim / v_dim
+            #     GLM   num_heads / head_dim
+            nh = _num(attrs.get("num_heads"))
+            hdim = _num(attrs.get("head_dim"))
+            nk = _num(attrs.get("k_heads")) or nh
+            nv = _num(attrs.get("v_heads")) or nh
+            dk = _num(attrs.get("k_dim")) or hdim
+            dv = _num(attrs.get("v_dim")) or hdim
+            miss = [k for k, v in (("k_heads/num_heads", nk),
+                                   ("v_heads", nv),
+                                   ("k_dim/head_dim", dk),
+                                   ("v_dim", dv)) if not v]
+            if miss:
+                err(f"机制 '{name}' 的 KDA 缺少 {', '.join(miss)}")
+                return None
+            nk, nv, dk, dv = int(nk), int(nv), int(dk), int(dv)
+            if nv % nk:
+                err(f"机制 '{name}': v_heads={nv} 不是 k_heads={nk} 的整数倍")
+                return None
+            # 门是不是两层 —— **不猜** ✓。GLM 的契约里有 `f_a/f_b`
+            # 而 Ling 的只有 `f_proj` ✓，两边都对着官方产物验过 ✓。
+            # 默认看属性；没写就按契约里有没有 `f_b_proj` 推一次 ✗ ——
+            # 不行，codegen 看不到契约。所以**显式声明** ✓：
+            # 没写 `gate_lowrank` 就是一层。
+            lowrank = _flag(attrs.get("gate_lowrank"))
+            return {"kind": "KDA", "mech": name, "attrs": {
+                "k_heads": nk, "v_heads": nv, "k_dim": dk, "v_dim": dv,
+                "conv_kernel": int(_num(attrs.get("conv_kernel"), 4)),
+                "conv_bias": _flag(attrs.get("conv_bias")),
+                "gate_lowrank": bool(lowrank),
+                # 门的秩（低秩时的瓶颈）。GLM 是 head_dim = 128 ✓。
+                "gate_rank": int(_num(attrs.get("gate_rank"), dk)),
+                "gate_lower": _num(attrs.get("gate_lower")),
+                "act": str(attrs.get("act", "silu")),
+                "l2_eps": float(_num(attrs.get("l2_eps"), 1e-6)),
                 "norm_eps": float(_num(attrs.get("norm_eps"),
                                        _num(hp.get("rms_eps"), _DEFAULT_EPS)))}}
         return None

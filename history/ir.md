@@ -6579,3 +6579,129 @@ MTP 是第 45 层 —— 层号接着数」✓）。
 **"数没动"这个现象，看不出是哪一种** ✗。
 
 所以每一条都得**单独**有一个反例 ✓ —— 这是这一轮最实在的收获 ✓。
+
+
+---
+
+## 114. KDA 接进 codegen —— 而**它不是新算法族，是 GDN 的变体**
+
+### 一、先看的不是"怎么写"，是"有没有写过"
+
+`by1codegen.py` 里已经有一个 `GatedDeltaNet` ✓（GDN ✓）。它的 forward：
+
+    beta = bb.sigmoid()
+    g = -self.A_log.float().exp() * F.softplus(aa.float() + self.dt_bias)
+    out, _ = gated_delta_rule(q, kk, v, g, beta, self.l2_eps)
+    out = self.norm(out.reshape(...), z)
+
+拿它对着 fla 的 KDA 一行一行看 ✓ —— **门公式一样** ✓、
+`beta = sigmoid` 一样 ✓、**delta 规则一样** ✓、gated norm 一样 ✓。
+
+再打开 `gated_delta_rule`（第 1503 行）：
+
+    q = l2norm(q, -1, l2_eps)          <- **KDA 的 use_qk_l2norm_in_kernel=True**
+    k = l2norm(k, -1, l2_eps)
+    q = q * (dk ** -0.5)               <- **KDA 的 1/sqrt(K)**
+    for i in range(s):
+        st = st * g[:, :, i].exp()...          <- S = S * exp(g_i)
+        kv_mem = (st * k).sum(-2)              <- (k_i ⊗ S).sum(-2)
+        delta = (v - kv_mem) * beta            <- (v_i - ...) * beta_i
+        st = st + k ⊗ delta                    <- S += (beta k) ⊗ (...)
+        out = (st * q).sum(-2)                 <- q_i @ S
+
+**逐行就是 KDA 的递推** ✓✓ —— **连 L2 归一化和 `1/sqrt(dk)` 都在** ✓。
+
+**所以 `by1codegen` 早就有了 KDA 的数学** ✓ —— 它叫 `gated_delta_rule` ✓。
+**这一轮一行数学都没写** ✓ —— 这正是"同一个意思不要两处实现" ✓。
+
+### 二、接了什么
+
+    SUPPORTED_KINDS  += "KDA"
+    ATTRS["KDA"]     = {k_heads, v_heads, k_dim, v_dim, num_heads, head_dim,
+                        conv_kernel, conv_bias, gate_lowrank, gate_rank,
+                        gate_lower, gate_act, l2_eps, norm_eps, act, structural}
+    MIXER_KINDS      += "KDA"
+    build 分支       两套属性名都收（Ling 用 k_heads/k_dim，GLM 用 num_heads/head_dim
+                     —— **名字不同、指的是同一个东西**，而两边都对着官方产物验过）
+
+### 三、判据：报错变了
+
+    之前：机制 'KDA' 的类型是 'KDA'，codegen 还不支持
+    现在：**这句没了** ✓
+          Ling  -> 机制 'MLA' 的属性 'qk_head' codegen 还不支持
+          GLM   -> 机制 'SparseMLA' 的属性 'index_heads' / 'index_dim' /
+                   'index_topk' codegen 还不支持
+
+**KDA 不再是拦路的了** ✓ —— 拦路的是 **MLA / SparseMLA** ✗。
+
+（中途出现过一个 "第 N 层没有可用的 token 混合器" ✗ ——
+ 和当初 SSM 那次**一模一样** ✓：`MIXER_KINDS` 里没加它 ✓，
+ 于是每一层都说不出来为什么 ✓。加一行就消了 ✓。）
+
+### 四、这一轮给目标带来的**新信息**
+
+目标的第 1 条写的是「接进 `by1codegen` 的机制表，**让这两个模型能跑前向**」✓。
+而现在量出来：**KDA 不是唯一的拦路石** ✗ ——
+
+    Ling  = KDA + MLA
+    GLM   = KDA + SparseMLA（MLA 加一个稀疏索引器）
+
+**两个模型都要先过 MLA 那一关** ✗ —— 那是**另一个机制** ✓，
+而且 `by1codegen` 里 MLA **已经有了一支** ✓（`MLAttention` ✓）——
+只是属性表收不下 `qk_head` / `index_*` 这些 ✓。
+
+**所以"让这两个模型跑前向"这条路，下一段是 MLA，不是 KDA** ✓。
+这一点在动手之前不知道 ✓ —— 现在知道了 ✓。
+
+### 五、还没做的
+
+    ✗ 运行时类 `KDA`（把上面的 attrs 变成 nn.Module）
+    ✗ `by1exec.op_kda`（NumPy 那一侧）
+    ✗ `by1c.py` 的 `kda`（C 那一侧）
+    ✗ `by1ir.KIND_ATTRS["KDA"]`
+    ✗ 判卷人（对 fla 的 `naive_recurrent_kda` + `naive_kda_gate`）
+
+**这一轮只做到"codegen 认得它"** ✓ —— 而这是可验证的一步 ✓（报错变了 ✓）。
+
+
+---
+
+## 115. `by1gate` 那条期望过期了 —— 改方向，不删
+
+### 一、它说什么
+
+    取值门 坏了：Ling-3.0-tiny.by1(理由)
+    拒绝理由里没提到 KDA
+
+而 `by1gate.py` 里那一行是：
+
+    ('Ling-3.0-tiny.by1', False, 'KDA', 'KDA 整族没实现'),
+
+**门说得对** ✓ —— Ling 现在被拒的理由是
+「机制 'MLA' 的属性 'qk_head' codegen 还不支持」✓ ——
+**因为 KDA 那一半已经实现了** ✓。
+
+### 二、怎么办：改方向
+
+    ('Ling-3.0-tiny.by1', False, 'MLA',
+     'MLA 的属性还没收全 —— KDA 那一半已经实现了'),
+
+**照样该被拒** ✓ —— 只是理由换了 ✓。
+和当初 Nemotron 从"该被拒"搬到"该通过"是**同一个动作** ✓：
+**期望过期了就改方向，不删** ✓。
+
+**删掉它才是错的** ✗ —— 那等于说"Ling 现在不该被拒" ✓，
+而它**明明还被拒着** ✓（卡在 MLA ✓）。
+
+### 三、这一轮顺带确认的
+
+    取值门：[PASS] 工作正常 ✓（三条真实模型 + 反例都各自对上了）
+    档 4：64 项，0 项失败 ✓
+
+### 四、这一轮的量：`by1gate` 这个检查**是有用的**
+
+它是**唯一**一个在 KDA 落地之后**立刻变红**的检查 ✗ ——
+而它红得**有道理** ✓（期望过期 ✓），不是误报 ✓。
+
+**一个改动落地时，最该看的不是"绿的那些还绿吗"** ✓ ——
+**而是"有没有哪个检查因此变得不对了"** ✓ —— 而那个检查正好会**变红** ✓。
