@@ -2,20 +2,35 @@
 # -*- coding: utf-8 -*-
 """by1kda -- 在**有 CUDA 的机器上**把 KDA 的判卷人立起来。
 
+> ## ⚠ 这个脚本的前提**是错的** —— 2026-10 查明
+>
+> 下面写着"没有 CUDA 就看不到它的源码" ✗ —— **那是错的** ✓。
+> `fla` 的源码**在 PyPI 上**，`pip download` 就拿到了，**不需要 GPU**：
+>
+>     pip download flash-linear-attention --no-deps --no-binary :all:   # 层
+>     pip download fla-core --no-deps                                  # ops
+>
+> 而 `fla/ops/kda/naive.py` 是**纯 PyTorch** 的参考实现 ✓ ——
+> **在 CPU 上就能跑** ✓，`einops` 装了就够 ✓。
+> 实测：`naive_recurrent_kda` 和 `naive_chunk_kda` 相对差 **3.2e-06** ✓。
+>
+> 所以"KDA 卡在 CUDA 上"这个结论**作废** ✓。真正的语义在 `naive.py`
+> 的 55-66 行，五行：
+>
+>     S = S * exp(g_i)
+>     S = S + (beta_i * k_i)  ⊗  (v_i - (k_i ⊗ S).sum(-2))
+>     o_i = q_i @ S
+>
+> **这个脚本仍然有用** —— 它 dump 的是 **Triton 核**的输出 ✓，
+> 那是"官方实现"，而 `naive.py` 是它自己的参考 ✓。两者都值得比。
+
 ## 为什么要有这个脚本，而不是直接把 KDA 实现写出来
 
 KDA（Kimi Delta Attention）的核心是 `fla.ops.kda.chunk_kda` ——
 **flash-linear-attention 库里的实现**，要 Triton，没有 CUDA 就 import 不了。
 
-我在没有 CUDA 的机器上**看不到它的源码**。也就是说：
-
-    我知道 KDA 的**张量集**（那部分已经和官方产物对上了：Ling 9283/9283），
-    但**它的门控语义我看不到** —— `g` 怎么进 delta 规则、`safe_gate` 和
-    `lower_bound` 各管什么、`use_gate_in_kernel` 开不开差在哪。
-
-**所以在这里凭空写一个 KDA 实现，就是在猜。** 猜出来的东西对不上，
-在有判卷人的机器上要排查的就不是"哪一行错了"，而是"我猜的语义对不对" ——
-那是两件完全不同、后者贵得多的事。
+它的**张量集**已经和官方产物对上了（Ling 9283/9283）✓，
+而门控语义见上面那段 —— 从 `naive.py` 读，不用等 GPU。
 
 这个脚本做的是把顺序倒过来：**先把判卷人立起来、把它的中间量 dump 出来**，
 然后对着 dump 出来的东西写实现。

@@ -5967,3 +5967,93 @@ GGUF 里它们叫 `blk.N.attn_q_norm.weight` ✓，而我的规则渲染成
 **前两次是从名字推断谁读它；这一次是"看起来等价的写法"其实不等价。**
 而三次的代价都是"看渲染出来的名字"就能立刻定位 ✓ ——
 **那个输出一直在印，只是我没看** ✓。
+
+
+---
+
+## 106. **KDA 根本没有卡在 CUDA 上** —— 那个前提是错的
+
+### 一、我一直在重复的一句
+
+从更早的几轮起，仓库里和我给你的说法一直是：
+
+    KDA 卡在 CUDA：`fla.ops.kda.chunk_kda` 要 Triton，
+    `fla`/`triton` 没装，`torch 2.13.0+cpu`，`cuda.is_available() = False`。
+    **看不到源码，所以不能写实现 —— 写了就是猜。**
+
+`gpu/by1kda.py` 的整个 docstring 就是围着这句写的 ✓。
+
+### 二、这一轮问了一句：**"看不到"具体指什么**
+
+卡住的到底是**跑**它，还是**读**它 ✓？
+
+    跑 chunk_kda   -> 要 Triton、要 CUDA        ✓ 真的卡住
+    读它的源码     -> 要什么？                    <- **没问过**
+
+试了一下：
+
+    $ pip download flash-linear-attention --no-deps --no-binary :all:
+    -> flash_linear_attention-0.5.2.tar.gz      208 KB   ✓
+    $ pip download fla-core --no-deps
+    -> fla_core-0.5.2-py3-none-any.whl          819 KB   ✓
+
+**PyPI 是通的** ✓ —— 而且 `fla/ops/kda/` 下有 **20 个文件** ✓，
+其中包括：
+
+    fla/ops/kda/naive.py                        6339 字节
+
+**那是纯 PyTorch 的参考实现** ✓ —— 没有 Triton、没有 CUDA ✓，
+`einops` 装了就能在 CPU 上跑 ✓（实测跑通了 ✓）。
+
+### 三、语义就在那 166 行里
+
+`naive_recurrent_kda` 的核心是五行（第 55-66 行）：
+
+    S = zeros(B, HV, K, V)
+    for i in range(T):
+        S = S * exp(g_i)                                    # 逐维衰减
+        S = S + (beta_i * k_i) ⊗ (v_i - (k_i ⊗ S).sum(-2))   # delta 规则
+        o_i = q_i @ S                                       # 读出
+
+`q` 先乘 `1/sqrt(K)` ✓，`q`/`k` 按 `G = HV/H` 复制（GVA）✓。
+`naive_chunk_kda` 是同一件事的分块写法 ✓。
+
+**所以我一直说"看不到"的东西，166 行就写完了** ✓。
+
+### 四、判卷人的地基：两种写法必须一致
+
+    第一次比    差 1.9e+04   ✗  -> 我以为语义不同
+    看清楚      |o1| 最大 6.0e+09，**相对差 3.2e-06**   ✓
+
+**我比的是绝对值** ✗ —— 而那个配置下前向本身放大到 6e9 量级 ✓
+（`beta ~ U(0,1)` 不衰减 ✓、`k`/`v` 是 `randn` ✓，`g` 压不住 ✓）。
+
+**相对差 3.2e-06** ✓ —— 两种写法一致 ✓。
+**这就是 KDA 判卷人的地基**：递归式对分块式，两边都在 CPU 上 ✓。
+
+### 五、所以 item 1 的状态变了
+
+    之前：**卡住**（等一台 CUDA 机器）
+    现在：**没卡** ✓ —— 语义在 `naive.py` 里，参考在 CPU 上跑得动
+
+要做的变成三件普通事：
+
+    ① by1codegen 加 KDA 分支（张量名和形状已经从 `fla/layers/kda.py` 量出来了：
+       q/k_proj -> key_dim、v_proj -> value_dim、f_proj 是两层 Sequential、
+       b_proj -> num_v_heads、A_log -> num_v_heads、o_proj <- value_dim）
+    ② by1exec 加 op_kda（按上面五行）
+    ③ 判卷人：**对 `naive_recurrent_kda`**，并证明它在反例上会红
+       （把 `exp(g)` 换成 `g`、把 delta 项去掉 —— 两个都该红）
+
+### 六、这一轮改了什么
+
+    gpu/by1kda.py   开头加了一段"**这个脚本的前提是错的**"，
+                    写明正确的取法（两条 pip download）、
+                    语义在哪几行、以及这个脚本仍然有用
+                    （它 dump 的是 **Triton 核**的输出，那是官方实现；
+                      `naive.py` 是它自己的参考 —— 两者都值得比）
+
+**没改任何检查、没动任何语言** ✓ —— 这一轮的产出是**把一句错了很久的
+前提拆掉** ✓。而它的形状和前面几次一样：
+
+    我以为"卡住了"的那个东西，其实只是**我没试另一条路**。
