@@ -71,6 +71,12 @@ def load_checker():
 # ── 支持矩阵 ────────────────────────────────────────────────────────
 
 SUPPORTED_KINDS = {"Attention", "FFN", "MoE", "Linear", "MLA",
+                    # 选择性状态空间（Mamba2 / Nemotron-H 那一版）。
+                    # **它不是注意力的变体** —— 没有 q/k/v，状态是
+                    # `A_log` / `D` / `dt_bias` 驱动的。
+                    # 判卷人：`src/modelcheck/by1ssm.py`（对官方的
+                    # `NemotronHMamba2Mixer`，两种尺寸 + 三条反例）。
+                    "SSM",
                     # 逃生舱第一层 —— 计算在 raw.py 里，契约照旧。
                     # **这一层要改编译器。**
                     "Raw",
@@ -103,9 +109,19 @@ ATTRS = {
             # Block 1.2：MoE 侧的机制属性
             "routing", "act", "swiglu_limit", "alpha", "expert_bias",
             "shared_gate", "swiglu_limit_shared",
+            # **`gate` 是"名字"还是"取值"？** Nemotron 声明的是
+            # `gate=none` —— 那不是一种新的门控，是**这个属性取空**。
+            # 而"名字不在允许表里就报不支持"这一条把它也拦下了 ✗。
+            # 加进来只是让 `none` 通过；非 `none` 的取值由下面
+            # `SSM`/`MoE` 的语义各自决定。
+            "gate",
             # 分组路由（noaux_tc）的结构属性：只决定契约的等价类划分，
             # 计算还没实现 —— 但声明出来不该报错
             "n_group", "topk_group"},
+    # 选择性状态空间。**和注意力是不同的算法族** —— 没有 q/k/v。
+    "SSM": {"heads", "head_dim", "ssm_state", "n_groups", "conv_kernel",
+            "expand", "chunk_size", "conv_bias", "proj_bias", "act",
+            "norm_eps", "structural"},
     # MLA：低秩压缩的注意力（DeepSeek 提出）。
     # kv 被压到 c_kv，k_rot 是**单头**共享的 —— 这是它和 GQA 的根本区别。
     "MLA": {"heads", "q", "head_dim", "q_lora", "kv_lora",
@@ -308,13 +324,23 @@ def _yarn_params(info):
 
 #: **生成器认得哪些 token 混合器。** 只有这一处定义 —— 判定也只用它。
 #:
-#: 不在这里面的（`KDA` / `SSM` / 稀疏索引器等）**不是模型的错**，
+#: 不在里面的（`KDA` / 稀疏索引器等）**不是模型的错**，
 #: 是生成器还没实现。README 里就是这么写的：
 #: "KDA / SSM / 稀疏索引器 / mHC 只有契约，算不了"。
 #:
+#: （`SSM` 原来在这个名单**外面** —— 而这一节改完之后，那句话里
+#:   只剩 `KDA` / 稀疏索引器 / mHC 还成立 ✓。）
+#:
 #: 这个常量的用处是让调用方**在渲染之前**就知道，从而按三态协议
 #: 说"这台机器上没验"，而不是报一个看起来像"模型算错了"的失败。
-MIXER_KINDS = ("Attention", "Linear", "MLA", "Raw", "External")
+#:
+#: **`MoE` 也在这里。** Nemotron-H 的层是 `Mamba / MoE / Mamba / MoE /
+#: Mamba / Attn / …` 交替的 —— **MoE 在那里就是 token 混合器**
+#: （它把 token 之间混起来，而不是只逐 token 变宽）。
+#: 加上它不影响别的模型：混合器是**按位置挑**的，只有那一层的主机制
+#: 才会走到这个判断。
+MIXER_KINDS = ("Attention", "Linear", "MLA", "MoE", "SSM", "Raw",
+               "External")
 
 
 def compile_ir(info: Dict[str, Any]) -> Dict[str, Any]:
@@ -615,6 +641,47 @@ def compile_ir(info: Dict[str, Any]) -> Dict[str, Any]:
                                        _num(hp.get("rms_eps"), _DEFAULT_EPS))),
                 "l2_eps": float(_num(attrs.get("l2_eps"), 1e-6)),
                 "out_dim": int(_num(attrs.get("out_dim")) or nv * dv)}}
+
+        if kind == "SSM":
+            # **选择性状态空间。** 和 Linear 那一支是同一形状（非注意力的
+            # 带状态混合器），但参数完全不同 —— 那里是 k/v 头 + delta 规则，
+            # 这里是逐头的 A_log / D / dt_bias + 一个深度卷积。
+            #
+            # 契约里的 8 个张量（Nemotron 那一族，23 层）：
+            #   in_proj.weight (10304, 2688)  = d_inner + conv_dim + heads
+            #   conv1d.weight  (6144, 1, 4)   = conv_dim, 深度卷积
+            #   conv1d.bias    (6144)
+            #   A_log / D / dt_bias  (64,)    逐头
+            #   norm.weight    (4096,)        d_inner
+            #   out_proj.weight (2688, 4096)
+            h = _num(attrs.get("heads"))
+            hd = _num(attrs.get("head_dim"))
+            ss = _num(attrs.get("ssm_state"))
+            ng = _num(attrs.get("n_groups"))
+            miss = [k for k, v in (("heads", h), ("head_dim", hd),
+                                   ("ssm_state", ss), ("n_groups", ng))
+                    if not v]
+            if miss:
+                err(f"机制 '{name}' 的 SSM 缺少 {', '.join(miss)}")
+                return None
+            h, hd, ss, ng = int(h), int(hd), int(ss), int(ng)
+            if h % ng:
+                err(f"机制 '{name}': heads={h} 不是 n_groups={ng} 的整数倍")
+                return None
+            if not _ck("act", attrs.get("act"), name, kind):
+                return None
+            return {"kind": "SSM", "mech": name, "attrs": {
+                "heads": h, "head_dim": hd, "ssm_state": ss, "n_groups": ng,
+                "conv_kernel": int(_num(attrs.get("conv_kernel"), 4)),
+                "expand": int(_num(attrs.get("expand"), 2)),
+                "chunk_size": int(_num(attrs.get("chunk_size"), 128)),
+                "conv_bias": _flag(attrs.get("conv_bias"), True),
+                "proj_bias": _flag(attrs.get("proj_bias")),
+                "act": str(attrs.get("act", "silu")),
+                # 跟着模型的 rms_norm_eps 走 —— 这个 bug 在 GDN 和 MLA
+                # 上各犯过一次，写死 1e-6 而模型是 1e-5。
+                "norm_eps": float(_num(attrs.get("norm_eps"),
+                                       _num(hp.get("rms_eps"), _DEFAULT_EPS)))}}
         return None
 
     # position 块里写 `learned(N)` 就是"学一张表"，不是 RoPE。
@@ -1521,9 +1588,120 @@ class GatedDeltaNet(nn.Module):
         return self.out_proj(out.reshape(b, s, self.vd))
 
 
+class RMSNormGatedGrouped(nn.Module):
+    """**按组**的 gated RMSNorm（Mamba2 那一版）。
+
+    和上面那个 `RMSNormGated` **三处都不同**，所以是两个东西：
+
+        · 归一化在 `group_size = d / n_groups` 那一维上，不是整个 d
+        · **gate 乘在 norm 之前**（`x * silu(gate)` 再归一化），
+          而上面那个是归一化之后再乘
+        · 权重照旧乘在最后
+
+    **同名不同义** —— 这个仓库里已经栽过几次（`qk_norm` 的 full/per_head、
+    `one_plus` 的三种约定）。所以宁可两个类，不合并成一个带开关的。
+    """
+
+    def __init__(self, d, n_groups, eps=1e-6):
+        super().__init__()
+        self.w = nn.Parameter(torch.ones(d))
+        self.eps = eps
+        self.gs = d // n_groups
+
+    def forward(self, x, gate):
+        y = x * F.silu(gate.float())
+        sh = y.shape
+        g = y.reshape(*sh[:-1], sh[-1] // self.gs, self.gs)
+        g = g * torch.rsqrt(g.pow(2).mean(-1, keepdim=True) + self.eps)
+        return self.w * g.reshape(*sh).to(x.dtype)
+
+
+class Mamba2(nn.Module):
+    """**选择性状态空间**（Mamba2 · Nemotron-H 那一版）。
+
+    和注意力是**不同的算法族** —— 没有 q/k/v，状态是 `A_log` / `D` /
+    `dt_bias` 驱动的，随 token 递推：
+
+        h_t = exp(dt_t * A) * h_{t-1} + dt_t * (x_t ⊗ B_t)
+        y_t = C_t · h_t + D * x_t
+
+    **判卷人**：`src/modelcheck/by1ssm.py` —— 对着官方
+    `NemotronHMamba2Mixer`，两种尺寸 + 三条反例。
+
+    **注意判卷人是 `NemotronH*` 而不是 `MambaForCausalLM`** ——
+    纯 Mamba 的 `in_proj` 是 `intermediate_size * 2`，而这一版是
+
+        d_inner + conv_dim + heads = 4096 + 6144 + 64 = 10304
+
+    **这一支走的是递推，不是官方的分块扫描** —— 官方有 CUDA kernel，
+    这里只有 CPU。数学相同，浮点归约顺序不同。
+    """
+
+    def __init__(self, a, d):
+        super().__init__()
+        self.h = a["heads"]
+        self.hd = a["head_dim"]
+        self.ssm = a["ssm_state"]
+        self.ng = a["n_groups"]
+        self.k = a["conv_kernel"]
+        self.act = a["act"]
+        self.d_inner = self.h * self.hd
+        self.conv_dim = self.d_inner + 2 * self.ng * self.ssm
+        self.rep = self.h // self.ng
+        _b = a["proj_bias"]
+        self.in_proj = nn.Linear(d, self.d_inner + self.conv_dim + self.h,
+                                 bias=_b)
+        # **深度卷积**：groups = conv_dim，padding = k-1（因果）。
+        self.conv = nn.Conv1d(self.conv_dim, self.conv_dim, self.k,
+                              groups=self.conv_dim, bias=a["conv_bias"],
+                              padding=self.k - 1)
+        self.dt_bias = nn.Parameter(torch.ones(self.h))
+        self.A_log = nn.Parameter(torch.zeros(self.h))
+        self.D = nn.Parameter(torch.ones(self.h))
+        self.norm = RMSNormGatedGrouped(self.d_inner, self.ng,
+                                        eps=a.get("norm_eps", 1e-6))
+        self.out_proj = nn.Linear(self.d_inner, d, bias=_b)
+
+    def forward(self, x):
+        b, s, _ = x.shape
+        h, hd, ng, ssm = self.h, self.hd, self.ng, self.ssm
+        proj = self.in_proj(x)
+        gate, bc, dt = torch.split(
+            proj, [self.d_inner, self.conv_dim, h], dim=-1)
+
+        # ② 因果深度卷积 + 激活
+        bc = self.conv(bc.transpose(1, 2))[:, :, :s].transpose(1, 2)
+        bc = F.silu(bc)
+
+        hs, B, C = torch.split(bc, [self.d_inner, ng * ssm, ng * ssm], dim=-1)
+        xs = hs.view(b, s, h, hd)
+        B = B.view(b, s, ng, ssm).repeat_interleave(self.rep, dim=2)
+        C = C.view(b, s, ng, ssm).repeat_interleave(self.rep, dim=2)
+
+        # ③ SSM 递推。状态是 [b, h, hd, ssm]，所以
+        #    更新是**外积**（x 在 hd 维、B 在 ssm 维），
+        #    读出是 **h 右乘 C**。这两处最容易写反 ——
+        #    写反了会炸在维度上，不会静默算错（第一次就是这么发现的）。
+        A = -torch.exp(self.A_log.float())
+        dtt = F.softplus(dt + self.dt_bias)
+        st = x.new_zeros(b, h, hd, ssm)
+        ys = []
+        for t in range(s):
+            d_t = dtt[:, t][..., None, None]
+            st = (torch.exp(d_t * A[None, :, None, None]) * st
+                  + d_t * (xs[:, t][..., None] * B[:, t][:, :, None, :]))
+            ys.append((st @ C[:, t][..., None]).squeeze(-1)
+                      + self.D[None, :, None] * xs[:, t])
+        y = torch.stack(ys, 1).reshape(b, s, self.d_inner)
+
+        # ④ 按组 gated norm（gate 在 norm **之前**）+ 输出投影
+        return self.out_proj(self.norm(y, gate))
+
+
 BUILDERS = {"Norm": _mk_norm, "Attention": Attention,
             "FFN": MLP, "MoE": MoE, "Linear": GatedDeltaNet,
-            "MLA": MLAttention, "Raw": RawMech, "External": ExternalMech}
+            "MLA": MLAttention, "SSM": Mamba2,
+            "Raw": RawMech, "External": ExternalMech}
 
 
 class LayerMod(nn.Module):

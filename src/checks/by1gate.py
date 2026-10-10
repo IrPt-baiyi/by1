@@ -42,9 +42,18 @@ CASE = [
     # ── 该被拒的 ──────────────────────────────────────────────────
     ('gate-probe.by1', False, 'nosuchactivation',
      '故意的反例：act 是个不存在的取值'),
-    ('NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16.by1', False, 'SSM', 'Mamba 整族没实现'),
     ('Ling-3.0-tiny.by1', False, 'KDA', 'KDA 整族没实现'),
     # ── 该通过的 ──────────────────────────────────────────────────
+    # **Nemotron 从"该被拒"搬到了这里。**
+    #
+    # 它原来在这一行：`(..., False, 'SSM', 'Mamba 整族没实现')`。
+    # 而 `SSM` 在 `by1codegen` 里实现之后，那条期望就**过时**了 ——
+    # 这个护栏编码的是**旧的真相** ✅，而真相变了。
+    #
+    # 它不是被删掉，是**换了方向** ✓：现在要求它**编得出来**。
+    # 少一边就等于把护栏拆了 —— 而那正是"一个不可能红的检查"。
+    ('NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16.by1', True, '',
+     'SSM（选择性状态空间）实现了 —— 判卷人 src/modelcheck/by1ssm.py'),
     ('clef-tiny.by1', True, '', '取值全都实现过'),
     ('Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL.by1', True, '', 'sigmoid_topk 已实现'),
     ('gpt2.by1', True, '',

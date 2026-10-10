@@ -122,7 +122,19 @@ def check_blocks(*, _mod, _):
             if _['i'] > 0:
                 _['v'] = eval_num(_['part'][_['i'] + 1 :])
                 if _['v'] is not None:
-                    _['out'][_['part'][:_['i']].strip()] = _['v']
+                    _['out'][_['part'][: _['i']].strip()] = _['v']
+            else:
+                # **裸数字也得认。** `heads = 64` 是说"头数是 64"，
+                # 而这一段原来只认 `k = v` 那种写法 —— 于是裸数字
+                # **被静默丢掉** ✗：`heads_of` 返回 None，
+                # 属性表里既没有 `heads` 也没有展开出来的 `q`/`kv`。
+                #
+                # 它是怎么暴露的：给 `SSM` 写 `one_mech` 时，
+                # Nemotron 的 `mech Mamba : SSM { heads = 64 ... }`
+                # 报"缺少 heads" —— 而声明里明明写着 ✗。
+                _['v'] = eval_num(_['part'])
+                if _['v'] is not None:
+                    _['out']["heads"] = _['v']
         return _['out'] or None
     _['heads_of'] = heads_of    # 让 stage 也取得到它
 
