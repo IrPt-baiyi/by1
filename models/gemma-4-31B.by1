@@ -105,17 +105,17 @@ model gemma-4-31B {
   # 上面那个栈给（1152）。
   tensors {
     GQA {
-      q_proj : (q * head_dim, d_model)
-      k_proj : (kv * head_dim, d_model)
-      v_proj : (kv * head_dim, d_model) unless kv_tie
-      o_proj : (d_model, q * head_dim)
-      q_norm : (head_dim,)
-      k_norm : (head_dim,)
+      q_proj.weight : (q * head_dim, d_model)
+      k_proj.weight : (kv * head_dim, d_model)
+      v_proj.weight : (kv * head_dim, d_model) unless kv_tie
+      o_proj.weight : (d_model, q * head_dim)
+      q_norm.weight : (head_dim,)
+      k_norm.weight : (head_dim,)
     }
     Dense {
-      gate_proj : (hidden, d_model)
-      up_proj   : (hidden, d_model)
-      down_proj : (d_model, hidden)
+      gate_proj.weight : (hidden, d_model)
+      up_proj.weight   : (hidden, d_model)
+      down_proj.weight : (d_model, hidden)
     }
     ViT {
       # **逻辑名里带 `.linear`。** 官方的视觉张量叫
@@ -125,23 +125,27 @@ model gemma-4-31B {
       #
       # 层内那四个 norm **不走这条** —— 它们来自内建的 `LAYER_DEFAULT`，
       # 名字是 `input_layernorm.weight`，没有 `.linear` ✓。
-      q_proj.linear : (q * head_dim, d_model)
-      k_proj.linear : (kv * head_dim, d_model)
-      v_proj.linear : (kv * head_dim, d_model)
-      o_proj.linear : (d_model, q * head_dim)
-      q_norm        : (head_dim,)
-      k_norm        : (head_dim,)
+      q_proj.linear.weight : (q * head_dim, d_model)
+      k_proj.linear.weight : (kv * head_dim, d_model)
+      v_proj.linear.weight : (kv * head_dim, d_model)
+      o_proj.linear.weight : (d_model, q * head_dim)
+      q_norm.weight        : (head_dim,)
+      k_norm.weight        : (head_dim,)
     }
     ViTMlp {
-      gate_proj.linear : (hidden, d_model)
-      up_proj.linear   : (hidden, d_model)
-      down_proj.linear : (d_model, hidden)
+      gate_proj.linear.weight : (hidden, d_model)
+      up_proj.linear.weight   : (hidden, d_model)
+      down_proj.linear.weight : (d_model, hidden)
     }
     layer {
-      input_layernorm            : (d_model,)
-      post_attention_layernorm   : (d_model,)
-      pre_feedforward_layernorm  : (d_model,)
-      post_feedforward_layernorm : (d_model,)
+      input_layernorm.weight            : (d_model,)
+      post_attention_layernorm.weight   : (d_model,)
+      pre_feedforward_layernorm.weight  : (d_model,)
+      post_feedforward_layernorm.weight : (d_model,)
+      # **没有 .weight 后缀的那个。** 换成标准约定（逻辑名带 .weight、
+      # 模板用 {scope}{physical}）之后，这种张量才表达得出来 ——
+      # 旧的 `{logical}.weight` 模板会把它渲染成 layer_scalar.weight ✗。
+      layer_scalar                      : (1,) unless Dense
     }
   }
 
@@ -242,11 +246,11 @@ model gemma-4-31B {
 
     # 权威产物：HuggingFace safetensors
     train -> torch.module {
-      name  = "model.language_model.layers.{i}.{scope}{logical}.weight"
+      name  = "model.language_model.layers.{i}.{scope}{physical}"
       # 辅助栈可以有自己的前缀（`render_name` 的优先级是
       # `expert_name > name_<栈名> > name`，Nemotron 的
       # `name_model` / `name_mtp` 就是这么用的）。视觉塔只差这一条 ✓。
-      name_vision = "model.vision_tower.encoder.layers.{i}.{scope}{logical}.weight"
+      name_vision = "model.vision_tower.encoder.layers.{i}.{scope}{physical}"
       #
       # ⚠ **`layer` / `global` 这两行我试过、撤了。** 试的写法是
       #
@@ -293,10 +297,23 @@ model gemma-4-31B {
     # 推理产物：GGUF
     infer -> ggml {
       name  = "blk.{i}.{scope}_{physical}.weight"
+      # **`rename` 的键是逻辑名，而逻辑名现在带 `.weight`。**
+      # 换成标准约定（逻辑名含 `.weight`、模板用 `{scope}{physical}`）之后，
+      # 这里的键也得跟着带 —— 否则一条都查不到，
+      # 而表现是"530 个声明、**0 个对上**" ✗。
+      #
+      # （`name` 里那个 `.weight` 不动：`physical` 现在只是 `q` 这样的短名，
+      #   后缀仍由模板给 ✓。）
       scope { GQA = attn, Dense = ffn }
       rename {
-        q_proj = q, k_proj = k, v_proj = v, o_proj = output,
-        gate_proj = gate, up_proj = up, down_proj = down
+        q_proj.weight = q, k_proj.weight = k, v_proj.weight = v,
+        o_proj.weight = output,
+        gate_proj.weight = gate, up_proj.weight = up,
+        down_proj.weight = down,
+        # `blk.N.attn_q_norm.weight` —— 这两条原来漏了，
+        # 于是渲染成 `…attn_q_norm.weight.weight`（双后缀）✗，
+        # 60 层 x 2 = 120 个"缺失" ✓。
+        q_norm.weight = q_norm, k_norm.weight = k_norm
       }
     }
   }

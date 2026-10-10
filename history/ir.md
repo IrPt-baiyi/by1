@@ -5877,3 +5877,93 @@ Step-3.7 有 `vision_config` / `image_token_len` / `vision_select_layer`
 
 **共同点：从名字推断谁读它，而不是去看读它的那一行。**
 而两次的代价都是"撤一整轮" ✓ —— 除了这一次没撤 ✓。
+
+
+---
+
+## 105. 换成标准命名约定，未覆盖 415 -> **7**
+
+### 一、先问了一句：带 `.weight` 之外的张量怎么表达
+
+`layer_scalar` 的官方名字**没有 `.weight` 后缀** ✗，而 Gemma 的模板是
+`{scope}.{logical}.weight` ✗ —— 无条件加那一段。想补它，得先知道
+**别的模型是怎么表达"没有 `.weight` 的张量"的** ✓。
+
+答案在 `gpt2.by1` 里，而它一直写着：
+
+    name  = "h.{i}.{scope}{physical}"                    <- {physical}，不是 {logical}.weight
+    scope { Attn = attn., MLP = mlp., layer = "", global = "" }   <- 值自带尾点
+    tensors { Attn { c_attn.weight : (…) ; c_attn.bias : (…) } }  <- **逻辑名含后缀**
+
+**这套约定下，没有后缀的张量自然表达得出来** ✓ —— 而 Gemma 用的是
+"裸逻辑名 + 模板加后缀" ✗，那套表达不了 ✗。
+
+### 二、这次**一次只改一件事**
+
+上一轮我在同一个改动里换了点的约定**又**加了 `rename`/`global_name` ✓ ——
+结果是 2/1210 ✗，而我把原因归到了点上 ✗（错的）。
+
+这次拆开：
+
+    第一次（只有点的约定）  773 / 415   **和改之前一模一样** ✓
+    第二次（加上逻辑名带后缀 + {scope}{physical}）
+                           -> 348 对上、773 缺失 ✗
+
+**348 正好是层级那 240+108** ✓ —— 说明 **layer 行通了**、而机制行断了 ✓。
+
+### 三、断的原因，又是"看渲染出来的名字"
+
+    L0  GQA.q_proj.weight -> model.language_model.layers.0.q_proj.weight
+                                                           ^^^^^^^ **scope 丢了**
+
+**因为我把 `scope { … }` 折成了两行** ✗ —— 而它没被解析 ✓。
+（**不是**约定的问题 ✓。）
+
+改回一行：1121 / 1121 / 67 ✓ —— 和切换前等价 ✓，而**约定已经是标准的那套** ✓。
+
+### 四、于是 `layer_scalar` 可以写了
+
+    layer_scalar : (1,) unless Dense
+
+`unless <机制>` 的语义是"**只在挂了它的时候**" ✓ —— 而视觉栈挂的是
+`ViTMlp` ✓、文本栈挂的是 `Dense` ✓ —— 所以这一条只落在文本那 60 层上 ✓。
+
+（第一次没写 guard：`缺失 27` ✗ —— 官方的视觉层里没有 `layer_scalar` ✓。）
+
+    契约声明存在: 1181   名字+形状一致 1181   缺失 0  ✓
+    契约未覆盖: 67 -> **7**（6% -> **1%**）
+
+### 五、而 `ggml` 那边被我一起弄坏了
+
+    0 一致 / 530 缺失 ✗
+
+**`rename` 的键是逻辑名** ✓ —— 逻辑名带上 `.weight` 之后，
+ggml 那七条 `q_proj = q` 一条都查不到 ✗。补上后缀 -> **410** ✓。
+
+而还剩 `缺失 120` ✗ —— **120 = 60 x 2**，正好是 `q_norm` / `k_norm` ✗ ——
+GGUF 里它们叫 `blk.N.attn_q_norm.weight` ✓，而我的规则渲染成
+`…attn_q_norm.weight.weight`（双后缀）✗。补两条 rename -> 绿 ✓。
+
+### 六、结果
+
+    档 4: 64 项，0 项失败 ✓
+    torch.module  1181 / 1181 / 缺失 0
+    未覆盖 658 -> 415 -> 67 -> **7**
+
+    剩下那 7 个是真的还没建模的：
+      patch_embedder.input_proj / position_embedding_table
+      std_bias / std_scale
+      embed_vision.embedding_projection
+      embed_tokens / norm（这两个要 `rename`，是另一件事）
+
+### 七、这一轮的账
+
+**三次"改了没生效"，三次都是同一个形状**：
+
+    上上轮  `scope`      —— 以为它参与物理名        实际只有 render_name 读
+    上一轮  `d_model`    —— 以为层级形状读它        实际读的是 hp
+    这一轮  `{scope}` 两行 —— 以为折行没关系        实际没被解析
+
+**前两次是从名字推断谁读它；这一次是"看起来等价的写法"其实不等价。**
+而三次的代价都是"看渲染出来的名字"就能立刻定位 ✓ ——
+**那个输出一直在印，只是我没看** ✓。
