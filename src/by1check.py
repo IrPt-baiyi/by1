@@ -665,6 +665,18 @@ def expand_pattern(expr: str, named: Dict[str, List["Rec"]]) -> Optional[List["R
 # ════════════════════════════════════════════════════════════════════
 
 E, W, I = "E", "W", "i"
+
+#: **这个语言认识的顶层关键字。** 不在里面的顶层块 `词 词 {` 会被
+#: 解析器**直接跳过** —— 所以 `check()` 要把它报出来（见那里的注释）。
+#:
+#: 这一份不是抄的：是从 `by1check` 认这些块的**字面量**里读出来的 ✓。
+#: 少列一个的后果是假报，而门会跑全部 27 份 `.by1`，假报当场露出来 ✓。
+TOP_KEYWORDS = {
+    "model", "hparams", "schedule", "stack", "position", "tensors",
+    "emit", "head", "mech", "state", "optimizer", "memory",
+    "residual", "interop",
+}
+
 TOKEN_MIXER = {"Attention", "Sparse", "Linear", "SSM", "Vision", "Recurrent",
                "MLA",
                # **逃生舱。** 计算在声明层之外实现（raw.py 里的一个工厂函数），
@@ -734,6 +746,42 @@ def check(path: str) -> Tuple[Report, dict]:
     _['rep'] = Report(path)
     for _['e'] in _['perr']:
         _['rep'].add(E, 0, "parse", _['e'])
+
+    # ---- 顶层块：**关键字不认识就要出声** --------------------------
+    #
+    # 解析器是按关键字逐个认的（`stack` / `mech` / `tensors` / `emit` …），
+    # **不认识的顶层块被直接跳过、一个字都不报** ✗。
+    #
+    # 而它的后果比"没写"更坏。实测：`gemma-4-31B.by1` 里有一段
+    #
+    #     vision ViT {
+    #       n_layer  = 27
+    #       d_model  = 1152
+    #       head_dim = 72
+    #       patch    = 16
+    #       pooling  = 3
+    #     }
+    #
+    # —— 它看起来像在声明视觉塔的规模，而**删掉它，`check()` 的 24 个
+    # 输出键里唯一变化的是行号**（每个正好差 7，就是删掉的行数）。
+    # **语义贡献是零。** 读的人（包括写的人）会以为它生效了。
+    #
+    # 所以这里加一条：顶层出现一个不认识的块头，报出来。
+    #
+    # **已知的十四个关键字从哪来**：不是抄的，是从 `by1check` 自己
+    # 认它们的那些字面量里读出来的 ✓。少列一个的后果是假报 ——
+    # 而门会跑全部 27 份 `.by1`，假报会当场露出来 ✓。
+    for _['i'], _['l'] in enumerate(_['text'].split("\n"), 1):
+        _['mb'] = re.match(r"^  ([A-Za-z_]\w*)(?:\s+[A-Za-z_]\w*)?\s*\{",
+                           _['l'])
+        if _['mb'] and _['mb'].group(1) not in TOP_KEYWORDS:
+            _['rep'].add(
+                E, _['i'], "顶层块",
+                "'%s' 不是这个语言认识的顶层关键字 —— **这一段不会被读**。"
+                "认识的十四个：%s。"
+                "（这一类最坏的地方是它看起来生效了："
+                "实测删掉它，`check()` 的输出只有行号会变。）"
+                % (_['mb'].group(1), " / ".join(sorted(TOP_KEYWORDS))))
 
     _['model'] = _['root'].first("model")
     _['scope'] = _['model'] if _['model'] else _['root']

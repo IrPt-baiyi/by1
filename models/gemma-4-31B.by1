@@ -91,13 +91,29 @@ model gemma-4-31B {
   head LmHead { tie_embedding = true, logit_softcap = 30.0 }
   head Draft  { kind = speculative }
 
-  vision ViT {
-    n_layer  = 27
-    d_model  = 1152
-    head_dim = 72
-    patch    = 16
-    pooling  = 3
-  }
+  # ── 视觉塔：**现在没有建模，而这里原来写着一段假的** ──────────────
+  #
+  # 原来这里有：
+  #
+  #     vision ViT {
+  #       n_layer = 27, d_model = 1152, head_dim = 72,
+  #       patch = 16, pooling = 3
+  #     }
+  #
+  # —— 而 `vision` 不是这个语言认识的顶层关键字，**那一段从来没被读过**
+  # ✗。实测：删掉它，`check()` 的 24 个输出键里**唯一变化的是行号**
+  # （每个正好差 7，就是删掉的行数）。
+  #
+  # **它比"没写"更坏** —— 看起来像声明了视觉塔的规模，而实际是零。
+  # 现在 `check()` 会为这种块报错（`TOP_KEYWORDS`），所以留着它反而红。
+  #
+  # 官方那边确实有东西：`config.vision_config`、以及 11 个视觉张量
+  # （`model.vision_embedder.patch_dense.weight` 之类）、
+  # 外加一个 `audio_tower`。**都没建模。**
+  #
+  # 真要建模时，形状应该是一个 **vision 模态的 stack** ——
+  # `stack` 本来就认模态（`by1blocks.MODAL` 里有 `vision`），
+  # 而 ViT 那几层是现成的 Attention + FFN，不需要新机制。
 
   # ── 后端：物理命名与 config 字段都由这里生成 ──────────────────────
   emit {
