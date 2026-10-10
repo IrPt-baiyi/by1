@@ -494,6 +494,107 @@ static void gdn(float *o, const float *x, int n, int d,
 }
 
 
+/* SSM：选择性状态空间（Mamba2 · Nemotron-H 那一版）。
+
+   **没有 q/k/v** —— 和注意力是不同的算法族。状态由 A_log / D / dt_bias
+   驱动，随 token 递推：
+
+       h_t = exp(dt_t * A) * h_{t-1} + dt_t * (x_t ⊗ B_t)
+       y_t = C_t · h_t + D * x_t
+
+   状态是 [nh, hd, ss]，**每次前向从零开始**（不做持久 state）——
+   和 GDN 不同，那里跨调用留滑窗历史。
+
+   两处最容易写反（写反了会读错内存、不会报错）：
+       更新是**外积** x[hd] ⊗ B[ss]
+       读出是 **h 右乘 C**（h[hd][ss] 逐行点 C[ss]）
+   B / C 按 ng 分组，每个组服务 rep = nh/ng 个头。
+
+   判卷人：src/modelcheck/by1ssm.py（对官方 NemotronHMamba2Mixer，
+   两种尺寸 + 三条反例）。 */
+static void ssm(float *o, const float *x, int n, int d,
+                int nh, int hd, int ss, int ng, int ck,
+                const float *win, const float *cw, const float *cb,
+                const float *dtb, const float *alog, const float *Dw,
+                const float *nw, const float *wout, float neps) {
+    int di = nh * hd, cd = di + 2 * ng * ss, rep = nh / ng;
+    int proj = di + cd + nh;
+    int gs = di / ng;
+    float *pr = (float *)malloc(sizeof(float) * n * proj);
+    float *cv = (float *)malloc(sizeof(float) * n * cd);
+    float *st = (float *)calloc((size_t)nh * hd * ss, sizeof(float));
+    float *y = (float *)malloc(sizeof(float) * n * di);
+
+    linear(pr, x, win, n, d, proj);
+
+    /* ② 因果深度卷积 + silu：out[t] = sum_i in[t+i-(k-1)] * cw[:, i] */
+    for (int t = 0; t < n; t++)
+        for (int c = 0; c < cd; c++) {
+            float s = cb ? cb[c] : 0.f;
+            for (int i = 0; i < ck; i++) {
+                int u = t + i - (ck - 1);
+                if (u >= 0)
+                    s += pr[(size_t)u * proj + di + c] * cw[(size_t)c * ck + i];
+            }
+            cv[(size_t)t * cd + c] = s / (1.f + expf(-s));
+        }
+
+    /* ③ SSM 递推 */
+    for (int t = 0; t < n; t++) {
+        const float *cvt = cv + (size_t)t * cd;
+        const float *prt = pr + (size_t)t * proj;
+        const float *Bv = cvt + di;
+        const float *Cv = cvt + di + ng * ss;
+        float *yt = y + (size_t)t * di;
+        for (int h = 0; h < nh; h++) {
+            int g = h / rep;
+            float dt = prt[di + cd + h] + dtb[h];
+            dt = logf(1.f + expf(dt));              /* softplus */
+            float dec = expf(dt * (-expf(alog[h])));
+            float *hh = st + (size_t)h * hd * ss;
+            for (int i = 0; i < hd; i++) {
+                float xi = dt * cvt[h * hd + i];
+                float *row = hh + (size_t)i * ss;
+                for (int j = 0; j < ss; j++)
+                    row[j] = dec * row[j] + xi * Bv[g * ss + j];
+            }
+            for (int i = 0; i < hd; i++) {
+                const float *row = hh + (size_t)i * ss;
+                float s = 0.f;
+                for (int j = 0; j < ss; j++) s += row[j] * Cv[g * ss + j];
+                yt[h * hd + i] = s + Dw[h] * cvt[h * hd + i];
+            }
+        }
+    }
+
+    /* ④ 按组 gated RMSNorm：**gate 乘在 norm 之前**，且是 silu */
+    for (int t = 0; t < n; t++) {
+        float *yt = y + (size_t)t * di;
+        const float *prt = pr + (size_t)t * proj;
+        for (int q = 0; q < ng; q++) {
+            float vv = 0.f;
+            for (int i = 0; i < gs; i++) {
+                float gv = prt[q * gs + i];
+                gv = gv / (1.f + expf(-gv));
+                yt[q * gs + i] *= gv;
+                vv += yt[q * gs + i] * yt[q * gs + i];
+            }
+            vv = 1.f / sqrtf(vv / gs + neps);
+            for (int i = 0; i < gs; i++)
+                yt[q * gs + i] *= vv * nw[q * gs + i];
+        }
+    }
+
+    {
+        float *tmp = (float *)malloc(sizeof(float) * n * di);
+        memcpy(tmp, y, sizeof(float) * n * di);
+        linear(o, tmp, wout, n, di, d);
+        free(tmp);
+    }
+    free(pr); free(cv); free(st); free(y);
+}
+
+
 /* q_gate：wq 的输出是 2 倍，前半是 query，后半是门 */
 static void split_qg(float *q, float *gt, const float *qf, int n, int nh, int hd) {
     for (int t = 0; t < n; t++)
@@ -889,6 +990,14 @@ def _emit_c_body(ir, params):
                            "A_log", "norm.w", "out_proj"):
                     order.append((key(i, j, nm), pre + nm))
                 body.append((i, j, "Linear", a))
+            elif k == "SSM":
+                # 选择性状态空间。8 个张量，和契约里 'Mamba' 那一组对上。
+                for nm in ("in_proj", "conv", "dt_bias", "A_log", "D",
+                           "norm.w", "out_proj"):
+                    order.append((key(i, j, nm), pre + nm))
+                if a.get("conv_bias"):
+                    order.append((key(i, j, "conv.bias"), pre + "conv.bias"))
+                body.append((i, j, "SSM", a))
             elif k == "MLA":
                 for nm in ("q_a_proj", "q_a_layernorm.w", "q_b_proj",
                            "kv_a_proj_with_mqa", "kv_a_layernorm.w",
@@ -1104,6 +1213,19 @@ def _emit_c_body(ir, params):
                     f" P({key(i,j,'A_log')}), P({key(i,j,'norm.w')}),"
                     f" P({key(i,j,'out_proj')}),"
                     f" {float(a['l2_eps'])}f, {float(a['norm_eps'])}f);")
+            elif k == "SSM":
+                _cb = (f"P({key(i, j, 'conv.bias')})"
+                       if a.get("conv_bias") else "0")
+                lb.append(
+                    f" ssm({dst}, {src[0]}, n, D, {a['heads']},"
+                    f" {a['head_dim']}, {a['ssm_state']}, {a['n_groups']},"
+                    f" {a['conv_kernel']},"
+                    f" P({key(i, j, 'in_proj')}), P({key(i, j, 'conv')}),"
+                    f" {_cb},"
+                    f" P({key(i, j, 'dt_bias')}), P({key(i, j, 'A_log')}),"
+                    f" P({key(i, j, 'D')}), P({key(i, j, 'norm.w')}),"
+                    f" P({key(i, j, 'out_proj')}),"
+                    f" {float(a['norm_eps'])}f);")
             elif k == "MLA":
                 hg = a.get("head_gate", "off") != "off"
                 lb.append(
