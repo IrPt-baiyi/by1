@@ -5369,3 +5369,75 @@ Step-3.7 有 `vision_config` / `image_token_len` / `vision_select_layer`
 
     27 份：**一份都不红了** ✓
     档 4：64 项，0 项失败 ✓
+
+
+---
+
+## 98. 视觉塔到底是什么形状 —— 以及**我又写错了一句**
+
+### 一、先纠正我自己
+
+上一节我删掉那段死声明时，在注释里（和给你的说明里）写过一句
+"它的数字和官方对不上" ✗ —— **那句是错的**。
+
+我拿 `gemma-4-12B` 的 `vision_config` 去比了（`mm_embed_dim=3840`、
+`mm_posemb_size=1120`），而那段声明是给 **`gemma-4-31B`** 的。
+按 31B 的官方张量清单，它的数字**全对**：
+
+    vision_tower.encoder.layers.{0..26}            **27 层** ✓
+      input_layernorm.weight              [1152]   **d_model** ✓
+      self_attn.q_norm.weight             [72]     **head_dim** ✓
+      self_attn.{q,k,v,o}_proj.linear.weight  [1152, 1152]
+      mlp.{down,gate,up}_proj.linear.weight   [1152,4304] / [4304,1152]
+      post_attention_layernorm / pre_feedforward_layernorm /
+      post_feedforward_layernorm                    ← Gemma 式三明治
+    patch_embedder.input_proj.weight      [1152, 768]
+    patch_embedder.position_embedding_table [2, 10240, 1152]
+    embed_vision.embedding_projection.weight [5376, 1152]
+
+**所以那段声明是"数字对、但没人读"** ✗ —— 而**这比编造的更险**：
+一个编造的数字迟早会被查出来，一个**正确的**数字会让人以为
+"已经声明过了" ✓。
+
+（这一条正是这个仓库反复说的：**没验过的具体不要写进行文** ✓。
+我这次犯的是它的近亲 —— 验了，但验错了对象。）
+
+### 二、形状：**全部是现成的机制**
+
+    27 层 pre/post-norm transformer   <- Attention + FFN，都支持 ✓
+    q_norm / k_norm 每个头 72 维       <- `qk_norm` 支持 ✓
+    SwiGLU（down/gate/up）            <- FFN 支持 ✓
+    一个 patch 投影 + 一张位置表        <- 线性 + memory 查表
+    **每层四个 norm**（input / post_attn / pre_ff / post_ff）
+                                      <- Gemma 式三明治，声明得出来 ✓
+
+**一个新机制都不需要** ✓ —— 所以"能描述"是可达的 ✓。
+
+### 三、判卷人现成
+
+    python src/checks/by1verify.py gemma-4-31B.by1 \
+        refs/google__gemma-4-31B.config.json \
+        --tensors refs/google__gemma-4-31B.tensors.json
+
+**对着官方产物查名字和形状** ✓ —— 而 `gemma-4-31B` 现在只覆盖了
+文本主干（530 个张量），**视觉那 356 个一个没查** ✓。
+
+### 四、"支持到哪一层"—— 决定，以及理由
+
+    能描述  —— **做这个** ✓
+              第二个 stack + 张量命名，用现成的机制；
+              判卷人是 `by1verify --tensors`（官方的 356 个张量）
+    能算前向 —— **不做** ✗
+              patch 切块、axial rope（`rope_type: axial`）、
+              池化、`std_bias/std_scale` 那套归一化 ——
+              **都不在语言里**，要加新机制
+
+**理由**：这两件事的成本差一个数量级，而这一轮的量测已经把
+"能描述"需要什么全找齐了 ✓。先把能验的那一层做出来，
+比同时开工两件、两件都半途而废好 ✓。
+
+### 五、顺带：`gemma-4-31B` 的视觉张量是 **356 个**
+
+而我第一次数出来是 11 个 ✗ —— 那是因为我把 JSON 的结构读错了
+（以为是 `{tensors: {...}}`，实际是**扁平的 `{名字: {shape, dtype}}`** ✓）。
+**读错结构量出来的数字是假的** ✓ —— 这个坑这个仓库里踩过不止一次。

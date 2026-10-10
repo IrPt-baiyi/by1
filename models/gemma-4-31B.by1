@@ -111,9 +111,18 @@ model gemma-4-31B {
   # （`model.vision_embedder.patch_dense.weight` 之类）、
   # 外加一个 `audio_tower`。**都没建模。**
   #
-  # 真要建模时，形状应该是一个 **vision 模态的 stack** ——
-  # `stack` 本来就认模态（`by1blocks.MODAL` 里有 `vision`），
-  # 而 ViT 那几层是现成的 Attention + FFN，不需要新机制。
+  # 真要建模时，形状应该是一个**第二个 stack** ——
+  # ViT 那几层是现成的 Attention + FFN，不需要新机制。
+  #
+  # **这里原来我写的是"`stack` 本来就认模态"—— 那句是错的** ✗。
+  # 查过：`MODAL`（`by1blocks.py`）只用在 **position 块的键**上
+  # （`position { vision = rope(...) }` 那种），而 `stack` 的正则是
+  #
+  #     ^stack\s+(\w+)(?:\s+(\w+))?\s*(?:\[\s*(\d+)\s*\])?
+  #
+  # —— 第二个词是**别名**，没有模态位 ✓。所以"模态的 stack"这个说法
+  # 不成立，得写成普普通通的第二个 stack。
+  # （**一个没查过就写下的具体，正是这个仓库一直在猎的东西。**）
 
   # ── 后端：物理命名与 config 字段都由这里生成 ──────────────────────
   emit {
