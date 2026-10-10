@@ -92,8 +92,12 @@ model llama3-shaped {
     train -> torch.module {
       name        = "model.layers.{i}.{scope}{physical}"
       global_name = "{physical}"
-      scope { Full = self_attn., Slide = self_attn., MLP_ = mlp.,
-              layer = "", global = "" }
+      # **`scope` 必须写在一行里。** 折行之后这一行不以 `{` 结尾，
+      # 而花括号不参与续行判定 —— 于是整张映射表**空着**，
+      # 渲染出来的名字**静默丢掉前缀**。
+      # （这一份原来就是折行的；是 `by1check` 新加的那条解析错误
+      #   把它找出来的，而它在此之前一直"通过"。）
+      scope { Full = self_attn., Slide = self_attn., MLP_ = mlp., layer = "", global = "" }
       rename {
         attn_norm.weight = input_layernorm.weight,
         mlp_norm.weight  = post_attention_layernorm.weight,

@@ -147,8 +147,30 @@ def instantiate(*, _mod, _):
                         f"契约必须按机制声明（见 pattern-design §2 规则 3）")
                 continue
             _['base'] = _['h'].split(".")[0].strip()
+            # **按栈的层内张量：`layer <栈名> { ... }`**
+            #
+            # 为什么需要它：`layer` 那一块是**模型级**的 —— 所有栈共用
+            # 同一套层内张量名。Gemma 的视觉塔恰好和文本用同一组名字
+            # （`input_layernorm` 那一套），所以没暴露；而 clef / Qwen3.8 /
+            # Qwen3.6 的视觉块用的是 `norm1` / `norm2` —— 写进 `layer`
+            # 会**给文本层也发一份**，而文本层没有这两个张量。
+            #
+            # 和 `name_<栈名>`（物理前缀按栈各写一份）是同一个理由，
+            # 只是那一边管**前缀**，这一边管**有哪些张量**。
+            _['_sm'] = re.fullmatch(r"layer\s+([A-Za-z_]\w*)", _['h'])
+            if _['_sm']:
+                _['_sn2'] = _['_sm'].group(1)
+                if _['_sn2'] not in {s.name for s in _['stacks']}:
+                    _['rep'].add(E, _['ch'].line, "tensors",
+                            f"tensors 的 'layer {_['_sn2']}' 引用了一个不存在的栈"
+                            f"（已声明的栈："
+                            f"{', '.join(s.name for s in _['stacks'])}）")
+                    continue
+                _['base'] = "layer:" + _['_sn2']
             if _['h'] in ("layer", "global"):
                 pass                    # 层级 / 全局：不属于任何机制
+            elif _['_sm']:
+                pass                    # 按栈的层级块，上面已经验过栈名
             elif _['base'] not in _['mechs'] and _['base'] not in _['memories'] and _['base'] not in _['residuals']:
                 _['rep'].add(E, _['ch'].line, "tensors", f"tensors 的作用域 '{_['base']}' 未声明")
                 continue
@@ -235,8 +257,11 @@ def instantiate(*, _mod, _):
         _['_hp2'] = dict(_['hp'])
         _['_hp2']["d_model"] = _fmt(_['_dm'])
         _['hp'] = _['_hp2']
+        # **这一栈有没有自己的一套层内张量。** 有就用它，没有就用
+        # 模型级那份 `layer` —— 两处都要按这一栈的宽度求值。
         _['layer_rows_by_stack'][_['_sn']] = _['_flat_rows'](
-            _['contracts'].get("layer", []))
+            _['contracts'].get("layer:" + _['_sn'])
+            or _['contracts'].get("layer", []))
         _['hp'] = _['_sav_hp']
 
     # 3) 逐类实例化
@@ -319,7 +344,7 @@ def instantiate(*, _mod, _):
             _['trows'].append((_['nm'], _['label'], _['ent']["count"], _['rows']))
 
     for _['nm'], _['lst'] in _['contracts'].items():
-        if _['nm'] in ("layer", "global"):
+        if _['nm'] in ("layer", "global") or _['nm'].startswith("layer:"):
             continue
         if _['nm'] not in _['classes'] and _['nm'] not in _['attached']:
             _['rep'].add(W, _['lst'][0][3] if _['lst'] else 0, "tensors",

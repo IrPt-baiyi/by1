@@ -63,6 +63,35 @@ model clef {
 
   mech FFN_ : FFN { hidden = 17408 }
 
+  # ── 视觉塔（27 层）────────────────────────────────────────────────
+  #
+  # 官方产物里有 **333 个** `model.visual.*` 张量，在这之前一个都没建模
+  # （契约未覆盖 333 —— `1.md` 那张表里 clef / Qwen3.8-27B / Qwen3.6-35B-A3B
+  # 各 333 个，而**三个的名字和形状逐个相同**，所以这一份能同时管三个）。
+  #
+  # 它和文本主干**不是一套**：
+  #   · 注意力是**融合 qkv**、**带 bias**（文本那边 q/k/v 分开且无 bias）
+  #   · 每层两个 LayerNorm（`norm1` / `norm2`，**带 bias**），
+  #     而且是标准的「先 norm 再子层」，不是 Gemma 那种三明治
+  #   · MLP 是**两层**（`linear_fc1` / `linear_fc2`，没有门控）
+  #   · 宽度 1152，而模型 `d_model` 是 5120
+  #
+  # 16 头 x 72 = 1152 ✓（`qkv.weight` 是 3 x 1152 = 3456 ✓，`qkv.bias` 同宽）。
+  # 头数、头维、融合 qkv、二层 MLP、bias —— 全是现成的属性，**零个新属性** ✓。
+  mech Vis : Attention {
+    heads      = { q = 16, kv = 16, head_dim = 72 }
+    bias       = true
+    structural = [ head_dim ]
+  }
+
+  mech VisMlp : FFN {
+    hidden = 4304
+    # **两层，没有门控。** 不写 `gate` 是"有门"（见 `by1contract._ffn`），
+    # 所以这里必须显式关掉。
+    gate   = none
+    bias   = true
+  }
+
   # ── 调度：三线性 + 一全量，重复 16 次 ──────────────────────────────
   # **每个部件要先单独命名** —— 写 `local + local + local + global` 这种
   # 重复名字的写法，layer_types 会退化成一整串 full_attention。
@@ -75,6 +104,15 @@ model clef {
   stack main {
     pattern = 16 * block           # 64 层 = 48 线性 + 16 全量
     main[:] >> FFN_
+  }
+
+  # **辅助栈，不进 `n_layer` 的合计**（和 Gemma 的视觉塔、MTP 栈同一个理由）。
+  # 它有自己的宽度 1152 —— 而张量形状里的 `d_model` 因此是**这一栈的**。
+  stack visual {
+    d_model = 1152
+    aux     = true
+    pattern = 27 * Vis
+    visual[:] >> VisMlp
   }
 
   position {
@@ -110,14 +148,46 @@ model clef {
       up_proj.weight   : (hidden, d_model)
       down_proj.weight : (d_model, hidden)
     }
+    # 视觉块。`d_model` 在这个栈里是 1152（见 `stack visual`）。
+    Vis {
+      qkv.weight  : (3 * q * head_dim, d_model)
+      qkv.bias    : (3 * q * head_dim,)
+      proj.weight : (d_model, q * head_dim)
+      proj.bias   : (d_model,)
+    }
+    VisMlp {
+      linear_fc1.weight : (hidden, d_model)
+      linear_fc1.bias   : (hidden,)
+      linear_fc2.weight : (d_model, hidden)
+      linear_fc2.bias   : (d_model,)
+    }
     layer {
       input_layernorm.weight          : (d_model,)
       post_attention_layernorm.weight : (d_model,)
+    }
+    # **这一栈的层内张量，和主干不是一套** —— 所以是 `layer <栈名>`。
+    # 写进上面那个 `layer` 会**给 64 个文本层也发一份**，而它们没有这两个。
+    layer visual {
+      norm1.weight : (d_model,)
+      norm1.bias   : (d_model,)
+      norm2.weight : (d_model,)
+      norm2.bias   : (d_model,)
     }
     global {
       embed.weight      : (vocab, d_model)
       final_norm.weight : (d_model,)
       lm_head.weight    : (vocab, d_model)
+      # ── 视觉塔里不属于任何层的那 9 个 ──
+      # 逻辑名直接写官方全名；`global_name = "{physical}"` 于是原样渲染。
+      model.visual.patch_embed.proj.weight  : (1152, 3, 2, 16, 16)
+      model.visual.patch_embed.proj.bias    : (1152,)
+      model.visual.pos_embed.weight         : (2304, 1152)
+      model.visual.merger.norm.weight       : (1152,)
+      model.visual.merger.norm.bias         : (1152,)
+      model.visual.merger.linear_fc1.weight : (4608, 4608)
+      model.visual.merger.linear_fc1.bias   : (4608,)
+      model.visual.merger.linear_fc2.weight : (5120, 4608)
+      model.visual.merger.linear_fc2.bias   : (5120,)
     }
   }
 
@@ -163,8 +233,17 @@ model clef {
 
     train -> torch.module {
       name        = "model.language_model.layers.{i}.{scope}{physical}"
+      # **辅助栈的物理前缀和主干不同** —— 视觉塔在 `model.visual.blocks.`
+      # 下面，而主干在 `model.language_model.layers.` 下面。
+      # 优先级是 `expert_name > name_<栈名> > name`（见 `by1check.render_name`）。
+      name_visual = "model.visual.blocks.{i}.{scope}{physical}"
       global_name = "{physical}"
-      scope { Lin = linear_attn., GQA = self_attn., FFN_ = mlp., layer = "", global = "" }
+      # ⚠ **`scope` 那一行不能折行** —— 花括号不参与续行判定
+      #   （`by1check._cont_depth`），折行之后整张映射表**空着**，
+      #   渲染出来的名字静默丢掉前缀（报出来是"936 个张量实际不存在"，
+      #   看起来像契约写错了）。**现在 `by1check` 会直接报错** ✓，
+      #   所以这一行不再是陷阱、只是一条规矩。
+      scope { Lin = linear_attn., GQA = self_attn., FFN_ = mlp., Vis = attn., VisMlp = mlp., layer = "", global = "" }
       rename {
         input_layernorm.weight          = input_layernorm.weight,
         post_attention_layernorm.weight = post_attention_layernorm.weight,

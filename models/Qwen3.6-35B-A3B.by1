@@ -80,6 +80,16 @@ model Qwen3.6-35B-A3B {
     structural    = [ experts, hidden, shared_hidden, shared_gate ]
   }
 
+  # ── 视觉塔（27 层）────────────────────────────────────────────────
+  # 和 clef / Qwen3.8-27B 的**逐张量同名同形状**（实测 333 个）。
+  # 16 头 x 72 = 1152 ✓，融合 qkv 带 bias，MLP 两层无门控，每层两个 LayerNorm。
+  mech Vis : Attention {
+    heads      = { q = 16, kv = 16, head_dim = 72 }
+    bias       = true
+    structural = [ head_dim ]
+  }
+  mech VisMlp : FFN { hidden = 4304, gate = none, bias = true }
+
   schedule {
     lin   = 3 * Lin
     full  = 1 * GQA
@@ -95,6 +105,15 @@ model Qwen3.6-35B-A3B {
     aux     = true
     pattern = 1 * MTPAttn
     mtp[:] >> MTPMoe
+  }
+
+  # 视觉塔：27 层，自己的宽度 1152（主干是 5120），`aux = true`。
+  # 和 clef / Qwen3.8-27B 的**逐张量同名同形状**（实测 333 个）。
+  stack visual {
+    d_model = 1152
+    aux     = true
+    pattern = 27 * Vis
+    visual[:] >> VisMlp
   }
 
   position {
@@ -153,6 +172,26 @@ model Qwen3.6-35B-A3B {
       input_layernorm.weight          : (d_model,)
       post_attention_layernorm.weight : (d_model,)
     }
+    # 视觉块。这一栈里的 `d_model` 是 1152（见 `stack visual`）。
+    Vis {
+      qkv.weight  : (3 * q * head_dim, d_model)
+      qkv.bias    : (3 * q * head_dim,)
+      proj.weight : (d_model, q * head_dim)
+      proj.bias   : (d_model,)
+    }
+    VisMlp {
+      linear_fc1.weight : (hidden, d_model)
+      linear_fc1.bias   : (hidden,)
+      linear_fc2.weight : (d_model, hidden)
+      linear_fc2.bias   : (d_model,)
+    }
+    # 视觉塔的层内张量**和主干不是一套** —— 所以是 `layer <栈名>`。
+    layer visual {
+      norm1.weight : (d_model,)
+      norm1.bias   : (d_model,)
+      norm2.weight : (d_model,)
+      norm2.bias   : (d_model,)
+    }
     global {
       embed.weight      : (vocab, d_model)
       final_norm.weight : (d_model,)
@@ -161,6 +200,20 @@ model Qwen3.6-35B-A3B {
       mtp_norm_embedding.weight : (d_model,)
       mtp_norm_hidden.weight    : (d_model,)
       mtp_norm.weight           : (d_model,)
+      # ── 视觉塔里不属于任何层的那 9 个 ──
+      # ⚠ **`merger` 那两条和 clef / Qwen3.8 不一样**：merger 的输出宽度是
+      # **这个模型自己的 `d_model`**（2048），而视觉塔那 27 层是 1152。
+      # 量出来才知道 —— 三份发布的**层内** 333 个逐张量相同 ✓，
+      # 而**层外**的 merger 跟着各自的 `d_model` 变 ✗。
+      model.visual.patch_embed.proj.weight  : (1152, 3, 2, 16, 16)
+      model.visual.patch_embed.proj.bias    : (1152,)
+      model.visual.pos_embed.weight         : (2304, 1152)
+      model.visual.merger.norm.weight       : (1152,)
+      model.visual.merger.norm.bias         : (1152,)
+      model.visual.merger.linear_fc1.weight : (4608, 4608)
+      model.visual.merger.linear_fc1.bias   : (4608,)
+      model.visual.merger.linear_fc2.weight : (d_model, 4608)
+      model.visual.merger.linear_fc2.bias   : (d_model,)
     }
   }
 
@@ -211,9 +264,10 @@ model Qwen3.6-35B-A3B {
     train -> torch.module {
       name_model  = "model.language_model.layers.{i}.{scope}{physical}"
       name_mtp    = "mtp.layers.{i}.{scope}{physical}"
+      name_visual = "model.visual.blocks.{i}.{scope}{physical}"
       name        = "{stack}.layers.{i}.{scope}{physical}"
       global_name = "{physical}"
-      scope { Lin = linear_attn., GQA = self_attn., MTPAttn = self_attn., MoE = mlp., MTPMoe = mlp., layer = "", global = "" }
+      scope { Lin = linear_attn., GQA = self_attn., MTPAttn = self_attn., MoE = mlp., MTPMoe = mlp., Vis = attn., VisMlp = mlp., layer = "", global = "" }
       rename {
         input_layernorm.weight          = input_layernorm.weight,
         post_attention_layernorm.weight = post_attention_layernorm.weight,

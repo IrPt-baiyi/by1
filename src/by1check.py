@@ -466,6 +466,26 @@ def parse(text: str) -> Tuple[Blk, List[str]]:
                 cur.children.append(b)
                 cur = b
                 continue
+            # **块头/映射没写完：出现了 `{` 而这一行里没有配对的 `}`。**
+            #
+            # 这一类原来**静默变成垃圾**：`scope { a = b,` 会被
+            # `parse_stmt` 当成一条 `key = value`（键是 `scope { a`），
+            # 于是整张 scope 映射表**空着**，而表现是
+            # "所有物理名前缀消失" —— **看起来像契约写错了**，
+            # 于是去改契约（实测：报的是"936 个张量实际不存在"）。
+            #
+            # 根因在 `_cont_depth`：**花括号不参与续行判定**（它是对的 ——
+            # 参与的话 `mech X {` … `}` 整个块会被并成一行）。
+            # 所以折行的那一半**不会**被并进来。
+            #
+            # 与其让每个模型文件各自写一句"别折行"，不如在这里出声。
+            if "{" in p and "}" not in p:
+                errors.append(
+                    f"{lineno}: `{p[:48]}` 里有个 `{{` 而这一行没有配对的 `}}` "
+                    f"—— 花括号不参与续行判定，所以下一行**不会**并进来。"
+                    f"块头要写成以 `{{` 结尾；`scope` / `rename` / map 这类"
+                    f"赋值要写在一行里。")
+                continue
             for piece2 in split_top(p, ";"):
                 for stmt in split_multi_assign(piece2):
                     parse_stmt(cur, stmt, lineno)
