@@ -173,7 +173,7 @@ src/            12 个底座模块 + 5 个子目录
   lang/         语言本身
   data/         抓数据 / 推模型
   escape/       逃生舱
-models/         `models/`（33 个 .by1），其中 14 份对真实 checkpoint 验过
+models/         `models/`（34 个 .by1），其中 14 份对真实 checkpoint 验过
 refs/           从 HF / ModelScope 抓的公开元数据（不是权重）
 docs/ history/ drafts/ gpu/ tools/
 ```

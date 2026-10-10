@@ -1,6 +1,6 @@
 # 这个仓库里每个文件是干什么的
 
-> 251 个跟踪文件。按"你会想找什么"分组，不按字母表。
+> 252 个跟踪文件。按"你会想找什么"分组，不按字母表。
 >
 > **这份文档是生成的**：`python src/by1files.py --write`。
 > 文件清单、每组的个数、每个文件的一句话都从目录树和 docstring 来 ——
@@ -248,7 +248,7 @@
 | `ir.md` | Block 0 · 中间表示（IR）规格 |
 | `plan.md` | by1 · 接下来的计划 |
 
-## `models/` —— 34 个
+## `models/` —— 35 个
 
 命名规矩：**文件名 = 长名 = HF 的模型名（去掉 owner）**，
 `model` 声明 = 短名（手写的）。两列的对照见 `models.tsv`。
@@ -268,6 +268,7 @@
 | `clef.by1` | 真实模型 · HF id `Cloudflare/clef` |
 | `gate-probe.by1` | 取值门的**反例**：故意写一个 codegen 没实现的取值 |
 | `gemma-4-31B.by1` | 真实模型 · HF id `google/gemma-4-31B` |
+| `glm-text-tiny.by1` | GLM-5.3-Flash 文本主干的机械缩小版。** 结构一个字没改： |
 | `gpt-oss-120b.by1` | 真实模型 · HF id `openai/gpt-oss-120b` |
 | `gpt-oss-shaped.by1` | Block 1.2 的第二个判卷对象：GPT-OSS 的注意力 + MoE |
 | `gpt2-tiny.by1` | 由 gpt2.by1 机械缩小维度得来，结构一个字没改 |

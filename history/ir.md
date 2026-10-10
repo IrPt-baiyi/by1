@@ -8219,6 +8219,57 @@ transformers 的 `DeepseekV3TopkRouter`）。
 仍然没跑（真尺寸跑不动）。要做到那一步，得像 `clef-tiny` 那样
 各出一份机械缩小版。
 
+---
+
+## 131. 两份机械缩小版 —— **"结构跑得起来"现在是门里的一项**
+
+上一节末尾那句"得像 `clef-tiny` 那样各出一份机械缩小版"，这一轮做了。
+
+### `ling-tiny.by1`（由 Ling-3.0-tiny 机械缩小，结构一个字没改）
+
+    3 层 KDA + 1 层 MLA 一组、第 0 层稠密、其余 noaux_tc MoE
+    partial rope 0.5 · interleaved —— 逐层覆盖、选择器、机制种类照抄
+    缩：d_model 1536->256 · n_layer 24->4 · experts 128->8 · top_k 8->2
+        n_group 8->4 · topk_group 4->2 · qk_head 192->48（nope 32 + rope 16）
+
+    NumPy vs PyTorch   相对 3.8e-07   过
+    C vs NumPy         相对 7.6e-07   过
+
+### `glm-text-tiny.by1`（GLM-5.3-Flash 的**文本主干**，同样机械缩小）
+
+    3 层 KDA（**低秩门** f_a/f_b · g_a/g_b）+ 1 层 SparseMLA（带 DSA 索引器）
+    + noaux_tc MoE（n_group=1 / topk_group=1，真模型就是 1/1）
+    缩：d_model 4096->256 · n_layer 45->4 · experts 288->8 · gate_rank 128->8
+        q_lora 1536->48 · kv_lora 512->16 · index_* 32/128/2048 -> 4/16/4
+
+    NumPy vs PyTorch   相对 4.0e-07   过
+    C vs NumPy         相对 8.0e-07   过
+
+    **`qk_rope = 0` 走通了** —— GLM 的 MLA 不用 RoPE，这一条以前没在任何
+    跑过的模型上出现过。
+
+档 5：**87 项，0 项失败**（原 85）。
+
+### 两句话写在文件头，不含糊
+
+1. **它验的是「结构跑得起来、三个后端一致」，不是「和真模型数值一致」。**
+   后者要真尺寸权重 + 官方实现，这台机器跑不动。
+2. **`glm-text-tiny` 不带 GLM 的另外两块**：视觉塔（卡在 IR 没有
+   「每层输入宽度」，§128）、mHC（只有契约没有算子）。
+   **带进来会让"跑得起来"这句话变味**，所以不带，并且把理由写在文件头。
+
+机制级的数值判据在别处：KDA -> `by1kda.py`、MLA -> `by1mla.py`、
+noaux_tc 路由 -> `by1moe.py`、DSA 索引器 -> `by1sparse.py`。
+
+### 那么 item 2 到哪一步了
+
+**"机制能算"** ✅ —— 四个新机制（`qk_head` · DSA 索引器 ·
+`sigmoid_topk` · `sigmoid_group_topk`）三个后端都算得对，
+各有判卷人、各有实测会红的反例。
+**"模型结构跑得起来"** ✅ —— 两份缩小版进门。
+**"和真模型数值一致"** ⛔ **没验** —— 真尺寸 + 官方实现，
+这台机器跑不动，而且 GLM 还差 `index_kpool_compress_*` 的参照物。
+
 ### 五、视觉前向：**决定不做，停在「描述」**
 
 结论写进 `1.md` 的「视觉前向：决定不做」，一句话：

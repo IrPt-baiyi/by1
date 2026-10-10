@@ -154,6 +154,10 @@ SHAPED = ['llama-shaped.by1', 'mixtral-shaped.by1', 'gpt-oss-shaped.by1',
           # 第 0 层稠密、其余 noaux_tc MoE），只缩维度 —— 真尺寸这台机器跑不动。
           # 它证明「Ling 的结构跑得起来」，不是「和 Ling 数值一致」。
           'ling-tiny.by1',
+          # **GLM-5.3-Flash 文本主干的机械缩小版。** 3×KDA（**低秩门**）+
+          # 1×SparseMLA（带 DSA 索引器）+ noaux_tc MoE。视觉塔和 mHC 不在里面
+          # —— 前者卡在 IR 没有「每层输入宽度」，后者只有契约没有算子。
+          'glm-text-tiny.by1',
           # **由 clef.by1 机械缩小维度得来，结构一个字没改。**
           # 它证明"对着真 checkpoint 验过的那份描述"**同时是能跑的** ——
           # 不是两套东西。
@@ -715,6 +719,7 @@ def main():
         _todo = [f for f in SHAPED
                  if f not in ('mla-shaped.by1', 'mla-sparse-shaped.by1',
                               'moe-routing-shaped.by1', 'ling-tiny.by1',
+                              'glm-text-tiny.by1',
                               'llama3-shaped.by1',
                               'clef-tiny.by1', 'gpt2-tiny.by1', 'hello.by1')]
         for f, (st, out) in zip(_todo, run_many(

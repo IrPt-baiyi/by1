@@ -1,0 +1,116 @@
+# ── glm-text-tiny.by1 ────────────────────────────────────────────────
+# **GLM-5.3-Flash 文本主干的机械缩小版。** 结构一个字没改：
+#
+#   3 层 KDA（**低秩门** f_a/f_b · g_a/g_b）+ 1 层 **SparseMLA**（带 DSA 索引器）
+#   一组重复；第 0..2 层挂稠密、第 3 层挂 noaux_tc MoE（n_group=1, topk_group=1）
+#
+# 缩的对应关系（左真尺寸 / 右这份）：
+#   d_model 4096 -> 256   n_layer 45 -> 4   vocab 154880 -> 512
+#   KDA  num_heads 64 -> 4   head_dim 128 -> 16   gate_rank 128 -> 8
+#   SparseMLA  q 64 -> 4   v_dim 256 -> 32   qk_nope 256 -> 32   qk_rope 0（不变）
+#              q_lora 1536 -> 48   kv_lora 512 -> 16
+#              index_heads 32 -> 4   index_dim 128 -> 16   index_topk 2048 -> 4
+#   MoE  experts 288 -> 8   hidden 2048 -> 32   top_k 8 -> 2   shared_hidden 2048 -> 32
+#        n_group 1 / topk_group 1（**不变** —— 真模型就是 1/1）
+#   Dense hidden 12288 -> 128
+#
+# **`index_topk = 4` 必须小于序列长**（C 侧 `--seq 16`），否则"挑中了哪些"
+# 退化成"全都要"，判据就瞎了（by1sparse 里踩过一次）。
+#
+#   python by1exec.py glm-text-tiny.by1 --compare --seq 16
+#   python by1c.py    glm-text-tiny.by1 --gcc <gcc> --seq 16
+#
+# ⚠️ **它验的是「文本主干的结构跑得起来、三个后端一致」。**
+#    不是「和 GLM-5.3-Flash 数值一致」—— 真尺寸 + 官方实现这台机器跑不动。
+#    机制级判据：KDA -> by1kda.py · MLA/索引器 -> by1mla.py + by1sparse.py ·
+#    noaux_tc 路由 -> by1moe.py。
+#
+# ⚠️ **这份不带 GLM 的另外两块**，理由都写在下面，别当成漏了：
+#    ① **视觉塔** —— 它进得了 IR，但 `by1exec` / `by1c` 给它推出来的参数
+#       **连形状都对不上**（`shapes_of` 用模型级 `d_model`，而视觉栈宽 1024）。
+#       根因是 IR 里没有「这一层的输入宽度」。见 `history/ir.md` 128。
+#    ② **mHC（超连接）** —— 它只有张量契约，**没有算子**。
+#       带进来会让「跑得起来」这句话变味，所以不带。
+#    另外 `index_kpool_compress_gate` / `_ape` 两个张量**没有官方实现可比**
+#    （实测 ModelScope 上 GLM-5.3 的模型仓库里一个 modeling_*.py 都没有），
+#    所以索引器只实现了 DSA 那四个投影。见 `history/ir.md` 126。
+
+model GLM-text-tiny {
+  arch  glm5_next
+  ctx   1048576
+
+  hparams {
+    d_model = 256
+    n_layer = 4
+    vocab   = 512
+    rms_eps = 1e-05
+  }
+
+  # ── KDA：**门是低秩的**（f_a/f_b · g_a/g_b 两级，不是一层）──
+  # GLM 和 Ling 的 KDA 就差在这里：Ling 的门是 `f_proj` 一层，
+  # GLM 是两级、中间一个 gate_rank 的瓶颈。
+  # `gate_out_bias = false` 必须显式写 —— 官方权重清单里没有 g_b_proj.bias。
+  mech KDA : KDA {
+    num_heads     = 4
+    head_dim      = 16
+    conv_kernel   = 4
+    gate_lower    = -5.0
+    gate_lowrank  = true
+    gate_rank     = 8
+    gate_out_bias = false
+    structural    = [ num_heads, head_dim, conv_kernel ]
+  }
+
+  # ── SparseMLA：MLA 加一个 DSA 稀疏索引器 ────────────────────────
+  # qk_rope = 0 —— **它不用 RoPE**（官方 qk_rope_head_dim = 0）。
+  # 索引器的三个形状：heads / dim / topk。判卷人是 transformers 的
+  # `GlmMoeDsaIndexer`（by1sparse.py，4 正例 + 8 反例）。
+  mech SparseMLA : MLA {
+    q           = 4
+    v_dim       = 32
+    qk_nope     = 32
+    qk_rope     = 0
+    q_lora      = 48
+    kv_lora     = 16
+    index_heads = 4
+    index_dim   = 16
+    index_topk  = 4
+    ltype       = deepseek_sparse_attention
+    structural  = [ q, v_dim, qk_nope, qk_rope, q_lora, kv_lora,
+                    index_heads, index_dim, index_topk ]
+  }
+
+  mech MoE : MoE {
+    experts       = 8
+    hidden        = 32
+    top_k         = 2
+    shared        = 1
+    shared_hidden = 32
+    routed_scale  = 2.5
+    n_group       = 1
+    topk_group    = 1
+    routing       = sigmoid_group_topk
+    swiglu_limit  = 10.0
+    layer_kind    = sparse
+    structural    = [ experts, hidden, shared, n_group, topk_group ]
+  }
+
+  mech Dense : FFN { hidden = 128 }
+
+  schedule {
+    kda   = 3 * KDA
+    full  = 1 * SparseMLA
+    block = kda + full
+  }
+
+  stack model {
+    pattern      = 1 * block         # 4 层 = 3 KDA + 1 SparseMLA
+    model[0..2]  >> Dense
+    model[3..3]  >> MoE
+  }
+
+  position {
+    # qk_rope = 0 —— 全量那层不用位置编码；这里写出来是给 KDA 之外的部分兜底
+    default = rope(base = 10000, pairing = half)
+  }
+}
