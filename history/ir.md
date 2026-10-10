@@ -4783,3 +4783,93 @@ config 里**有**那些视觉/音频字段 ✓。
     2. **MoE 的 gate 属性**（同一个模型）—— 小改动
     3. **多模态建模**（不用判卷人）      —— 语言层的活
     4. **KDA**（判卷人看不到）          —— **要租 CUDA，而且先立判卷人**
+
+
+---
+
+## 90. Mamba/SSM 的**完整设计** —— 判卷人、形状、算法
+
+上一节说"Mamba 本机能做"。这一节把它**读到底**，读完就不需要再查了。
+
+### 一、判卷人：`NemotronHForCausalLM`（不是 `MambaForCausalLM`）
+
+**纯 Mamba** 的 `in_proj` 是 `intermediate_size * 2`；Nemotron 声明的是
+
+    projection_size = intermediate_size + conv_dim + num_heads
+                    = 4096 + 6144 + 64 = 10304        ✓ 对上了
+    conv_dim        = intermediate_size + 2*n_groups*ssm_state
+                    = 4096 + 2*8*128 = 6144           ✓ 对上了
+
+**所以那是 Nemotron-H 那一版** ✓ —— 判卷人必须是 `NemotronHForCausalLM`
+（它和 `NemotronHMamba2Mixer` 都在装着的 transformers 里 ✓）。
+
+### 二、声明 → `__init__`，逐个对上
+
+    .by1 声明                        官方 NemotronHMamba2Mixer
+    ----------------------------------------------------------------
+    heads = 64                       num_heads = mamba_num_heads        64
+    head_dim = 64                    head_dim = mamba_head_dim          64
+    ssm_state = 128                  ssm_state_size                     128
+    n_groups = 8                     n_groups                           8
+    conv_kernel = 4                  conv_kernel_size                   4
+    expand = 2                       intermediate_size = heads*head_dim 4096
+    chunk_size = 128                 chunk_size                         128
+    conv_bias = true                 use_conv_bias                      True
+    proj_bias = false                use_bias                           False
+    act = silu                       mamba_hidden_act                   silu
+
+    张量：
+    conv1d.weight  [6144, 1, 4]      depthwise（groups=conv_dim）padding=k-1
+    in_proj.weight [10304, 2688]
+    dt_bias (64,) · A_log (64,) · D (64,)            **三个都是逐头的**
+    norm.weight    (4096,)           Zamba2RMSNormGated(4096, group_size=4096//8)
+    out_proj.weight[2688, 4096]
+
+### 三、算法（`forward` 的正文）
+
+    gate, bc, dt = split(in_proj(x), [d_inner, conv_dim, num_heads])
+    # ② depthwise 因果卷积 + 激活
+    bc = conv1d(bc.transpose(1,2), weight.squeeze(1), bias,
+                groups=conv_dim, padding=k-1)   -> 激活
+    hs, B, C = split(bc, [d_inner, ng*ssm, ng*ssm])
+    # ③ SSM scan
+    scan = mamba2_chunk_scan(hs.view(B,S,H,hd), dt, A, B.view(B,S,ng,ssm),
+                             C.view(B,S,ng,ssm), chunk_size, D,
+                             dt_bias, dt_softplus=True)
+    scan = scan.reshape(B, S, -1)
+    # ④ gated RMSNorm，再 out_proj
+    return out_proj(norm(scan, gate))
+
+而 `A = -exp(A_log)` ✓、`dt` 走 **softplus** ✓、`D` 是**跳连** ✓。
+
+### 四、关键：要生成的是**纯 torch 那一条**
+
+`forward` 里有三条路：
+
+    mamba2_split_conv1d_scan_combined   CUDA kernel（训练时）
+    causal_conv1d_fn / chunk_scan       CUDA kernel
+    **纯 torch 回退**                    判卷人在 CPU 上走的就是这条 ✓
+
+**所以 by1 要生成的应该是回退那条的算法** ✓ —— 数学相同，
+只是慢。而**递推形式和分块形式算的是同一个东西**：
+
+    h_t = exp(dt_t * A) * h_{t-1} + dt_t * B_t * x_t
+    y_t = C_t · h_t + D * x_t
+
+（B/C 按 `n_groups` 分组、每个头 `repeat_interleave` 到 `num_heads` ✓
+—— 和 GQA 的 `repeat_kv` 同一套写法。）
+
+**这条递推是可以在 CPU 上逐位验证的** ✓ —— 而它会和判卷人给出同一个数，
+如果两边真的同源的话。**这正是判卷人的用处。**
+
+### 五、还差的两样（下一轮做）
+
+    ① `MoE` 的属性 `gate` —— Nemotron 的第二个缺口，小改动
+    ② `Zamba2RMSNormGated` 的式子 —— 它在共享模块里
+       （`from ... import`），不在 nemotron_h 里；实现前要先读它
+
+### 六、这一轮没有动一行产品代码
+
+**读完了、对上了、算法记在这里了。** 而这一步值得单独记的原因是：
+**再往下写就是照抄，不再需要判断** ✓ —— 而"需不需要判断"是
+一件事该不该现在做的分界。
