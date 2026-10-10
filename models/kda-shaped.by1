@@ -49,6 +49,16 @@ model KDA-shaped {
     conv_kernel = 4
     conv_bias   = false
     gate_lowrank = false
+    # **`lower_bound` 那一支** —— Ling 的 config 里写着
+    # `kda_lower_bound = -5` ✓（GLM 那边叫 `gate_lower_bound: -5.0` ✓），
+    # 也就是
+    #     g = lower * sigmoid(exp(A_log) * g)
+    # 而不是默认的 `g = -exp(A_log) * softplus(g)` ✓。
+    #
+    # 写上它是为了**让这一支有模型走** ✓：不写的话，
+    # `gate_lower` 那条路径在三个后端里都是**没验过的代码** ✗，
+    # 而 Ling 的真模型正要走它 ✓。
+    gate_lower  = -5.0
     act         = silu
     structural  = [ k_heads, v_heads, k_dim, v_dim, conv_kernel ]
   }

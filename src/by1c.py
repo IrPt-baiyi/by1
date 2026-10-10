@@ -595,6 +595,188 @@ static void ssm(float *o, const float *x, int n, int d,
 }
 
 
+/* KDA（Kimi Delta Attention）：短卷积 + **逐维**衰减门 + delta 规则 + 输出门。
+
+   和 GDN 是**同一个递推**，差别全在门和投影上：
+
+     · q / k / v 是**分开**的投影，各自一条深度卷积
+     · `dt_bias` 按**维**（nv * dk），不是按头 —— 所以 g 的形状是 [nv, dk]
+     · 多一个输出门 g_proj，喂给最后的 RMSNorm
+     · 那个 RMSNorm 的激活是 **sigmoid**（不是 GDN 的 silu）
+     · 门可以低秩两层（`f_a/f_b`、`g_a/g_b`），也可以一层（`f_proj`）
+
+   两处最容易写反，而**写反了不会报错、只会算错**：
+     · `g` 的秩：**每维一个**（KDA），不是每头一个（GDN）
+     · `dt_bias` 的长度：`nv * dk`，不是 `nv`
+   还有一处**不报错但会算错**：低秩的两层之间**没有激活**
+   （fla 是 `nn.Sequential(Linear, Linear)`）。
+
+   GVA：`nk < nv` 时 q/k 按 `rep = nv / nk` 复用（`fla/ops/kda/naive.py:52-53`）。
+
+   和这个文件里别的算子一样：**照 `by1exec.op_kda` 的数值路径写** ——
+   NumPy 那一侧是"另一个后端"，不是"另一份实现"，
+   而它自己已经对着 fla 的 `naive_recurrent_kda` 判过
+   （`src/modelcheck/by1kda.py`，四个正例 + 八条反例）。
+
+   判卷人：`by1all --tier 5` 的 C 后端那一段（C ↔ NumPy 逐位对拍）。 */
+static void kda(float *o, const float *x, int n, int d,
+                int nk, int nv, int dk, int dv, int ck, int rank,
+                int has_lower, float lower, float l2eps, float neps,
+                const float *wq, const float *wk, const float *wv,
+                const float *cwq, const float *cwk, const float *cwv,
+                const float *alog, const float *dtb, const float *bproj,
+                const float *fa, const float *fb,
+                const float *ga, const float *gb, const float *gbb,
+                const float *nw, const float *wout) {
+    int kd = nk * dk, vd = nv * dv, gd = nv * dk, rep = nv / nk;
+    float qscale = 1.f / sqrtf((float)dk);
+    float *pq = (float *)malloc(sizeof(float) * (size_t)n * kd);
+    float *pk = (float *)malloc(sizeof(float) * (size_t)n * kd);
+    float *pv = (float *)malloc(sizeof(float) * (size_t)n * vd);
+    float *q = (float *)malloc(sizeof(float) * (size_t)n * nk * dk);
+    float *kk = (float *)malloc(sizeof(float) * (size_t)n * nk * dk);
+    float *v = (float *)malloc(sizeof(float) * (size_t)n * nv * dv);
+    float *fg = (float *)malloc(sizeof(float) * (size_t)n * gd);
+    float *gt = (float *)malloc(sizeof(float) * (size_t)n * vd);
+    float *be = (float *)malloc(sizeof(float) * (size_t)n * nv);
+    float *st = (float *)calloc((size_t)nv * dk * dv, sizeof(float));
+    float *y = (float *)malloc(sizeof(float) * (size_t)n * nv * dv);
+
+    linear(pq, x, wq, n, d, kd);
+    linear(pk, x, wk, n, d, kd);
+    linear(pv, x, wv, n, d, vd);
+
+    /* ① q / k 各自的深度卷积 + silu，然后**逐头**做 L2 归一化；
+          q 再乘 dk^-0.5（和 naive_recurrent_kda 里的 scale 是同一个数）。
+          **卷积读的是投影结果 pq/pk，写的是 q/kk —— 不能就地写**：
+          卷积的窗口会读到已经 silu 过的值。 */
+    for (int t = 0; t < n; t++)
+        for (int h = 0; h < nk; h++) {
+            float *qr = q + ((size_t)t * nk + h) * dk;
+            float *kr = kk + ((size_t)t * nk + h) * dk;
+            for (int i = 0; i < dk; i++) {
+                int c = h * dk + i;
+                float sq = 0.f, sk = 0.f;
+                for (int j = 0; j < ck; j++) {
+                    int u = t + j - (ck - 1);
+                    if (u >= 0) {
+                        sq += pq[(size_t)u * kd + c] * cwq[(size_t)c * ck + j];
+                        sk += pk[(size_t)u * kd + c] * cwk[(size_t)c * ck + j];
+                    }
+                }
+                qr[i] = sq / (1.f + expf(-sq));
+                kr[i] = sk / (1.f + expf(-sk));
+            }
+            float nq = 0.f, nk2 = 0.f;
+            for (int i = 0; i < dk; i++) { nq += qr[i] * qr[i]; nk2 += kr[i] * kr[i]; }
+            nq = 1.f / sqrtf(nq + l2eps);
+            nk2 = 1.f / sqrtf(nk2 + l2eps);
+            for (int i = 0; i < dk; i++) { qr[i] *= nq * qscale; kr[i] *= nk2; }
+        }
+
+    /* ② v 的深度卷积 + silu（同样换一个缓冲写） */
+    for (int t = 0; t < n; t++)
+        for (int h = 0; h < nv; h++)
+            for (int i = 0; i < dv; i++) {
+                int c = h * dv + i;
+                float s = 0.f;
+                for (int j = 0; j < ck; j++) {
+                    int u = t + j - (ck - 1);
+                    if (u >= 0) s += pv[(size_t)u * vd + c] * cwv[(size_t)c * ck + j];
+                }
+                v[(size_t)t * vd + c] = s / (1.f + expf(-s));
+            }
+
+    /* ③ 衰减门的**输入**：两层（f_a/f_b）或一层（f_proj）——
+          **两层之间没有激活**（fla 是 nn.Sequential）。 */
+    if (fb) {
+        float *tmp = (float *)malloc(sizeof(float) * (size_t)n * rank);
+        linear(tmp, x, fa, n, d, rank);
+        linear(fg, tmp, fb, n, rank, gd);
+        free(tmp);
+    } else {
+        linear(fg, x, fa, n, d, gd);
+    }
+
+    /* ④ 输出门：同样两层或一层，然后**乘 sigmoid**。
+          `fla/layers/kda.py:191` 的 `activation="sigmoid"`，
+          展开在 `fused_norm_gate.py:104`：`y = y * sigmoid(g)`。 */
+    if (gb) {
+        float *tmp = (float *)malloc(sizeof(float) * (size_t)n * rank);
+        linear(tmp, x, ga, n, d, rank);
+        linear_b(gt, tmp, gb, gbb, n, rank, vd);
+        free(tmp);
+    } else {
+        linear(gt, x, ga, n, d, vd);
+    }
+    for (size_t i = 0; i < (size_t)n * vd; i++)
+        gt[i] = 1.f / (1.f + expf(-gt[i]));
+
+    /* ⑤ beta（`use_beta_sigmoid_in_kernel`，所以核里拿到的是概率） */
+    linear(be, x, bproj, n, d, nv);
+    for (size_t i = 0; i < (size_t)n * nv; i++)
+        be[i] = 1.f / (1.f + expf(-be[i]));
+
+    /* ⑥ delta 规则递推。状态是 [nv, dk, dv]，与序列长度无关。 */
+    for (int t = 0; t < n; t++)
+        for (int h = 0; h < nv; h++) {
+            int kh = h / rep;                     /* GVA：q/k 复用 */
+            const float *qt = q + ((size_t)t * nk + kh) * dk;
+            const float *kt = kk + ((size_t)t * nk + kh) * dk;
+            const float *vt = v + ((size_t)t * nv + h) * dv;
+            const float *fgt = fg + (size_t)t * gd + h * dk;
+            float bt = be[(size_t)t * nv + h];
+            float *hh = st + (size_t)h * dk * dv;
+            float *yt = y + ((size_t)t * nv + h) * dv;
+            for (int i = 0; i < dk; i++) {
+                float g = fgt[i] + dtb[h * dk + i];
+                if (has_lower)
+                    g = lower / (1.f + expf(-(expf(alog[h]) * g)));
+                else
+                    g = -expf(alog[h]) * logf(1.f + expf(g));
+                float dd = expf(g);
+                float *row = hh + (size_t)i * dv;
+                for (int j = 0; j < dv; j++) row[j] *= dd;
+            }
+            for (int j = 0; j < dv; j++) {
+                float s = 0.f;
+                for (int i = 0; i < dk; i++) s += hh[(size_t)i * dv + j] * kt[i];
+                yt[j] = (vt[j] - s) * bt;          /* 先当 delta 用 */
+            }
+            for (int i = 0; i < dk; i++) {
+                float ki = kt[i];
+                float *row = hh + (size_t)i * dv;
+                for (int j = 0; j < dv; j++) row[j] += ki * yt[j];
+            }
+            for (int j = 0; j < dv; j++) {
+                float s = 0.f;
+                for (int i = 0; i < dk; i++) s += hh[(size_t)i * dv + j] * qt[i];
+                yt[j] = s;
+            }
+        }
+
+    /* ⑦ 逐头 RMSNorm，再乘输出门，最后 o_proj */
+    {
+        float *tmp = (float *)malloc(sizeof(float) * (size_t)n * vd);
+        for (int t = 0; t < n; t++)
+            for (int h = 0; h < nv; h++) {
+                const float *yt = y + ((size_t)t * nv + h) * dv;
+                const float *gtw = gt + (size_t)t * vd + h * dv;
+                float *ot = tmp + (size_t)t * vd + h * dv;
+                float vv = 0.f;
+                for (int i = 0; i < dv; i++) vv += yt[i] * yt[i];
+                vv = 1.f / sqrtf(vv / dv + neps);
+                for (int i = 0; i < dv; i++)
+                    ot[i] = (nw[i] * yt[i] * vv) * gtw[i];
+            }
+        linear(o, tmp, wout, n, vd, d);
+        free(tmp);
+    }
+    free(pq); free(pk); free(pv); free(q); free(kk); free(v);
+    free(fg); free(gt); free(be); free(st); free(y);
+}
+
+
 /* q_gate：wq 的输出是 2 倍，前半是 query，后半是门 */
 static void split_qg(float *q, float *gt, const float *qf, int n, int nh, int hd) {
     for (int t = 0; t < n; t++)
@@ -998,6 +1180,27 @@ def _emit_c_body(ir, params):
                 if a.get("conv_bias"):
                     order.append((key(i, j, "conv.bias"), pre + "conv.bias"))
                 body.append((i, j, "SSM", a))
+            elif k == "KDA":
+                # Kimi Delta Attention。13 个张量（低秩门 15 个），
+                # 和契约里那一组对上。**顺序要和下面的调用一致**。
+                for nm in ("q_proj", "k_proj", "v_proj",
+                           "q_conv1d", "k_conv1d", "v_conv1d"):
+                    order.append((key(i, j, nm), pre + nm))
+                if a.get("gate_lowrank"):
+                    for nm in ("f_a_proj", "f_b_proj",
+                               "g_a_proj", "g_b_proj"):
+                        order.append((key(i, j, nm), pre + nm))
+                    # **bias 是可选的** —— fla 有，GLM 的官方清单没有
+                    if a.get("gate_out_bias", True):
+                        order.append((key(i, j, "g_b_proj.bias"),
+                                      pre + "g_b_proj.bias"))
+                else:
+                    for nm in ("f_proj", "g_proj"):
+                        order.append((key(i, j, nm), pre + nm))
+                for nm in ("b_proj", "A_log", "dt_bias",
+                           "o_norm.w", "o_proj"):
+                    order.append((key(i, j, nm), pre + nm))
+                body.append((i, j, "KDA", a))
             elif k == "MLA":
                 for nm in ("q_a_proj", "q_a_layernorm.w", "q_b_proj",
                            "kv_a_proj_with_mqa", "kv_a_layernorm.w",
@@ -1226,6 +1429,30 @@ def _emit_c_body(ir, params):
                     f" P({key(i, j, 'D')}), P({key(i, j, 'norm.w')}),"
                     f" P({key(i, j, 'out_proj')}),"
                     f" {float(a['norm_eps'])}f);")
+            elif k == "KDA":
+                _low = bool(a.get("gate_lowrank"))
+                _ob = bool(a.get("gate_out_bias", True))
+                _lo = a.get("gate_lower")
+
+                def _p(nm, when=True):
+                    return ("P(%s)" % key(i, j, nm)) if when else "NULL"
+
+                lb.append(
+                    f" kda({dst}, {src[0]}, n, D, {a['k_heads']},"
+                    f" {a['v_heads']}, {a['k_dim']}, {a['v_dim']},"
+                    f" {a['conv_kernel']}, {a['gate_rank']},"
+                    f" {1 if _lo is not None else 0},"
+                    f" {float(_lo) if _lo is not None else 0.0}f,"
+                    f" {float(a['l2_eps'])}f, {float(a['norm_eps'])}f,"
+                    f" {_p('q_proj')}, {_p('k_proj')}, {_p('v_proj')},"
+                    f" {_p('q_conv1d')}, {_p('k_conv1d')}, {_p('v_conv1d')},"
+                    f" {_p('A_log')}, {_p('dt_bias')}, {_p('b_proj')},"
+                    f" {_p('f_a_proj', _low) if _low else _p('f_proj')},"
+                    f" {_p('f_b_proj', _low)},"
+                    f" {_p('g_a_proj', _low) if _low else _p('g_proj')},"
+                    f" {_p('g_b_proj', _low)},"
+                    f" {_p('g_b_proj.bias', _low and _ob)},"
+                    f" {_p('o_norm.w')}, {_p('o_proj')});")
             elif k == "MLA":
                 hg = a.get("head_gate", "off") != "off"
                 lb.append(

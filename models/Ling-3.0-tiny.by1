@@ -43,13 +43,25 @@ model Ling-3.0-tiny {
   # ── KDA：短卷积 + delta 规则。和 GDN 同族，但张量集更细 ────────────
   # 三个卷积是分开的（q/k/v_conv1d），不是一条融合卷积；
   # 比 GDN 多了 f_proj 和 o_norm。
-  # ⚠️ KDA 的计算 by1 还没有 —— codegen 会明确拒绝，不会按 GDN 生成。
+  #
+  # **`⚠️ KDA 的计算 by1 还没有`** —— 这句现在过期了 ✗：
+  # KDA 三个后端都能算了 ✓（`models/kda-shaped.by1` 那一族是它的
+  # 小尺寸对照 ✓），判卷人是 `src/modelcheck/by1kda.py` ✓。
   mech KDA : KDA {
     k_heads     = 16
     v_heads     = 16
     k_dim       = 128
     v_dim       = 128
     conv_kernel = 4
+    # 门是**一层**（config 里 `no_kda_lora = true`，权重清单里就是
+    # 一个 `f_proj.weight`）—— 这也是默认值，写出来是为了**显式**。
+    gate_lowrank = false
+    # **`lower_bound` 那一支。** config 里 `kda_lower_bound = -5` ——
+    # 而它原来**没写在这里** ✗，于是默认走的是
+    # `g = -exp(A_log) * softplus(g)` ✓，也就是**另一个函数** ✗。
+    # （和 GLM 漏掉 `gate_lowrank` 是同一类：契约对得上 ✓、
+    #   生成出来的是另一个模型 ✓、而它跑不了所以一声不吭 ✓。）
+    gate_lower  = -5.0
   }
 
   # ── MLA：低秩压缩的注意力 ─────────────────────────────────────────
