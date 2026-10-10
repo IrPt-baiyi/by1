@@ -1,0 +1,335 @@
+# -*- coding: utf-8 -*-
+# ── glm5-next-indexer.reference.txt ───────────────────────────────────
+# **判卷人的参照物**：transformers **5.19.0** 的
+# 	ransformers/models/glm5_next/modeling_glm5_next.py 里 Glm5NextTextIndexer
+# 那一整段，逐行切出来。**版权属发布方 / HuggingFace，依其各自的许可证。**
+#
+# ## 为什么留这一份
+#
+# GLM-5.3-Flash 的 checkpoint 上有 indexer.index_kpool_compress_gate 和
+# indexer.index_kpool_compress_ape 两个张量，而这里**一直找不到官方实现可比**
+# （本地 transformers 5.15.1 全库 0 命中；ModelScope 的模型仓库里 0 个 modeling_*.py）。
+# 于是那两个张量「描述得住、算不了」。**找到 5.19.0 才有。**
+#
+# 从哪拿：pip download transformers==5.19.0 --no-deps，解包看
+# 	ransformers/models/glm5_next/modeling_glm5_next.py。
+# ⚠ HuggingFace 的 web_fetch 够不着（DNS 把 huggingface.co 解析到 198.18.0.13
+#   那个 fake-IP 段，工具拒绝非公网 IP）；**走系统网络栈就行**
+#   （Invoke-WebRequest / Invoke-RestMethod 实测 200）。
+#
+# ## 它算的是什么（读懂了，写在这）
+#
+# DSA 的索引器本来给**每个 key** 打分；GLM-5.3 改成给**每 index_kpool 个
+# 连续 key 压成的一个「池」**打分，选中池再摊回原始 token。
+#
+#   gate_scores = hidden @ index_kpool_compress_gate.T        # [B,S,hd] 逐 token 的门
+#   池 = 从**第一个有效 token** 起、每 index_kpool 个连续 token 一组
+#        （不是从槽位 0 起 —— padding 前面的不算）
+#   池内加权平均：logits = gate_scores + index_kpool_compress_ape   # ape=[kpool,hd]
+#                 prob   = softmax(logits)  （无效位置填 -inf）
+#                 pool_key = sum(prob * key)
+#   只有**整个池都有效**的才当候选（pool_valid = 全部有效）
+#   scores = relu(q @ pool_key^T * hd^-0.5)，再按头加权求和 -> index_scores
+#   池可选当且仅当**它的最后一个 token 对 query 可见**
+#   select_k = min(index_topk // index_kpool, 池数)
+#   选中的池摊回 index_kpool 个 token -> topk_indices
+#   index_kpool_always_select_tail：再把「可见的尾巴」（不完整那个池的 token）
+#        追加进来，宽度变成 index_topk + index_kpool - 1
+#   其余填 -1，再按 attention_mask 屏掉
+#
+# 两个张量的职责：
+#   index_kpool_compress_gate [hd, hidden]   -> 逐 token 的门，池内加权用它
+#   index_kpool_compress_ape  [kpool, hd]    -> 池内**位置**的可学嵌入，加在门上
+# ════════════════════════════════════════════════════════════════════
+
+class Glm5NextTextIndexer(nn.Module):
+    """
+    DeepSeek Sparse Attention (DSA) indexer with k-pool compression for GLM-5.3-Flash.
+
+    The indexer uses lightweight projections (`wq_b`, `wk`) separate from the main MLA
+    attention path. It scores compressed k-pool candidates, expands selected pools back
+    into raw cache indices, and optionally appends the current incomplete tail pool.
+
+    **Cache strategy**: the indexer state cache lives on the per-layer `DynamicIndexedLayer`
+    (or the `StaticIndexedLayer` for static caches) inside the shared cache, accessed via
+    `past_key_values.update_indexer()`.
+    """
+
+    def __init__(self, config, layer_idx: int):
+        super().__init__()
+        self.config = config
+        self.layer_idx = layer_idx
+
+        self.hidden_size: int = config.hidden_size
+        self.n_heads: int = config.index_n_heads
+        self.head_dim: int = config.index_head_dim
+        self.qk_rope_head_dim: int = config.qk_rope_head_dim
+        self.index_topk: int = config.index_topk
+        self.q_lora_rank: int = config.q_lora_rank
+
+        self.wq_b = nn.Linear(self.q_lora_rank, self.n_heads * self.head_dim, bias=False)
+        self.wk = nn.Linear(self.hidden_size, self.head_dim, bias=False)
+        self.k_norm = nn.LayerNorm(self.head_dim, eps=1e-6)
+        self.weights_proj = nn.Linear(self.hidden_size, self.n_heads, bias=False)
+        self.softmax_scale = self.head_dim**-0.5
+
+        self.index_kpool = config.index_kpool
+        self.index_kpool_always_select_tail = config.index_kpool_always_select_tail
+
+        self.index_kpool_compress_ape = nn.Parameter(torch.zeros(self.index_kpool, self.head_dim))
+        self.index_kpool_compress_gate = nn.Parameter(torch.zeros(self.head_dim, self.hidden_size))
+
+    @torch.no_grad()
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        q_resid: torch.Tensor,
+        attention_mask: torch.BoolTensor,
+        past_key_values: Cache | None,
+    ) -> torch.LongTensor:
+        """
+        Selects the top-k tokens per query for DeepSeek Sparse Attention (DSA) based on grouping pools (and tails).
+
+        Args:
+            hidden_states: Input hidden states `[B, S, hidden_size]`.
+            q_resid: Query residual from `q_a_layernorm(q_a_proj(x))`, shape `[B, S, q_lora_rank]`.
+            attention_mask: Local boolean padding mask of shape `[B, S]`.
+            past_key_values: Cache object containing the indexer state cache for this layer.
+
+        Returns:
+            `torch.Tensor`: the `int32` top-k token indices of shape `[B, S, topk]` (or `[B, S, 2*topk - 1]` with tail).
+            The eager / SDPA paths turn these into an additive sparse mask.
+        """
+        batch_size, seq_len = hidden_states.shape[:2]
+        hidden_shape = (batch_size, seq_len, -1, self.head_dim)
+
+        q = self.wq_b(q_resid).view(hidden_shape)
+        k = self.k_norm(self.wk(hidden_states)).view(hidden_shape).squeeze(2)
+
+        gate_scores = F.linear(hidden_states, self.index_kpool_compress_gate)
+        valid_channel = attention_mask.to(k.dtype)[..., None]
+
+        packed_states = torch.cat([k, gate_scores, valid_channel], dim=-1)
+
+        kv_len = seq_len
+        current_length = seq_len
+        if past_key_values is not None:
+            cache_layer = past_key_values.layers[self.layer_idx]
+
+            packed_states = past_key_values.update_indexer(packed_states, self.layer_idx)
+            # Only different on static caches where key is a static full tensor to max len
+            kv_len = cache_layer.keys.shape[-2]
+            current_length = cache_layer.get_seq_length()
+
+        # Get pools based on the valid key entries (based on padding / causality)
+        valid_keys = packed_states[..., -1].bool()
+        visible_tokens = self.get_visible_tokens(
+            valid_keys=valid_keys,
+            q_length=seq_len,
+            current_length=current_length,
+        )
+
+        # Key difference: Score across pools, not on a per token basis
+        pool_keys, pool_indices, pool_valid = self.get_pooled_states(packed_states=packed_states)
+        scores = torch.matmul(q.float(), pool_keys.transpose(-1, -2).float().unsqueeze(1))
+        scores = F.relu(scores * self.softmax_scale)
+
+        # Weight per head and sum across heads: [B, S, 1, H] @ [B, S, H, P] -> [B, S, P]
+        weights = self.weights_proj(hidden_states.to(self.weights_proj.weight.dtype)).float() * (self.n_heads**-0.5)
+        index_scores = torch.matmul(weights.unsqueeze(-2), scores).squeeze(-2)
+
+        # Clamp invalid / static pool ends
+        pool_end = pool_indices[..., -1].clamp(0, kv_len - 1)
+        pool_visible = visible_tokens.gather(
+            dim=-1,
+            index=pool_end[:, None, :].expand(batch_size, seq_len, -1),
+        )
+        # A pool is selectable only if its final token is visible to the query
+        valid_candidates = pool_visible & pool_valid[:, None]
+
+        index_scores = index_scores.masked_fill(
+            ~valid_candidates,
+            torch.finfo(index_scores.dtype).min,
+        )
+
+        # Similar budgeting as in original but compressed by its pool size
+        select_k = min(self.index_topk // self.index_kpool, index_scores.shape[-1])
+
+        # Selection is based on 2 steps
+        #   1. The actual scores (selected indices)
+        #   2. And removing invalid rows based on padding (selected valid)
+        selected = index_scores.topk(select_k, dim=-1).indices
+        batch_idx = torch.arange(batch_size, device=hidden_states.device)[:, None, None]
+
+        selected_valid = valid_candidates.gather(-1, selected)
+        selected_indices = pool_indices[batch_idx, selected]
+
+        # Convert selected pools back into the raw tokens
+        # [B, S, K, P] -> [B, S, K * P]
+        topk_indices = selected_indices.flatten(-2)
+        topk_indices = topk_indices.masked_fill(
+            ~selected_valid[..., None].expand_as(selected_indices).flatten(-2),
+            -1,
+        )
+
+        output_width = self.index_topk
+        if self.index_kpool_always_select_tail:
+            topk_indices = self.append_visible_tail(topk_indices, visible_tokens, valid_keys)
+            output_width += self.index_kpool - 1  # expanded tail size maximum
+
+        # Pad so we fill up with invalid entries instead of gathered selections
+        topk_indices = F.pad(topk_indices, (0, output_width - topk_indices.shape[-1]), value=-1)
+
+        topk_indices = topk_indices[..., :output_width]
+        topk_indices = topk_indices.masked_fill(~attention_mask[..., None], -1)
+
+        return topk_indices.to(torch.int32)
+
+    def get_visible_tokens(
+        self,
+        valid_keys: torch.BoolTensor,
+        q_length: int,
+        current_length: int,
+    ) -> torch.BoolTensor:
+        """
+        Check whether a token is visible for Q based on
+            - Causality
+            - Padding status
+                - Valid keys which is a (cached) variation of the attention mask
+        """
+        device = valid_keys.device
+
+        kv_positions = torch.arange(valid_keys.shape[-1], device=device)
+        q_positions = current_length - q_length + torch.arange(q_length, device=device)
+        causal = kv_positions[None, None, :] <= q_positions[None, :, None]
+
+        return causal & valid_keys[:, None, :]
+
+    def get_pooled_states(
+        self,
+        packed_states: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.LongTensor, torch.BoolTensor]:
+        """
+        (Re-)Build compressed k-pool candidates from the packed state.
+
+        Pooling starts at the first real token, not raw slot 0. This is the part
+        that makes:
+
+            [P, P, A, B, C, D, ...]
+
+        behave like:
+
+            [A, B, C, D, ...]
+
+        for k-pool grouping.
+        """
+        # All states we need
+        #   1. The actual keys
+        #   2. The compressed gate scores
+        #   3. The valid keys based on padding and causality
+        keys, gate_scores, valid_keys = torch.split(
+            packed_states,
+            [self.head_dim, self.head_dim, 1],
+            dim=-1,
+        )
+        valid_keys = valid_keys.bool().squeeze(-1)
+
+        # Metadata
+        batch_size, seq_len = keys.shape[:2]
+        number_of_pools = (seq_len + self.index_kpool - 1) // self.index_kpool
+        device = keys.device
+
+        # Example, index_kpool=4:
+        #   [P, P, A, B, C, D, E, F]
+        #          ^
+        #      first_key
+        #
+        #   pool 0 -> first_key + [0, 1, 2, 3] -> [A, B, C, D]
+        #   pool 1 -> first_key + [4, 5, 6, 7] -> [E, F, out, out]
+        first_key = torch.where(
+            valid_keys.any(-1),
+            valid_keys.long().argmax(-1),
+            torch.full((batch_size,), seq_len, dtype=torch.long, device=device),
+        )
+        pool_offsets = torch.arange(number_of_pools * self.index_kpool, device=device)
+        pool_offsets = pool_offsets.view(1, number_of_pools, self.index_kpool)
+        pool_indices = first_key[:, None, None] + pool_offsets
+
+        batch_idx = torch.arange(batch_size, device=device)[:, None, None]
+        safe_indices = pool_indices.clamp(0, seq_len - 1)
+
+        grouped_keys = keys[batch_idx, safe_indices]
+        grouped_gate_scores = gate_scores[batch_idx, safe_indices]
+        grouped_valid_keys = valid_keys[batch_idx, safe_indices]
+
+        # Only allow those within range (clamp)
+        grouped_valid_keys = grouped_valid_keys & (pool_indices < seq_len)
+        pool_valid = grouped_valid_keys.all(-1)
+        pool_indices = pool_indices.masked_fill(~grouped_valid_keys, -1)
+
+        # Learn a weighted average over the tokens inside each complete pool
+        logits = grouped_gate_scores.float() + self.index_kpool_compress_ape.float()[None, None]
+        logits = logits.masked_fill(~grouped_valid_keys[..., None], float("-inf"))
+        probabilities = torch.nan_to_num(logits.softmax(dim=2)).to(
+            grouped_keys.dtype
+        )  # nan to num for full invalid pools
+        pool_keys = (probabilities * grouped_keys).sum(dim=2)
+
+        # Avoids static cache allocated positions
+        keep = pool_valid.any(0)
+
+        return pool_keys[:, keep], pool_indices[:, keep], pool_valid[:, keep]
+
+    def append_visible_tail(
+        self,
+        topk_indices: torch.Tensor,
+        token_visible: torch.BoolTensor,
+        key_valid: torch.BoolTensor,
+    ) -> torch.Tensor:
+        """
+        Append the current incomplete pool as raw token indices.
+        So we if we have a pool size of 4:
+            - [P P A B C D E F]
+            - [A B C D] (selected pool)
+            - [E F] (appended tail)
+        """
+        if (max_tail_width := self.index_kpool - 1) == 0:
+            return topk_indices
+
+        batch_size, _, kv_length = token_visible.shape
+        device = token_visible.device
+
+        # Example, index_kpool=4:
+        #   visible keys: [A, B, C, D, E, F]
+        #   full pools:   [A, B, C, D]
+        #   tail:                     [E, F]
+        #
+        # visible_count = 6
+        # tail_count    = 6 % 4 = 2
+        # tail_start    = first_key + visible_count - tail_count
+        # tail_indices  = tail_start + [0, 1, ..., index_kpool - 2]
+        first_key = torch.where(
+            key_valid.any(-1),
+            key_valid.long().argmax(-1),
+            torch.full((batch_size,), kv_length, dtype=torch.long, device=device),
+        )
+        visible_count = token_visible.long().sum(-1)
+        tail_count = visible_count.remainder(self.index_kpool)
+        tail_offsets = torch.arange(max_tail_width, device=device)
+
+        tail_start = first_key[:, None] + visible_count - tail_count
+        tail_indices = tail_start[..., None] + tail_offsets
+
+        # We exclude tails that are just use to fill in positions + those that go beyond the max length
+        tail_valid = (tail_offsets[None, None, :] < tail_count[..., None]) & tail_indices.lt(kv_length)
+
+        # Also check for padding based tokens
+        kv_idx = tail_indices.clamp(0, kv_length - 1)
+        tail_visible = token_visible.gather(dim=-1, index=kv_idx)
+
+        # Get the valid conclusion
+        tail_indices = tail_indices.masked_fill(~(tail_valid & tail_visible), -1)
+
+        return torch.cat([topk_indices, tail_indices], dim=-1)
+
+
