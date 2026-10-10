@@ -35,6 +35,12 @@ model GLM-5.3-Flash {
     head_dim      = 128
     conv_kernel   = 4
     gate_lower    = -5.0
+    gate_lowrank  = true
+    gate_rank     = 128
+    # **官方权重清单里没有 `g_b_proj.bias`** —— 而 fla 的层写的是
+    # `bias=True`。两个出处不一致，所以这里必须显式关掉：
+    # 76108 个张量里 `.bias` 只有 135 个，全是 indexer 和视觉塔的。
+    gate_out_bias = false
     structural    = [ num_heads, head_dim, conv_kernel ]
   }
 

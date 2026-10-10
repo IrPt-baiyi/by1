@@ -149,6 +149,7 @@ python src/by1irentry.py                    # 三个后端只从 IR 跑
 | `conv_bias` | `bool` | 是 |  |
 | `gate_lowrank` | `bool` | 是 | 门是不是两层（GLM 的 f_a/f_b）。默认一层（Ling 的 f_proj） |
 | `gate_rank` | `int` | 否 | 低秩门的瓶颈宽度 |
+| `gate_out_bias` | `bool` | 否 | 输出门第二层有没有 bias。**两个出处不一致**：fla 的层写的是 `bias=True`，而 GLM 的官方权重清单里**没有** `g_b_proj.bias`。所以它必须是属性，不能写死 —— 默认 true（跟 fla） |
 | `gate_lower` | `float` | 否 | 给定时走 lower_bound 那一支：g = lower * sigmoid(exp(A_log) * g)（GLM 是 -5.0） |
 | `l2_eps` | `float` | 否 | q/k 做 L2 归一化时的 eps |
 | `act` | `enum:silu,gptoss,gelu,gelu_new,relu2` | 是 |  |

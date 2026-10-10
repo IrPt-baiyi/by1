@@ -244,6 +244,11 @@ KIND_ATTRS = {
         "gate_lowrank": ("bool", True,
                          "门是不是两层（GLM 的 f_a/f_b）。默认一层（Ling 的 f_proj）"),
         "gate_rank": ("int", False, "低秩门的瓶颈宽度"),
+        "gate_out_bias": ("bool", False,
+                          "输出门第二层有没有 bias。**两个出处不一致**："
+                          "fla 的层写的是 `bias=True`，而 GLM 的官方权重清单里"
+                          "**没有** `g_b_proj.bias`。所以它必须是属性，"
+                          "不能写死 —— 默认 true（跟 fla）"),
         "gate_lower": ("float", False,
                        "给定时走 lower_bound 那一支："
                        "g = lower * sigmoid(exp(A_log) * g)（GLM 是 -5.0）"),

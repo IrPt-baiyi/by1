@@ -1,0 +1,115 @@
+# ── kda-lowrank-shaped.by1 ────────────────────────────────────────────
+# KDA 的 **低秩门变体**：门是两层（`f_a`/`f_b`、`g_a`/`g_b`）。
+#
+# 和 `kda-shaped.by1` 的差别就是 GLM 和 Ling 的差别：
+#   Ling  `no_kda_lora = true`  -> 一层 `f_proj` / `g_proj`
+#   GLM                         -> 两层 `f_a/f_b`、`g_a/g_b`
+# 而这条分支**一直没有任何模型走** —— 后果实测到了两处：
+#
+#   ① PyTorch 那边在两层之间**多了一个 silu**（NumPy 那边没有）
+#      —— 而 fla 是 `nn.Sequential(Linear, Linear)`，两层之间没有激活。
+#      **两个后端在低秩输出门上一直不一致，`--compare` 从来没红过**，
+#      因为没有模型走这一支。
+#   ② GLM 的机制块里**没写 `gate_lowrank`**，于是默认成 `false` ——
+#      契约声明的是 `f_a_proj/f_b_proj`（两层），而生成出来的模块是
+#      一层。**描述的是一个模型，生成的是另一个，而且一声不吭。**
+#
+# 所以这一份不是为了"多一个形状"，是为了**让这条分支有东西管住**。
+#
+#   python by1exec.py kda-lowrank-shaped.by1 --compare    NumPy vs PyTorch
+#
+# 判卷人：`src/modelcheck/by1kda.py` 的"低秩"那个正例（对着 fla 的
+# `naive_recurrent_kda` + `rms_norm_ref`）+ 这条分支自己的两条反例。
+
+model KDA-lowrank-shaped {
+  arch  kda_lowrank_shaped
+  ctx   1024
+
+  hparams {
+    d_model = 128
+    n_layer = 4
+    vocab   = 512
+    rms_eps = 1e-05
+  }
+
+  # Kimi Delta Attention，GLM 那一支。
+  #   kd = k_heads * k_dim = 4 * 16 = 64
+  #   vd = v_heads * v_dim = 4 * 16 = 64
+  #   gate_dim = v_heads * k_dim = 64
+  #   瓶颈 = gate_rank = 16  —— fla 里它是 `head_v_dim`（= v_dim）✓，
+  #   这里故意取一个**和 v_dim 不一样**的值，好让"瓶颈该是哪个宽度"
+  #   这一类错误建得出形状差（两个真模型都恰好 dk == dv，量不出来）。
+  mech KDA_ : KDA {
+    k_heads       = 4
+    v_heads       = 4
+    k_dim         = 16
+    v_dim         = 16
+    conv_kernel   = 4
+    conv_bias     = false
+    gate_lowrank  = true
+    gate_rank     = 16
+    gate_out_bias = true
+    act           = silu
+    structural    = [ k_heads, v_heads, k_dim, v_dim, conv_kernel, gate_rank ]
+  }
+
+  mech MLP_ : FFN { hidden = 256 }
+
+  stack main {
+    pattern = 4 * KDA_
+    main[:] >> MLP_
+  }
+
+  position {
+    default = none
+  }
+
+  tensors {
+    KDA_ {
+      q_proj.weight   : (k_heads * k_dim, d_model)
+      k_proj.weight   : (k_heads * k_dim, d_model)
+      v_proj.weight   : (v_heads * v_dim, d_model)
+      q_conv1d.weight : (k_heads * k_dim, 1, conv_kernel)
+      k_conv1d.weight : (k_heads * k_dim, 1, conv_kernel)
+      v_conv1d.weight : (v_heads * v_dim, 1, conv_kernel)
+      f_a_proj.weight : (gate_rank, d_model)
+      f_b_proj.weight : (v_heads * k_dim, gate_rank)
+      g_a_proj.weight : (gate_rank, d_model)
+      g_b_proj.weight : (v_heads * v_dim, gate_rank)
+      g_b_proj.bias   : (v_heads * v_dim,)
+      b_proj.weight   : (v_heads, d_model)
+      A_log           : (v_heads,)
+      dt_bias         : (v_heads * k_dim,)
+      o_norm.weight   : (v_dim,)
+      o_proj.weight   : (d_model, v_heads * v_dim)
+    }
+    MLP_ {
+      gate_proj.weight : (hidden, d_model)
+      up_proj.weight   : (hidden, d_model)
+      down_proj.weight : (d_model, hidden)
+    }
+    layer {
+      attn_norm.weight : (d_model,)
+      mlp_norm.weight  : (d_model,)
+    }
+    global {
+      embed.weight      : (vocab, d_model)
+      final_norm.weight : (d_model,)
+      lm_head.weight    : (vocab, d_model)
+    }
+  }
+
+  emit {
+    train -> torch.module {
+      name        = "model.layers.{i}.{scope}{physical}"
+      global_name = "{physical}"
+      scope { KDA_ = mixer., MLP_ = mlp., layer = "", global = "" }
+      rename {
+        attn_norm.weight  = input_layernorm.weight,
+        mlp_norm.weight   = post_attention_layernorm.weight,
+        embed.weight      = model.embed_tokens.weight,
+        final_norm.weight = model.norm.weight
+      }
+    }
+  }
+}

@@ -508,7 +508,14 @@ def op_kda(P, a, ins, d):
     # 门：一层还是两层，由契约里有没有 f_b_proj 决定 —— **不猜**
     if "f_b_proj" in P:
         fg = (x @ P["f_a_proj"].T) @ P["f_b_proj"].T
-        gtw = (x @ P["g_a_proj"].T) @ P["g_b_proj"].T + P.get("g_b_proj.bias")
+        gtw = (x @ P["g_a_proj"].T) @ P["g_b_proj"].T
+        # **bias 是可选的** ✓ —— fla 的层有（`bias=True`）✓，
+        # 而 GLM 的官方权重清单里**没有** `g_b_proj.bias` ✓。
+        # 原来这里是无条件加的 ✗，于是"没有 bias"那份契约会
+        # `ndarray + None` 直接炸 ✓ —— 或者更糟：如果有人给它补一个
+        # 全零的占位，它会**静默算对** ✓，然后永远没人发现契约是错的 ✗。
+        if P.get("g_b_proj.bias") is not None:
+            gtw = gtw + P["g_b_proj.bias"]
     else:
         fg = x @ P["f_proj"].T
         gtw = x @ P["g_proj"].T
@@ -557,7 +564,13 @@ def op_kda(P, a, ins, d):
 
     var = out.astype(np.float64).__pow__(2).mean(-1, keepdims=True)
     y = out * (1.0 / np.sqrt(var + a.get("norm_eps", _DEFAULT_EPS)))
-    y = (P["o_norm.w"] * y) * silu(gtw)
+    # **输出门的激活是 `sigmoid`，不是 `silu`** ✓ ——
+    # `fla/layers/kda.py:191` 的 `activation="sigmoid"` ✓，
+    # 而它在核里就是 `y = y * sigmoid(g)` ✓
+    # （`fla/modules/fused_norm_gate.py:104`）✓。
+    # 这里原来写的是 `silu(gtw)` ✗ —— 和 PyTorch 那边**错得一模一样** ✓，
+    # 所以 `--compare` 一直是绿的 ✓：**两个后端一致，而两个都错** ✗。
+    y = (P["o_norm.w"] * y) * (1.0 / (1.0 + np.exp(-gtw.astype(np.float64))))
     return y.reshape(b, s, vd) @ P["o_proj"].T
 
 
@@ -800,7 +813,10 @@ def shapes_of(ir):
                     out[pre + "f_b_proj"] = (_nv * _dk, _r)
                     out[pre + "g_a_proj"] = (_r, d)
                     out[pre + "g_b_proj"] = (_vd, _r)
-                    out[pre + "g_b_proj.bias"] = (_vd,)
+                    # **第二层的 bias 跟属性走** ✓ —— fla 有 ✓，GLM 没有 ✓
+                    # （见 `by1ir.KIND_ATTRS["KDA"]["gate_out_bias"]`）。
+                    if a.get("gate_out_bias", True):
+                        out[pre + "g_b_proj.bias"] = (_vd,)
                 else:
                     out[pre + "f_proj"] = (_nv * _dk, d)
                     out[pre + "g_proj"] = (_vd, d)

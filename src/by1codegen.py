@@ -153,7 +153,14 @@ ATTRS = {
             "num_heads", "head_dim",
             "conv_kernel", "conv_bias",
             # 门是两层还是三层 —— GLM 的 f_a/f_b 是两层，Ling 的 f_proj 一层
-            "gate_lowrank", "gate_lower", "gate_act",
+            #
+            # **`gate_act` 从这里删掉了** ✗ —— KDA 类里**没人读它** ✓
+            # （Attention 和 MLA 那两支读的是各自的 `gate_act` ✓）。
+            # 留着它的后果是最坏的一种 ✓：模型里写 `gate_act = softplus`
+            # **不报错** ✗，而它**什么也不做** ✓ ——
+            # 而 `by1ir` 那边又会把它判成非法属性 ✓，两边不一致 ✓。
+            # 那一层现在从 `by1ir.KIND_ATTRS` 推（见下面那段）✓。
+            "gate_lowrank", "gate_lower", "gate_rank", "gate_out_bias",
             "l2_eps", "norm_eps", "act", "structural"},
     # MLA：低秩压缩的注意力（DeepSeek 提出）。
     # kv 被压到 c_kv，k_rot 是**单头**共享的 —— 这是它和 GQA 的根本区别。
@@ -166,6 +173,29 @@ ATTRS = {
                "act", "norm_eps", "l2_eps", "out_dim", "structural",
                "decay", "shortconv"},
 }
+
+# ── **上面那张表和 `by1ir.KIND_ATTRS` 必须一致** ─────────────────────
+#
+# 上一张表是"`.by1` 的机制块里能写哪些键" ✓，
+# `by1ir.KIND_ATTRS` 是"IR 里合法的属性有哪些" ✓ ——
+# 两层的东西，而**一个 IR 属性必须先能写进 `.by1`** ✓。
+#
+# 原来这两张表**各写各的** ✗，而实测已经不一致了 ✓：
+#
+#     by1ir  有 `gate_rank` / `gate_out_bias` —— codegen 没有 ✗
+#     codegen 有 `gate_act`                —— 而 **KDA 类里没人读它** ✗
+#
+# 后果不是"报错" ✗，是**写进模型里的属性会在半路被丢掉** ✓，
+# 或者一个**永远用不上**的属性（`gate_rank` 从来没被接受过 ✓）。
+#
+# 所以这一层改成**从 IR 那张表推** ✓ —— 少一处手抄，就少一处对不上 ✓。
+# 反向（codegen 有、IR 没有）剩下的就是 **`.by1` 自己的关键字**
+# （`structural` / `rope` / `pairing` … ✓），那些本来就该在这一层 ✓。
+import by1ir  # noqa: E402  （**没有环**：by1ir 不 import by1codegen）
+
+for _k, _spec in by1ir.KIND_ATTRS.items():
+    if _k in ATTRS:
+        ATTRS[_k] = set(ATTRS[_k]) | set(_spec)
 
 
 class CodegenError(Exception):
@@ -753,8 +783,17 @@ def compile_ir(info: Dict[str, Any]) -> Dict[str, Any]:
                 "conv_kernel": int(_num(attrs.get("conv_kernel"), 4)),
                 "conv_bias": _flag(attrs.get("conv_bias")),
                 "gate_lowrank": bool(lowrank),
-                # 门的秩（低秩时的瓶颈）。GLM 是 head_dim = 128 ✓。
-                "gate_rank": int(_num(attrs.get("gate_rank"), dk)),
+                # 门的秩（低秩时的瓶颈）。**是 `head_v_dim`（= `v_dim`）** ✓
+                # —— `fla/layers/kda.py:169` 写的是
+                # `nn.Linear(hidden_size, self.head_v_dim)` ✓。
+                # 这里原来默认成 `dk` ✗：两个真模型（GLM、Ling）
+                # 都恰好 `dk == dv` ✓，所以**量不出来** ✗。
+                "gate_rank": int(_num(attrs.get("gate_rank"), dv)),
+                # **输出门第二层有没有 bias** ✓ —— 两个出处不一致
+                # （fla `bias=True` ✓ / GLM 的官方清单里没有 ✓），
+                # 所以它是属性 ✓。原来**没往这里抄** ✗ ——
+                # 于是模型里写 `gate_out_bias = false` 会被静默丢掉 ✗。
+                "gate_out_bias": _flag(attrs.get("gate_out_bias"), default=True),
                 "act": str(attrs.get("act", "silu")),
                 "l2_eps": float(_num(attrs.get("l2_eps"), 1e-6)),
                 "norm_eps": float(_num(attrs.get("norm_eps"),
@@ -1641,6 +1680,26 @@ def gated_delta_rule(q, k, v, g, beta, l2_eps=1e-6, state=None):
 
 
 class RMSNormGated(nn.Module):
+    """门控 RMSNorm。**门的激活有两种** —— `silu` 和 `sigmoid`。
+
+    ⚠ 这一行原来是写死的 `F.silu(gate)` ✗ —— 而 `self.act` **收了却
+    从来没人读** ✓（"数没动"的第一种：**没人读**）。
+
+    而它不只是死参数 ✗：两个用它的机制**激活不一样** ✓ ——
+
+        GDN  `fla/layers/gated_deltanet.py:197`
+             `FusedRMSNormGated(head_v_dim, eps=norm_eps)`     -> 默认 swish/silu ✓
+        KDA  `fla/layers/kda.py:191`
+             `FusedRMSNormGated(head_v_dim, activation="sigmoid", ...)`  -> **sigmoid** ✓
+
+    而 `sigmoid` 那一支在 `fla/modules/fused_norm_gate.py:104` 里就是
+    `y = y * sigmoid(g)` ✓（`silu` 那一支是 `y * g * sigmoid(g)` ✓，
+    第 101 行）✓。
+
+    **所以 by1 的 KDA 一直算的是另一个函数** ✓ —— 而判卷人看不出来 ✗，
+    因为参照物那一侧**也是我照着同一句话写的** ✓。
+    """
+
     def __init__(self, d, eps=1e-6, act="silu"):
         super().__init__()
         self.w = nn.Parameter(torch.ones(d))
@@ -1650,7 +1709,14 @@ class RMSNormGated(nn.Module):
     def forward(self, x, gate):
         v = x.float().pow(2).mean(-1, keepdim=True)
         y = x * torch.rsqrt(v + self.eps)
-        return (self.w * y) * F.silu(gate.float())
+        g = gate.float()
+        if self.act in ("silu", "swish"):
+            z = g * torch.sigmoid(g)
+        elif self.act == "sigmoid":
+            z = torch.sigmoid(g)
+        else:
+            raise ValueError("RMSNormGated 不认识的门激活：%r" % (self.act,))
+        return (self.w * y) * z
 
 
 class GatedDeltaNet(nn.Module):
@@ -1716,9 +1782,11 @@ class KDA(nn.Module):
       ① q / k / v 是**分开**的投影（GDN 融在一个 `in_proj_qkvz` 里）
       ② `dt_bias` 按**维**（`nv * dk`），GDN 按头（`nv`）
       ③ 多一个**输出门** `g_proj`，喂给 `o_norm`（`fla/layers/kda.py:309`）
-      ④ 门可以**低秩两层**（GLM 的 `f_a/f_b`），也可以一层（Ling 的 `f_proj`）
+       —— 而 `o_norm` 的激活是 **sigmoid** ✗（不是 GDN 那个 silu）
+    ④ 门可以**低秩两层**（GLM 的 `f_a/f_b`），也可以一层（Ling 的 `f_proj`）
 
-    后两条尤其容易写错，而**写错了不会报错，只会算错** ✓。
+    后两条尤其容易写错，而**写错了不会报错，只会算错** ✓ ——
+    实测：③ 那一处**确实写错了** ✗，见 `RMSNormGated` 的注释。
     """
 
     def __init__(self, a, d):
@@ -1729,7 +1797,15 @@ class KDA(nn.Module):
         #: 门的宽度 —— `fla` 里叫 `gate_dim = num_v_heads * head_k_dim` ✓。
         self.gd = self.nv * self.dk
         self.lowrank = bool(a.get("gate_lowrank"))
-        self.rank = int(a.get("gate_rank") or self.dk)
+        # **低秩门的瓶颈宽度是 `head_v_dim`，不是 `head_k_dim`。**
+        #
+        # `fla/layers/kda.py:168-171` 写的是
+        #     f_proj = Sequential(Linear(hidden, self.head_v_dim),
+        #                         Linear(self.head_v_dim, gate_dim))
+        # —— 瓶颈是 **head_v_dim** ✓。这里原来默认成 `self.dk` ✗，
+        # 两个真模型（GLM 128/128、Ling 128/128）里 dk 恰好等于 dv ✓，
+        # 所以**量不出来** ✗ —— 而 dk ≠ dv 的模型会建错形状 ✓。
+        self.rank = int(a.get("gate_rank") or self.dv)
         self.gate_lower = a.get("gate_lower")
         k = a["conv_kernel"]
 
@@ -1745,9 +1821,19 @@ class KDA(nn.Module):
                                 bias=cb, padding=k - 1)
 
         # 衰减门（`f_proj`）：hidden -> gate_dim，一层或两层
+        #
+        # ⚠ **属性名必须和契约里的张量名一致** ✗ —— 这里原来叫
+        # `f_a` / `f_b` ✗，于是模块的 `state_dict` 是
+        # `…f_a.weight` ✓，而契约（和 shapes 表）那边叫 `f_a_proj` ✓，
+        # 两边对不上 ✓ —— 实测：`kda-lowrank-shaped.by1` 一跑
+        # `--compare` 就报"PyTorch 侧有 20 个参数没找到对应" ✓。
+        #
+        # 而这条路**一直没有任何模型走过** ✗（低秩的真模型只有 GLM，
+        # 卡在 SparseMLA 上）✓ —— 也就是说"低秩门"这个能力
+        # **声明了、建得出来、装不上权重** ✓。
         if self.lowrank:
-            self.f_a = nn.Linear(d, self.rank, bias=False)
-            self.f_b = nn.Linear(self.rank, self.gd, bias=False)
+            self.f_a_proj = nn.Linear(d, self.rank, bias=False)
+            self.f_b_proj = nn.Linear(self.rank, self.gd, bias=False)
         else:
             self.f_proj = nn.Linear(d, self.gd, bias=False)
         # `A_log` / `dt_bias` 的形状和 fla 一致：A_log 按 v 头、
@@ -1757,15 +1843,42 @@ class KDA(nn.Module):
 
         self.b_proj = nn.Linear(d, self.nv, bias=False)
 
-        # 输出门（`g_proj`）：hidden -> value_dim。**第二层带 bias** ✓ ——
-        # 这一条只有源码里有，config 里看不出来。
+        # 输出门（`g_proj`）：hidden -> value_dim。
+        #
+        # ⚠ **这里原来写的是 `g_b(F.silu(g_a(x)))`** ✗ —— 而 fla 那边是
+        #     g_proj = Sequential(Linear(hidden, head_v_dim),
+        #                         Linear(head_v_dim, value_dim, bias=True))
+        # （`fla/layers/kda.py:187-190`）✓ —— `nn.Sequential` 两层之间
+        # **没有激活** ✓。所以那个 silu 是**凭"门一般配 silu"加的** ✗，
+        # 不是从源码来的 ✓。
+        #
+        # 而 NumPy 那边（`by1exec.op_kda`）**从头就没有那个 silu** ✓ ——
+        # 也就是说 torch 和 NumPy 在低秩输出门上**一直不一致** ✗，
+        # 只是没有任何模型走这条分支 ✓，所以 `--compare` 从来没红过 ✓。
+        # （`gate_lowrank=true` 的真模型只有 GLM，而它卡在 SparseMLA 上。）
+        #
+        # 第二层带不带 bias：**两个出处不一致**，所以做成属性 ——
+        #
+        #     fla `layers/kda.py:189`      `nn.Linear(..., bias=True)`  -> 有
+        #     GLM 的官方权重清单           **没有** `g_b_proj.bias`     -> 没有
+        #     （76108 个张量里 `.bias` 只有 135 个，全是 indexer 和视觉塔的）
+        #
+        # 原来写死 `bias=True` ✗ —— 对 fla 对 ✓，对 GLM 不对 ✗，
+        # 而 GLM 卡在 SparseMLA 上跑不了 ✓，所以**没有东西会报** ✗。
         if self.lowrank:
-            self.g_a = nn.Linear(d, self.rank, bias=False)
-            self.g_b = nn.Linear(self.rank, self.vd, bias=True)
+            self.g_a_proj = nn.Linear(d, self.rank, bias=False)
+            self.g_b_proj = nn.Linear(self.rank, self.vd,
+                                      bias=bool(a.get("gate_out_bias", True)))
         else:
             self.g_proj = nn.Linear(d, self.vd, bias=False)
 
-        self.o_norm = RMSNormGated(self.dv, a["norm_eps"], a["act"])
+        # **KDA 的输出门是 `sigmoid`，不是 `silu`** ✓ ——
+        # `fla/layers/kda.py:191` 写的是 `activation="sigmoid"` ✓。
+        # 而 GDN 那边（`gated_deltanet.py:197`）不传，是默认的 silu ✓。
+        # **两个机制用同一个类、不同的激活** ✓ —— 所以这个类必须
+        # 真的读 `act` ✓，不能写死 ✗。
+        self.o_norm_act = "sigmoid"
+        self.o_norm = RMSNormGated(self.dv, a["norm_eps"], self.o_norm_act)
         self.o_proj = nn.Linear(self.vd, d, bias=False)
         self.l2_eps = a["l2_eps"]
 
@@ -1776,12 +1889,14 @@ class KDA(nn.Module):
         # （`by1irentry` 把三个后端都从 IR 跑一遍 —— 就是它抓住的 ✓。）
         if not self.lowrank:
             return self.f_proj(x)
-        return self.f_b(self.f_a(x))
+        return self.f_b_proj(self.f_a_proj(x))
 
     def _gate_out(self, x):
         if not self.lowrank:
             return self.g_proj(x)
-        return self.g_b(F.silu(self.g_a(x)))
+        # **中间没有激活** ✓ —— `fla/layers/kda.py:187-190` 是
+        # `nn.Sequential(Linear, Linear)` ✓。见 `__init__` 里那段注释。
+        return self.g_b_proj(self.g_a_proj(x))
 
     def forward(self, x):
         b, s, _ = x.shape

@@ -43,9 +43,27 @@ KDA 的语义**不是我猜的** —— 是从 `fla` 的源码里读出来的，
     ② `dt_bias` 按**头**而不是按**维**
     ③ `q/k` 不做 **L2 归一化**
     ④ 输出门**整条不乘**
-    ⑤ 归一化和门的**先后反了**（`norm_before_gate`）
-    ⑥ 低秩输出门中间**不加 silu**
+    ⑤ 门的**先后反了**（乘在归一化之前）
+    ⑥ 低秩输出门中间**多一个 silu**
     ⑦ 低秩衰减门中间**多一个 silu**
+    ⑧ 输出门用 **silu 而不是 sigmoid**
+
+## 而它自己**盲过一次** —— 这一条比上面八条都重要
+
+第 ⑧ 条是**事后补的** ✓，因为 by1 和这个判卷人**原来都写成 silu** ✗：
+
+    by1 的 RMSNormGated.forward   F.silu(gate)          ✗
+    判卷人的 tail()                rms_norm_ref(z=gate)  ✗（里面也是 silu）
+
+**两边错得一模一样，判卷人一直是绿的** ✓ —— 判卷人最该防、
+也最难自己发现的一种失效 ✓：**它的错和被测物的错同源时，它什么都证明不了** ✗。
+
+抓出它的是**读源码那一行** ✓（`fla/layers/kda.py:191` 的
+`activation="sigmoid"` ✓），**不是跑测试** ✓。
+所以 `gate_act()` 旁边把两处出处写死了 ✓，并且给它配了反例 ⑧ ✓。
+
+**这一节不是自我批评，是使用说明** ✓：这个判卷人的每一条断言，
+可信度**不超过它旁边那句出处** ✓。出处错的，它跟着错 ✓。
 
 ## 用法
 
@@ -92,9 +110,22 @@ REDS = [
     ('dt_bias 按头而不是按维', _PLAIN, dict(fkw=dict(per_dim_dt=False))),
     ('q/k 不做 L2 归一化', _PLAIN, dict(fkw=dict(l2norm=False))),
     ('输出门整条不乘', _PLAIN, dict(tkw=dict(use_gate=False))),
-    ('归一化在门之前', _PLAIN, dict(tkw=dict(norm_before_gate=False))),
-    ('低秩输出门中间不加 silu', _LOWRANK, dict(tkw=dict(out_act=None))),
+    ('门的先后反了', _PLAIN, dict(tkw=dict(gate_before_norm=True))),
+    # **这一条原来的名字是"低秩输出门中间不加 silu"** ✗ ——
+    # 也就是说，它把"两层之间有 silu"**当成了标准答案** ✗，
+    # 而真答案是反过来 ✓（fla 是 `nn.Sequential`，两层之间没有激活）。
+    #
+    # 坏的不在反例的机制 ✓（加 silu 和不加 silu 都会红 ✓），
+    # 坏的是**默认值** `gate_out(act='silu')` ✓：
+    # 于是就算有人把 by1 修对了 ✓，"低秩"那个**正例**也会红 ✗ ——
+    # 而正例红了，要改的是**判卷人** ✓。
+    # **一条指向反方向的判据，比没有判据更坏** ✓：它会挡住修复 ✓。
+    ('低秩输出门中间多一个 silu', _LOWRANK, dict(tkw=dict(out_act='silu'))),
     ('低秩衰减门中间多一个 silu', _LOWRANK, dict(fkw=dict(gate_act='silu'))),
+    # **这一条是这一轮真正的收获** ✓ —— 见 `gate_act` 的 docstring：
+    # by1 和参照物原来**都**把输出门的激活写成 silu ✗，
+    # 于是判卷人一直绿 ✓。抓出它的是**读源码** ✓，不是跑测试 ✓。
+    ('输出门用 silu 而不是 sigmoid', _PLAIN, dict(tkw=dict(act='silu'))),
 ]
 
 
@@ -199,21 +230,31 @@ def gate_in(torch, m, x, *, act=None):
     """
     F = torch.nn.functional
     if m.lowrank:
-        h = m.f_a(x)
+        h = m.f_a_proj(x)
         if act == 'silu':
             h = F.silu(h)
-        return m.f_b(h)
+        return m.f_b_proj(h)
     return m.f_proj(x)
 
 
-def gate_out(torch, m, x, *, act='silu'):
-    """输出门 —— 低秩那支中间**有** silu（`fla/layers/kda.py`）。"""
+def gate_out(torch, m, x, *, act=None):
+    """输出门 —— **低秩那支两层之间没有激活** ✓。
+
+    `fla/layers/kda.py:187-190`：
+
+        g_proj = nn.Sequential(nn.Linear(hidden_size, self.head_v_dim, bias=False),
+                               nn.Linear(self.head_v_dim, self.value_dim, bias=True))
+
+    `nn.Sequential` **不会自己加激活** ✓。这里原来写的注释是
+    "低秩那支中间**有** silu" ✗ —— 那是我凭"门一般配 silu"想出来的 ✗，
+    而 `act='silu'` 这个开关留着，专门用来当**反例** ✓。
+    """
     F = torch.nn.functional
     if m.lowrank:
-        h = m.g_a(x)
+        h = m.g_a_proj(x)
         if act == 'silu':
             h = F.silu(h)
-        return m.g_b(h)
+        return m.g_b_proj(h)
     return m.g_proj(x)
 
 
@@ -263,13 +304,49 @@ def front(torch, m, x, *, per_dim_gate=True, per_dim_dt=True, l2norm=True,
     return dict(q=q, k=k, v=v, g=g, beta=beta, qn=qn, kn=kn)
 
 
-def tail(torch, m, rms_ref, rec, x, *, use_gate=True, norm_before_gate=True,
-         out_act='silu'):
-    """尾巴：输出门 → 门控 RMSNorm → `o_proj`。参照物是 `rms_norm_ref`。"""
+def gate_act(torch, g, act="sigmoid"):
+    """输出门的**激活** —— 两处出处都在 fla 里，不是选的。
+
+        `fla/layers/kda.py:191`            activation="sigmoid"
+        `fla/modules/fused_norm_gate.py`   silu/swish: y * g * sigmoid(g)
+                                           sigmoid:   y * sigmoid(g)
+
+    **这一条原来两边都写成了 silu** ✗ —— 也就是说这个判卷人
+    **本来是有盲区的** ✓，而且盲的正是它自己要判的那一处 ✓：
+    参照物那一侧是我照着同一句话写的 ✓，于是"by1 错、参照物也错" ✓，
+    两边**错得一模一样** ✓，判卷人**一直是绿的** ✓。
+
+    这就是判卷人最该防、也最难自己发现的一种失效 ✓ ——
+    **判卷人的错和被测物的错同源时，它证明不了任何东西** ✓。
+    抓出它的是**读源码**（`activation="sigmoid"` 那一行）✓，
+    不是跑测试 ✓。所以这里把出处写死在旁边 ✓，并且给它配一条反例 ✓。
+    """
+    if act in ("silu", "swish"):
+        return g * torch.sigmoid(g)
+    if act == "sigmoid":
+        return torch.sigmoid(g)
+    raise ValueError('不认识的门激活：%r' % (act,))
+
+
+def tail(torch, m, rms_ref, rec, x, *, use_gate=True, gate_before_norm=False,
+         out_act=None, act="sigmoid"):
+    """尾巴：输出门 → 门控 RMSNorm → `o_proj`。
+
+    **归一化那一半用 fla 自己的 `rms_norm_ref`** ✓（传 `z=None`，
+    它只做 `x * rstd * w`）✓；门的激活**单独乘** ✓ ——
+    因为 `rms_norm_ref` 里的 `F.silu(z)` 是**写死的** ✗，
+    而 KDA 要的是 sigmoid ✓（见 `gate_act` 的 docstring）。
+    """
     b, s, _ = x.shape
     g = gate_out(torch, m, x, act=out_act).reshape(b, s, m.nv, m.dv)
-    y = rms_ref(rec, m.o_norm.w, None, z=(g if use_gate else None),
-                eps=m.o_norm.eps, norm_before_gate=norm_before_gate)
+    z = gate_act(torch, g.float(), act) if use_gate else None
+    if z is not None and gate_before_norm:
+        # 反例：门的先后反了
+        rec = rec * z
+        z = None
+    y = rms_ref(rec, m.o_norm.w, None, z=None, eps=m.o_norm.eps)
+    if z is not None:
+        y = y * z
     return m.o_proj(y.reshape(b, s, m.vd))
 
 
