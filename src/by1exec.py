@@ -788,10 +788,17 @@ OPS = {"Norm": op_norm, "Add": op_add, "Attention": op_attention,
 # ── 执行器：按 IR 求值，不认机制名，只认 kind ──────────────────────
 
 def shapes_of(ir):
-    """**从 IR 自己推**每个 op 需要的参数形状。IR 里没有形状，这是后端的活。"""
-    d = ir["d_model"]
+    """**从 IR 自己推**每个 op 需要的参数形状。IR 里没有形状，这是后端的活。
+
+    **宽度按层取**：`L["in_dim"]`（这一层的残差流宽度），不给才是顶层
+    `d_model`。原来这里无条件用 `ir["d_model"]` —— 于是**独立宽度的栈
+    （视觉塔）参数形状全错**：clef 的 `wq` 推成 (1152, 5120)，而产物是
+    `qkv.weight (3456, 1152)`。三个后端用的是同一份 `shapes_of`，
+    **它们会一致地错**。见 history/ir.md 128。
+    """
     out = {}
     for L in ir["layers"]:
+        d = L.get("in_dim") or ir["d_model"]
         for j, o in enumerate(L["ops"]):
             a, k = o["attrs"], o["kind"]
             pre = f"layers.{L['index']}.op{j}."
@@ -992,6 +999,18 @@ class Exec:
             n = x.shape[1]
             x = x + self.params_global("pos.weight")[:n][None, :, :]
         for L in self.ir["layers"]:
+            # **宽度按层取。** 原来这里传的是模型级 `d_model`，
+            # 而独立宽度的栈（视觉塔）不是它 —— 参数形状改对了、
+            # 计算宽度没跟着改，就是"形状对、算出来是另一个东西"。
+            d = L.get("in_dim") or self.ir["d_model"]
+            if x.shape[-1] != d:
+                # **宽度衔接不上的时候说清楚，不要让 matmul 裸崩。**
+                # 这句话正是多宽度模型现在缺的那一半：栈与栈之间
+                # 残差流要换宽度，而那一步还没人做（见 history/ir.md 128）。
+                raise ValueError(
+                    f"层 {L['index']} 的输入宽度 {x.shape[-1]} != "
+                    f"in_dim {d} —— **宽度在这里接不上**。"
+                    f"（独立宽度的栈之间要换宽度，那一步还没实现。）")
             env = {"hidden": x}
             for j, o in enumerate(L["ops"]):
                 ins = [env[r] for r in o["inputs"]]
@@ -1145,6 +1164,18 @@ def main(argv=None):
             c = find(k, v)
             if c is None:
                 left.append(k)
+            elif int(np.prod(params[c].shape)) != int(v.numel()):
+                # **元素总数对不上就是错了。** 这里原来无条件
+                # `reshape(v.shape)` —— 形状不一样也能塞进去，于是
+                # **宽度算错也照样绿**（`in_dim` 写错正好走这条路）。
+                #
+                # 判**总数**而不是判**形状**，是因为两边存在**合法的布局差**：
+                # 卷积核 `shapes_of` 给 2-D `(64, 4)`、PyTorch 给 3-D `(64, 1, 4)`；
+                # 注意力那边是融合 qkv vs 拆开。**总数一样、布局不同**，
+                # reshape 干的就是这件事。宽度错了总数就变，所以这条尺子够用。
+                left.append('%s 个数 %d != PyTorch 的 %d（形状 %s vs %s）'
+                            % (k, int(np.prod(params[c].shape)), int(v.numel()),
+                               tuple(params[c].shape), tuple(v.shape)))
             else:
                 # 键必须是 PyTorch 的名字 k，不能是 numpy 的名字 c ——
                 # 用错的话 strict=False 会**静默忽略全部**，模型还是随机初始化。

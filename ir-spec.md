@@ -45,6 +45,7 @@ python src/by1irentry.py                    # 三个后端只从 IR 跑
 | 字段 | 类型 | 必填 | 语义 |
 |---|---|---|---|
 | `index` | `int` | 是 | 层号。**多栈时是各栈从 0 起**，不是全局序号 |
+| `in_dim` | `int?` | 否 | 这一层的残差流宽度。**缺省是顶层 `d_model`**；独立宽度的栈（视觉塔）必给 |
 | `attrs` | `dict` | 是 | 这一层的属性（逐层覆盖合并之后的结果） |
 | `ops` | `list[Op]` | 是 | 这一层的算子序列，**顺序有意义** |
 | `state` | `list[State]` | 否 | 这一层需要什么状态（KV cache / recurrent / conv） |

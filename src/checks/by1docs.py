@@ -67,8 +67,15 @@ def md_files():
     """
     out = []
     for base, dirs, files in os.walk(ROOT):
+        # **只扫本仓库自己写的文档。** `node_modules` / `.mimocode` /
+        # `cgen` / `.venv` 里的 `.md` 是第三方或产物 —— 实测 npm 包的 README
+        # 里有 5 处指向**它们自己仓库**的相对链接，在这里当然是坏的，
+        # 而报出来像"我们的文档坏了"。**扫进来比不扫更糟**，和 `history/`
+        # 那条是同一个理由。
         dirs[:] = [d for d in dirs
-                   if d not in ('.git', '__pycache__', 'history')]
+                   if d not in ('.git', '__pycache__', 'history',
+                                'node_modules', '.mimocode', 'cgen',
+                                '.venv', '.dsh')]
         for f in files:
             if f.endswith('.md'):
                 out.append(os.path.join(base, f))

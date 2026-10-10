@@ -1003,10 +1003,18 @@ def compile_ir(info: Dict[str, Any]) -> Dict[str, Any]:
         else:
             state.append({"kind": "kv_cache", "bounded_by": None,
                           "dtype": "bf16", "reuse": "prefix"})
-        layers.append({"index": li,
-                       "attrs": dict(a),
-                       "ops": ops_of(mixer, attached, a),
-                       "state": state})
+        # **这一层的残差流宽度。** 绝大多数模型每层都一样，所以不写它时
+        # 后端按顶层 `d_model` 走；而独立宽度的栈（视觉塔）必须写 ——
+        # 不写的话后端推出来的参数形状是模型宽度，**全错**。
+        # 实测：clef 视觉栈宽 1152 而模型 5120，`wq` 该是 (1152, 1152) 一截。
+        _idm = (info.get("stack_d_model") or {}).get(_s)
+        _lay = {"index": li,
+                "attrs": dict(a),
+                "ops": ops_of(mixer, attached, a),
+                "state": state}
+        if _idm is not None and int(_idm) != d_model:
+            _lay["in_dim"] = int(_idm)
+        layers.append(_lay)
 
     if errs:
         # **写坏了优先。** 一份文件里既有语法/属性错、又有不认的机制时，

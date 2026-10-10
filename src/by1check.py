@@ -927,6 +927,14 @@ def check(path: str) -> Tuple[Report, dict]:
         #   就撞上了。** 说出来才有得查。
         "stack_index": {s.name: ((s.assigns.get("index") or "local").strip().lower())
                         for s in _['stacks']},
+        # **每个栈自己的残差流宽度。** 不等于 `d_model` 的就是视觉塔那种
+        # （clef 1152 / GLM 1024 / Step 1536，而模型宽度是 5120 / 4096 / 4096）。
+        # ⚠ 这个键原来**根本没暴露** —— 和上面 `stack_index` 是同一个毛病：
+        #   `by1tens` 里算过它，但外面拿不到，于是 `by1exec.shapes_of` 和
+        #   `by1c` 只能按模型级 `d_model` 推参数形状，**视觉栈的形状全错**
+        #   （实测 clef 的 `wq (1152, 5120)`，而产物是 `qkv.weight (3456, 1152)`）。
+        #   说出来才有得查。见 history/ir.md 128。
+        "stack_d_model": dict(_['stack_d_model'] or {}),
         "expansion": _['expansion'],
         "states": _['states'],
         "mechs": {n: b.mtype for n, b in _['mechs'].items()},
