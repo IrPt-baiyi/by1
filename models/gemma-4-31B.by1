@@ -137,6 +137,12 @@ model gemma-4-31B {
       up_proj.linear   : (hidden, d_model)
       down_proj.linear : (d_model, hidden)
     }
+    layer {
+      input_layernorm            : (d_model,)
+      post_attention_layernorm   : (d_model,)
+      pre_feedforward_layernorm  : (d_model,)
+      post_feedforward_layernorm : (d_model,)
+    }
   }
 
   # ── 附属 ──────────────────────────────────────────────────────────

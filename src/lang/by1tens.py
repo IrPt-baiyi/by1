@@ -205,14 +205,21 @@ def instantiate(*, _mod, _):
     # 全部"形状不符"（声明 `(5376,)` 而官方是 `(1152,)`）。
     #
     # class rows 没有这个问题，因为它们是**逐实例**算的 ✓。
-    # 这里补一张按栈的表；没声明宽度的栈沿用上面那份 ✓。
+    #
+    # ⚠ **要换的是 `_['hp']`，不是 `_['d_model']`。** `_flat_rows` 里写着
+    # 「形状只用 hparams 求值」—— 它读的就是 `_['hp']`（第 171 行）✗。
+    # 我第一版换的是 `_['d_model']` ✓，而那个名字**没有任何人读** ✗ ——
+    # 于是 `layer_rows_by_stack['vision']` 里仍然是 `(5376)`，
+    # 而表现是"改了跟没改一样" ✓。
     _['layer_rows_by_stack']: Dict[str, list] = {}
     for _['_sn'], _['_dm'] in (_['stack_d_model'] or {}).items():
-        _['_sav'] = _['d_model']
-        _['d_model'] = _['_dm']          # `_flat_rows` 读的就是这个名字
+        _['_sav_hp'] = _['hp']
+        _['_hp2'] = dict(_['hp'])
+        _['_hp2']["d_model"] = _fmt(_['_dm'])
+        _['hp'] = _['_hp2']
         _['layer_rows_by_stack'][_['_sn']] = _['_flat_rows'](
             _['contracts'].get("layer", []))
-        _['d_model'] = _['_sav']
+        _['hp'] = _['_sav_hp']
 
     # 3) 逐类实例化
     _['trows'] = []
