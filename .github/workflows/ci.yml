@@ -1,0 +1,67 @@
+# 每次提交都跑档 1 —— **这是这个仓库唯一的自动门。**
+#
+# ## 为什么需要它
+#
+# 推送走的是 `by1run --push`，而它用 `git push --no-verify`：**本地钩子不跑。**
+# 所以在我这台机器上，"检查过了"和"提交了"之间没有强制关系。
+#
+# 而真正堵住推送的那些错 —— 语法错、`FILES.md` 过期、行尾变成 CRLF、
+# `by1files` 的生成顺序 —— **全都落在档 1 里**。档 1 又是纯标准库，
+# 所以 CI 里一个依赖都不用装。
+#
+# ## 为什么只跑档 1
+#
+#   档 2 起要 numpy；档 3 要 `refs/` 语料；档 4 要 torch 和 transformers。
+#   那些放进来要下权重、要几百 MB，而回报远不如档 1。
+#   **这一条不假装覆盖了档 2 以后的东西。**
+#
+# ## 为什么不装 `[verify]`
+#
+# 因为"档 1 只要标准库"是这份配置**要证明的东西**。
+# 装了依赖再跑，就证明了不它。
+#
+# ## 为什么 Windows 也跑
+#
+# 这个项目在 Windows 上开发，而**行尾**和路径分隔符在这里出过两次事
+# （66 个文件的工作副本是 CRLF 而 `.gitattributes` 写的是 LF）。
+# 只在 Linux 上跑就看不见那类问题。
+
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  tier1:
+    name: 档 1（静态 · 纯标准库）
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # 一个组合红了，别把别的组合取消掉 —— 那样只看得到第一个错。
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        # `pyproject.toml` 写着 `requires-python = ">=3.9"` ——
+        # 而那个下限**从来没有被真跑过一次**。3.9 是来验那句话的。
+        python: ["3.9", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: 确认没有装任何东西
+        run: python -c "import sys; print(sys.version); print(len(sys.path))"
+
+      - name: 档 1
+        run: python src/checks/by1all.py --tier 1
+
+      # **判定行里写着「[全过（N 项没验）]」—— 那 N 项不是绿的。**
+      # 档 1 会跳过档 2 以后的内容，那是"这一档没验"，不是失败。
+      # 所以这里看的是**退出码**：非零就是真红。
+      #
+      # 退出码的含义是五态的，不是两态的：
+      #   0 过 · 1 被测的东西错了 · 30 这台机器上没验 · 40 调用方错了 · 51 检查器坏了
+      # 档 1 全静态，正常情况只会是 0 或 1。
