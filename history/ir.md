@@ -5645,3 +5645,77 @@ Step-3.7 有 `vision_config` / `image_token_len` / `vision_select_layer`
 把 Gemma 那四个 norm 和 `layer_scalar` 声明进 `tensors { layer { ... } }`，
 415 应该掉到 5 上下（只剩 patch embedder 那几个真正没建模的）。
 **而判据还是同一个数** ✓ —— 不需要新写。
+
+
+---
+
+## 102. 补 `layer` / `global` 那一步：**试了两次，都撤了**
+
+### 一、想做的是什么
+
+`by1verify` 一直印着"契约未覆盖"，而里面是：
+
+    文本 4 个 norm x 60 = 240     （Gemma 是三明治：attn 前/后、ff 前/后）
+    视觉 4 个 norm x 27 = 108
+    layer_scalar x 60
+    embed_tokens / norm / patch_embedder 那几个
+
+**目标**：把这些声明进 `tensors { layer { ... } }` / `global { ... }`，
+让 415 掉到 5 上下。判据还是同一个数、不需要新写 ✓。
+
+### 二、第一次：声明了，**数一点没变**
+
+在 `tensors` 里加了 `layer { … }` 和 `global { … }` 两块 ✓ ——
+而 `415` 一个没动 ✗。
+
+查下去发现：`by1verify` 的 `check_tensors` 是**按 owner 查 `scope` 表**的
+
+    if scope_map and owner not in scope_map:
+        unmapped += 1
+        continue
+
+而 layer 行的 owner 是 `"layer"` ✗ —— 不在我的 `scope { GQA, Dense, ViT, ViTMlp }`
+里 ✓ —— **于是全部被当成"未映射"跳过** ✗。
+
+**所以"写出来"和"验得到"是两件事** ✓ —— 而表现是"声明好像没生效" ✓，
+看起来像解析器的问题，实际是**映射表少两行** ✓。
+（`mla-shaped.by1` 里一直写着 `layer = "", global = ""` ✓ —— 我读过那一段 ✗。）
+
+### 三、第二次：加进 `scope`，把物理名弄坏了
+
+    scope { GQA = self_attn, ..., layer = "", global = "" }
+
+结果：
+
+    契约声明存在: 1208   名字+形状一致 **0**   缺失 1208
+    契约未覆盖: 1188 个（100%）
+
+**`scope` 的值不只用于命名模板** ✗ —— 它也**参与物理名**。
+而 `scope = ""` 让 layer 行渲染成 `layers.N..input_layernorm.weight`（双点）✗。
+
+我接着试了把约定改成 `{scope}{logical}`（值自带尾点，`mla-shaped` 的写法 ✓）——
+结果 **2 / 1210** ✗（只有 `global` 那两行对了 ✓）。
+
+**两次都把门弄红了** ✗。**撤回到 773 / 415 / 档 4 全绿** ✓。
+
+### 四、这一轮真正的产出：**两件下一个人必须知道的事**
+
+    ① `by1verify` **按 owner 查 `scope`** —— 不在表里就静默跳过。
+       所以往 `tensors` 里加 `layer` / `global` **不会自动被验** ✗，
+       而表现是"数没变"，看起来像解析没生效。
+    ② `scope` 的值有**两种用途**（命名模板 + 物理名）✗ ——
+       改它的格式会同时动到两边。要加 `layer` / `global`，
+       得先读懂它在 `by1check` 里到底被消费了几处 ✓。
+
+**这不是"没做成"，是"知道了它为什么不是加两行"** ✓ ——
+和前面那次"视觉塔卡在语言缺口"同一形状：**先说清楚做到哪一步**，
+比留一段看起来快好了的半成品好 ✓。
+
+### 五、现在的位置
+
+    契约声明存在: 773   名字+形状一致 773   形状不符 0   缺失 0  ✓
+    契约未覆盖: 415（35%）
+    档 4: 64 项，0 项失败 ✓
+
+那一轮的目标（命名规则 → 773）**已经达成并留下** ✓；
+而"补 layer/global" 是**下一个**目标，判据还是那个数（415 → 5）。

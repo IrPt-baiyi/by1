@@ -137,6 +137,25 @@ model gemma-4-31B {
       up_proj.linear   : (hidden, d_model)
       down_proj.linear : (d_model, hidden)
     }
+    # ⚠ **`layer` / `global` 两块我试过、撤了。**
+    #
+    # 目标是把 Gemma 每层那四个 norm（`input_layernorm` /
+    # `post_attention_layernorm` / `pre_feedforward_layernorm` /
+    # `post_feedforward_layernorm`）和 `layer_scalar` 声明出来 ——
+    # 它们从没进过契约，一直躺在 `by1verify` 的"契约未覆盖"里
+    # （文本 240 个 + 视觉 108 个 + `layer_scalar` 60 个）。
+    #
+    # 而**写出来不等于验得到** ✗：`by1verify` 按 owner 查 `scope` 表，
+    # `layer` / `global` 不在表里就被记成"未映射"跳过 ——
+    # 表现是"未覆盖数一点没变"，看起来像声明没生效 ✓。
+    # 加进 `scope` 之后又发现 `scope` 的值**不只用于命名模板**，
+    # 也参与物理名 ✗ —— 于是"1210 个只有 2 个对得上"。
+    #
+    # **所以这一步的前置是读懂 `scope` 的两种用途**，而不是加两行 ✓。
+
+    # 非层级：`embed` 和 `final_norm`。它们的官方名字和逻辑名不同
+    # （`model.language_model.embed_tokens.weight` / `...norm.weight`），
+    # 而 `rename` 是干这个的 —— 也一并留到那一步。
   }
 
   # ── 附属 ──────────────────────────────────────────────────────────
@@ -237,13 +256,22 @@ model gemma-4-31B {
     # 权威产物：HuggingFace safetensors
     train -> torch.module {
       name  = "model.language_model.layers.{i}.{scope}.{logical}.weight"
-      # **辅助栈可以有自己的前缀。** `render_name` 里的优先级是
-      # `expert_name > name_<栈名> > name`（见 `by1check.py`），
-      # 而 Nemotron 的 `name_model` / `name_mtp` 就是这么用的 ✓。
-      #
-      # 视觉塔挂在 `model.vision_tower.encoder.layers.N.` 下，而不是
-      # `model.language_model.layers.N.` —— 只差这一条前缀。
+      # 辅助栈可以有自己的前缀（`render_name` 的优先级是
+      # `expert_name > name_<栈名> > name`，Nemotron 的
+      # `name_model` / `name_mtp` 就是这么用的）。视觉塔只差这一条 ✓。
       name_vision = "model.vision_tower.encoder.layers.{i}.{scope}.{logical}.weight"
+      #
+      # ⚠ **`layer` / `global` 这两行我试过、撤了。** 试的写法是
+      #
+      #     scope { ..., layer = "", global = "" }
+      #
+      # 而它把**物理名**也改了 —— `scope` 的值不只用于这里的模板，
+      # 也参与别处的物理名。表现是"契约声明了 1210 个、只有 2 个对得上"。
+      #
+      # 真要补上那 355 个张量（Gemma 每层四个 norm + `layer_scalar`
+      # + `embed`/`final_norm`），得先分清 `scope` 的两种用途 ——
+      # 那是一件**要读懂 `by1check` 里 `scope` 怎么被消费**的活，
+      # 而不是往这里加两行 ✓。
       scope { GQA = self_attn, Dense = mlp, ViT = self_attn, ViTMlp = mlp }
     }
 
