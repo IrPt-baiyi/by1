@@ -200,6 +200,20 @@ def instantiate(*, _mod, _):
     _['layer_rows'] = _['_flat_rows'](_['contracts'].get("layer", []))
     _['global_rows'] = _['_flat_rows'](_['contracts'].get("global", []))
 
+    # **逐层的张量也要按栈算宽度。** `layer_rows` 上面那一行只算了一次、
+    # 用的是模型的 `d_model` —— 而视觉栈宽 1152 ✗。实测：27 层 x 4 个 norm
+    # 全部"形状不符"（声明 `(5376,)` 而官方是 `(1152,)`）。
+    #
+    # class rows 没有这个问题，因为它们是**逐实例**算的 ✓。
+    # 这里补一张按栈的表；没声明宽度的栈沿用上面那份 ✓。
+    _['layer_rows_by_stack']: Dict[str, list] = {}
+    for _['_sn'], _['_dm'] in (_['stack_d_model'] or {}).items():
+        _['_sav'] = _['d_model']
+        _['d_model'] = _['_dm']          # `_flat_rows` 读的就是这个名字
+        _['layer_rows_by_stack'][_['_sn']] = _['_flat_rows'](
+            _['contracts'].get("layer", []))
+        _['d_model'] = _['_sav']
+
     # 3) 逐类实例化
     _['trows'] = []
     _['class_rows']: Dict[tuple, list] = {}

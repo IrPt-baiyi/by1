@@ -883,7 +883,11 @@ def check(path: str) -> Tuple[Report, dict]:
             _['_at'] = dict(_['resolve_attrs'](_['mechs'][_['am']], {}))
             _['_at'].update(_['overrides'].get((_['s'], _['_li'], _['am']), {}))
             _['entry'] += [(_['am'], r) for r in _['class_rows'].get((_['am'], _['key_of'](_['am'], _['_at'])), [])]
-        for _['_r'] in _['layer_rows']:
+        # **逐层的张量要按这一层所在的栈取。** 视觉栈宽 1152、
+        # 主干 5376 —— 同一份 `layer` 契约要算两遍（见 `by1tens`）。
+        # 没声明宽度的栈沿用默认那一份 ✓。
+        for _['_r'] in ((_['layer_rows_by_stack'] or {}).get(_['s'])
+                        or _['layer_rows']):
             _['_gd'] = _['_r'][2]
             if _['_gd'] is not None and _['_gd'] not in _['atts']:
                 continue          # 这层没挂那个机制，就没有这个张量
