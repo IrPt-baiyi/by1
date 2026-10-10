@@ -7758,3 +7758,44 @@ Gemma 的 `torch.module` emit 里没有 `global_name` ✗ ——
     ③ Laguna 的 83
        —— 量出来是**少数几层**的 norm 加全局那两个 ✓，
           像是"某几层的层类型不同" ✓，得先看是哪几层 ✓。
+
+### 十一、补量：那三处 333 个**长得一模一样**
+
+写进"下一步"之前先验了假设 ✓（"一份栈 + 一个契约块能不能同时覆盖
+三个模型" ✓）：
+
+    clef              视觉 333 个   27 层 x 12 + 9 个不带层号的
+    Qwen3.8-27B       视觉 333 个   27 层 x 12 + 9 个不带层号的
+    Qwen3.6-35B-A3B   视觉 333 个   27 层 x 12 + 9 个不带层号的
+
+而**逐张量的名字和形状都一样** ✓：
+
+    attn.qkv.weight    (3456, 1152)   <- **融合 qkv，带 bias**
+    attn.qkv.bias      (3456,)
+    attn.proj.weight   (1152, 1152)   attn.proj.bias (1152,)
+    mlp.linear_fc1.weight (4304, 1152)   .bias (4304,)
+    mlp.linear_fc2.weight (1152, 4304)   .bias (1152,)
+    norm1.weight/.bias (1152,)        norm2.weight/.bias (1152,)
+    不带层号的 9 个:  patch_embed.proj.{weight,bias} +
+                      merger.norm.{weight,bias} +
+                      merger.linear_fc1.{weight,bias} +
+                      merger.linear_fc2.{weight,bias}
+
+**假设成立** ✓ —— 三个模型共用**同一份视觉栈 + 同一个契约块** ✓，
+所以那 999 个未覆盖是**一次改动的事** ✓，不是三次 ✓。
+
+（而它确实**需要新东西**，两样，都是小的：
+  ① `Attention` 要能表达**融合 qkv + bias** ✓ —— 这一条 GPT-2 已经有了 ✓，
+     所以大概不用新写 ✓；
+  ② `layer` 行要能表达**带 bias 的 norm** ✓（`norm1.bias`）✓ ——
+     这一条得看 `layer` 行现在支不支持 bias ✓，是这一轮**没做**的那一件 ✓。）
+
+另外两个视觉塔**不是同一套** ✓，别混：
+
+    Step-3.7-Flash   666 个   47 层 x 14，前缀 `vision_model.*`，
+                              还有 `ls_1.gamma` / `ls_2.gamma`（LayerScale）✓
+    GLM-5.3-Flash    347 个   24 层 x 14，前缀 `model.visual.blocks.*`，
+                              带 `attn.k_norm` ✓
+
+**所以"视觉塔"不是一件事，是至少三件事** ✓ ——
+而其中最整齐的那一件（clef 那三个）占 999 个 ✓，先做它 ✓。
