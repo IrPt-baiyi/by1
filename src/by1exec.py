@@ -326,6 +326,8 @@ def _dsa_index(P, a, x, q_resid):
         k_rot = apply_rope(k_rot, c, s, "interleaved")
     q = np.concatenate([q_rot, q_pass], -1)            # [b, n, nh, hd]
     k = np.concatenate([k_rot, k_pass], -1)            # [b, n, hd]
+    if int(a.get("index_kpool") or 1) > 1:
+        return _dsa_index_pool(P, a, x, q, k)
     # [b,n,nh,hd] @ [b,1,hd,n] -> [b,n,nh,n]（每头一个分数）
     scores = np.maximum(q @ k.transpose(0, 2, 1)[:, None], 0.0) * (hd ** -0.5)
     w = (x @ P["indexer.weights_proj.weight"].T) * (nh ** -0.5)  # [b, n, nh]
@@ -342,6 +344,81 @@ def _dsa_index(P, a, x, q_resid):
                 # **并列取较小的 key 下标** —— 见下面那段注释。
                 sel = np.argsort(-sc[bi, ti], kind="stable")[:t]
                 keep[bi, ti, sel] = True
+    return keep
+
+
+def _dsa_index_pool(P, a, x, q, k):
+    """k-pool：**池**打分，选中的池摊回原始 token。返回 [b, n, n] 布尔掩码。
+
+    **和 `by1codegen.DSAIndexer._pool_select`（PyTorch 侧）逐行对应**，
+    判卷人是 transformers 5.19.0 的 `Glm5NextTextIndexer`
+    （refs/glm5-next-indexer.reference.txt）。三后端都按这一份数学算。
+
+    两处容易漏：池从**第一个有效 token** 起算（不是槽位 0）；
+    池可选当且仅当**它最后一个 token 对 query 可见**，且**整个池都有效**。
+    """
+    b, n, _ = x.shape
+    P_ = int(a["index_kpool"])
+    tail = bool(a.get("index_kpool_tail"))
+    nh, hd = int(a["index_heads"]), int(a["index_dim"])
+    topk = int(a["index_topk"])
+    gate = x @ P["indexer.index_kpool_compress_gate"].T        # [b, n, hd]
+    ape = P["indexer.index_kpool_compress_ape"]                # [P, hd]
+    valid = np.ones((b, n), dtype=bool)
+    first = np.where(valid.any(-1), valid.argmax(-1), n)
+    np_ = (n + P_ - 1) // P_
+    off = np.arange(np_ * P_).reshape(1, np_, P_)
+    pidx = first[:, None, None] + off                          # [b, np, P_]
+    bidx = np.arange(b).reshape(b, 1, 1)
+    safe = np.clip(pidx, 0, n - 1)
+    gk = k[bidx, safe]                                         # [b, np, P_, hd]
+    gg = gate[bidx, safe]
+    gv = valid[bidx, safe] & (pidx < n)
+    pool_valid = gv.all(-1)
+    pidx = np.where(gv, pidx, -1)
+    lg = gg.astype(np.float64) + ape.astype(np.float64)[None, None]
+    lg = np.where(gv[..., None], lg, -np.inf)
+    e = np.exp(lg - lg.max(axis=2, keepdims=True))
+    e = np.where(np.isfinite(lg), e, 0.0)
+    prob = e / np.maximum(e.sum(axis=2, keepdims=True), 1e-30)
+    pool_key = (prob * gk).sum(axis=2)                          # [b, np, hd]
+    keepm = pool_valid.any(0)
+    pool_key, pidx, pool_valid = pool_key[:, keepm], pidx[:, keepm], pool_valid[:, keepm]
+    s = np.maximum(q @ pool_key.transpose(0, 2, 1)[:, None], 0.0) * (hd ** -0.5)
+    w = (x @ P["indexer.weights_proj.weight"].T) * (nh ** -0.5)
+    sc = (w[..., None, :] @ s).squeeze(-2)                      # [b, n, np']
+    pend = np.clip(pidx[..., -1], 0, n - 1)
+    ar = np.arange(n)
+    vis = pend[:, None, :] <= ar[None, :, None]
+    cand = vis & pool_valid[:, None, :]
+    sc = np.where(cand, sc, -np.inf)
+    sk = min(topk // P_, sc.shape[-1])
+    keep = np.zeros((b, n, n), dtype=bool)
+    for bi in range(b):
+        for ti in range(n):
+            sel = np.argsort(-sc[bi, ti], kind="stable")[:sk]
+            for s2 in sel:
+                for v in pidx[bi, s2]:
+                    if v >= 0 and cand[bi, ti, s2]:
+                        keep[bi, ti, v] = True
+    if tail and P_ > 1:
+        bidx2 = np.arange(b).reshape(b, 1)
+        pos = ar
+        tv = (pos[None, :, None] >= pos[None, None, :]) & valid[:, None, :]
+        vc = tv.sum(-1)
+        tc = vc % P_
+        offs = np.arange(P_ - 1)
+        tstart = first[:, None] + vc - tc
+        tidx = tstart[..., None] + offs
+        tok = (offs[None, None, :] < tc[..., None]) & (tidx < n)
+        kv = np.clip(tidx, 0, n - 1)
+        tvis = np.take_along_axis(tv, kv, axis=-1)
+        tidx = np.where(tok & tvis, tidx, -1)
+        for bi in range(b):
+            for ti in range(n):
+                for v in tidx[bi, ti]:
+                    if v >= 0:
+                        keep[bi, ti, v] = True
     return keep
 
 
