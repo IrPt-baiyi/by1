@@ -84,6 +84,9 @@ model Qwen3.6-35B-A3B {
   # 和 clef / Qwen3.8-27B 的**逐张量同名同形状**（实测 333 个）。
   # 16 头 x 72 = 1152 ✓，融合 qkv 带 bias，MLP 两层无门控，每层两个 LayerNorm。
   mech Vis : Attention {
+    # **q/k/v 融合成一个张量**（\qkv.weight\ / \in_proj_weight\）。这是**布局**
+    # 不是算法 —— 不说的话后端只能按拆开的推，形状就和产物对不上。
+    qkv_fused = true
     heads      = { q = 16, kv = 16, head_dim = 72 }
     bias       = true
     structural = [ head_dim ]

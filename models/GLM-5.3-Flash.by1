@@ -104,6 +104,9 @@ model GLM-5.3-Flash {
   # 也带 bias、每层两个 norm **不带** bias、宽度 1024（主干 4096）。
   # 16 头 x 64 = 1024 ✓（`q_norm` / `k_norm` 实测 [64] ✓）。
   mech Vis : Attention {
+    # **q/k/v 融合成一个张量**（\qkv.weight\ / \in_proj_weight\）。这是**布局**
+    # 不是算法 —— 不说的话后端只能按拆开的推，形状就和产物对不上。
+    qkv_fused = true
     heads      = { q = 16, kv = 16, head_dim = 64 }
     bias       = true
     structural = [ head_dim ]

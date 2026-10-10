@@ -546,6 +546,11 @@ def compile_ir(info: Dict[str, Any]) -> Dict[str, Any]:
                 "yarn": rs["yarn"],
                 "rope_partial": float(_num(attrs.get("partial"), rs["partial"])),
                 "q_gate": _flag(attrs.get("q_gate")),
+                # **q/k/v 融合成一个张量吗。** 视觉塔是融合的
+                # （`qkv.weight (3*q*head_dim, in_dim)`），文本主干是拆开的。
+                # 这是**布局**不是算法 —— 不说的话后端只能按拆开的推，
+                # 形状就和产物对不上。见 by1ir.KIND_ATTRS["Attention"]。
+                "qkv_fused": _flag(attrs.get("qkv_fused")),
                 "norm_one_plus": norm_1p,
                 # Block 1.2
                 "sink": _flag(attrs.get("sink")),

@@ -102,6 +102,7 @@ python src/by1irentry.py                    # 三个后端只从 IR 跑
 | `rope_scale` | `float` | 是 | YaRN 的 attention_factor 之类 |
 | `yarn` | `dict?` | 是 |  |
 | `q_gate` | `bool` | 是 | q 投影输出翻倍，一半当门 |
+| `qkv_fused` | `bool` | 否 | q/k/v 融合成一个张量（视觉塔那种）。缺省 false |
 | `sink` | `bool` | 是 | 每个头一个可学标量参与 softmax |
 | `kv_tie` | `bool` | 是 | k 和 v 共用同一块 |
 | `head_gate` | `enum:off,per_head` | 是 |  |

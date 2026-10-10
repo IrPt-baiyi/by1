@@ -167,6 +167,14 @@ KIND_ATTRS = {
         "rope_scale": ("float", True, "YaRN 的 attention_factor 之类"),
         "yarn": ("dict?", True, ""),
         "q_gate": ("bool", True, "q 投影输出翻倍，一半当门"),
+        # **q/k/v 存成一个张量还是三个。** 视觉塔（clef / GLM / Step 的
+        # `qkv.weight` / `in_proj_weight`）是**融合**的：`(3*q*head_dim, in_dim)`；
+        # 文本主干是拆开的 `q_proj` / `k_proj` / `v_proj`。
+        # **这是布局，不是算法** —— 计算完全一样，只是参数的形状和名字不同。
+        # 不说的话后端只能按拆开的推，于是**形状和产物对不上**
+        # （实测 clef 契约 `qkv.weight (3456, 1152)`，而后端给
+        # `wq/wk/wv` 各 `(1152, 1152)` —— 总量一样、形状不同）。
+        "qkv_fused": ("bool", False, "q/k/v 融合成一个张量（视觉塔那种）。缺省 false"),
         "sink": ("bool", True, "每个头一个可学标量参与 softmax"),
         "kv_tie": ("bool", True, "k 和 v 共用同一块"),
         "head_gate": ("enum:off,per_head", True, ""),

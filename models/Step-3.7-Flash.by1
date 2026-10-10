@@ -86,6 +86,9 @@ model Step-3.7-Flash {
   # 带 bias、每层两个 LayerNorm（**带 bias**）+ 两个 LayerScale、
   # MLP 是 `c_fc` / `c_proj` 两层（**没有门控**）、宽度 1536（主干 4096）。
   mech Vis : Attention {
+    # **q/k/v 融合成一个张量**（\qkv.weight\ / \in_proj_weight\）。这是**布局**
+    # 不是算法 —— 不说的话后端只能按拆开的推，形状就和产物对不上。
+    qkv_fused = true
     heads      = { q = 16, kv = 16, head_dim = 96 }
     bias       = true
     structural = [ head_dim ]

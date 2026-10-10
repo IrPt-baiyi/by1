@@ -166,6 +166,24 @@ def op_add(P, a, ins, d):
 def op_attention(P, a, ins, d):
     x = ins[0]
     b, n, _ = x.shape
+    if a.get("qkv_fused"):
+        # **融合 q/k/v**（视觉塔那种）：`qkv` 是 [q | k | v] 三截拼起来的
+        # 一个张量，`proj` 是输出投影。**只是布局不同，算法一模一样** ——
+        # 所以这里把它拆回 `wq`/`wk`/`wv`/`wo`，后面一格不动。
+        # 不拆的话形状和产物对不上（clef 契约 `qkv.weight (3456, 1152)`）。
+        _hd, _q, _kv = a["head_dim"], a["q"], a["kv"]
+        _a, _b = _q * _hd, _kv * _hd
+        P = dict(P)
+        P["wq"] = P["qkv"][:_a]
+        P["wk"] = P["qkv"][_a:_a + _b]
+        P["wv"] = P["qkv"][_a + _b:_a + 2 * _b]
+        P["wo"] = P["proj"]
+        if "qkv.bias" in P:
+            P["wq.bias"] = P["qkv.bias"][:_a]
+            P["wk.bias"] = P["qkv.bias"][_a:_a + _b]
+            P["wv.bias"] = P["qkv.bias"][_a + _b:_a + 2 * _b]
+        if "proj.bias" in P:
+            P["wo.bias"] = P["proj.bias"]
     q_gate = a.get("q_gate", False)
     w = a["head_dim"] * (2 if q_gate else 1)
     qq = x @ P["wq"].T
@@ -810,6 +828,22 @@ def shapes_of(ir):
                     out[pre + "b"] = (d,)
             elif k == "Attention":
                 hd, q, kv = a["head_dim"], a["q"], a["kv"]
+                if a.get("qkv_fused"):
+                    # **融合 q/k/v**（视觉塔那种）：一个 `qkv` 装下 q、k、v
+                    # 三截，后面 `proj` 是输出投影。形状要和契约对上 ——
+                    # 实测 clef 的 `qkv.weight (3*q*head_dim, in_dim)`。
+                    out[pre + "qkv"] = (q * hd + 2 * kv * hd, d)
+                    out[pre + "proj"] = (d, a["out_dim"])
+                    if a["bias"]:
+                        out[pre + "qkv.bias"] = (q * hd + 2 * kv * hd,)
+                        out[pre + "proj.bias"] = (d,)
+                    if _qk_on(a.get("qk_norm")):
+                        out[pre + "qn.w"] = (hd,)
+                        out[pre + "kn.w"] = (hd,)
+                    if a.get("head_gate", "off") != "off":
+                        out[pre + "g_proj"] = ((q if a["head_gate"] == "per_head"
+                                              else q * hd), d)
+                    continue
                 out[pre + "wq"] = (q * hd * (2 if a.get("q_gate") else 1), d)
                 out[pre + "wk"] = (kv * hd, d)
                 if not a.get("kv_tie"):
