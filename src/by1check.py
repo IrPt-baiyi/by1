@@ -23,6 +23,7 @@ import by1io          # noqa: F401  —— import 它就够：它在 import 时�
 import by1paths
 import by1skip
 import by1export
+import by1blocks
 
 #: **"这个 field 映射指不到东西"的占位符。**
 #
@@ -709,642 +710,509 @@ def check(path: str) -> Tuple[Report, dict]:
     # by1gpt2 / by1load 都走 `check()`）。
     #
     # `Report` 里记的仍然是**调用方给的名字** —— 报出来的该是你问的那个。
-    real = by1paths.model(path)
-    with open(real, "r", encoding="utf-8") as f:
-        text = f.read()
-    root, perr = parse(text)
-    rep = Report(path)
-    for e in perr:
-        rep.add(E, 0, "parse", e)
+    # ---- 命名空间 -------------------------------------------------
+    # **主体不再有局部名字 —— 一切在 `_` 里**（含那 7 个嵌套 def）。
+    #
+    # 于是「搬一个 stage 出去」只需要接 `_` 一个参数，**不需要枚举
+    # 任何名字** —— 而枚举名字正是前面 21 次失败的死因（Python 的
+    # 函数局部名在编译期定死，清单要对就得有完整的数据流分析）。
+    #
+    # 改写是**按 AST 位置精确换文本**的：`x` -> `_['x']`，对读和写是
+    # 同一个替换、所以不需要知道哪边是哪边。判据是 26 份 `.by1`
+    # 的输出逐字节不变。
+    _ = {}
+    _['real'] = by1paths.model(path)
+    with open(_['real'], "r", encoding="utf-8") as _['f']:
+        _['text'] = _['f'].read()
+    _['root'], _['perr'] = parse(_['text'])
+    _['rep'] = Report(path)
+    for _['e'] in _['perr']:
+        _['rep'].add(E, 0, "parse", _['e'])
 
-    model = root.first("model")
-    scope = model if model else root
+    _['model'] = _['root'].first("model")
+    _['scope'] = _['model'] if _['model'] else _['root']
 
-    mechs: Dict[str, Blk] = {}
-    memories: Dict[str, Blk] = {}
-    residuals: Dict[str, Blk] = {}
-    for c in scope.children:
-        if c.kind == "mech":
-            mechs[c.name] = c
-        elif c.kind == "memory":
-            memories[c.name] = c
-        elif c.kind == "residual":
-            residuals[c.name] = c
+    _['mechs']: Dict[str, Blk] = {}
+    _['memories']: Dict[str, Blk] = {}
+    _['residuals']: Dict[str, Blk] = {}
+    for _['c'] in _['scope'].children:
+        if _['c'].kind == "mech":
+            _['mechs'][_['c'].name] = _['c']
+        elif _['c'].kind == "memory":
+            _['memories'][_['c'].name] = _['c']
+        elif _['c'].kind == "residual":
+            _['residuals'][_['c'].name] = _['c']
 
     # ---- hparams -------------------------------------------------
-    hp: Dict[str, str] = {}
-    nlayer_decl = None
-    hb = scope.first("hparams")
-    if hb:
-        hp = dict(hb.assigns)
-        nlayer_decl = eval_num(hp.get("n_layer"))
-    d_model = eval_num(hp.get("d_model"))
-    vocab = eval_num(hp.get("vocab"))
+    _['hp']: Dict[str, str] = {}
+    _['nlayer_decl'] = None
+    _['hb'] = _['scope'].first("hparams")
+    if _['hb']:
+        _['hp'] = dict(_['hb'].assigns)
+        _['nlayer_decl'] = eval_num(_['hp'].get("n_layer"))
+    _['d_model'] = eval_num(_['hp'].get("d_model"))
+    _['vocab'] = eval_num(_['hp'].get("vocab"))
 
     # ---- schedule 命名子序列 --------------------------------------
-    named: Dict[str, List[Rec]] = {}
-    sb = scope.first("schedule")
-    if sb:
+    _['named']: Dict[str, List[Rec]] = {}
+    _['sb'] = _['scope'].first("schedule")
+    if _['sb']:
         # 多趟展开：命名子序列可以引用别的命名子序列，直到不再变化
-        for _ in range(8):
-            before = {k: [str(r) for r in v] for k, v in named.items()}
-            for k, v in sb.assigns.items():
-                ex = expand_pattern(v, named)
-                if ex is not None:
-                    named[k] = ex
-            if before == {k: [str(r) for r in v] for k, v in named.items()}:
+        for _['_'] in range(8):
+            _['before'] = {k: [str(r) for r in v] for k, v in _['named'].items()}
+            for _['k'], _['v'] in _['sb'].assigns.items():
+                _['ex'] = expand_pattern(_['v'], _['named'])
+                if _['ex'] is not None:
+                    _['named'][_['k']] = _['ex']
+            if _['before'] == {k: [str(r) for r in v] for k, v in _['named'].items()}:
                 break
 
     # ---- stacks --------------------------------------------------
-    stacks = scope.kids("stack")
-    alias = {}
-    expansion: Dict[str, List[Rec]] = {}
+    _['stacks'] = _['scope'].kids("stack")
+    _['alias'] = {}
+    _['expansion']: Dict[str, List[Rec]] = {}
     # (栈, 层号, 机制) -> {属性: 值}
-    overrides: Dict[Tuple[str, int, str], Dict[str, str]] = {}
-    pending_ov: List[tuple] = []
-    total_layers = 0
-    for st in stacks:
-        if st.alias:
-            alias[st.alias] = st.name
-        alias[st.name] = st.name
+    _['overrides']: Dict[Tuple[str, int, str], Dict[str, str]] = {}
+    _['pending_ov']: List[tuple] = []
+    _['total_layers'] = 0
+    for _['st'] in _['stacks']:
+        if _['st'].alias:
+            _['alias'][_['st'].alias] = _['st'].name
+        _['alias'][_['st'].name] = _['st'].name
 
-    for st in stacks:
-        pexpr = st.assigns.get("pattern")
-        if pexpr is None:
-            rep.add(W, st.line, "pattern", f"stack {st.name} 没有 pattern")
+    for _['st'] in _['stacks']:
+        _['pexpr'] = _['st'].assigns.get("pattern")
+        if _['pexpr'] is None:
+            _['rep'].add(W, _['st'].line, "pattern", f"stack {_['st'].name} 没有 pattern")
             continue
-        ex = expand_pattern(pexpr, named)
-        if ex is None:
-            rep.add(E, st.line, "pattern", f"stack {st.name} 的 pattern 无法解析")
+        _['ex'] = expand_pattern(_['pexpr'], _['named'])
+        if _['ex'] is None:
+            _['rep'].add(E, _['st'].line, "pattern", f"stack {_['st'].name} 的 pattern 无法解析")
             continue
-        expansion[st.name] = ex
-        total_layers += len(ex)
+        _['expansion'][_['st'].name] = _['ex']
+        _['total_layers'] += len(_['ex'])
 
         # 逐层属性覆盖：`main[3..44] : MoE.experts = [255, 266, ...]`
         # 值按被选中的层顺序分配。逐层变化的专家数、swiglu_limit 都靠它。
-        for _k, _v, _ln in st.entries:
-            _m = re.match(r"^([A-Za-z_]\w*)\s*\[\s*(.*?)\s*\]$", _k)
-            if not _m:
-                rep.add(W, _ln, "override",
-                        f"stack {st.name} 里的条目 '{_k}' 不是逐层覆盖"
+        for _['_k'], _['_v'], _['_ln'] in _['st'].entries:
+            _['_m'] = re.match(r"^([A-Za-z_]\w*)\s*\[\s*(.*?)\s*\]$", _['_k'])
+            if not _['_m']:
+                _['rep'].add(W, _['_ln'], "override",
+                        f"stack {_['st'].name} 里的条目 '{_['_k']}' 不是逐层覆盖"
                         f"（要写成像 main[3..44] : MoE.experts = [...]）")
                 continue
-            _sn, _sel = _m.group(1), _m.group(2)
-            if alias.get(_sn, _sn) != st.name:
-                rep.add(E, _ln, "override",
-                        f"逐层覆盖 '{_k}' 指的是栈 '{_sn}'，但它写在 stack {st.name} 里")
+            _['_sn'], _['_sel'] = _['_m'].group(1), _['_m'].group(2)
+            if _['alias'].get(_['_sn'], _['_sn']) != _['st'].name:
+                _['rep'].add(E, _['_ln'], "override",
+                        f"逐层覆盖 '{_['_k']}' 指的是栈 '{_['_sn']}'，但它写在 stack {_['st'].name} 里")
                 continue
-            _mq = re.match(r"^([A-Za-z_]\w*)\.([A-Za-z_]\w*)\s*=\s*(.*)$", _v)
-            if not _mq:
-                rep.add(E, _ln, "override",
-                        f"逐层覆盖 '{_k}' 的值要写成 <机制>.<属性> = [...]")
+            _['_mq'] = re.match(r"^([A-Za-z_]\w*)\.([A-Za-z_]\w*)\s*=\s*(.*)$", _['_v'])
+            if not _['_mq']:
+                _['rep'].add(E, _['_ln'], "override",
+                        f"逐层覆盖 '{_['_k']}' 的值要写成 <机制>.<属性> = [...]")
                 continue
-            _mech, _attr, _vals = _mq.group(1), _mq.group(2), _mq.group(3).strip()
-            if not (_vals.startswith("[") and _vals.endswith("]")):
-                rep.add(E, _ln, "override",
-                        f"逐层覆盖 '{_k}' 的值必须是列表")
+            _['_mech'], _['_attr'], _['_vals'] = _['_mq'].group(1), _['_mq'].group(2), _['_mq'].group(3).strip()
+            if not (_['_vals'].startswith("[") and _['_vals'].endswith("]")):
+                _['rep'].add(E, _['_ln'], "override",
+                        f"逐层覆盖 '{_['_k']}' 的值必须是列表")
                 continue
-            if _mech not in mechs:
-                rep.add(E, _ln, "override", f"逐层覆盖引用了未声明的机制 '{_mech}'")
+            if _['_mech'] not in _['mechs']:
+                _['rep'].add(E, _['_ln'], "override", f"逐层覆盖引用了未声明的机制 '{_['_mech']}'")
                 continue
-            _items = [x.strip() for x in split_top(_vals[1:-1]) if x.strip()]
+            _['_items'] = [x.strip() for x in split_top(_['_vals'][1:-1]) if x.strip()]
             # resolve_attrs 还没定义，先把原始的攒起来，等它可用再分配
-            pending_ov.append((st.name, _sel, _mech, _attr, _items, _ln, _k))
-        if st.decl_len is not None and st.decl_len != len(ex):
-            rep.add(E, st.line, "layers",
-                    f"stack {st.name} 声明 {st.decl_len} 层，pattern 展开出 {len(ex)} 层")
-        elif st.decl_len is not None:
-            rep.add(I, st.line, "layers",
-                    f"stack {st.name} 的层数在两处声明（[{st.decl_len}] 与 pattern），"
+            _['pending_ov'].append((_['st'].name, _['_sel'], _['_mech'], _['_attr'], _['_items'], _['_ln'], _['_k']))
+        if _['st'].decl_len is not None and _['st'].decl_len != len(_['ex']):
+            _['rep'].add(E, _['st'].line, "layers",
+                    f"stack {_['st'].name} 声明 {_['st'].decl_len} 层，pattern 展开出 {len(_['ex'])} 层")
+        elif _['st'].decl_len is not None:
+            _['rep'].add(I, _['st'].line, "layers",
+                    f"stack {_['st'].name} 的层数在两处声明（[{_['st'].decl_len}] 与 pattern），"
                     f"当前一致 —— 建议 [N] 只作断言")
-        for r in ex:
-            if r.name not in mechs:
-                if r.name in memories:
-                    rep.add(W, st.line, "resolve",
-                            f"{r.name} 声明在 memory 块，却被 pattern 当作层机制引用")
-                elif r.name in residuals:
-                    rep.add(E, st.line, "resolve",
-                            f"{r.name} 是 residual，不能出现在 pattern 里")
+        for _['r'] in _['ex']:
+            if _['r'].name not in _['mechs']:
+                if _['r'].name in _['memories']:
+                    _['rep'].add(W, _['st'].line, "resolve",
+                            f"{_['r'].name} 声明在 memory 块，却被 pattern 当作层机制引用")
+                elif _['r'].name in _['residuals']:
+                    _['rep'].add(E, _['st'].line, "resolve",
+                            f"{_['r'].name} 是 residual，不能出现在 pattern 里")
                 else:
-                    rep.add(E, st.line, "resolve",
-                            f"pattern 引用了未声明的机制 '{r.name}'")
+                    _['rep'].add(E, _['st'].line, "resolve",
+                            f"pattern 引用了未声明的机制 '{_['r'].name}'")
             else:
-                m = mechs[r.name]
-                for a in r.attrs:
-                    if a not in m.assigns and a not in BUILTIN_ATTRS:
-                        rep.add(W, st.line, "attr",
-                                f"{r.name}({a} = ...) 的属性 '{a}' 既未在 mech "
-                                f"{r.name} 声明，也不在已知属性表里")
+                _['m'] = _['mechs'][_['r'].name]
+                for _['a'] in _['r'].attrs:
+                    if _['a'] not in _['m'].assigns and _['a'] not in BUILTIN_ATTRS:
+                        _['rep'].add(W, _['st'].line, "attr",
+                                f"{_['r'].name}({_['a']} = ...) 的属性 '{_['a']}' 既未在 mech "
+                                f"{_['r'].name} 声明，也不在已知属性表里")
 
     def _is_aux(st):
         """栈是不是辅助栈（MTP / 投机解码头之类）。
         **显式声明，不靠栈名猜。** 定义必须在使用之前 ——
         闭包在运行时才解析名字，放后面会 NameError。
         """
-        v = (st.assigns.get("aux") or "").strip().lower()
-        return v in ("true", "1", "yes", "on")
+        _['v'] = (st.assigns.get("aux") or "").strip().lower()
+        return _['v'] in ("true", "1", "yes", "on")
+    _['_is_aux'] = _is_aux    # 让 stage 也取得到它
 
-    _main_stack_names = {st.name for st in stacks if not _is_aux(st)}
+    _['_main_stack_names'] = {st.name for st in _['stacks'] if not _['_is_aux'](st)}
 
     # **辅助栈不算解码层。** MTP（多 token 预测）是训练时的辅助头，
     # 它在权重里、但不在 num_hidden_layers 里 —— 主干的层数才是那个数。
     # 靠栈名判断是魔法，所以让 .by1 显式写 ux = true。
-    _main_layers = sum(len(expansion.get(st.name, []))
-                       for st in stacks
-                       if not _is_aux(st))
-    if nlayer_decl is not None and stacks:
-        if nlayer_decl != _main_layers:
-            rep.add(E, hb.line, "layers",
-                    f"hparams.n_layer = {int(nlayer_decl)}，但主栈合计 {_main_layers} 层"
-                    + (f"（另有辅助栈 {total_layers - _main_layers} 层）"
-                       if total_layers != _main_layers else ""))
+    _['_main_layers'] = sum(len(_['expansion'].get(st.name, []))
+                       for st in _['stacks']
+                       if not _['_is_aux'](st))
+    if _['nlayer_decl'] is not None and _['stacks']:
+        if _['nlayer_decl'] != _['_main_layers']:
+            _['rep'].add(E, _['hb'].line, "layers",
+                    f"hparams.n_layer = {int(_['nlayer_decl'])}，但主栈合计 {_['_main_layers']} 层"
+                    + (f"（另有辅助栈 {_['total_layers'] - _['_main_layers']} 层）"
+                       if _['total_layers'] != _['_main_layers'] else ""))
 
-    # ---- 双真相源: ctx vs yarn ------------------------------------
-    ctx = eval_num(scope.assigns.get("ctx"))
-    pb = scope.first("position")
-    yarn = None
-    if pb:
-        for k, v in pb.assigns.items():
-            if "yarn" in v:
-                m = re.search(r"yarn\s*=\s*([\d.]+)", v)
-                if m:
-                    yarn = to_num(m.group(1))
-    if ctx and yarn:
-        rep.add(W, scope.line, "twotruth",
-                f"ctx = {int(ctx)} 与 position.yarn = {yarn} 并存："
-                f"哪个是原生上下文、哪个是外推上限没有区分（外推后 = {int(ctx*yarn)}）")
-
-    # ---- attach 目标 ---------------------------------------------
-    attached = set()
-    for c in scope.children:
-        for sel, op, target, ln in c.attaches:
-            base = target.split("(")[0].strip()
-            attached.add(base)
-            if base not in mechs and base not in residuals:
-                rep.add(E, ln, "resolve", f"'{sel} {op} {target}' 的目标 '{base}' 未声明")
-
-    # ---- state 块 ------------------------------------------------
-    state_src: Dict[str, List[Tuple[str, str, int]]] = {}
-    stb = scope.first("state")
-    if stb:
-        for key, val, ln in stb.entries:
-            hits = [n for n in list(mechs) + list(memories)
-                    if re.search(r"(?<!\w)" + re.escape(n) + r"(?!\w)", key)]
-            if not hits:
-                rep.add(E, ln, "resolve",
-                        f"state 条目 '{key}' 解析不到任何已声明的机制"
-                        f"（通配符条目也必须能指名机制）")
-                continue
-            nm = hits[0]
-            if nm in memories:
-                rep.add(W, ln, "state-vs-param",
-                        f"state 里的 '{nm}' 声明在 memory 块。查表是"
-                        f"跨序列共享的固定权重，不是 per-seq 状态")
-            state_src.setdefault(nm, []).append((key, val, ln))
-
-    # ---- position 块键 -------------------------------------------
-    MODAL = {"default", "text", "vision", "audio", "video"}
-    if pb:
-        for k in pb.assigns:
-            if k in MODAL:
-                continue
-            if k not in mechs and k not in named:
-                rep.add(W, pb.line, "resolve",
-                        f"position 的键 '{k}' 不是机制名、模态名，也不是命名子序列")
-
-    # ---- optimizer except(...) -----------------------------------
-    for c in scope.children:
-        if c.kind != "optimizer":
-            continue
-        for key, val, ln in c.entries:
-            m = re.search(r"except\s*\(([^)]*)\)", key)
-            if not m:
-                continue
-            known = set(mechs) | set(memories) | set(residuals)
-            known |= {ch.name for ch in scope.kids("head")}
-            for sym in split_top(m.group(1)):
-                if sym not in known:
-                    rep.add(E, ln, "resolve",
-                            f"optimizer except(...) 引用了未声明的符号 '{sym}'")
-
-    # ---- interop 栈名 --------------------------------------------
-    ib = scope.first("interop")
-    if ib:
-        stack_names = set(alias)
-        for s, ln in ib.edges:
-            segs = [x.strip() for x in s.split("->") if x.strip()]
-            for seg in (segs[:1] + segs[-1:]):
-                m = re.match(r"([A-Za-z_]\w*)", seg)
-                if m and m.group(1) not in stack_names:
-                    rep.add(E, ln, "interop",
-                            f"interop 的 '{seg}' 里 '{m.group(1)}' 不是已声明的 stack")
-
-    # ---- 机制形状 ------------------------------------------------
-    def heads_of(blk: Blk) -> Optional[Dict[str, float]]:
-        raw = blk.assigns.get("heads")
-        if not raw:
-            return None
-        body = raw.strip()
-        if body.startswith("{"):
-            body = body[1 : body.rfind("}")] if "}" in body else body[1:]
-        out = {}
-        for part in split_top(body):
-            i = part.find("=")
-            if i > 0:
-                v = eval_num(part[i + 1 :])
-                if v is not None:
-                    out[part[:i].strip()] = v
-        return out or None
-
-    head_dim_of: Dict[str, float] = {}
-    for nm, blk in mechs.items():
-        h = heads_of(blk)
-        hd = None
-        if h and "head_dim" in h:
-            hd = h["head_dim"]
-        else:
-            hd = eval_num(blk.assigns.get("head_dim"))
-        if hd:
-            head_dim_of[nm] = hd
-
-        if h is None:
-            if blk.mtype in TOKEN_MIXER and blk.mtype != "Vision":
-                rep.add(W, blk.line, "shape",
-                        f"mech {nm} ({blk.mtype}) 未声明 heads/head_dim —— "
-                        f"依赖它的 KV cache 与状态尺寸都无法推导")
-            continue
-        if "q" not in h and "v" not in h:
-            rep.add(W, blk.line, "shape",
-                    f"mech {nm} 的 heads 缺 q/v —— 宽度与投影形状都推不出来")
-            continue
-
-    # ---- mrope 不变式 --------------------------------------------
-    if pb:
-        for k, v in pb.assigns.items():
-            m = re.search(r"mrope\s*=\s*\[([^\]]*)\]", v)
-            if not m:
-                continue
-            secs = [x for x in (to_num(p) for p in m.group(1).split(",")) if x]
-            ssum = sum(secs)
-            ref = head_dim_of.get("QSA") or head_dim_of.get("GQA")
-            if ref is None and head_dim_of:
-                ref = max(head_dim_of.values())
-            if ref is None:
-                rep.add(W, pb.line, "position",
-                        f"mrope 段和 = {int(ssum)}，但没有机制声明 head_dim，"
-                        f"无法校验（隐含 head_dim = {int(ssum*2)}）")
-            else:
-                want = ref / 2
-                if abs(want - ssum) > 1e-9:
-                    rep.add(E, pb.line, "position",
-                            f"mrope 段和 = {int(ssum)}，但按 head_dim = {int(ref)} "
-                            f"应为 {int(want)}（隐含 head_dim = {int(ssum*2)}）")
-
-    # ---- memory 表 vs params -------------------------------------
-    decl_params: Dict[str, float] = {}
-    for nm, blk in memories.items():
-        p = eval_num(blk.assigns.get("params"))
-        if p:
-            decl_params[nm] = p
-        ents = leading_num(blk.assigns.get("table"))
-        if p and ents:
-            per = p / ents
-            row = eval_num(blk.assigns.get("row_dim"))
-            if row is None and (per > 1024 or abs(per - round(per)) > 1e-9):
-                rep.add(W, blk.line, "params",
-                        f"memory {nm}: params/table = {per:,.1f} 参数/条目 —— "
-                        f"查表通常是 row_dim（128~512）/条目。"
-                        f"缺 row_dim 或 heads 声明，无法确认单位")
-
+    # ---- 各块一致性检查：**搬去 by1blocks.py 了** ------------------
+    #
+    # 九个块只看"声明之间自相不相容"，和张量契约不是一回事。
+    #
+    # **它只接一个参数** —— `_` 就是这个命名空间。曾经搬失败过 21
+    # 次，因为那时要枚举"这一段依赖哪些局部名字"；现在没有局部
+    # 名字了。
+    by1blocks.check_blocks(_mod=globals(), _=_)
     # ---- 张量契约实例化 ------------------------------------------
     # 契约按「机制」声明；实例按「(机制, 结构属性) 等价类」求值。
     # 这正是结构属性的连带代价：head_dim / kv_tie 一变，形状与张量集合都变。
-    STRUCTURAL = {"head_dim", "kv", "q", "v", "qk", "kv_heads", "kv_tie",
+    _['STRUCTURAL'] = {"head_dim", "kv", "q", "v", "qk", "kv_heads", "kv_tie",
                   "experts", "d_ff", "hidden", "intermediate", "out_dim"}
-    decl_struct: Dict[str, set] = {}
-    for nm, blk in mechs.items():
-        raw = blk.assigns.get("structural")
-        if raw:
-            body = raw.strip()
-            if body.startswith("[") and "]" in body:
-                body = body[1 : body.rfind("]")]
-            decl_struct[nm] = set(split_top(body))
+    _['decl_struct']: Dict[str, set] = {}
+    for _['nm'], _['blk'] in _['mechs'].items():
+        _['raw'] = _['blk'].assigns.get("structural")
+        if _['raw']:
+            _['body'] = _['raw'].strip()
+            if _['body'].startswith("[") and "]" in _['body']:
+                _['body'] = _['body'][1 : _['body'].rfind("]")]
+            _['decl_struct'][_['nm']] = set(split_top(_['body']))
 
     # 1) 实例枚举 -> 等价类
     def resolve_attrs(m: Blk, over: Dict[str, str]) -> Dict[str, str]:
-        a: Dict[str, str] = {}
-        for k, v in m.assigns.items():
-            if k not in ("heads", "structural"):
-                a[k] = v
-        for k, v in (heads_of(m) or {}).items():
-            a[k] = _fmt(v)
-        a.update(over)
-        return a
+        _['a']: Dict[str, str] = {}
+        for _['k'], _['v'] in m.assigns.items():
+            if _['k'] not in ("heads", "structural"):
+                _['a'][_['k']] = _['v']
+        for _['k'], _['v'] in (_['heads_of'](m) or {}).items():
+            _['a'][_['k']] = _fmt(_['v'])
+        _['a'].update(over)
+        return _['a']
+    _['resolve_attrs'] = resolve_attrs    # 让 stage 也取得到它
 
     def key_of(nm: str, attrs: Dict[str, str]) -> tuple:
-        sk = STRUCTURAL | decl_struct.get(nm, set())
-        return tuple(sorted((k, v) for k, v in attrs.items() if k in sk))
+        _['sk'] = _['STRUCTURAL'] | _['decl_struct'].get(nm, set())
+        return tuple(sorted((k, v) for k, v in attrs.items() if k in _['sk']))
+    _['key_of'] = key_of    # 让 stage 也取得到它
 
     # 哪些层挂了哪些「通道混合器」—— 选择器（[:] / [0] / [1..39] / [step 4]）生效
-    attach_rules: List[tuple] = []
-    for c in scope.children:
-        for sel, op, target, ln in c.attaches:
-            base = target.split("(")[0].strip()
-            if base not in mechs or op != ">>":
+    _['attach_rules']: List[tuple] = []
+    for _['c'] in _['scope'].children:
+        for _['sel'], _['op'], _['target'], _['ln'] in _['c'].attaches:
+            _['base'] = _['target'].split("(")[0].strip()
+            if _['base'] not in _['mechs'] or _['op'] != ">>":
                 continue
-            sk, inner = split_selector(sel)
-            attach_rules.append((alias.get(sk, sk), make_layer_pred(inner), base))
+            _['sk'], _['inner'] = split_selector(_['sel'])
+            _['attach_rules'].append((_['alias'].get(_['sk'], _['sk']), make_layer_pred(_['inner']), _['base']))
 
     def attached_at(stack_name: str, li: int, attrs: Dict[str, str]) -> List[str]:
-        return [b for (sn, pred, b) in attach_rules
+        return [b for (sn, pred, b) in _['attach_rules']
                 if sn == stack_name and pred(li, attrs)]
+    _['attached_at'] = attached_at    # 让 stage 也取得到它
 
     # 逐层覆盖的分配 —— 必须等 resolve_attrs 可用（它选择哪些层要按属性判断）
-    for _sn, _sel, _mech, _attr, _items, _ln, _k in pending_ov:
-        _ex = expansion.get(_sn, [])
-        _pred = make_layer_pred(_sel)
-        _hit = [i for i, r in enumerate(_ex)
-                if _pred(i, resolve_attrs(mechs[r.name], r.attrs)
-                         if r.name in mechs else {})]
-        if len(_hit) != len(_items):
-            rep.add(E, _ln, "override",
-                    f"逐层覆盖 '{_k}' 选中 {len(_hit)} 层，但给了 {len(_items)} 个值")
+    for _['_sn'], _['_sel'], _['_mech'], _['_attr'], _['_items'], _['_ln'], _['_k'] in _['pending_ov']:
+        _['_ex'] = _['expansion'].get(_['_sn'], [])
+        _['_pred'] = make_layer_pred(_['_sel'])
+        _['_hit'] = [i for i, r in enumerate(_['_ex'])
+                if _['_pred'](i, _['resolve_attrs'](_['mechs'][r.name], r.attrs)
+                         if r.name in _['mechs'] else {})]
+        if len(_['_hit']) != len(_['_items']):
+            _['rep'].add(E, _['_ln'], "override",
+                    f"逐层覆盖 '{_['_k']}' 选中 {len(_['_hit'])} 层，但给了 {len(_['_items'])} 个值")
             continue
-        for _i, _val in zip(_hit, _items):
-            overrides.setdefault((_sn, _i, _mech), {})[_attr] = _val
+        for _['_i'], _['_val'] in zip(_['_hit'], _['_items']):
+            _['overrides'].setdefault((_['_sn'], _['_i'], _['_mech']), {})[_['_attr']] = _['_val']
 
-    classes: Dict[str, Dict[tuple, dict]] = {}
+    _['classes']: Dict[str, Dict[tuple, dict]] = {}
 
-    layer_seq: List[tuple] = []
-    for st in stacks:
-        for li, r in enumerate(expansion.get(st.name, [])):
-            m = mechs.get(r.name)
-            if m is None:
+    _['layer_seq']: List[tuple] = []
+    for _['st'] in _['stacks']:
+        for _['li'], _['r'] in enumerate(_['expansion'].get(_['st'].name, [])):
+            _['m'] = _['mechs'].get(_['r'].name)
+            if _['m'] is None:
                 continue
-            attrs = resolve_attrs(m, r.attrs)
-            _ov = overrides.get((st.name, li, r.name))
-            if _ov:
-                attrs.update(_ov)
-            key = key_of(r.name, attrs)
-            layer_seq.append((st.name, r.name, dict(attrs), key,
-                              attached_at(st.name, li, attrs)))
-            d = classes.setdefault(r.name, {})
-            ent = d.setdefault(key, {"count": 0, "attrs": {}})
-            ent["count"] += 1
-            ent["attrs"].update(attrs)
+            _['attrs'] = _['resolve_attrs'](_['m'], _['r'].attrs)
+            _['_ov'] = _['overrides'].get((_['st'].name, _['li'], _['r'].name))
+            if _['_ov']:
+                _['attrs'].update(_['_ov'])
+            _['key'] = _['key_of'](_['r'].name, _['attrs'])
+            _['layer_seq'].append((_['st'].name, _['r'].name, dict(_['attrs']), _['key'],
+                              _['attached_at'](_['st'].name, _['li'], _['attrs'])))
+            _['d'] = _['classes'].setdefault(_['r'].name, {})
+            _['ent'] = _['d'].setdefault(_['key'], {"count": 0, "attrs": {}})
+            _['ent']["count"] += 1
+            _['ent']["attrs"].update(_['attrs'])
 
     # 只被挂载、不作为层机制出现的（如 FFN）：按每个挂载规则建类，层数按选择器数
-    for (sn, pred, base) in attach_rules:
-        if base in classes or base not in mechs:
+    for (_['sn'], _['pred'], _['base']) in _['attach_rules']:
+        if _['base'] in _['classes'] or _['base'] not in _['mechs']:
             continue
-        buckets = {}
-        for li, r in enumerate(expansion.get(sn, [])):
-            a = resolve_attrs(mechs[r.name], r.attrs) if r.name in mechs else {}
-            if not pred(li, a):
+        _['buckets'] = {}
+        for _['li'], _['r'] in enumerate(_['expansion'].get(_['sn'], [])):
+            _['a'] = _['resolve_attrs'](_['mechs'][_['r'].name], _['r'].attrs) if _['r'].name in _['mechs'] else {}
+            if not _['pred'](_['li'], _['a']):
                 continue
-            at = dict(resolve_attrs(mechs[base], {}))
-            at.update(overrides.get((sn, li, base), {}))
-            kk = key_of(base, at)
-            buckets.setdefault(kk, {"count": 0, "attrs": at})
-            buckets[kk]["count"] += 1
-        classes.setdefault(base, {}).update(buckets)
+            _['at'] = dict(_['resolve_attrs'](_['mechs'][_['base']], {}))
+            _['at'].update(_['overrides'].get((_['sn'], _['li'], _['base']), {}))
+            _['kk'] = _['key_of'](_['base'], _['at'])
+            _['buckets'].setdefault(_['kk'], {"count": 0, "attrs": _['at']})
+            _['buckets'][_['kk']]["count"] += 1
+        _['classes'].setdefault(_['base'], {}).update(_['buckets'])
 
     # 2) 读契约
-    tb = scope.first("tensors")
+    _['tb'] = _['scope'].first("tensors")
     # 文件里既没有 tensors 也没有 emit，说明它是在**设计一个新模型**，
     # 不是在对拍一个已有产物。张量契约那类警告对它是噪音。
-    wants_artifacts = (tb is not None) or (scope.first("emit") is not None)
-    contracts: Dict[str, list] = {}
-    if tb:
-        for ch in tb.children:
-            h = ch.head.strip()
-            if re.match(r"^layer\s*\(", h):
-                rep.add(E, ch.line, "tensors",
-                        f"'{h}' 是无作用域写法：会给所有层发同一套张量名。"
+    _['wants_artifacts'] = (_['tb'] is not None) or (_['scope'].first("emit") is not None)
+    _['contracts']: Dict[str, list] = {}
+    if _['tb']:
+        for _['ch'] in _['tb'].children:
+            _['h'] = _['ch'].head.strip()
+            if re.match(r"^layer\s*\(", _['h']):
+                _['rep'].add(E, _['ch'].line, "tensors",
+                        f"'{_['h']}' 是无作用域写法：会给所有层发同一套张量名。"
                         f"契约必须按机制声明（见 pattern-design §2 规则 3）")
                 continue
-            base = h.split(".")[0].strip()
-            if h in ("layer", "global"):
+            _['base'] = _['h'].split(".")[0].strip()
+            if _['h'] in ("layer", "global"):
                 pass                    # 层级 / 全局：不属于任何机制
-            elif base not in mechs and base not in memories and base not in residuals:
-                rep.add(E, ch.line, "tensors", f"tensors 的作用域 '{base}' 未声明")
+            elif _['base'] not in _['mechs'] and _['base'] not in _['memories'] and _['base'] not in _['residuals']:
+                _['rep'].add(E, _['ch'].line, "tensors", f"tensors 的作用域 '{_['base']}' 未声明")
                 continue
-            lst = []
-            for key, val, ln in ch.entries:
-                mg = re.search(r"\bunless\s+([A-Za-z_]\w*)", val)
-                guard = mg.group(1) if mg else None
-                pe = bool(re.search(r"\bper_expert\b", val))
-                shp = re.sub(r"\bunless\s+[A-Za-z_]\w*", "", val)
-                shp = re.sub(r"\bper_expert\b", "", shp).strip()
-                lst.append((key, shp, guard, ln, pe))
-            if not lst:
-                rep.add(W, ch.line, "tensors",
-                        f"tensors 的 '{h}' 契约是空的 —— 没有声明任何逻辑张量")
-            contracts[base] = lst
+            _['lst'] = []
+            for _['key'], _['val'], _['ln'] in _['ch'].entries:
+                _['mg'] = re.search(r"\bunless\s+([A-Za-z_]\w*)", _['val'])
+                _['guard'] = _['mg'].group(1) if _['mg'] else None
+                _['pe'] = bool(re.search(r"\bper_expert\b", _['val']))
+                _['shp'] = re.sub(r"\bunless\s+[A-Za-z_]\w*", "", _['val'])
+                _['shp'] = re.sub(r"\bper_expert\b", "", _['shp']).strip()
+                _['lst'].append((_['key'], _['shp'], _['guard'], _['ln'], _['pe']))
+            if not _['lst']:
+                _['rep'].add(W, _['ch'].line, "tensors",
+                        f"tensors 的 '{_['h']}' 契约是空的 —— 没有声明任何逻辑张量")
+            _['contracts'][_['base']] = _['lst']
 
     def _flat_rows(entry_list):
         """层级 / 全局张量：形状只用 hparams 求值（没有逐层属性）。"""
-        sym0: Dict[str, float] = {}
-        for k2, v2 in hp.items():
-            n2 = eval_num(v2)
-            if n2 is not None:
-                sym0[k2] = n2
-        res = []
-        for (lname, shp, guard, ln, pe) in entry_list:
-            body = shp.strip()
-            if body.startswith("(") and ")" in body:
-                body = body[1: body.rfind(")")]
-            comps = []
-            for c in split_top(body):
-                ids = set(re.findall(r"[A-Za-z_]\w*", c))
-                s2 = c
-                for i in sorted(ids, key=len, reverse=True):
-                    if i in sym0:
-                        s2 = re.sub(r"\b" + re.escape(i) + r"\b", _fmt(sym0[i]), s2)
-                v = eval_num(s2)
-                comps.append(_fmt(v) if v is not None else s2.replace(" ", ""))
+        _['sym0']: Dict[str, float] = {}
+        for _['k2'], _['v2'] in _['hp'].items():
+            _['n2'] = eval_num(_['v2'])
+            if _['n2'] is not None:
+                _['sym0'][_['k2']] = _['n2']
+        _['res'] = []
+        for (_['lname'], _['shp'], _['guard'], _['ln'], _['pe']) in entry_list:
+            _['body'] = _['shp'].strip()
+            if _['body'].startswith("(") and ")" in _['body']:
+                _['body'] = _['body'][1: _['body'].rfind(")")]
+            _['comps'] = []
+            for _['c'] in split_top(_['body']):
+                _['ids'] = set(re.findall(r"[A-Za-z_]\w*", _['c']))
+                _['s2'] = _['c']
+                for _['i'] in sorted(_['ids'], key=len, reverse=True):
+                    if _['i'] in _['sym0']:
+                        _['s2'] = re.sub(r"\b" + re.escape(_['i']) + r"\b", _fmt(_['sym0'][_['i']]), _['s2'])
+                _['v'] = eval_num(_['s2'])
+                _['comps'].append(_fmt(_['v']) if _['v'] is not None else _['s2'].replace(" ", ""))
             # `--` 是**声明为不该存在**（权重共享时没有 lm_head），
             # 它不是形状，不能被重新包成 `(...)` —— 原样透传，
             # 让 by1verify 去检查"确实不存在"。
-            if shp.strip() == "--":
-                res.append((lname, "--", guard, pe))
+            if _['shp'].strip() == "--":
+                _['res'].append((_['lname'], "--", _['guard'], _['pe']))
                 continue
             # guard 留着 —— layer 作用域用它做「只有挂了某机制才有这个张量」
-            res.append((lname, "(" + ", ".join(comps) + ")", guard, pe))
-        return res
+            _['res'].append((_['lname'], "(" + ", ".join(_['comps']) + ")", _['guard'], _['pe']))
+        return _['res']
+    _['_flat_rows'] = _flat_rows    # 让 stage 也取得到它
 
-    layer_rows = _flat_rows(contracts.get("layer", []))
-    global_rows = _flat_rows(contracts.get("global", []))
+    _['layer_rows'] = _['_flat_rows'](_['contracts'].get("layer", []))
+    _['global_rows'] = _['_flat_rows'](_['contracts'].get("global", []))
 
     # 3) 逐类实例化
-    trows = []
-    class_rows: Dict[tuple, list] = {}
-    for nm in sorted(classes):
-        cls = classes[nm]
-        if nm not in contracts:
-            if wants_artifacts and mechs[nm].mtype in TOKEN_MIXER:
-                rep.add(W, mechs[nm].line, "tensors", f"mech {nm} 无张量契约")
+    _['trows'] = []
+    _['class_rows']: Dict[tuple, list] = {}
+    for _['nm'] in sorted(_['classes']):
+        _['cls'] = _['classes'][_['nm']]
+        if _['nm'] not in _['contracts']:
+            if _['wants_artifacts'] and _['mechs'][_['nm']].mtype in TOKEN_MIXER:
+                _['rep'].add(W, _['mechs'][_['nm']].line, "tensors", f"mech {_['nm']} 无张量契约")
             continue
-        for key, ent in sorted(cls.items(), key=lambda kv: -kv[1]["count"]):
-            attrs = ent["attrs"]
-            label = ", ".join(f"{k}={v}" for k, v in key) or "(无结构属性)"
-            sym: Dict[str, float] = {}
-            for k, v in attrs.items():
-                n = eval_num(v)
-                if n is not None:
-                    sym[k] = n
-            for k, v in hp.items():
-                n = eval_num(v)
-                if n is not None:
-                    sym[k] = n
+        for _['key'], _['ent'] in sorted(_['cls'].items(), key=lambda kv: -kv[1]["count"]):
+            _['attrs'] = _['ent']["attrs"]
+            _['label'] = ", ".join(f"{k}={v}" for k, v in _['key']) or "(无结构属性)"
+            _['sym']: Dict[str, float] = {}
+            for _['k'], _['v'] in _['attrs'].items():
+                _['n'] = eval_num(_['v'])
+                if _['n'] is not None:
+                    _['sym'][_['k']] = _['n']
+            for _['k'], _['v'] in _['hp'].items():
+                _['n'] = eval_num(_['v'])
+                if _['n'] is not None:
+                    _['sym'][_['k']] = _['n']
 
             # 宽度不变式。注意：不能靠「比值是否好看」判定对错 —— Gemma 4 的
             # 注意力宽度本来就不等于 d_model。所以宽度变化必须显式声明。
-            qq, vv, hdv = sym.get("q"), sym.get("v"), sym.get("head_dim")
-            w = (vv * hdv) if (vv and hdv) else ((qq * hdv) if (qq and hdv) else None)
-            od = eval_num(attrs.get("out_dim"))
-            if w and od:
-                if abs(w - od) > 1e-9:
-                    rep.add(E, mechs[nm].line, "shape",
-                            f"{nm}({label}): 声明 out_dim = {_fmt(od)}，"
-                            f"但 q x head_dim = {_fmt(w)}")
-            elif w and d_model and abs(w - d_model) > 1e-9:
-                rep.add(W, mechs[nm].line, "shape",
-                        f"{nm}({label}): q x head_dim = {_fmt(w)} != d_model = "
-                        f"{_fmt(d_model)}（比值 {w/d_model:.3f}）—— 若这是有意的宽度变化，"
-                        f"声明 out_dim = {_fmt(w)}")
-            rows = []
-            for lname, shp, guard, ln, pe in contracts[nm]:
-                if guard is not None:
-                    gs = attrs.get(guard)
-                    if gs is None:
-                        rep.add(W, ln, "tensors",
-                                f"{nm}.{lname}: unless {guard} 引用了未声明的属性")
+            _['qq'], _['vv'], _['hdv'] = _['sym'].get("q"), _['sym'].get("v"), _['sym'].get("head_dim")
+            _['w'] = (_['vv'] * _['hdv']) if (_['vv'] and _['hdv']) else ((_['qq'] * _['hdv']) if (_['qq'] and _['hdv']) else None)
+            _['od'] = eval_num(_['attrs'].get("out_dim"))
+            if _['w'] and _['od']:
+                if abs(_['w'] - _['od']) > 1e-9:
+                    _['rep'].add(E, _['mechs'][_['nm']].line, "shape",
+                            f"{_['nm']}({_['label']}): 声明 out_dim = {_fmt(_['od'])}，"
+                            f"但 q x head_dim = {_fmt(_['w'])}")
+            elif _['w'] and _['d_model'] and abs(_['w'] - _['d_model']) > 1e-9:
+                _['rep'].add(W, _['mechs'][_['nm']].line, "shape",
+                        f"{_['nm']}({_['label']}): q x head_dim = {_fmt(_['w'])} != d_model = "
+                        f"{_fmt(_['d_model'])}（比值 {_['w']/_['d_model']:.3f}）—— 若这是有意的宽度变化，"
+                        f"声明 out_dim = {_fmt(_['w'])}")
+            _['rows'] = []
+            for _['lname'], _['shp'], _['guard'], _['ln'], _['pe'] in _['contracts'][_['nm']]:
+                if _['guard'] is not None:
+                    _['gs'] = _['attrs'].get(_['guard'])
+                    if _['gs'] is None:
+                        _['rep'].add(W, _['ln'], "tensors",
+                                f"{_['nm']}.{_['lname']}: unless {_['guard']} 引用了未声明的属性")
                         continue
-                    if str(gs).strip().lower() in ("true", "1", "yes", "on"):
-                        rows.append((lname, "--", f"由 unless {guard} 抑制", pe))
+                    if str(_['gs']).strip().lower() in ("true", "1", "yes", "on"):
+                        _['rows'].append((_['lname'], "--", f"由 unless {_['guard']} 抑制", _['pe']))
                         continue
-                body = shp.strip()
-                if body.startswith("(") and ")" in body:
-                    body = body[1 : body.rfind(")")]
-                out, miss = [], []
-                for c in split_top(body):
-                    ids = set(re.findall(r"[A-Za-z_]\w*", c))
-                    bad = sorted(i for i in ids if i not in sym)
-                    if bad:
-                        miss.extend(bad)
-                    s2 = c
-                    for i in sorted(ids, key=len, reverse=True):
-                        if i in sym:
-                            s2 = re.sub(r"\b" + re.escape(i) + r"\b", _fmt(sym[i]), s2)
-                    v = eval_num(s2)
-                    out.append(_fmt(v) if v is not None else s2.replace(" ", ""))
-                note = ("缺 " + ", ".join(sorted(set(miss)))) if miss else ""
-                rows.append((lname, "(" + ", ".join(out) + ")", note, pe))
-            label = ", ".join(f"{k}={v}" for k, v in key) or "(无结构属性)"
-            class_rows[(nm, key)] = rows
-            trows.append((nm, label, ent["count"], rows))
+                _['body'] = _['shp'].strip()
+                if _['body'].startswith("(") and ")" in _['body']:
+                    _['body'] = _['body'][1 : _['body'].rfind(")")]
+                _['out'], _['miss'] = [], []
+                for _['c'] in split_top(_['body']):
+                    _['ids'] = set(re.findall(r"[A-Za-z_]\w*", _['c']))
+                    _['bad'] = sorted(i for i in _['ids'] if i not in _['sym'])
+                    if _['bad']:
+                        _['miss'].extend(_['bad'])
+                    _['s2'] = _['c']
+                    for _['i'] in sorted(_['ids'], key=len, reverse=True):
+                        if _['i'] in _['sym']:
+                            _['s2'] = re.sub(r"\b" + re.escape(_['i']) + r"\b", _fmt(_['sym'][_['i']]), _['s2'])
+                    _['v'] = eval_num(_['s2'])
+                    _['out'].append(_fmt(_['v']) if _['v'] is not None else _['s2'].replace(" ", ""))
+                _['note'] = ("缺 " + ", ".join(sorted(set(_['miss'])))) if _['miss'] else ""
+                _['rows'].append((_['lname'], "(" + ", ".join(_['out']) + ")", _['note'], _['pe']))
+            _['label'] = ", ".join(f"{k}={v}" for k, v in _['key']) or "(无结构属性)"
+            _['class_rows'][(_['nm'], _['key'])] = _['rows']
+            _['trows'].append((_['nm'], _['label'], _['ent']["count"], _['rows']))
 
-    for nm, lst in contracts.items():
-        if nm in ("layer", "global"):
+    for _['nm'], _['lst'] in _['contracts'].items():
+        if _['nm'] in ("layer", "global"):
             continue
-        if nm not in classes and nm not in attached:
-            rep.add(W, lst[0][3] if lst else 0, "tensors",
-                    f"tensors 声明了 {nm} 的契约，但 pattern 里没有它的实例")
+        if _['nm'] not in _['classes'] and _['nm'] not in _['attached']:
+            _['rep'].add(W, _['lst'][0][3] if _['lst'] else 0, "tensors",
+                    f"tensors 声明了 {_['nm']} 的契约，但 pattern 里没有它的实例")
 
     # ---- emit lowering 规则 --------------------------------------
     # 物理命名在后端里声明，张量契约保持纯逻辑 —— 这是「一份描述两个后端」
     # 能成立的前提。检查器负责校验模板与映射的引用是否合法。
-    KNOWN_PH = {"i", "local_i", "global_i", "stack", "mech",
+    _['KNOWN_PH'] = {"i", "local_i", "global_i", "stack", "mech",
                 "logical", "scope", "physical", "expert"}
-    all_logical = {ln for lst in contracts.values() for (ln, _s, _g, _l, _p) in lst}
-    emit_rules: Dict[str, dict] = {}
-    eb = scope.first("emit")
-    if eb:
-        for be in eb.children:
-            key = be.head.split("->")[-1].strip() if "->" in be.head else be.head.strip()
-            rule = {"name": be.assigns.get("name", "").strip().strip('"'),
-                    "expert_name": be.assigns.get("expert_name", "").strip().strip('"'),
-                    "global_name": be.assigns.get("global_name", "").strip().strip('"'),
+    _['all_logical'] = {ln for lst in _['contracts'].values() for (ln, _s, _g, _l, _p) in lst}
+    _['emit_rules']: Dict[str, dict] = {}
+    _['eb'] = _['scope'].first("emit")
+    if _['eb']:
+        for _['be'] in _['eb'].children:
+            _['key'] = _['be'].head.split("->")[-1].strip() if "->" in _['be'].head else _['be'].head.strip()
+            _['rule'] = {"name": _['be'].assigns.get("name", "").strip().strip('"'),
+                    "expert_name": _['be'].assigns.get("expert_name", "").strip().strip('"'),
+                    "global_name": _['be'].assigns.get("global_name", "").strip().strip('"'),
                     "scope": {}, "rename": {}, "fields": {},
-                    "quant": {}, "line": be.line, "head": be.head.strip()}
+                    "quant": {}, "line": _['be'].line, "head": _['be'].head.strip()}
             # **按栈各写一份名字模板**：`name_<栈名>`。
             # 一个 checkpoint 里可以有多个栈、各套前缀
             # （Qwen3.5 主干是 model.language_model.layers.{i}.…，
             #   MTP 那层是 mtp.layers.{i}.…），一个模板装不下。
             # render_name 里 name_<栈名> 优先、name 兜底。
-            for _k, _v in be.assigns.items():
-                if (_k.startswith("name_") or _k.startswith("expert_name_")) \
-                        and _k not in ("name_", "expert_name_"):
-                    rule[_k] = _v.strip().strip('"')
-            for sub in be.children:
-                h = sub.head.strip()
-                if h == "quant":
-                    for k, v in sub.assigns.items():
-                        rule["quant"][k] = v.strip().strip('"')
-                    for sub2 in sub.children:
-                        if sub2.head.strip() == "fuse":
-                            rule["quant"]["fuse"] = dict(sub2.assigns)
+            for _['_k'], _['_v'] in _['be'].assigns.items():
+                if (_['_k'].startswith("name_") or _['_k'].startswith("expert_name_")) \
+                        and _['_k'] not in ("name_", "expert_name_"):
+                    _['rule'][_['_k']] = _['_v'].strip().strip('"')
+            for _['sub'] in _['be'].children:
+                _['h'] = _['sub'].head.strip()
+                if _['h'] == "quant":
+                    for _['k'], _['v'] in _['sub'].assigns.items():
+                        _['rule']["quant"][_['k']] = _['v'].strip().strip('"')
+                    for _['sub2'] in _['sub'].children:
+                        if _['sub2'].head.strip() == "fuse":
+                            _['rule']["quant"]["fuse"] = dict(_['sub2'].assigns)
                     continue
-                tgt = {"scope": rule["scope"], "rename": rule["rename"],
-                       "field": rule["fields"], "fields": rule["fields"]}.get(h)
-                if tgt is None:
+                _['tgt'] = {"scope": _['rule']["scope"], "rename": _['rule']["rename"],
+                       "field": _['rule']["fields"], "fields": _['rule']["fields"]}.get(_['h'])
+                if _['tgt'] is None:
                     continue
-                for k, v in sub.assigns.items():
-                    tgt[k] = v.strip().strip('"')
-            emit_rules[key] = rule
+                for _['k'], _['v'] in _['sub'].assigns.items():
+                    _['tgt'][_['k']] = _['v'].strip().strip('"')
+            _['emit_rules'][_['key']] = _['rule']
 
-            if not rule["name"]:
-                if rule["fields"]:
+            if not _['rule']["name"]:
+                if _['rule']["fields"]:
                     continue
-                rep.add(W, rule["line"], "emit",
-                        f"emit {key} 既没有 name 模板也没有 field 映射")
+                _['rep'].add(W, _['rule']["line"], "emit",
+                        f"emit {_['key']} 既没有 name 模板也没有 field 映射")
                 continue
-            for ph in re.findall(r"\{(\w+)\}",
-                                 rule["name"] + rule["expert_name"] + rule["global_name"]):
-                if ph not in KNOWN_PH:
-                    rep.add(E, rule["line"], "emit",
-                            f"emit {key} 的 name 模板含未知占位符 {{{ph}}}")
-            for m in rule["scope"]:
-                if m not in ("layer", "global") and m not in mechs:
-                    rep.add(E, rule["line"], "emit",
-                            f"emit {key} 的 scope 引用了未声明的机制 '{m}'")
+            for _['ph'] in re.findall(r"\{(\w+)\}",
+                                 _['rule']["name"] + _['rule']["expert_name"] + _['rule']["global_name"]):
+                if _['ph'] not in _['KNOWN_PH']:
+                    _['rep'].add(E, _['rule']["line"], "emit",
+                            f"emit {_['key']} 的 name 模板含未知占位符 {{{_['ph']}}}")
+            for _['m'] in _['rule']["scope"]:
+                if _['m'] not in ("layer", "global") and _['m'] not in _['mechs']:
+                    _['rep'].add(E, _['rule']["line"], "emit",
+                            f"emit {_['key']} 的 scope 引用了未声明的机制 '{_['m']}'")
             # quant 的 fuse 名（如 gate_up_proj）和它点名的张量，只在导出时才存在，
             # 不是契约里的逻辑张量 —— 不该被当成拼写错误
-            _qnames = set(re.findall(
-                r"[A-Za-z_][\w.]*", (rule.get("quant") or {}).get("tensor", "")))
-            for _n, _v in ((rule.get("quant") or {}).get("fuse") or {}).items():
-                _qnames.add(_n)
-                _qnames |= set(re.findall(r"[A-Za-z_][\w.]*", _v))
-            for ln in rule["rename"]:
-                if ln in _qnames:
+            _['_qnames'] = set(re.findall(
+                r"[A-Za-z_][\w.]*", (_['rule'].get("quant") or {}).get("tensor", "")))
+            for _['_n'], _['_v'] in ((_['rule'].get("quant") or {}).get("fuse") or {}).items():
+                _['_qnames'].add(_['_n'])
+                _['_qnames'] |= set(re.findall(r"[A-Za-z_][\w.]*", _['_v']))
+            for _['ln'] in _['rule']["rename"]:
+                if _['ln'] in _['_qnames']:
                     continue
-                if all_logical and ln not in all_logical:
-                    rep.add(W, rule["line"], "emit",
-                            f"emit {key} 的 rename 键 '{ln}' 不是任何契约里的逻辑张量")
-            used_logical = set(re.findall(r"\{logical\}", rule["name"]))
+                if _['all_logical'] and _['ln'] not in _['all_logical']:
+                    _['rep'].add(W, _['rule']["line"], "emit",
+                            f"emit {_['key']} 的 rename 键 '{_['ln']}' 不是任何契约里的逻辑张量")
+            _['used_logical'] = set(re.findall(r"\{logical\}", _['rule']["name"]))
             # 真不变式：同一个等价类里，不同的逻辑张量不能生成同一个物理名
-            for (mn, _mk), rows in class_rows.items():
-                if rule["scope"] and mn not in rule["scope"]:
+            for (_['mn'], _['_mk']), _['rows'] in _['class_rows'].items():
+                if _['rule']["scope"] and _['mn'] not in _['rule']["scope"]:
                     continue
-                seen_nm: Dict[str, str] = {}
-                for (ln2, _sh, _nt, _pe) in rows:
-                    nm2 = render_name(rule, 0, "<stack>", mn, ln2)
-                    if nm2 in seen_nm and seen_nm[nm2] != ln2:
-                        rep.add(E, rule["line"], "emit",
-                                f"emit {key}: {mn} 的 '{ln2}' 与 '{seen_nm[nm2]}' "
-                                f"生成同一个物理名 '{nm2}'")
-                    seen_nm[nm2] = ln2
+                _['seen_nm']: Dict[str, str] = {}
+                for (_['ln2'], _['_sh'], _['_nt'], _['_pe']) in _['rows']:
+                    _['nm2'] = render_name(_['rule'], 0, "<stack>", _['mn'], _['ln2'])
+                    if _['nm2'] in _['seen_nm'] and _['seen_nm'][_['nm2']] != _['ln2']:
+                        _['rep'].add(E, _['rule']["line"], "emit",
+                                f"emit {_['key']}: {_['mn']} 的 '{_['ln2']}' 与 '{_['seen_nm'][_['nm2']]}' "
+                                f"生成同一个物理名 '{_['nm2']}'")
+                    _['seen_nm'][_['nm2']] = _['ln2']
 
 
 
 
 
-    ROPE_KEYS = {"base": "rope_theta", "type": "rope_type",
+    _['ROPE_KEYS'] = {"base": "rope_theta", "type": "rope_type",
                  "partial": "partial_rotary_factor",
                  "ratio": "partial_rotary_factor",
                  "original": "original_max_position_embeddings"}
-    ROPE_DROP = {"pairing"}          # 配对约定是 codegen 的事，不进 config
+    _['ROPE_DROP'] = {"pairing"}          # 配对约定是 codegen 的事，不进 config
 
 
 
@@ -1371,24 +1239,24 @@ def check(path: str) -> Tuple[Report, dict]:
     # `resolve_field`，而它们分别在本行上面不远处才定义完。
     #
     # 下面把它们绑回本地名字，**所以这个函数里所有调用点一个字不用改**。
-    _exp = by1export.make(
-        _main_stack_names=_main_stack_names, hp=hp, layer_seq=layer_seq,
-        mechs=mechs, named=named, overrides=overrides, pb=pb, rep=rep,
-        scope=scope, ROPE_DROP=ROPE_DROP, ROPE_KEYS=ROPE_KEYS, W=W,
+    _['_exp'] = by1export.make(
+        _main_stack_names=_['_main_stack_names'], hp=_['hp'], layer_seq=_['layer_seq'],
+        mechs=_['mechs'], named=_['named'], overrides=_['overrides'], pb=_['pb'], rep=_['rep'],
+        scope=_['scope'], ROPE_DROP=_['ROPE_DROP'], ROPE_KEYS=_['ROPE_KEYS'], W=W,
         MISSING=MISSING, eval_num=eval_num, parse_state_key=parse_state_key,
         selector_matches=selector_matches, split_top=split_top)
-    (gen_layer_types, name_layer_type, gen_rope_parameters,
-     gen_rope_scaling, gen_attention_other_setting, gen_by_layer,
-     gen_per_layer_rope, gen_join, gen_pad, gen_per_layer,
-     gen_per_layer_d, gen_sliding_window,
-     gen_rope_parameters_flat,
+    (_['gen_layer_types'], _['name_layer_type'], _['gen_rope_parameters'],
+     _['gen_rope_scaling'], _['gen_attention_other_setting'], _['gen_by_layer'],
+     _['gen_per_layer_rope'], _['gen_join'], _['gen_pad'], _['gen_per_layer'],
+     _['gen_per_layer_d'], _['gen_sliding_window'],
+     _['gen_rope_parameters_flat'],
      # **这 6 个也搬过去了**（它们曾经被当成"导出层的上游"，其实不是 ——
      # `resolve_field` 把 `emit { config = ... }` 的字段值解析出来，
      # 而 `schedule` / `position` / `rope_scaling` 这些名字**直接就是
      # 那 13 个生成器的入口**。它们和生成器是一层。）
-     resolve_field, lookup_attr, _coerce, _ltype_of_attrs,
-     _rope_params, parse_rope) = (
-        _exp[n] for n in (
+     _['resolve_field'], _['lookup_attr'], _['_coerce'], _['_ltype_of_attrs'],
+     _['_rope_params'], _['parse_rope']) = (
+        _['_exp'][n] for n in (
             'gen_layer_types', 'name_layer_type', 'gen_rope_parameters',
             'gen_rope_scaling', 'gen_attention_other_setting',
             'gen_by_layer', 'gen_per_layer_rope', 'gen_join', 'gen_pad',
@@ -1396,142 +1264,143 @@ def check(path: str) -> Tuple[Report, dict]:
             'gen_rope_parameters_flat',
             'resolve_field', 'lookup_attr', '_coerce', '_ltype_of_attrs',
             '_rope_params', 'parse_rope'))
-    cfg_out: Dict[str, Any] = {}
-    for key, rule in emit_rules.items():
-        for fname, fval in rule.get("fields", {}).items():
-            cfg_out[fname] = resolve_field(fval)
-    for key, rule in emit_rules.items():
-        for fname in rule.get("fields", {}):
+    _['cfg_out']: Dict[str, Any] = {}
+    for _['key'], _['rule'] in _['emit_rules'].items():
+        for _['fname'], _['fval'] in _['rule'].get("fields", {}).items():
+            _['cfg_out'][_['fname']] = _['resolve_field'](_['fval'])
+    for _['key'], _['rule'] in _['emit_rules'].items():
+        for _['fname'] in _['rule'].get("fields", {}):
             # **判据和产出方共用一个常量。** 见文件头上 `MISSING` 那段：
             # 这里原来写的是 `startswith("<未解析")`，而产出的是
             # `<找不到 ...>` —— 一条永远为假的判断，也就是一个不会响的报警。
-            if str(cfg_out.get(fname, "")).startswith(MISSING_PREFIX):
-                rep.add(E, rule["line"], "config",
-                        f"emit {key} 的字段 '{fname}' 的值无法解析：{cfg_out[fname]}")
+            if str(_['cfg_out'].get(_['fname'], "")).startswith(MISSING_PREFIX):
+                _['rep'].add(E, _['rule']["line"], "config",
+                        f"emit {_['key']} 的字段 '{_['fname']}' 的值无法解析：{_['cfg_out'][_['fname']]}")
 
     # ---- 状态尺寸 -------------------------------------------------
     # 按「选择器」把 state 声明落到具体的层上。同一个机制的两类层状态可以不同：
     #   GQA[window = none]  : kv_cache(grows_with_seq)
     #   GQA[window != none] : kv_cache(bounded_by = window - 1)
-    states = []
-    dtype_b = 2  # bf16 默认
-    em = scope.first("emit")
-    if em:
-        for a, b in em.assigns.items():
-            m = re.search(r"dtype\s*=\s*(\w+)", b)
-            if m and m.group(1) in ("fp32", "float32"):
-                dtype_b = 4
+    _['states'] = []
+    _['dtype_b'] = 2  # bf16 默认
+    _['em'] = _['scope'].first("emit")
+    if _['em']:
+        for _['a'], _['b'] in _['em'].assigns.items():
+            _['m'] = re.search(r"dtype\s*=\s*(\w+)", _['b'])
+            if _['m'] and _['m'].group(1) in ("fp32", "float32"):
+                _['dtype_b'] = 4
 
-    inst_by_mech: Dict[str, List[Dict[str, str]]] = {}
-    for (_s, _m, _a, _k, _t) in layer_seq:
-        inst_by_mech.setdefault(_m, []).append(_a)
+    _['inst_by_mech']: Dict[str, List[Dict[str, str]]] = {}
+    for (_['_s'], _['_m'], _['_a'], _['_k'], _['_t']) in _['layer_seq']:
+        _['inst_by_mech'].setdefault(_['_m'], []).append(_['_a'])
 
     def eval_with(expr: str, attrs: Dict[str, str]):
-        s2 = expr
-        for k2, v2 in attrs.items():
-            n2 = eval_num(v2)
-            if n2 is not None:
-                s2 = re.sub(r"\b" + re.escape(k2) + r"\b", _fmt(n2), s2)
-        return eval_num(s2)
+        _['s2'] = expr
+        for _['k2'], _['v2'] in attrs.items():
+            _['n2'] = eval_num(_['v2'])
+            if _['n2'] is not None:
+                _['s2'] = re.sub(r"\b" + re.escape(_['k2']) + r"\b", _fmt(_['n2']), _['s2'])
+        return eval_num(_['s2'])
+    _['eval_with'] = eval_with    # 让 stage 也取得到它
 
-    for nm, ents in state_src.items():
-        blk = mechs.get(nm) or memories.get(nm)
-        for key, val, ln in ents:
-            _n, conds = parse_state_key(key)
-            sel = [a for a in inst_by_mech.get(nm, []) if selector_matches(conds, a)]
-            n = len(sel)
-            tag = key if conds else nm
-            h = heads_of(blk) if blk else None
-            hd = head_dim_of.get(nm)
-            if "recurrent" in val:
-                if h and "v" in h and hd:
-                    per = h["v"] * hd * hd * dtype_b
-                    states.append((f"{tag} recurrent", f"{per/2**20:,.2f} MiB/层",
-                                   f"{n} 层", f"{per*n/2**20:,.2f} MiB"))
+    for _['nm'], _['ents'] in _['state_src'].items():
+        _['blk'] = _['mechs'].get(_['nm']) or _['memories'].get(_['nm'])
+        for _['key'], _['val'], _['ln'] in _['ents']:
+            _['_n'], _['conds'] = parse_state_key(_['key'])
+            _['sel'] = [a for a in _['inst_by_mech'].get(_['nm'], []) if selector_matches(_['conds'], a)]
+            _['n'] = len(_['sel'])
+            _['tag'] = _['key'] if _['conds'] else _['nm']
+            _['h'] = _['heads_of'](_['blk']) if _['blk'] else None
+            _['hd'] = _['head_dim_of'].get(_['nm'])
+            if "recurrent" in _['val']:
+                if _['h'] and "v" in _['h'] and _['hd']:
+                    _['per'] = _['h']["v"] * _['hd'] * _['hd'] * _['dtype_b']
+                    _['states'].append((f"{_['tag']} recurrent", f"{_['per']/2**20:,.2f} MiB/层",
+                                   f"{_['n']} 层", f"{_['per']*_['n']/2**20:,.2f} MiB"))
                 else:
-                    states.append((f"{tag} recurrent", "无法推导", f"{n} 层",
+                    _['states'].append((f"{_['tag']} recurrent", "无法推导", f"{_['n']} 层",
                                    "缺 heads(v)/head_dim"))
-            elif "kv_cache" in val:
-                kv = None
-                if h:
-                    kv = h.get("kv", h.get("kv_heads"))
-                if kv is None and blk is not None:
-                    kv = eval_num(blk.assigns.get("kv_heads"))
-                if not (kv and hd):
-                    states.append((f"{tag} kv_cache", "无法推导", f"{n} 层",
+            elif "kv_cache" in _['val']:
+                _['kv'] = None
+                if _['h']:
+                    _['kv'] = _['h'].get("kv", _['h'].get("kv_heads"))
+                if _['kv'] is None and _['blk'] is not None:
+                    _['kv'] = eval_num(_['blk'].assigns.get("kv_heads"))
+                if not (_['kv'] and _['hd']):
+                    _['states'].append((f"{_['tag']} kv_cache", "无法推导", f"{_['n']} 层",
                                    "缺 kv heads 或 head_dim —— 算不出来"))
                     continue
-                per_tok = kv * hd * 2 * dtype_b
-                mb = re.search(r"bounded_by\s*=\s*([^,)]+)", val)
-                if mb:
-                    bounds = [eval_with(mb.group(1).strip(), a) for a in sel]
-                    if any(b is None for b in bounds):
-                        states.append((f"{tag} kv_cache(bounded)",
-                                       f"{per_tok:,.0f} B/token", f"{n} 层",
+                _['per_tok'] = _['kv'] * _['hd'] * 2 * _['dtype_b']
+                _['mb'] = re.search(r"bounded_by\s*=\s*([^,)]+)", _['val'])
+                if _['mb']:
+                    _['bounds'] = [_['eval_with'](_['mb'].group(1).strip(), a) for a in _['sel']]
+                    if any(b is None for b in _['bounds']):
+                        _['states'].append((f"{_['tag']} kv_cache(bounded)",
+                                       f"{_['per_tok']:,.0f} B/token", f"{_['n']} 层",
                                        "有界，但上界表达式算不出来"))
                     else:
-                        tot = per_tok * sum(bounds)
-                        bset = sorted({int(b) for b in bounds})
-                        bt = str(bset[0]) if len(bset) == 1 else str(bset)
-                        states.append((f"{tag} kv_cache(bounded)",
-                                       f"{per_tok:,.0f} B/token", f"{n} 层",
-                                       f"上界 {bt} → {tot/2**20:,.2f} MiB 常量"))
+                        _['tot'] = _['per_tok'] * sum(_['bounds'])
+                        _['bset'] = sorted({int(b) for b in _['bounds']})
+                        _['bt'] = str(_['bset'][0]) if len(_['bset']) == 1 else str(_['bset'])
+                        _['states'].append((f"{_['tag']} kv_cache(bounded)",
+                                       f"{_['per_tok']:,.0f} B/token", f"{_['n']} 层",
+                                       f"上界 {_['bt']} → {_['tot']/2**20:,.2f} MiB 常量"))
                 else:
-                    states.append((f"{tag} kv_cache", f"{per_tok:,.0f} B/token",
-                                   f"{n} 层", f"{per_tok*n:,.0f} B/token (全模型)"))
+                    _['states'].append((f"{_['tag']} kv_cache", f"{_['per_tok']:,.0f} B/token",
+                                   f"{_['n']} 层", f"{_['per_tok']*_['n']:,.0f} B/token (全模型)"))
 
     # ---- 未填占位符 ----------------------------------------------
-    nq = 0
-    for line in text.splitlines():
-        nq += len(re.findall(r"(?<![\w.])\?(?![\w.])", strip_comment(line)))
-    if nq:
-        rep.add(I, 0, "todo", f"未填占位符 {nq} 处（?）—— 文件尚未完成")
+    _['nq'] = 0
+    for _['line'] in _['text'].splitlines():
+        _['nq'] += len(re.findall(r"(?<![\w.])\?(?![\w.])", strip_comment(_['line'])))
+    if _['nq']:
+        _['rep'].add(I, 0, "todo", f"未填占位符 {_['nq']} 处（?）—— 文件尚未完成")
 
-    layer_out = []
-    for _li, (s, m, a, k, atts) in enumerate(layer_seq):
-        entry = [(m, r) for r in class_rows.get((m, k), [])]
-        for am in atts:
-            _at = dict(resolve_attrs(mechs[am], {}))
-            _at.update(overrides.get((s, _li, am), {}))
-            entry += [(am, r) for r in class_rows.get((am, key_of(am, _at)), [])]
-        for _r in layer_rows:
-            _gd = _r[2]
-            if _gd is not None and _gd not in atts:
+    _['layer_out'] = []
+    for _['_li'], (_['s'], _['m'], _['a'], _['k'], _['atts']) in enumerate(_['layer_seq']):
+        _['entry'] = [(_['m'], r) for r in _['class_rows'].get((_['m'], _['k']), [])]
+        for _['am'] in _['atts']:
+            _['_at'] = dict(_['resolve_attrs'](_['mechs'][_['am']], {}))
+            _['_at'].update(_['overrides'].get((_['s'], _['_li'], _['am']), {}))
+            _['entry'] += [(_['am'], r) for r in _['class_rows'].get((_['am'], _['key_of'](_['am'], _['_at'])), [])]
+        for _['_r'] in _['layer_rows']:
+            _['_gd'] = _['_r'][2]
+            if _['_gd'] is not None and _['_gd'] not in _['atts']:
                 continue          # 这层没挂那个机制，就没有这个张量
-            entry.append(("layer", (_r[0], _r[1],
-                                    (f"仅当挂载 {_gd}" if _gd else ""), _r[3])))
-        layer_out.append((s, m, a, entry))
+            _['entry'].append(("layer", (_['_r'][0], _['_r'][1],
+                                    (f"仅当挂载 {_['_gd']}" if _['_gd'] else ""), _['_r'][3])))
+        _['layer_out'].append((_['s'], _['m'], _['a'], _['entry']))
 
     # ---- 汇报 -----------------------------------------------------
-    return rep, {
-        "stacks": [(s.name, s.alias, len(expansion.get(s.name, []))) for s in stacks],
-        "expansion": expansion,
-        "states": states,
-        "mechs": {n: b.mtype for n, b in mechs.items()},
-        "d_model": d_model,
-        "vocab": vocab,
-        "total_layers": total_layers,
-        "decl_params": decl_params,
-        "tens": trows,
-        "layers": [(s, m, a) for (s, m, a, k, _t) in layer_seq],
+    return _['rep'], {
+        "stacks": [(s.name, s.alias, len(_['expansion'].get(s.name, []))) for s in _['stacks']],
+        "expansion": _['expansion'],
+        "states": _['states'],
+        "mechs": {n: b.mtype for n, b in _['mechs'].items()},
+        "d_model": _['d_model'],
+        "vocab": _['vocab'],
+        "total_layers": _['total_layers'],
+        "decl_params": _['decl_params'],
+        "tens": _['trows'],
+        "layers": [(s, m, a) for (s, m, a, k, _t) in _['layer_seq']],
         # 逐层覆盖要传给下游 —— 否则契约按逐层算、而生成的计算全用默认值，
         # 那就是一个**看起来对的错模型**：张量检查全过，跑起来每层宽度都一样。
         "overrides": {"%s|%d|%s" % k: dict(v)
-                      for k, v in overrides.items()},
-        "layer_out": layer_out,
-        "emit": emit_rules,
-        "state": state_src,
-        "config": cfg_out,
-        "layer_seq": layer_seq,
-        "ctx": ctx,
-        "hparams": hp,
-        "position": (pb.assigns if pb else {}),
-        "named": named,
+                      for k, v in _['overrides'].items()},
+        "layer_out": _['layer_out'],
+        "emit": _['emit_rules'],
+        "state": _['state_src'],
+        "config": _['cfg_out'],
+        "layer_seq": _['layer_seq'],
+        "ctx": _['ctx'],
+        "hparams": _['hp'],
+        "position": (_['pb'].assigns if _['pb'] else {}),
+        "named": _['named'],
         # 逐层类型 + 按类型的 RoPE 参数 —— codegen 靠这两个把 position 绑到正确的层上
-        "layer_types": gen_layer_types(),
-        "rope_by_type": gen_rope_parameters(),
-        "mech_attrs": {nm: resolve_attrs(b, {}) for nm, b in mechs.items()},
-        "global_rows": global_rows,
+        "layer_types": _['gen_layer_types'](),
+        "rope_by_type": _['gen_rope_parameters'](),
+        "mech_attrs": {nm: _['resolve_attrs'](b, {}) for nm, b in _['mechs'].items()},
+        "global_rows": _['global_rows'],
     }
 
 

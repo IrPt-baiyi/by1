@@ -81,7 +81,7 @@ GROUPS = [
 它原来是 `by1check.check()` 里嵌着的 13 个 `gen_*` / `name_*`
 （那个函数因此有 1243 行）。**劈开的理由写在那个文件的头注里。**''', [
         'by1', 'by1contract', 'by1emit', 'by1name', 'by1vocab',
-        'by1export']),
+        'by1export', 'by1blocks']),
 
     ('`checks/` —— 判卷人 · 神谕 · 跑检查', 'checks', '''这个项目最核心的资产。
 
