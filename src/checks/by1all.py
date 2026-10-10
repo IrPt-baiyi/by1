@@ -150,6 +150,10 @@ SHAPED = ['llama-shaped.by1', 'mixtral-shaped.by1', 'gpt-oss-shaped.by1',
           # 而它们原来是**落进 else 分支走 softmax_topk** 的 ——
           # 实测 3.8e-02 / 6.4e-01 对不上（见 history/ir.md 130）。
           'moe-routing-shaped.by1',
+          # **Ling-3.0-tiny 机械缩小版。** 结构一个字没改（3×KDA + 1×MLA，
+          # 第 0 层稠密、其余 noaux_tc MoE），只缩维度 —— 真尺寸这台机器跑不动。
+          # 它证明「Ling 的结构跑得起来」，不是「和 Ling 数值一致」。
+          'ling-tiny.by1',
           # **由 clef.by1 机械缩小维度得来，结构一个字没改。**
           # 它证明"对着真 checkpoint 验过的那份描述"**同时是能跑的** ——
           # 不是两套东西。
@@ -710,7 +714,7 @@ def main():
         # transformers 的 `GlmMoeDsaIndexer` 比"挑中了哪些 key"。
         _todo = [f for f in SHAPED
                  if f not in ('mla-shaped.by1', 'mla-sparse-shaped.by1',
-                              'moe-routing-shaped.by1',
+                              'moe-routing-shaped.by1', 'ling-tiny.by1',
                               'llama3-shaped.by1',
                               'clef-tiny.by1', 'gpt2-tiny.by1', 'hello.by1')]
         for f, (st, out) in zip(_todo, run_many(

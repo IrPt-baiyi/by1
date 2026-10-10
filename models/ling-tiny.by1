@@ -1,0 +1,247 @@
+# ── ling-tiny.by1 ─────────────────────────────────────────────────────
+# **由 Ling-3.0-tiny.by1 机械缩小维度得到，结构一个字没改。**
+#
+# 目的：让「Ling-3.0-tiny 真能跑前向」这件事**进得了门**。真尺寸跑不动
+# （24 层 × 128 专家 × 512×1536，光专家就 7 GB+），所以按 `clef-tiny` 的
+# 同一个办法缩维度、保结构 —— 缩小的唯一理由是这台机器的内存。
+#
+# 缩的对应关系（左边真尺寸，右边这份）：
+#   d_model 1536 -> 256   n_layer 24 -> 4   vocab 157184 -> 512
+#   KDA  k_heads/v_heads 16 -> 4   k_dim/v_dim 128 -> 16   d_attn 2048 -> 64
+#   MLA  q 16 -> 4   head_dim 192 -> 48（qk_nope 128 -> 32 + qk_rope 64 -> 16）
+#        q_lora 256 -> 64   kv_lora 512 -> 32   v_dim 128 -> 16
+#   MoE  experts 128 -> 8   top_k 8 -> 2   n_group 8 -> 4   topk_group 4 -> 2
+#        hidden 512 -> 32   shared_hidden 512 -> 32
+#   Dense hidden 4608 -> 128
+#
+# **结构一个字没改**：3 层 KDA + 1 层 MLA 一组、一组重复、第 0 层挂稠密、
+# 其余挂 MoE（noaux_tc 分组路由）、partial rope 0.5 · interleaved。
+# 逐层覆盖、选择器、机制种类全部照抄。
+#
+#   python by1exec.py ling-tiny.by1 --compare
+#   python by1c.py    ling-tiny.by1 --gcc <gcc> --seq 16
+#
+# ⚠️ **它验的是「结构跑得起来、三个后端一致」，不是「和 Ling 的数值一致」。**
+#    后者要真尺寸的权重 + 官方实现，那台机器上跑不动。
+#    能对拍的机制级判据在别处：KDA -> by1kda.py、MLA -> by1mla.py、
+#    noaux_tc 路由 -> by1moe.py、DSA 索引器 -> by1sparse.py。
+
+model Ling-tiny {
+  arch  bailing_hybrid
+  ctx   262144
+
+  hparams {
+    d_model     = 256
+    n_layer     = 4
+    vocab       = 512
+    rms_eps     = 1e-06
+    d_ff        = 128          # 层 0 的稠密 FFN
+    d_attn      = 64           # KDA 的 q/k/v 宽度 = 4 × 16
+    k_heads     = 4
+    kv_lora     = 32
+    q_lora      = 64
+    qk_head     = 48           # = qk_nope 32 + qk_rope 16
+    qk_rope     = 16
+    v_dim       = 16
+    d_ff_moe    = 32
+    d_ff_shared = 32
+  }
+
+  # ── KDA：短卷积 + delta 规则 ────────────────────────────────────
+  # 门是**一层**（config 里 `no_kda_lora = true`）—— 也是默认值，写出来为了显式。
+  # `gate_lower` 那一支必须写：不写会走 `-exp(A_log) * softplus(g)`，是另一个函数。
+  mech KDA : KDA {
+    k_heads     = 4
+    v_heads     = 4
+    k_dim       = 16
+    v_dim       = 16
+    conv_kernel = 4
+    gate_lowrank = false
+    gate_lower  = -5.0
+  }
+
+  # ── MLA：低秩压缩的注意力 ──────────────────────────────────────
+  # `qk_head` 是**别名**，值必须等于 `qk_nope + qk_rope`（有反例守着）。
+  mech MLA : MLA {
+    heads      = { q = 4, head_dim = 48 }
+    q_lora     = 64
+    kv_lora    = 32
+    qk_head    = 48
+    qk_nope    = 32
+    qk_rope    = 16
+    v_dim      = 16
+    head_gate  = per_head         # 每头一个门
+    gate_act   = sigmoid          # Ling 用 sigmoid
+  }
+
+  mech Dense : FFN {
+    hidden     = 128
+    layer_kind = dense
+  }
+
+  # noaux_tc 分组路由：sigmoid 打分 + 分组 top-k + 无辅助损失
+  mech MoE : MoE {
+    experts       = 8
+    top_k         = 2
+    n_group       = 4
+    topk_group    = 2
+    hidden        = 32
+    shared        = 1
+    shared_hidden = 32
+    score_bias    = true
+    routing       = sigmoid_group_topk
+    routed_scale  = 2.5
+    layer_kind    = sparse
+    structural    = [ experts, hidden, shared_hidden, n_group, topk_group ]
+  }
+
+  schedule {
+    kda   = 3 * KDA
+    mla   = 1 * MLA
+    block = kda + mla
+  }
+
+  stack main {
+    pattern     = 1 * block          # 4 层 = 3 KDA + 1 MLA
+    main[0]     >> Dense
+    main[1..3]  >> MoE
+  }
+
+  position {
+    # partial_rotary_factor 0.5 · rope_interleave · 只对 MLA 层用
+    default = rope(base = 6000000, pairing = interleaved, partial = 0.5)
+  }
+
+  tensors {
+    KDA {
+      q_proj.weight   : (d_attn, d_model)
+      k_proj.weight   : (d_attn, d_model)
+      v_proj.weight   : (d_attn, d_model)
+      q_conv1d.weight : (d_attn, 1, conv_kernel)
+      k_conv1d.weight : (d_attn, 1, conv_kernel)
+      v_conv1d.weight : (d_attn, 1, conv_kernel)
+      A_log           : (k_heads,)
+      dt_bias         : (d_attn,)
+      b_proj.weight   : (k_heads, d_model)
+      f_proj.weight   : (d_attn, d_model)
+      g_proj.weight   : (d_attn, d_model)
+      o_norm.weight   : (v_dim,)
+      o_proj.weight   : (d_model, d_attn)
+    }
+    MLA {
+      q_a_proj.weight           : (q_lora, d_model)
+      q_a_layernorm.weight      : (q_lora,)
+      q_b_proj.weight           : (k_heads * qk_head, q_lora)
+      kv_a_proj_with_mqa.weight : (kv_lora + qk_rope, d_model)
+      kv_a_layernorm.weight     : (kv_lora,)
+      kv_b_proj.weight          : (k_heads * (qk_nope + v_dim), kv_lora)
+      dense.weight              : (d_model, k_heads * v_dim)
+      g_proj.weight             : (k_heads, d_model)
+    }
+    Dense {
+      gate_proj.weight : (hidden, d_model)
+      up_proj.weight   : (hidden, d_model)
+      down_proj.weight : (d_model, hidden)
+    }
+    MoE {
+      gate.weight       : (experts, d_model)
+      gate.expert_bias  : (experts,)
+      gate_proj.weight  : (experts, hidden, d_model) per_expert
+      up_proj.weight    : (experts, hidden, d_model) per_expert
+      down_proj.weight  : (experts, d_model, hidden) per_expert
+      shared_experts.gate_proj.weight : (shared_hidden, d_model)
+      shared_experts.up_proj.weight   : (shared_hidden, d_model)
+      shared_experts.down_proj.weight : (d_model, shared_hidden)
+    }
+    layer {
+      input_layernorm.weight          : (d_model,)
+      post_attention_layernorm.weight : (d_model,)
+    }
+    global {
+      embed.weight      : (vocab, d_model)
+      final_norm.weight : (d_model,)
+      lm_head.weight    : (vocab, d_model)
+    }
+  }
+
+  emit {
+    train -> transformers.config {
+      field {
+        model_type              = "bailing_hybrid"
+        vocab_size              = vocab
+        hidden_size             = d_model
+        num_hidden_layers       = n_layer
+        intermediate_size       = d_ff
+        moe_intermediate_size   = d_ff_moe
+        moe_shared_expert_intermediate_size = d_ff_shared
+        max_position_embeddings = ctx
+        rms_norm_eps            = rms_eps
+        hidden_act              = "silu"
+        attention_dropout       = 0.0
+        embedding_dropout       = 0.0
+        output_dropout          = 0.0
+        initializer_range       = 0.02
+        use_cache               = true
+        tie_word_embeddings     = false
+        torch_dtype             = "bfloat16"
+        eos_token_id            = 156895
+        pad_token_id            = 156892
+        # MLA 那一半
+        num_attention_heads     = MLA.q
+        num_key_value_heads     = MLA.q
+        q_lora_rank             = MLA.q_lora
+        kv_lora_rank            = MLA.kv_lora
+        qk_head_dim             = MLA.qk_head
+        qk_nope_head_dim        = MLA.qk_nope
+        qk_rope_head_dim        = MLA.qk_rope
+        v_head_dim              = MLA.v_dim
+        rotary_dim              = MLA.qk_rope
+        partial_rotary_factor   = 0.5
+        rope_theta              = 6000000
+        rope_scaling            = null
+        rope_interleave         = true
+        use_qk_norm             = true
+        use_mla_nope            = false
+        use_qkv_bias            = false
+        use_bias                = false
+        gated_attention_proj_granularity_type = "head_wise"
+        # KDA 那一半
+        head_dim                = KDA.k_dim
+        short_conv_kernel_size  = KDA.conv_kernel
+        kda_lower_bound         = -5
+        kda_safe_gate           = true
+        no_kda_lora             = true
+        use_kda_lora            = false
+        num_kv_heads_for_linear_attn = 0
+        linear_silu             = true
+        up_proj_norm            = false
+        value_norm              = false
+        # MoE
+        num_experts             = MoE.experts
+        num_experts_per_tok     = MoE.top_k
+        n_group                 = MoE.n_group
+        topk_group              = MoE.topk_group
+        routed_scaling_factor   = MoE.routed_scale
+        moe_router_enable_expert_bias = true
+        score_function          = "sigmoid"
+        scoring_func            = "sigmoid"
+        topk_method             = "noaux_tc"
+        norm_topk_prob          = true
+        router_dtype            = "fp32"
+        scale_router_input      = false
+        seq_aux                 = true
+        output_router_logits    = false
+        # 层布局
+        first_k_dense_replace   = 1
+        layer_group_size        = 4
+        max_window_layers       = 20
+        group_norm_size         = 1
+        num_shared_experts      = MoE.shared
+        mtp_use_kda             = false
+        mtp_loss_scaling_factor = 0
+        num_nextn_predict_layers = 0
+        use_nGPT                = false
+      }
+    }
+  }
+}
