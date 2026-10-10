@@ -4936,3 +4936,72 @@ dt 不做 softplus ✓ —— **一个碰不到被测东西的测试不是测试
 
 数学通了、判卷人立了，`by1codegen` 里加 `SSM` 那一支就**只剩照抄** ✓。
 还要顺手补 Nemotron 的第二个缺口：`MoE` 的属性 `gate`。
+
+
+---
+
+## 92. SSM 的实现底稿 —— 三个缺口、八个张量、一处已经写好的映射
+
+上一节数学验通了、判卷人立了。这一节把**要照抄的东西**找齐。
+
+### 一、缺口是**三个**，不是一个
+
+`compile_ir` 对 Nemotron 的完整抱怨：
+
+    - 机制 'Mamba' 的类型是 'SSM'，codegen 还不支持
+    - 机制 'MoE' 的属性 'gate' codegen 还不支持
+    - **第 1 层的主机制是 'MoE'，codegen 不把它当 token 混合器**   <- 第三个
+
+而层序列是干净的交替：`Mamba, MoE, Mamba, MoE, Mamba, Attn, MoE, ...`
+—— **MoE 在这个模型里当 token 混合器用** ✓。
+
+### 二、张量底稿：8 个，名字和形状全在
+
+`info['tens']` 是契约的分组（每个不同的机制一组）。Mamba 那一组：
+
+    组 'Mamba'   attrs: conv_kernel=4, head_dim=64, n_groups=8, ssm_state=128
+                 层数 23
+    in_proj.weight    (10304, 2688)
+    conv1d.weight     (6144, 1, 4)
+    conv1d.bias       (6144)
+    A_log             (64)
+    D                 (64)
+    dt_bias           (64)
+    norm.weight       (4096)
+    out_proj.weight   (2688, 4096)
+
+**和官方 `NemotronHMamba2Mixer` 逐字对上** ✓ ——
+`10304 = 4096 + 6144 + 64` ✓、`6144 = 4096 + 2*8*128` ✓。
+
+### 三、有两处**已经写好了**，不用动
+
+    by1check.py:668    TOKEN_MIXER = {..., "SSM", "Vision", "Recurrent", ...}
+                       —— `SSM` **已经被认成 token 混合器** ✓
+    by1export.py:411   elif _mk in ("SSM",): out.append("mamba")
+                       —— 导出层的 `layer_types` **已经会写 mamba** ✓
+
+**所以缺的只在 `by1codegen` 这一层** ✓ —— 机制表、builder、以及
+`MoE` 当混合器那一条。
+
+### 四、`MoE` 的 `gate` 只是要接受 `none`
+
+契约里 MoE 那一组的 attrs 写着 `gate=none`。所以那不是"要支持一种
+新的门控"，是**要接受 `none` 这个取值** ✓ —— 而"不认识的属性一律
+报不支持"这条规则把它也拦下了 ✗。
+
+**这一条值得单独记**：`unsupported` 的判据是"名字在不在允许表里"，
+而这里的问题是"**值**是 none" ✗ —— 名字和取值是两件事。
+
+### 五、还差一步：逻辑名 -> 物理名
+
+契约里的逻辑名是 `in_proj.weight`，而生成出来的模块叫
+`layers.0.op0.in_proj.weight`。`by1load.py` 的头注里已经写过这件事：
+"模型的参数名是后端自己的，而契约里的逻辑名差一个后缀" ✓ ——
+所以那一层映射是现成的 ✓。
+
+### 六、这一轮也没动产品代码，而这是**最后一次**
+
+前两轮不动，是因为"还在判断"；这一轮不动，是因为**底稿刚找齐、
+而它值得单独落一次**（下一轮如果实现到一半被打断，这张表还在）。
+
+**再往下就是纯粹的照着写。**
