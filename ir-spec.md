@@ -193,6 +193,8 @@ python src/by1irentry.py                    # 三个后端只从 IR 跑
 | `index_heads` | `int` | 否 | 索引器的头数（GLM-5.3 是 32） |
 | `index_dim` | `int` | 否 | 索引器的头维（128） |
 | `index_topk` | `int` | 否 | 每层挑多少个 key（2048） |
+| `index_kpool` | `int` | 否 | 池大小。1 = 逐 key（缺省） |
+| `index_kpool_tail` | `bool` | 否 | 把可见的尾巴追加进来（宽度多 kpool-1） |
 
 ### `MoE`
 

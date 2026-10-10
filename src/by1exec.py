@@ -902,6 +902,13 @@ def shapes_of(ir):
                     out[pre + "indexer.k_norm.weight"] = (hd_,)
                     out[pre + "indexer.k_norm.bias"] = (hd_,)
                     out[pre + "indexer.weights_proj.weight"] = (nh_, d)
+                    # k-pool 的两个张量。**职责不一样，别混**：
+                    #   _gate [hd, hidden]  逐 token 的门，池内加权用它
+                    #   _ape  [kpool, hd]   池内位置的可学嵌入
+                    if int(a.get("index_kpool") or 1) > 1:
+                        out[pre + "indexer.index_kpool_compress_gate"] = (hd_, d)
+                        out[pre + "indexer.index_kpool_compress_ape"] = (
+                            int(a["index_kpool"]), hd_)
             elif k == "FFN":
                 out[pre + "w1"] = (a["hidden"], d)
                 out[pre + "w2"] = (d, a["hidden"])

@@ -617,6 +617,9 @@ def compile_ir(info: Dict[str, Any]) -> Dict[str, Any]:
                 "q": q, "q_lora": int(h["q_lora"]), "kv_lora": int(h["kv_lora"]),
                 "qk_nope": qn, "qk_rope": kr, "v_dim": int(h["v_dim"]),
                 "head_dim": qn + kr,
+                # k-pool：不给就是逐 key（1）
+                "index_kpool": int(_num(attrs.get("index_kpool"), 1) or 1),
+                "index_kpool_tail": _flag(attrs.get("index_kpool_tail")),
                 "out_dim": int(_num(attrs.get("out_dim")) or q * int(h["v_dim"])),
                 "bias": _flag(attrs.get("bias", attrs.get("attn_bias"))),
                 "rope_base": int(_num(attrs.get("rope_base"), rs["base"])),
@@ -1221,6 +1224,23 @@ class DSAIndexer(nn.Module):
         self.k_norm = nn.LayerNorm(self.hd, eps=1e-6)
         self.weights_proj = nn.Linear(d, self.nh, bias=False)
         self.scale = self.hd ** -0.5
+        # ── k-pool 压缩（GLM-5.3）─────────────────────────────────
+        # 不给 `index_kpool` 就是普通的逐 key 打分（`by1sparse` 对
+        # `GlmMoeDsaIndexer` 验过的那一份）。给了就走**池**：
+        # 每 `index_kpool` 个连续 key 压成一个池，给池打分，选中池再摊回 token。
+        #
+        # 两个张量的职责**不一样**，别混：
+        #   index_kpool_compress_gate [hd, hidden]  逐 token 的门，池内加权用它
+        #   index_kpool_compress_ape  [kpool, hd]   池内**位置**的可学嵌入
+        # 判卷人是 transformers 5.19.0 的 `Glm5NextTextIndexer`，
+        # 见 refs/glm5-next-indexer.reference.txt（原文 + 算法说明）。
+        self.kpool = int(a.get("index_kpool") or 1)
+        self.kpool_tail = bool(a.get("index_kpool_tail"))
+        if self.kpool > 1:
+            self.index_kpool_compress_gate = nn.Parameter(
+                torch.zeros(self.hd, d))
+            self.index_kpool_compress_ape = nn.Parameter(
+                torch.zeros(self.kpool, self.hd))
 
     def forward(self, x, q_resid, cos=None, sin=None):
         b, n, _ = x.shape
@@ -1240,6 +1260,8 @@ class DSAIndexer(nn.Module):
                                self.pairing).transpose(1, 2)
         q = torch.cat([q_rot, q_pass], dim=-1)            # [b, n, nh, hd]
         k = torch.cat([k_rot, k_pass], dim=-1).squeeze(2)  # [b, n, hd]
+        if self.kpool > 1:
+            return self._pool_select(x, q, k)
         scores = torch.matmul(q.float(),
                               k.float().transpose(-1, -2).unsqueeze(1)) * self.scale
         scores = torch.relu(scores)                        # [b, n, nh, n]
@@ -1249,6 +1271,101 @@ class DSAIndexer(nn.Module):
         idx = idx.masked_fill(pos[None, :] > pos[:, None], float("-inf"))
         t = min(self.topk, n)
         return idx.topk(t, dim=-1).indices                  # [b, n, t]
+
+    def _pool_select(self, x, q, k):
+        """k-pool：**池**打分，选中的池摊回原始 token。
+
+        逐行对着 `Glm5NextTextIndexer`（refs/glm5-next-indexer.reference.txt）。
+        `index_kpool = 1` 时它必须退化成上面那份逐 key 的 —— 实测交集 6/6。
+
+        两处容易漏：
+        ① 池从**第一个有效 token** 起算，不是槽位 0；
+        ② 池可选当且仅当**它最后一个 token 对 query 可见**，
+           而且**整个池都有效**才算候选。
+        """
+        b, n, _ = x.shape
+        P = self.kpool
+        device = x.device
+        gate_scores = x @ self.index_kpool_compress_gate.T       # [b, n, hd]
+        valid = torch.ones(b, n, dtype=torch.bool, device=device)
+        # 池 = 从第一个有效 token 起、每 P 个连续 token 一组
+        first = torch.where(valid.any(-1), valid.long().argmax(-1),
+                            torch.full((b,), n, dtype=torch.long, device=device))
+        np_ = (n + P - 1) // P
+        off = torch.arange(np_ * P, device=device).view(1, np_, P)
+        pool_idx = first[:, None, None] + off                    # [b, np, P]
+        bidx = torch.arange(b, device=device)[:, None, None]
+        safe = pool_idx.clamp(0, n - 1)
+        gk = k[bidx, safe]                                      # [b, np, P, hd]
+        gg = gate_scores[bidx, safe]
+        gv = valid[bidx, safe] & (pool_idx < n)
+        pool_valid = gv.all(-1)                                 # [b, np]
+        pool_idx = pool_idx.masked_fill(~gv, -1)
+        # 池内加权平均：门 + 池内位置嵌入，softmax，再对 key 加权求和
+        lg = gg.float() + self.index_kpool_compress_ape.float()[None, None]
+        lg = lg.masked_fill(~gv[..., None], float("-inf"))
+        prob = torch.nan_to_num(lg.softmax(dim=2)).to(gk.dtype)
+        pool_key = (prob * gk).sum(dim=2)                        # [b, np, hd]
+        keep = pool_valid.any(0)
+        pool_key, pool_idx, pool_valid = pool_key[:, keep], pool_idx[:, keep], pool_valid[:, keep]
+        # 打分：relu(q @ pool_key^T * scale)，按头加权求和
+        s = torch.matmul(q.float(),
+                         pool_key.float().transpose(-1, -2).unsqueeze(1)) * self.scale
+        s = torch.relu(s)
+        w = self.weights_proj(x).float() * (self.nh ** -0.5)
+        sc = torch.matmul(w.unsqueeze(-2), s).squeeze(-2)        # [b, n, np']
+        # 池可选：最后一个 token 对 query 可见（因果）**且** 整池有效
+        pend = pool_idx[..., -1].clamp(0, n - 1)
+        pos = torch.arange(n, device=device)
+        vis = pend[:, None, :] <= pos[None, :, None]             # [b, n, np']
+        cand = vis & pool_valid[:, None, :]
+        sc = sc.masked_fill(~cand, torch.finfo(sc.dtype).min)
+        sk = min(self.topk // P, sc.shape[-1])
+        sel = sc.topk(sk, dim=-1).indices
+        sel_ok = cand.gather(-1, sel)
+        sel_idx = pool_idx[bidx, sel]                            # [b, n, sk, P]
+        out = sel_idx.flatten(-2)
+        out = out.masked_fill(~sel_ok[..., None].expand_as(sel_idx).flatten(-2), -1)
+        width = self.topk
+        if self.kpool_tail:
+            out = self._append_tail(out, valid, n)
+            width += P - 1
+        if out.shape[-1] < width:
+            out = torch.nn.functional.pad(out, (0, width - out.shape[-1]), value=-1)
+        return out[..., :width]
+
+    def _append_tail(self, topk_idx, visible, n):
+        """`index_kpool_always_select_tail`：把**可见的尾巴**（那个不完整池的
+        token）追加进来，宽度多出 `kpool - 1`。
+
+        逐行对着 `Glm5NextTextIndexer.append_visible_tail`：
+            visible_count = 每个 query 能看见多少个 key
+            tail_count    = visible_count % kpool
+            tail_start    = first_key + visible_count - tail_count
+            tail_indices  = tail_start + [0 .. kpool-2]
+        无效的填 -1。
+        """
+        P = self.kpool
+        if P == 1:
+            return topk_idx
+        b = topk_idx.shape[0]
+        device = topk_idx.device
+        pos = torch.arange(n, device=device)
+        key_valid = visible                                    # [b, n] 全真
+        token_vis = (pos[None, :, None] >= pos[None, None, :]) \
+            & key_valid[:, None, :]                            # [b, n, n]
+        first = torch.where(key_valid.any(-1), key_valid.long().argmax(-1),
+                            torch.full((b,), n, dtype=torch.long, device=device))
+        vis_count = token_vis.long().sum(-1)                   # [b, n]
+        tail_count = vis_count.remainder(P)
+        offs = torch.arange(P - 1, device=device)
+        tstart = first[:, None] + vis_count - tail_count
+        tidx = tstart[..., None] + offs                        # [b, n, P-1]
+        tvalid = (offs[None, None, :] < tail_count[..., None]) & (tidx < n)
+        kv = tidx.clamp(0, n - 1)
+        tvis = token_vis.gather(-1, kv)
+        tidx = tidx.masked_fill(~(tvalid & tvis), -1)
+        return torch.cat([topk_idx, tidx], dim=-1)
 
 
 class MLAttention(nn.Module):

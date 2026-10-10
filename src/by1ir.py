@@ -199,6 +199,15 @@ KIND_ATTRS = {
         "index_heads": ("int", False, "索引器的头数（GLM-5.3 是 32）"),
         "index_dim": ("int", False, "索引器的头维（128）"),
         "index_topk": ("int", False, "每层挑多少个 key（2048）"),
+        # ── k-pool 压缩（GLM-5.3 独有）──────────────────────────────
+        # 不给就是**逐 key** 打分（`by1sparse` 对 `GlmMoeDsaIndexer` 验的那份）；
+        # 给了就走**池**：每 `index_kpool` 个连续 key 压成一个池、给池打分、
+        # 选中的池摊回原始 token。**不是同一个算法的两种写法，是两种算法。**
+        # 判卷人是 transformers 5.19.0 的 `Glm5NextTextIndexer`
+        # （refs/glm5-next-indexer.reference.txt，原文 + 算法说明）。
+        "index_kpool": ("int", False, "池大小。1 = 逐 key（缺省）"),
+        "index_kpool_tail": ("bool", False,
+                             "把可见的尾巴追加进来（宽度多 kpool-1）"),
     },
     "FFN": {
         "hidden": ("int", True, ""),
