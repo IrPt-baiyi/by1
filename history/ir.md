@@ -8156,6 +8156,43 @@ MoE 那边没暴露这个问题，只是因为它的随机权重下专家得分�
 即便如此，**近**并列还是会翻 —— 所以这条只解决"并列"，
 不解决"间隙比浮点噪声还小"。两件事要分开说。
 
+---
+
+## 130. **MoE 的四种路由，NumPy / C 后端只算了两种** —— 而 Ling / GLM 用的是缺的那种
+
+为了给 Ling / GLM 做缩小版（让"跑前向"进门），先去看 MoE 的后端。
+**`op_moe` 只有一个 `if routing == "topk_softmax"`，其余全落 else**，
+而 else 那一支是 `softmax` → top-k → 归一。C 后端一样（`if (routing == 1)`）。
+
+**量出来的**（`gpt-oss-shaped.by1` 换 routing，`by1exec --compare`，seq 16）：
+
+    routing                  NumPy vs PyTorch
+    topk_softmax             相对 3.0e-07   [PASS]
+    softmax_topk             相对 2.6e-07   [PASS]
+    sigmoid_topk             相对 3.8e-02   [FAIL]   <- 走了 softmax
+    sigmoid_group_topk       相对 6.4e-01   [FAIL]   <- 走了 softmax（noaux_tc）
+
+**所以：四种路由只有两种是算得对的。** `sigmoid_topk` 和
+`sigmoid_group_topk`（= noaux_tc，DeepSeek/Ling/GLM 那一支）
+在 NumPy / C 后端里**算的是另一个模型**，而且一声不响。
+
+**为什么一直没暴露**：门里的 shaped 模型只用了 `softmax_topk`（mixtral）
+和 `topk_softmax`（gpt-oss）——**缺的那两种一个模型都没用**。
+而 **Ling-3.0-tiny 和 GLM-5.3-Flash 用的正是 `sigmoid_group_topk`**。
+
+**这和 §126 那个 GLM 路由编码错误是同一族**：
+「契约对、config 对、生成出来是另一个模型」。区别是那个在**描述**里，
+这个在**后端**里。两次都因为"前向从来没跑过"而看不见。
+
+**它就是 item 2 的最后一块**：`by1gate` 说 Ling / GLM「编得出来」✓，
+而编出来不等于算得对 —— 要"真能跑前向"，MoE 的 `sigmoid_topk` /
+`sigmoid_group_topk` 必须在 NumPy / C 两个后端也实现，
+并且**要有判卷人 + 反例**（判卷人现成的：`by1moe.py` 对
+transformers 的 `DeepseekV3TopkRouter`）。
+
+⚠ **在这之前，任何"Ling / GLM 能跑前向"的说法都不成立** ——
+三后端跑得起来，但跑的是 softmax 路由。
+
 ### 五、视觉前向：**决定不做，停在「描述」**
 
 结论写进 `1.md` 的「视觉前向：决定不做」，一句话：
