@@ -63,6 +63,9 @@ def main(argv=None):
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--backward", action="store_true",
                     help="同时对比梯度（1.md 说前向与反向都要一致）")
+    ap.add_argument("--bisect", action="store_true",
+                    help="逐个子模块比（投影 / 输出投影 / 两个 norm），"
+                         "找第一个不一致的 —— 整模型差 1e-02 时用它定位")
     ap.add_argument("--probe", action="store_true",
                     help="给第 0 层的注意力挂 hook，比 by1 和 HF 的**注意力输出**"
                          "（逐层说'第 1 层之后偏了'，这一步说'偏在注意力还是前馈'）")
@@ -557,6 +560,113 @@ def main(argv=None):
             print("    量不了：%s: %s" % (type(ex).__name__, str(ex)[:90]))
             print("    （多半是生成模型的层签名不是 `(x)` 单参）")
 
+    # ── 二分（`--bisect`）：逐个子模块比，找第一个不一致的 ────────
+    #
+    # 整模型差 1e-02 时，只比 logits 看不出差在哪。而一层里能比的
+    # 中间结果只有形状相同的那些：
+    #
+    #     op0  <-> input_layernorm      [b,n,d]        ✓
+    #     wq/wk/wv <-> q_proj/k_proj/v_proj  Linear(d,…) ✓
+    #     wo   <-> o_proj                Linear(q*hd,d) ✓
+    #
+    # **`qn` / `kn` 形状对不上**（HF 把 `[b,n,q*hd]` 摊平了再 norm、
+    # by1 是 `[b,q,n,hd]`），直接比会得到假结论，所以不比。
+    #
+    # **每一对都要先取得到** —— 没有 `qk_norm` 的模型根本没有 `qn`，
+    # 直接访问会 AttributeError（临时版就是这么把四个 shaped 弄崩的）。
+    #
+    # 这个工具在 `minimind-3` 上把范围从"注意力那 55 行"缩到了
+    # "第一个算子 `op0`"，然后量出 **eps 差 10 倍**。
+    # **诊断绝不能改变判定。** 认不出的家族上量不了，就说"量不了"
+    # 然后退场 —— 而不是把 ok 变成 fail。
+    #
+    # （`--probe` / `--layers` 本来就是这个写法：外面包一层
+    #   `except (AttributeError, TypeError, RuntimeError)`。）
+    try:
+        if args.bisect:
+            print("\n  二分：第 0 层里形状对得上的子模块")
+            got = {}
+
+            def _mkb(side, nm):
+                def _h(mod, inp, out):
+                    o = out[0] if isinstance(out, (tuple, list)) else out
+                    got[(side, nm)] = o.detach().float()
+                return _h
+
+            _lay = mine.layers[0]
+            _att = getattr(_lay, "op1", None)
+            _hlay = ref.model.layers[0]
+            # **HF 那侧也要 `getattr(..., None)`。**
+            #
+            # Qwen3Next 那一族的层不叫 `self_attn` —— 直接访问会
+            # `AttributeError`（第一版就是这样把 `qwen3-next-shaped` 弄崩的）。
+            # 一侧做了、另一侧忘了，和前面那些"修好一个弄坏四个"是同一类。
+            _h_att = getattr(_hlay, "self_attn", None)
+            _h_ln = getattr(_hlay, "input_layernorm", None)
+            ROWS = [("op0", getattr(_lay, "op0", None),
+                     "input_layernorm", _h_ln),
+                    ("wq", getattr(_att, "wq", None), "q_proj",
+                     getattr(_h_att, "q_proj", None)),
+                    ("wk", getattr(_att, "wk", None), "k_proj",
+                     getattr(_h_att, "k_proj", None)),
+                    ("wv", getattr(_att, "wv", None), "v_proj",
+                     getattr(_h_att, "v_proj", None)),
+                    ("wo", getattr(_att, "wo", None), "o_proj",
+                     getattr(_h_att, "o_proj", None))]
+            hs = []
+            for bn, bmod, hn, hmod in ROWS:
+                # **判据是"这一行能不能挂 hook"**，不是"是不是 None"。
+                # 拿 `object()` 占位只会换一个 AttributeError。
+                if bmod is None or hmod is None \
+                        or not hasattr(bmod, "register_forward_hook") \
+                        or not hasattr(hmod, "register_forward_hook"):
+                    print("    %-6s %-16s 有一边挂不上，跳过" % (bn, hn))
+                    continue
+                hs.append(bmod.register_forward_hook(_mkb("by1", bn)))
+                hs.append(hmod.register_forward_hook(_mkb("ref", hn)))
+            try:
+                with torch.no_grad():
+                    ref(ids, output_hidden_states=True)
+                    mine(ids)
+            finally:
+                for h in hs:
+                    h.remove()
+            print("    %-6s %-16s %-12s %-12s %s"
+                  % ("by1", "hf", "绝对差", "相对", "判定"))
+            print("    " + "-" * 64)
+            first = None
+            for bn, _bm, hn, _hm in ROWS:
+                # **别用 `a` / `b`** —— 外层用它们存 logits，
+                # 这里一覆盖，后面 `d = (a - b).abs()` 就拿到两个 None ✗。
+                # （症状：`TypeError: unsupported operand type(s) for -:
+                #   'NoneType' and 'NoneType'`，而报的位置在外面。）
+                ra_, rb_ = got.get(("ref", hn)), got.get(("by1", bn))
+                if not hasattr(ra_, "shape") or not hasattr(rb_, "shape"):
+                    print("    %-6s %-16s （有一边没取到）" % (bn, hn))
+                    continue
+                if ra_.shape != rb_.shape:
+                    print("    %-6s %-16s 形状不同 %s vs %s"
+                          % (bn, hn, tuple(ra_.shape), tuple(rb_.shape)))
+                    continue
+                dd = (ra_ - rb_).abs().max().item()
+                rel = dd / max(ra_.abs().max().item(), 1e-12)
+                ok = rel < 1e-5
+                if not ok and first is None:
+                    first = "%s <-> %s" % (bn, hn)
+                print("    %-6s %-16s %-12.3e %-12.3e %s"
+                      % (bn, hn, dd, rel, '一致' if ok else '**不一致**'))
+            print()
+            if first is None:
+                print("    这些都一致 -> 差在它们**之间**的接线")
+            else:
+                print("    第一个不一致的是 `%s`" % first)
+                print("    下一步：量它的**输入**和**权重**，以及两边用的超参")
+
+    except (AttributeError, TypeError, RuntimeError, IndexError,
+            KeyError) as _ex:
+        print("    量不了：%s: %s"
+              % (type(_ex).__name__, str(_ex)[:90]))
+        print("    （这个家族的结构和二分假设的不一样 —— 不影响判定）")
     # ── 探针（`--probe`）：第 0 层的注意力，两边各挂一个 hook ──────
     #
     # 逐层说"第 1 层之后偏了"。而一层里有注意力和前馈两块 ——
@@ -579,8 +689,22 @@ def main(argv=None):
                             o.detach().float())
             return _h
 
-        hs = [ref.model.layers[0].self_attn.register_forward_hook(_mk("ref")),
-              mine.layers[0].op1.register_forward_hook(_mk("by1"))]
+        # **两边的模块都要先取得到。** Qwen3Next 那一族的层不叫
+        # `self_attn` —— 直接访问会 AttributeError，把一个 ok 变成 fail ✗。
+        # （这一条是"加完对 26 份全量验"抓到的：`--probe` 上一轮只拿
+        #   `minimind-3` 试过，没验过别的家族。）
+        #
+        # **诊断绝不能改变判定** —— 挂不上就说"看不到"然后退场。
+        _hmod = getattr(ref.model.layers[0], "self_attn", None)
+        _bmod = getattr(mine.layers[0], "op1", None)
+        if _hmod is None or _bmod is None \
+                or not hasattr(_hmod, "register_forward_hook") \
+                or not hasattr(_bmod, "register_forward_hook"):
+            print("    （这个家族的层挂不上注意力 hook，探针看不到）")
+            hs = []
+        else:
+            hs = [_hmod.register_forward_hook(_mk("ref")),
+                  _bmod.register_forward_hook(_mk("by1"))]
         try:
             with torch.no_grad():
                 ref(ids)

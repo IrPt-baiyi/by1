@@ -4188,3 +4188,87 @@ by1instella 的 Instella-3B）。
 而 `minimind-3` 那 2.282e-02 从"真实模型上的一个真 bug"
 变成了"**判卷人的第三个假红**"。**这不好看，但它是真的** ——
 而它换来的是"下次再看到前向不一致，知道该先查哪三条链"。
+
+
+---
+
+## 82. 诊断工具**绝不能改变判定**
+
+上一轮那三次假红有一个共同的形状：**判卷人断言了自己没验过的东西**
+（家族表 / 机制支持 / 超参）。这一轮做两件事：审那个类还在不在，
+以及把找到它的工具留下来。
+
+### 一、审：参考实现的构造里还有没有写死的值
+
+把 `common` 那一段逐个参数列出来，问"从 IR 读的还是写死的"：
+
+    vocab_size          ir["vocab"]                    ✓
+    hidden_size         ir["d_model"]                  ✓
+    num_hidden_layers   len(ir["layers"])              ✓
+    num_attention_heads attn["q"]                      ✓
+    num_key_value_heads attn["kv"]                     ✓
+    head_dim            attn["head_dim"]               ✓
+    max_position_emb.   max(ir["ctx"], args.seq + 8)   ✓
+    rms_norm_eps        ir.get("norm_eps") or 1e-5     ✓（1e-5 只是兜底）
+    tie_word_embeddings bool(ir.get(...))              ✓
+    attention_bias      attn["bias"]                   ✓
+    rope_theta          float(attn["rope_base"])       ✓
+
+**四个家族分支的参数也全是 IR 派生的**（Qwen3Next 那支的
+`num_experts` / `linear_*` 等都读自 `ffn_op["attrs"]` / `lin[...]`）。
+
+**所以产出三次假红的那一类是关上的。** 而它是**审出来的**，不是猜的。
+
+### 二、把 `--bisect` 加回来 —— 而这次加完立刻对 26 份全量验
+
+上一轮它是临时拼的，还被 `git checkout` 一起还原了。这次重写，并且
+**加完立刻对 26 份 × 四种模式全跑一遍**。而那一遍抓到了**三个**问题：
+
+    ① `ref.model.layers[0].self_attn` —— Qwen3Next 那一族的层不叫这个
+       -> AttributeError -> 把 `qwen3-next-shaped` 从 ok 变成 fail ✗
+    ② 拿 `object()` 占位 -> 换了个 AttributeError（`register_forward_hook`）
+    ③ **变量遮蔽**：二分里 `a, b = got.get(...)` 覆盖了外层存 logits 的
+       `a` / `b`，于是后面 `d = (a - b).abs()` 拿到两个 `None`
+       -> `TypeError: unsupported operand type(s) for -: 'NoneType' and
+          'NoneType'`，而报的位置在**外面** ✗
+
+**而 `--probe`（上一轮加的）有同一个 ①** —— 它当时只拿 `minimind-3`
+试过，**没验过别的家族** ✗。这次一并修了。
+
+### 三、于是有了一条不变量
+
+    **诊断工具绝不能改变判定。**
+
+`--layers` / `--probe` / `--bisect` 在不认识的家族上量不了时，
+应该说"量不了"然后退场 —— 而不是把 ok 变成 fail。
+
+验法：**26 份 × 四种模式（无 / --layers / --probe / --bisect），
+四个组合的 ok 数和 fail 数必须完全一样**。
+
+    无          ok=5  fail=3  误判=没有
+    --layers    ok=5  fail=3  误判=没有
+    --probe     ok=5  fail=3  误判=没有
+    --bisect    ok=5  fail=3  误判=没有   ✓
+
+**四个组合一模一样** —— 这就是那条不变量的判据。
+
+### 四、而 `minimind-3` 的二分现在全绿
+
+    op0  input_layernorm  0.000e+00  一致
+    wq   q_proj           0.000e+00  一致
+    wk   k_proj           0.000e+00  一致
+    wv   v_proj           0.000e+00  一致
+    wo   o_proj           1.788e-07  一致
+    [PASS] 两边前向一致
+
+**确认了 eps 就是那 2.282e-02 的全部原因** —— 而二分当时说
+"第一个不一致的是 `op0`"，正是它把范围逼到了那一步。
+
+### 五、这一轮真正的教训
+
+**"加完立刻对全集验一遍"** 这句话写过很多次，但这一轮它是**具体的**：
+
+    加 `--bisect`  ->  立刻 26 份 × 4 模式  ->  抓到 3 个问题
+    而 `--probe` 上一轮没这么做  ->  它带着同一个 bug 活了一轮
+
+**"验过了"和"在最难的那份上验过了"是两件事。**
