@@ -1,54 +1,51 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""by1kda -- KDA 的判卷人：**by1 算的，对着 fla 的 `naive_recurrent_kda`**。
+"""by1kda -- KDA 的判卷人：**by1 算的，对着 fla 的参考实现**。
 
 ## 为什么是它
 
-KDA 的语义**不是我猜的** ✓ —— 是从 `fla` 的源码里读出来的，
-五处出处写在 `gpu/by1kda.py` 的 docstring 里 ✓。这个脚本把那份
-"读出来的东西"变成一条**会跑的判据** ✓。
+KDA 的语义**不是我猜的** —— 是从 `fla` 的源码里读出来的，
+五处出处写在 `gpu/by1kda.py` 的 docstring 里。这个脚本把那份
+"读出来的东西"变成一条**会跑的判据**。
 
-参照物是 `fla/ops/kda/naive.py` —— **纯 PyTorch，CPU 上跑得动** ✓。
-（`fla` 那套 Triton 核要 CUDA ✓，**参考实现不要** ✓ ——
- 这一点我一开始判断错了 ✗，`gpu/by1kda.py` 开头记着。）
+参照物有两个，都是 fla 自己的**纯 PyTorch** 实现（CPU 上跑得动）：
 
-## 它比什么
+    ops/kda/naive.py        naive_recurrent_kda   —— 递推那五行
+    modules/layernorm_gated.py  rms_norm_ref      —— 门控 RMSNorm
 
-    同一组权重，两条路算同一个东西：
+（`fla` 那套 Triton 核要 CUDA，**参考实现不要** ——
+ 这一点我一开始判断错了，`gpu/by1kda.py` 开头记着。）
 
-    by1 侧    `by1codegen` 生成出来的那个 `KDA` 模块，调**它自己的 forward**
-    参照侧    `naive_recurrent_kda(q, k, v, g, beta)` —— 那五行
+## 它比什么 —— **三段，各自单独比**
 
-    S = S * exp(g_i)
-    S = S + (beta_i * k_i) ⊗ (v_i - (k_i ⊗ S).sum(-2))
-    o_i = q_i @ S
+    ① 前端    by1 递进 `gated_delta_rule` 的那五个张量，
+              和判卷人自己算的 q/k/v/g/beta 逐个比
+    ② 递推    `gated_delta_rule` 吐出来的，和 `naive_recurrent_kda` 比
+    ③ 尾巴    整个 `m(x)`，和「参照递推 → 门控 RMSNorm → `o_proj`」比
 
-**前端的管线判卷人自己再写一遍**（卷积 · silu · 重排 · 门 · sigmoid）✓ ——
-那是判卷人的活 ✓，不是被测物的活 ✓。
+**每段单独比**，因为三段会被不同的东西弄错 —— 混成一个数就只能知道
+"错了"，不知道"哪儿错了"。
+
+## 判卷人自己写的那一半
+
+前端管线（卷积 · silu · 重排 · 门 · sigmoid）**判卷人自己再写一遍** ——
+那是判卷人的活，不是被测物的活。
+
+**而且不调被测物的方法**：门的输入是判卷人自己拿
+`f_proj` / `f_b(f_a(x))` 组合出来的，**不调 `m._gate_in`**。
+（第一版调了 —— 那是被测物自己的方法，它内部写错了，
+两边**错得一模一样**，判卷人看不出来。`_gate_in` 忘了 `lowrank`
+分支正是真发生过的那个 bug。）
 
 ## 反例（每一条都必须红 —— 否则这个判卷人碰不到被测的东西）
 
-    ① 门退化成**每头一个标量**（GDN 的写法）✗ —— KDA 是逐维的
-    ② `dt_bias` 按**头**而不是按**维** ✗
-    ③ `q/k` 不做 **L2 归一化** ✗
-
-## 这个判卷人**碰不到**的地方（写出来，免得它被当成全覆盖）
-
-比的是**递推那一步的输出** —— 所以被真正判到的只有：
-
-    投影 · 短卷积 · silu · 重排 · 门 · sigmoid → **递推**
-
-**没判到的有两处** ✓，而两处都属于"写错了不报错、只算错"那一类 ✗：
-
-    ⓐ 输出门 `g_proj` / `o_norm` / `o_proj` —— 整条尾巴一次都没比过 ✗
-    ⓑ `front()` 里的门输入调的是 `m._gate_in(x)` ✓，
-       也就是**被测物自己的方法** ✓ —— 于是它内部要是写错了 ✗，
-       两边**错得一模一样** ✓，判卷人看不出来 ✗
-       （`_gate_in` 忘记 `lowrank` 分支，正是**真发生过**的那个 bug ✓）
-
-`by1exec --compare` 那条路（PyTorch 对 NumPy）也不管这两处 ✓ ——
-两个后端**共享同一个 IR** ✓，同一个意思写错两遍的概率很低 ✓，
-而它证的是"两边一致"，不是"和 fla 一致" ✗。
+    ① 门退化成**每头一个标量**（GDN 的写法）—— KDA 是逐维的
+    ② `dt_bias` 按**头**而不是按**维**
+    ③ `q/k` 不做 **L2 归一化**
+    ④ 输出门**整条不乘**
+    ⑤ 归一化和门的**先后反了**（`norm_before_gate`）
+    ⑥ 低秩输出门中间**不加 silu**
+    ⑦ 低秩衰减门中间**多一个 silu**
 
 ## 用法
 
@@ -61,6 +58,7 @@ KDA 的语义**不是我猜的** ✓ —— 是从 `fla` 的源码里读出来�
 """
 import importlib.util
 import os
+import re
 import site
 import sys
 
@@ -68,9 +66,36 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import by1paths  # noqa: E402
 import by1skip  # noqa: E402
 
-#: 尺寸取小值 —— 验的是语义，不是规模 ✓（和 `models/kda-shaped.by1` 同一个理由）
+#: 尺寸取小值 —— 验的是语义，不是规模（和 `models/kda-shaped.by1` 同一个理由）
 BASE = {'conv_kernel': 4, 'conv_bias': False, 'gate_lowrank': False,
         'act': 'silu', 'l2_eps': 1e-6, 'norm_eps': 1e-5}
+
+#: 正例的尺寸表。**四种**，因为它们是四条不同的代码路径：
+#: 单层门 / 单层门（大一点）/ 低秩两层门 / GVA（q/k 头数少于 v）
+CASES = [
+    ('小', dict(seed=0, s=16, d=32, nk=2, nv=2, dk=8, dv=8, ck=4,
+                lowrank=False)),
+    ('中', dict(seed=1, s=32, d=48, nk=3, nv=3, dk=16, dv=16, ck=4,
+                lowrank=False)),
+    ('低秩', dict(seed=2, s=24, d=40, nk=2, nv=2, dk=8, dv=8, ck=4,
+                  lowrank=True)),
+    ('GVA', dict(seed=3, s=16, d=32, nk=2, nv=4, dk=8, dv=8, ck=4,
+                 lowrank=False)),
+]
+
+#: 反例打在**哪个尺寸**上。低秩那两条只能打在低秩上。
+_PLAIN = CASES[0][1]
+_LOWRANK = CASES[2][1]
+
+REDS = [
+    ('门退化成每头一个标量', _PLAIN, dict(fkw=dict(per_dim_gate=False))),
+    ('dt_bias 按头而不是按维', _PLAIN, dict(fkw=dict(per_dim_dt=False))),
+    ('q/k 不做 L2 归一化', _PLAIN, dict(fkw=dict(l2norm=False))),
+    ('输出门整条不乘', _PLAIN, dict(tkw=dict(use_gate=False))),
+    ('归一化在门之前', _PLAIN, dict(tkw=dict(norm_before_gate=False))),
+    ('低秩输出门中间不加 silu', _LOWRANK, dict(tkw=dict(out_act=None))),
+    ('低秩衰减门中间多一个 silu', _LOWRANK, dict(fkw=dict(gate_act='silu'))),
+]
 
 
 def _torch():
@@ -81,40 +106,78 @@ def _torch():
         by1skip.skip('没装 torch —— 这一项在这台机器上验不了')
 
 
-def load_fla_naive():
-    """**按文件路径**加载 `fla/ops/kda/naive.py`。
+def _site_file(*parts):
+    """在 site-packages 里找 fla 的某个文件。找不到返回 None。
 
-    不走 `import fla.ops.kda` —— 那条路要过 `fla/ops/__init__.py` ✓，
-    而它 `import triton` ✗。我们要的只是那个纯 PyTorch 的参考 ✓，
-    它和 Triton 一点关系都没有 ✓。
+    **这里原来是个 `except Exception: pass`** —— 而被 `by1lint` 第一类
+    抓住了（"except 之后只有 pass"）。它说得对：静默吞掉之后，
+    **环境坏掉和没装 fla 长得一模一样** —— 都变成"跳过"，
+    而跳过是"没验"，不是"验过"。所以让它出声。
     """
-    cands = []
-    # **这里原来是个 `except Exception: pass`** ✗ —— 而被 `by1lint` 第一类
-    # 抓住了 ✓（"except 之后只有 pass" ✓）。它说得对：静默吞掉之后，
-    # **环境坏掉和没装 fla 长得一模一样** ✓ —— 都变成"跳过" ✓，
-    # 而跳过是"没验"，不是"验过" ✓。所以让它出声 ✓。
     try:
         _sps = site.getsitepackages()
     except Exception as e:
         print('  （取 site-packages 失败：%s: %s —— 当成"没装 fla"处理）'
               % (type(e).__name__, e))
         _sps = []
-    cands += [os.path.join(p, 'fla', 'ops', 'kda', 'naive.py') for p in _sps]
-    for p in cands:
-        if os.path.exists(p):
-            spec = importlib.util.spec_from_file_location('kda_naive', p)
-            m = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(m)
-            return m, p
-    return None, None
+    for p in _sps:
+        q = os.path.join(p, 'fla', *parts)
+        if os.path.exists(q):
+            return q
+    return None
+
+
+def load_fla_naive():
+    """**按文件路径**加载 `fla/ops/kda/naive.py`。
+
+    不走 `import fla.ops.kda` —— 那条路要过 `fla/ops/__init__.py`，
+    而它 `import triton`。我们要的只是那个纯 PyTorch 的参考，
+    它和 Triton 一点关系都没有。
+    """
+    p = _site_file('ops', 'kda', 'naive.py')
+    if p is None:
+        return None, None
+    spec = importlib.util.spec_from_file_location('kda_naive', p)
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m, p
+
+
+def load_fla_rms_norm_ref():
+    """把 `fla/modules/layernorm_gated.py` 里的 `rms_norm_ref` **切出来**。
+
+    ⚠ 那个文件**不能 import** —— 它开头就 `import triton`
+    （实测：`ModuleNotFoundError: No module named 'triton'`）。
+    而我们要的那个函数是**纯 PyTorch 的参考实现**，
+    和 Triton 一行关系都没有。
+
+    所以按函数名从源码里切出那一段再 `exec` —— 这仍然是
+    **fla 自己写的那份参照物**，不是我照着重写的一遍。
+    （重写一遍就变成"第三个实现"了，而那正是判卷人要避免的。）
+    """
+    p = _site_file('modules', 'layernorm_gated.py')
+    if p is None:
+        return None, None
+    with open(p, encoding='utf-8') as f:
+        src = f.read()
+    m = re.search(r'(?ms)^def rms_norm_ref\(.*?(?=^@|^def |\Z)', src)
+    if m is None:
+        print('  （%s 里找不到 rms_norm_ref —— fla 换版本了？）' % p)
+        return None, p
+    import torch
+    import torch.nn.functional as F
+    from einops import rearrange
+    ns = {'torch': torch, 'F': F, 'rearrange': rearrange}
+    exec(compile(m.group(0), '<fla-rms_norm_ref>', 'exec'), ns)
+    return ns['rms_norm_ref'], p
 
 
 def runtime(torch):
     """把 `by1codegen` **生成出来**的那份运行时 exec 出来。
 
-    ⚠ **不能 `import by1codegen` 然后取 `KDA`** ✗ ——
-    `by1codegen.py` 是"生成器 + 一个字符串模板" ✓，那些类写在
-    `RUNTIME` 这个字符串里 ✓，不是模块的属性 ✓。
+    ⚠ **不能 `import by1codegen` 然后取 `KDA`** ——
+    `by1codegen.py` 是"生成器 + 一个字符串模板"，那些类写在
+    `RUNTIME` 这个字符串里，不是模块的属性。
     """
     import by1check
     import by1codegen as G
@@ -125,8 +188,42 @@ def runtime(torch):
     return ns
 
 
-def front(torch, m, x, *, per_dim_gate=True, per_dim_dt=True, l2norm=True):
-    """判卷人自己再写一遍前端 —— 回来的五样就是 `naive_recurrent_kda` 要的。"""
+# ── 判卷人自己写的前端 ───────────────────────────────────────────────
+
+def gate_in(torch, m, x, *, act=None):
+    """衰减门的**输入** —— 判卷人自己组合，**不调 `m._gate_in`**。
+
+    by1 那边是 `f_b(f_a(x))`（低秩）或 `f_proj(x)`（一层），
+    中间**没有激活**。这里照源码写一遍，于是"`_gate_in` 内部写错了"
+    这一类**会红**，而不是两边一起错。
+    """
+    F = torch.nn.functional
+    if m.lowrank:
+        h = m.f_a(x)
+        if act == 'silu':
+            h = F.silu(h)
+        return m.f_b(h)
+    return m.f_proj(x)
+
+
+def gate_out(torch, m, x, *, act='silu'):
+    """输出门 —— 低秩那支中间**有** silu（`fla/layers/kda.py`）。"""
+    F = torch.nn.functional
+    if m.lowrank:
+        h = m.g_a(x)
+        if act == 'silu':
+            h = F.silu(h)
+        return m.g_b(h)
+    return m.g_proj(x)
+
+
+def front(torch, m, x, *, per_dim_gate=True, per_dim_dt=True, l2norm=True,
+          gate_act=None):
+    """前端全套。回来的 q/k 有**两份**：归一化前的和归一化后的。
+
+    归一化前的那份用来和 by1 **递进递推**的输入逐个比（那一步 by1
+    还没做 L2），归一化后的那份喂给参照递推。
+    """
     F = torch.nn.functional
     b, s, _ = x.shape
     nk, nv, dk, dv = m.nk, m.nv, m.dk, m.dv
@@ -146,123 +243,150 @@ def front(torch, m, x, *, per_dim_gate=True, per_dim_dt=True, l2norm=True):
     v = dconv(m.v_conv1d, m.v_proj(x)).reshape(b, s, nv, dv)
 
     # 门：g = -exp(A_log) * softplus(f(x) + dt_bias)（fla/ops/kda/gate.py:50-54）
-    fg = m._gate_in(x).float().reshape(b, s, nv, dk)
+    fg = gate_in(torch, m, x, act=gate_act).float().reshape(b, s, nv, dk)
     if per_dim_dt:
-        bias = m.dt_bias.view(1, 1, nv, dk)          # 按**维** ✓
+        bias = m.dt_bias.view(1, 1, nv, dk)          # 按**维**
     else:
-        # 反例②：按**头** —— 每头只取第一维那个偏置，摊到整头 ✗
+        # 反例②：按**头** —— 每头只取第一维那个偏置，摊到整头
         bias = m.dt_bias.view(1, 1, nv, dk)[..., :1]
     g = -m.A_log.float().exp().view(1, 1, -1, 1) * F.softplus(fg + bias)
     if not per_dim_gate:
-        # 反例①：门退化成每头一个标量（对 k_dim 求和再摊开）✗
+        # 反例①：门退化成每头一个标量（对 k_dim 求和再摊开）
         g = g.sum(-1, keepdim=True).expand(-1, -1, -1, dk).contiguous()
     beta = m.b_proj(x).sigmoid()
 
+    qn, kn = q, k
     if l2norm:
-        # 判卷人这边**自己做** L2 归一化 ✓（by1 那边在 gated_delta_rule 里 ✓）
-        q = q * torch.rsqrt((q * q).sum(-1, keepdim=True) + m.l2_eps)
-        k = k * torch.rsqrt((k * k).sum(-1, keepdim=True) + m.l2_eps)
-    return q, k, v, g, beta
+        # 判卷人这边**自己做** L2 归一化（by1 那边在 gated_delta_rule 里）
+        qn = q * torch.rsqrt((q * q).sum(-1, keepdim=True) + m.l2_eps)
+        kn = k * torch.rsqrt((k * k).sum(-1, keepdim=True) + m.l2_eps)
+    return dict(q=q, k=k, v=v, g=g, beta=beta, qn=qn, kn=kn)
 
 
-def _norm(x):
-    return x / max(1e-9, float(x.abs().max()))
+def tail(torch, m, rms_ref, rec, x, *, use_gate=True, norm_before_gate=True,
+         out_act='silu'):
+    """尾巴：输出门 → 门控 RMSNorm → `o_proj`。参照物是 `rms_norm_ref`。"""
+    b, s, _ = x.shape
+    g = gate_out(torch, m, x, act=out_act).reshape(b, s, m.nv, m.dv)
+    y = rms_ref(rec, m.o_norm.w, None, z=(g if use_gate else None),
+                eps=m.o_norm.eps, norm_before_gate=norm_before_gate)
+    return m.o_proj(y.reshape(b, s, m.vd))
 
 
-def one(torch, naive, R, seed, s, d, nk, nv, dk, dv, ck, **kw):
-    a = dict(BASE, k_heads=nk, v_heads=nv, k_dim=dk, v_dim=dv,
-             conv_kernel=ck, gate_rank=dk)
-    torch.manual_seed(seed)
-    m = R['KDA'](a, d)
+def _rel(a, b):
+    a, b = a.detach(), b.detach()
+    return float((a - b).abs().max()) / max(1e-9, float(b.abs().max()))
+
+
+def one(torch, naive, rms_ref, R, *, fkw=None, tkw=None, **case):
+    """跑一次，回来**三段各自的相对误差**。"""
+    fkw = dict(fkw or {})
+    tkw = dict(tkw or {})
+    a = dict(BASE, k_heads=case['nk'], v_heads=case['nv'],
+             k_dim=case['dk'], v_dim=case['dv'],
+             conv_kernel=case['ck'], gate_rank=case['dk'],
+             gate_lowrank=case['lowrank'])
+    torch.manual_seed(case['seed'])
+    m = R['KDA'](a, case['d'])
     m.eval()
     # **把参数随机化。**
     #
-    # 不随机化的话，反例**碰不到东西** ✗：`dt_bias` 和 `A_log` 在
-    # `__init__` 里是 `zeros` ✓，于是"按头"和"按维"**算出来一模一样** ✓ ——
-    # 那一条反例就永远不红 ✓，而它看起来"通过了" ✓。
-    # （实测踩到过：`dt_bias 按头而不是按维` 报 1.490e-08「没红」✗。）
+    # 不随机化的话，反例**碰不到东西**：`dt_bias` 和 `A_log` 在
+    # `__init__` 里是 `zeros`，于是"按头"和"按维"**算出来一模一样** ——
+    # 那一条反例就永远不红，而它看起来"通过了"。
+    # （实测踩到过：`dt_bias 按头而不是按维` 报 1.490e-08「没红」。）
     #
-    # **这和"一个碰不到被测东西的测试不是测试"是同一条** ✓。
+    # **这和"一个碰不到被测东西的测试不是测试"是同一条。**
     with torch.no_grad():
         for p in m.parameters():
             p.copy_(torch.randn_like(p) * 0.1)
-    x = torch.randn(1, s, d)
-    q, k, v, g, beta = front(torch, m, x, **kw)
-    # **在同一个阶段比。**
-    #
-    # `naive_recurrent_kda` 回来的是**递推的输出** `[b, s, HV, V]` ✓，
-    # 而 `m(x)` 是整个 forward（过了 `o_norm` + `o_proj`）✗ ——
-    # 第一版直接比，于是炸在形状上 ✓。
-    #
-    # 接住递推那一步：模块调的是**它自己命名空间里**的 `gated_delta_rule` ✓，
-    # 所以换掉 `R` 里那一个就够 ✓。
-    cap = {}
-    _orig = R['gated_delta_rule']
+    x = torch.randn(1, case['s'], case['d'])
+    with torch.no_grad():
+        ref = front(torch, m, x, **fkw)
 
-    def _spy(qq, kk, vv, gg, bb, l2_eps=1e-6, state=None):
-        o, st = _orig(qq, kk, vv, gg, bb, l2_eps, state)
-        cap['o'] = o
-        return o, st
+        # 接过 `gated_delta_rule` 那一跳：既要它吐出来的，也要喂进去的。
+        cap = {}
+        _orig = R['gated_delta_rule']
 
-    R['gated_delta_rule'] = _spy
-    try:
-        with torch.no_grad():
-            m(x)
-            ref, _ = naive.naive_recurrent_kda(q, k, v, g, beta)
-    finally:
-        R['gated_delta_rule'] = _orig
-    y = cap['o']
-    return float((y - ref).abs().max()), float(_norm(ref).abs().max())
+        def _spy(qq, kk, vv, gg, bb, l2_eps=1e-6, state=None):
+            cap['in'] = (qq, kk, vv, gg, bb)
+            o, st = _orig(qq, kk, vv, gg, bb, l2_eps, state)
+            cap['o'] = o
+            return o, st
+
+        R['gated_delta_rule'] = _spy
+        try:
+            y_by1 = m(x)
+            rec, _ = naive.naive_recurrent_kda(
+                ref['qn'], ref['kn'], ref['v'], ref['g'], ref['beta'])
+        finally:
+            R['gated_delta_rule'] = _orig
+
+        y_ref = tail(torch, m, rms_ref, rec, x, **tkw)
+    gin = cap['in']
+    return {
+        # ① 前端：by1 递进递推的那五个，和判卷人自己算的比
+        'in': max(_rel(gin[i], ref[n]) for i, n in
+                  enumerate(('q', 'k', 'v', 'g', 'beta'))),
+        # ② 递推
+        'rec': _rel(cap['o'], rec),
+        # ③ 尾巴
+        'full': _rel(y_by1, y_ref),
+    }
 
 
 def main(argv):
     torch = _torch()
     only_red = '--selftest' in argv
-    naive, path = load_fla_naive()
+    naive, p_naive = load_fla_naive()
     if naive is None:
         by1skip.skip('找不到 fla 的 naive 参考 —— 这一项在这台机器上验不了\n'
                      '    装它：pip install --no-deps fla-core')
+    rms_ref, p_norm = load_fla_rms_norm_ref()
+    if rms_ref is None:
+        by1skip.skip('找不到 fla 的 rms_norm_ref —— 这一项在这台机器上验不了\n'
+                     '    装它：pip install --no-deps fla-core')
     R = runtime(torch)
     if not only_red:
-        print('  参照物：%s' % path)
+        print('  参照物 ①  %s' % p_naive)
+        print('  参照物 ②  %s  （切出 rms_norm_ref —— 那个文件 import triton）'
+              % p_norm)
         print('  生成出来的运行时里有 KDA：%s' % ('KDA' in R))
 
     ok = True
     base = 0.0
     if not only_red:
         print()
-        print('  ── 正例（两种尺寸）')
-        for seed, s, d, nk, nv, dk, dv, ck, tag in (
-                (0, 16, 32, 2, 2, 8, 8, 4, '小'),
-                (1, 32, 48, 3, 3, 16, 16, 4, '中')):
-            ad, sc = one(torch, naive, R, seed, s, d, nk, nv, dk, dv, ck)
-            rl = ad / sc if sc > 0 else ad
-            base = max(base, rl)
-            good = rl < 1e-4
+        print('  ── 正例（四种尺寸 = 四条代码路径）')
+        print('     %-4s %-10s %-10s %-10s' % ('', '① 前端', '② 递推', '③ 尾巴'))
+        for tag, case in CASES:
+            r = one(torch, naive, rms_ref, R, **case)
+            base = max(base, r['in'], r['rec'], r['full'])
+            good = max(r.values()) < 1e-4
             ok = ok and good
-            print('     %-6s 绝对 %.3e  相对 %.3e  %s'
-                  % (tag, ad, rl, '✓' if good else '✗'))
+            print('     %-4s %-10.3e %-10.3e %-10.3e  %s'
+                  % (tag, r['in'], r['rec'], r['full'],
+                     '✓' if good else '✗ 这一段对不上'))
 
-    # **红线是"比正例的误差大两个数量级"** ✓ ——
-    # 不是写死一个数 ✗。理由：反例的效应**本来就可能小** ✓ ——
-    # 比如"`dt_bias` 按头而不是按维"只动到 `dk` 维里的 1 维 ✓，
-    # 实测 3.1e-04 ✓ —— 而正例的误差是 4.7e-09 ✓。
-    # 写死 `1e-3` 会把这条真反例判成"没红" ✗，而它**明明红了** ✓。
-    # 自适应之后，"红"的定义变成：**明显不是数值噪声** ✓。
+    # **红线是"比正例的误差大两个数量级"**，不是写死一个数。
+    # 理由：反例的效应**本来就可能小** —— 比如"`dt_bias` 按头而不是按维"
+    # 只动到 `dk` 维里的 1 维，实测 3.1e-04，而正例的误差是 4.7e-09。
+    # 写死 `1e-3` 会把这条真反例判成"没红"，而它**明明红了**。
+    # 自适应之后，"红"的定义变成：**明显不是数值噪声**。
     thr = max(1e-6, base * 100)
 
     print()
     print('  ── 反例（每一条都必须红 —— 否则这个判卷人碰不到被测的东西）')
     print('     红线：相对 %.3e（= max(1e-6, 正例误差 x 100)）' % thr)
     reds = []
-    for tag, kw in (('门退化成每头一个标量', dict(per_dim_gate=False)),
-                    ('dt_bias 按头而不是按维', dict(per_dim_dt=False)),
-                    ('q/k 不做 L2 归一化', dict(l2norm=False))):
-        ad, sc = one(torch, naive, R, 0, 16, 32, 2, 2, 8, 8, 4, **kw)
-        rl = ad / sc if sc > 0 else ad
-        red = rl > thr
+    for tag, case, kw in REDS:
+        r = one(torch, naive, rms_ref, R, **dict(case, **kw))
+        worst = max(r.values())
+        red = worst > thr
         reds.append(red)
-        print('     %-24s 相对 %.3e  %s' % (tag, rl, '红了 ✓' if red else '**没红** ✗'))
+        print('     %-26s ① %-9.3e ② %-9.3e ③ %-9.3e  %s'
+              % (tag, r['in'], r['rec'], r['full'],
+                 '红了 ✓' if red else '**没红** ✗'))
 
     allok = ok and all(reds)
     print()

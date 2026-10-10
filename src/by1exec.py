@@ -534,6 +534,16 @@ def op_kda(P, a, ins, d):
     kk = kk * (1.0 / np.sqrt((kk * kk).sum(-1, keepdims=True) + eps))
     q, kk, v, beta, g = [t.transpose(0, 2, 1, 3).astype(np.float64)
                          for t in (q, kk, v, beta[..., None], g)]
+    # **GVA：q/k 的头数可以少于 v 的头数** ✓ —— 和 codegen 那边
+    # `gated_delta_rule` 里那句 `repeat_interleave` **同一个意思** ✓
+    # （`fla/ops/kda/naive.py:52-53`）。两个后端都得有 ✓，
+    # 否则 `--compare` 会把"两边都错"读成"两边一致" ✗。
+    if nv != nk:
+        if nv % nk:
+            raise ValueError('v_heads (%d) 必须是 k_heads (%d) 的整数倍'
+                             % (nv, nk))
+        q = np.repeat(q, nv // nk, axis=1)
+        kk = np.repeat(kk, nv // nk, axis=1)
     q = q * (dk ** -0.5)
     st = np.zeros((b, nv, dk, dv))
     out = np.zeros((b, nv, s, dv))

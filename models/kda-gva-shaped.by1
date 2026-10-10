@@ -1,33 +1,28 @@
-# ── kda-shaped.by1 ────────────────────────────────────────────────────
-# KDA（Kimi Delta Attention）的最小可跑模型。
+# ── kda-gva-shaped.by1 ────────────────────────────────────────────────
+# KDA 的 **GVA 变体**：q/k 的头数**少于** v 的头数。
 #
-# 存在理由和 `ssm-shaped.by1` 一样：GLM-5.3-Flash 和 Ling-3.0-tiny
-# 都是真实规模（GLM 45 层 76108 个张量、Ling 9283 个），
-# 而这台机器上建不出来 —— 而"建不出来"是"验不了"，不是"算错了"。
-# 所以把 KDA 单独拎出来，用一个小尺寸让它走完三个后端。
+# 和 `kda-shaped.by1` 只差一行（`k_heads = 2`），而那一行值得单独一份：
 #
-#   python by1exec.py kda-shaped.by1 --compare      NumPy vs PyTorch
-#   python by1c.py kda-shaped.by1 --gcc <gcc> --seq 16
+#   `fla/ops/kda/naive.py:52-53` 里是
+#       q = q.repeat_interleave(G, dim=2)
+#       k = k.repeat_interleave(G, dim=2)      # G = HV // H
+#   而 by1 的两个后端**原来都没有这一句** —— 于是这个组合一跑就
+#       RuntimeError: The size of tensor a (2) must match b (4)
+#   而契约和 `by1ir.ATTRS["KDA"]` **都允许** `k_heads ≠ v_heads`
+#   （它们是两个独立属性）—— 也就是**"声明了、但一跑就炸"**。
 #
-# **判卷人是 fla 的 `naive_recurrent_kda` + `naive_kda_gate`**（纯 PyTorch，
-# CPU 上跑得动 ✓）—— 语义从 `gpu/by1kda.py` 的 docstring 里那五处出处来。
+# 而判卷人 `src/modelcheck/by1kda.py` 判的是 **PyTorch 那一个后端**
+# （它拿 IR 生成运行时，再自己喂尺寸）。NumPy 那一侧的分支
+# 只有这份文件能长期管住 —— 所以它必须是一个**留在仓库里的模型**，
+# 而不是一次性的临时文件。
 #
-# 这个尺寸选的是一层**一层门**的 KDA（Ling 那一版 ✓）——
-# 两层低秩门（GLM 的 f_a/f_b）是同一个类的另一个分支。
+#   python by1exec.py kda-gva-shaped.by1 --compare     NumPy vs PyTorch
 #
-# **这里原来写着"它的验证放在 `--gate-lowrank` 那个变体里"** ✗ ——
-# 而那个变体**不存在** ✓。（一个写在注释里的承诺，和写进文档里的数字
-# 是同一种东西：**没有任何东西在读它** ✓。）低秩那一支现在的判据是
-# `src/modelcheck/by1kda.py` 里的"低秩"那个正例 ✓，
-# 加上两条只打在它身上的反例 ✓。
-#
-# `k_heads ≠ v_heads`（GVA）是**另一个**分支，它在
-# `models/kda-gva-shaped.by1` ✓ —— 因为判卷人只管 PyTorch 那一个后端。
-#
-# 维度取小值即可 —— 验的是语义，不是规模。
+# 判卷人是谁：`by1kda.py` 的 "GVA" 那个正例（对着 fla 的
+# `naive_recurrent_kda`）+ 这份文件的 `--compare`（两个后端互相对）。
 
-model KDA-shaped {
-  arch  kda_shaped
+model KDA-GVA-shaped {
+  arch  kda_gva_shaped
   ctx   1024
 
   hparams {
@@ -37,12 +32,14 @@ model KDA-shaped {
     rms_eps = 1e-05
   }
 
-  # Kimi Delta Attention。
-  #   kd = k_heads * k_dim = 4 * 16 = 64
+  # Kimi Delta Attention，GVA 那一支。
+  #   kd = k_heads * k_dim = 2 * 16 = 32
   #   vd = v_heads * v_dim = 4 * 16 = 64
-  #   gate_dim = v_heads * k_dim = 64        <- dt_bias 和门的宽度都是它
+  #   gate_dim = v_heads * k_dim = 64      <- dt_bias 和门的宽度都是它
+  # 注意 `gate_dim` 跟的是 **v_heads**，不是 k_heads —— 这是 KDA 的定义，
+  # 而它正是最容易按对称性写反的地方。
   mech KDA_ : KDA {
-    k_heads     = 4
+    k_heads     = 2
     v_heads     = 4
     k_dim       = 16
     v_dim       = 16
@@ -61,7 +58,6 @@ model KDA-shaped {
   }
 
   position {
-    # KDA 是线性注意力：状态随 token 递推，位置信息在递推里。
     default = none
   }
 

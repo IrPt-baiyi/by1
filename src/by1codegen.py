@@ -1597,6 +1597,24 @@ def gated_delta_rule(q, k, v, g, beta, l2_eps=1e-6, state=None):
                         for t in (q, k, v, beta, g)]
     b, h, s, dk = k.shape
     dv = v.shape[-1]
+    # **GVA：q/k 的头数可以少于 v 的头数。**
+    #
+    # `fla/ops/kda/naive.py:52-53` 就是
+    # `q = q.repeat_interleave(G, dim=2); k = k.repeat_interleave(G, dim=2)`
+    # （`G = HV // H`）✓。原来这里**没有这一句** ✗，于是
+    # `k_heads ≠ v_heads` 的模型一跑就
+    # `RuntimeError: size of tensor a (2) must match b (4)` ✓ ——
+    # 而 `by1ir.ATTRS` 和契约**都允许**这个组合 ✓，
+    # 所以它是**"声明了、但一跑就炸"**那一类 ✗。
+    # （量出来的：`k_heads=2, v_heads=4` ✓。）
+    nv = v.shape[1]
+    if nv != h:
+        if nv % h:
+            raise ValueError('v_heads (%d) 必须是 k_heads (%d) 的整数倍'
+                             % (nv, h))
+        q = q.repeat_interleave(nv // h, 1)
+        k = k.repeat_interleave(nv // h, 1)
+        h = nv
     q = q * (dk ** -0.5)
     st = (torch.zeros(b, h, dk, dv, dtype=v.dtype, device=v.device)
           if state is None else state)

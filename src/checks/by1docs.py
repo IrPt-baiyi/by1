@@ -129,6 +129,22 @@ def measure(path, unit):
     `unit` 只认三种，**量不出来就返回 None** —— 那时候这条声明不判，
     而不是猜一个数出来（猜出来的数就是下一个要烂的数字）。
     """
+    # **"多少个 .by1" 这一支必须放在最前面。**
+    #
+    # 它数的是**目录**，不需要读文件内容。而它原来在
+    # `by1io.read_text(path)` **之后** —— 主语是目录时，
+    # 读目录抛 `IsADirectoryError`（`OSError` 的一种），
+    # 被下面那个 `except OSError` **静默接住**，于是返回 None，
+    # 而 None 的含义是"量不出来，这条不判"。
+    #
+    # 实测（2026-10）：先加了"目录也算主语"那一支，然后拿一个
+    # **故意写错的数**去试 —— 它**没红**。原因不在那一支，
+    # 在这里：**又一次静默吞掉，又一次让"没有判卷人"长得像"通过"。**
+    if unit.replace(' ', '') == '个.by1':
+        import glob as _g
+        # 主语**是目录**就数它自己；是文件就数它所在的那一层。
+        d = path if os.path.isdir(path) else os.path.dirname(path)
+        return len(_g.glob(os.path.join(d or '.', '*.by1')))
     try:
         t = by1io.read_text(path, errors='replace')
     except OSError:
@@ -146,10 +162,6 @@ def measure(path, unit):
         return n
     if unit == '节':
         return len(re.findall(r'^##\s', t, re.M))
-    if unit.replace(' ', '') == '个.by1':
-        import glob as _g
-        d = os.path.dirname(path)
-        return len(_g.glob(os.path.join(d or '.', '*.by1')))
     return None
 
 def main():
@@ -268,7 +280,26 @@ def main():
                     if tgt.startswith(SKIP_LINK) or ' ' in tgt:
                         continue
                     real = find(tgt, near)
-                    if not real or not os.path.isfile(real):
+                    if not real:
+                        continue
+                    # **目录也算主语 —— 但只对"多少个 .by1"这一种量法。**
+                    #
+                    # 实测（2026-10）：`README.md` 里那句
+                    #     models/         26 份 .by1，其中 14 份对真实 checkpoint 验过
+                    # **从来没被查过** ✗ —— 两处都不满足：
+                    # ① 主语没有反引号 ✓ ② 量词是"份"不是"个" ✓
+                    # 而它当时是**错的** ✓（实际 28 份）。
+                    #
+                    # 所以补上目录这一支 ✓ —— 于是它现在能写成
+                    # 可复核的形状：`` `models/`（29 个 .by1）`` ✓。
+                    # **改文档去迎合检查器是错的** ✗，但"把数字写成
+                    # 检查器读得懂的形状"不是迎合 ✓ —— 那正是让它有判卷人 ✓。
+                    # （"份"仍然不认 ✓：量词多一个，误报面就大一倍，
+                    #   而这个检查器怕的是**假警报把真问题淹掉** ✓。）
+                    if os.path.isdir(real):
+                        if unit.replace(' ', '') != '个.by1':
+                            continue
+                    elif not os.path.isfile(real):
                         continue
                     got = measure(real, unit)
                     if got is None:
