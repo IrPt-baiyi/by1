@@ -748,18 +748,25 @@ def compile_ir(info: Dict[str, Any]) -> Dict[str, Any]:
             # 不行，codegen 看不到契约。所以**显式声明** ✓：
             # 没写 `gate_lowrank` 就是一层。
             lowrank = _flag(attrs.get("gate_lowrank"))
-            return {"kind": "KDA", "mech": name, "attrs": {
+            _out = {"kind": "KDA", "mech": name, "attrs": {
                 "k_heads": nk, "v_heads": nv, "k_dim": dk, "v_dim": dv,
                 "conv_kernel": int(_num(attrs.get("conv_kernel"), 4)),
                 "conv_bias": _flag(attrs.get("conv_bias")),
                 "gate_lowrank": bool(lowrank),
                 # 门的秩（低秩时的瓶颈）。GLM 是 head_dim = 128 ✓。
                 "gate_rank": int(_num(attrs.get("gate_rank"), dk)),
-                "gate_lower": _num(attrs.get("gate_lower")),
                 "act": str(attrs.get("act", "silu")),
                 "l2_eps": float(_num(attrs.get("l2_eps"), 1e-6)),
                 "norm_eps": float(_num(attrs.get("norm_eps"),
                                        _num(hp.get("rms_eps"), _DEFAULT_EPS)))}}
+            # **`gate_lower` 只在设了的时候才写进去。**
+            # 无条件写会得到 `gate_lower = None` ✓，而 IR 那一层说
+            # "有键就得是数" ✓ -> `IRError: gate_lower 应当是数，实际 None` ✓。
+            # （是 `by1irentry` 抓住的 ✓ —— 闭集和类型表各做了一次它该做的事 ✓。）
+            _gl = _num(attrs.get("gate_lower"))
+            if _gl is not None:
+                _out["attrs"]["gate_lower"] = float(_gl)
+            return _out
         return None
 
     # position 块里写 `learned(N)` 就是"学一张表"，不是 RoPE。
@@ -1595,7 +1602,19 @@ def gated_delta_rule(q, k, v, g, beta, l2_eps=1e-6, state=None):
           if state is None else state)
     out = torch.zeros(b, h, s, dv, dtype=v.dtype, device=v.device)
     for i in range(s):
-        st = st * g[:, :, i].exp().unsqueeze(-1).unsqueeze(-1)
+        # **衰减门有两种秩，这里都收** ✓ ——
+        #
+        #   GDN   `g` 是 `[b, h, s]`      —— **每个头一个标量**
+        #   KDA   `g` 是 `[b, h, s, dk]`  —— **每一维一个**
+        #
+        # （`fla/ops/kda/naive.py:61` 是 `S = S * g_i[..., None].exp()`，
+        #   而 `g_i` 是 `[B, HV, K]` ✓ —— 逐维 ✓。
+        #   原来这里写死了逐头那一版 ✗，于是 KDA 一跑就
+        #   `RuntimeError: size of tensor a (4) must match b (16)` ✓ ——
+        #   **"写反了会炸在维度上，不会静默算错"** ✓。）
+        _gi = g[:, :, i]
+        _gd = _gi.unsqueeze(-1) if _gi.dim() == 2 else _gi
+        st = st * _gd.exp().unsqueeze(-1)
         kv_mem = (st * k[:, :, i].unsqueeze(-1)).sum(-2)
         delta = (v[:, :, i] - kv_mem) * beta[:, :, i].unsqueeze(-1)
         st = st + k[:, :, i].unsqueeze(-1) * delta.unsqueeze(-2)
@@ -1700,11 +1719,11 @@ class KDA(nn.Module):
         self.k_proj = nn.Linear(d, self.kd, bias=False)
         self.v_proj = nn.Linear(d, self.vd, bias=False)
         cb = bool(a.get("conv_bias"))
-        self.q_conv = nn.Conv1d(self.kd, self.kd, k, groups=self.kd,
+        self.q_conv1d = nn.Conv1d(self.kd, self.kd, k, groups=self.kd,
                                 bias=cb, padding=k - 1)
-        self.k_conv = nn.Conv1d(self.kd, self.kd, k, groups=self.kd,
+        self.k_conv1d = nn.Conv1d(self.kd, self.kd, k, groups=self.kd,
                                 bias=cb, padding=k - 1)
-        self.v_conv = nn.Conv1d(self.vd, self.vd, k, groups=self.vd,
+        self.v_conv1d = nn.Conv1d(self.vd, self.vd, k, groups=self.vd,
                                 bias=cb, padding=k - 1)
 
         # 衰减门（`f_proj`）：hidden -> gate_dim，一层或两层
@@ -1733,8 +1752,13 @@ class KDA(nn.Module):
         self.l2_eps = a["l2_eps"]
 
     def _gate_in(self, x):
-        h = self.f_a(x)
-        return self.f_b(h)
+        # **这里原来忘了分支** ✗ —— `_gate_out` 分了 ✓ 而 `_gate_in` 直接
+        # `self.f_a(x)` ✓，于是 `gate_lowrank=false` 的模型一跑就
+        # `'KDA' object has no attribute 'f_a'` ✓。
+        # （`by1irentry` 把三个后端都从 IR 跑一遍 —— 就是它抓住的 ✓。）
+        if not self.lowrank:
+            return self.f_proj(x)
+        return self.f_b(self.f_a(x))
 
     def _gate_out(self, x):
         if not self.lowrank:
@@ -1743,9 +1767,9 @@ class KDA(nn.Module):
 
     def forward(self, x):
         b, s, _ = x.shape
-        q = self.q_conv(self.q_proj(x).transpose(1, 2))[:, :, :s].transpose(1, 2)
-        kk = self.k_conv(self.k_proj(x).transpose(1, 2))[:, :, :s].transpose(1, 2)
-        v = self.v_conv(self.v_proj(x).transpose(1, 2))[:, :, :s].transpose(1, 2)
+        q = self.q_conv1d(self.q_proj(x).transpose(1, 2))[:, :, :s].transpose(1, 2)
+        kk = self.k_conv1d(self.k_proj(x).transpose(1, 2))[:, :, :s].transpose(1, 2)
+        v = self.v_conv1d(self.v_proj(x).transpose(1, 2))[:, :, :s].transpose(1, 2)
         q = F.silu(q).reshape(b, s, self.nk, self.dk)
         kk = F.silu(kk).reshape(b, s, self.nk, self.dk)
         v = F.silu(v).reshape(b, s, self.nv, self.dv)

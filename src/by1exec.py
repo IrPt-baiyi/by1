@@ -470,6 +470,87 @@ def op_linear(P, a, ins, d):
     return y.reshape(b, s, vd) @ P["out_proj"].T
 
 
+def op_kda(P, a, ins, d):
+    """**KDA（Kimi Delta Attention）** —— delta 规则 + 逐维衰减门。
+
+    ⚠ **递推和 GDN 是同一套** ✓ —— 代码gen 那边更是**直接调
+    `gated_delta_rule`** ✓，一行都没重写 ✓。这里照抄它的数值路径，
+    因为 NumPy 这一侧本来就是"另一个后端"，不是"另一份实现" ✓。
+
+    和 GDN 的四处差别（全部从 fla 源码量出来，见 `gpu/by1kda.py`）：
+
+      ① q / k / v 是**分开**的投影，且各自一条深度卷积
+      ② `dt_bias` 按**维**（`nv * dk`），GDN 按头 —— 所以 `g` 是
+         `[b, s, nv, dk]` 而不是 `[b, s, nv, 1]` ✗。**写错了不会报错** ✓。
+      ③ 多一个输出门 `g_proj`，喂给 `o_norm`（GDN 用的是融在 qkvz 里的 z）
+      ④ 门可以是**低秩两层**（`f_a`/`f_b`，GLM），也可以一层（`f_proj`，Ling）
+    """
+    x = ins[0]
+    b, s, _ = x.shape
+    nk, nv = a["k_heads"], a["v_heads"]
+    dk, dv = a["k_dim"], a["v_dim"]
+    kd, vd = nk * dk, nv * dv
+    ck = a["conv_kernel"]
+
+    def dconv(w, z):
+        """深度可分离因果卷积。和 GDN 那支同样的写法（同一个意思不写两遍）。"""
+        pad = np.zeros((b, ck - 1, z.shape[-1]))
+        mp = np.concatenate([pad, z], 1)
+        c = np.zeros_like(z)
+        for i in range(ck):
+            c += mp[:, i:i + s, :] * w[:, i][None, None, :]
+        return silu(c)
+
+    q = dconv(P["q_conv1d"], x @ P["q_proj"].T).reshape(b, s, nk, dk)
+    kk = dconv(P["k_conv1d"], x @ P["k_proj"].T).reshape(b, s, nk, dk)
+    v = dconv(P["v_conv1d"], x @ P["v_proj"].T).reshape(b, s, nv, dv)
+
+    # 门：一层还是两层，由契约里有没有 f_b_proj 决定 —— **不猜**
+    if "f_b_proj" in P:
+        fg = (x @ P["f_a_proj"].T) @ P["f_b_proj"].T
+        gtw = (x @ P["g_a_proj"].T) @ P["g_b_proj"].T + P.get("g_b_proj.bias")
+    else:
+        fg = x @ P["f_proj"].T
+        gtw = x @ P["g_proj"].T
+    fg = fg.reshape(b, s, nv, dk)
+    gtw = gtw.reshape(b, s, nv, dv)
+
+    beta = 1.0 / (1.0 + np.exp(-(x @ P["b_proj"].T)))
+    A = P["A_log"].astype(np.float64)
+    dtb = P["dt_bias"].reshape(nv, dk)
+    if a.get("gate_lower") is not None:
+        # lower_bound 那一支：g = lower * sigmoid(exp(A_log) * g)
+        g = float(a["gate_lower"]) * (
+            1.0 / (1.0 + np.exp(-(np.exp(A)[None, None, :, None]
+                                  * (fg.astype(np.float64)
+                                     + dtb[None, None, :, :])))))
+    else:
+        # g = -exp(A_log) * softplus(g + dt_bias)（fla/ops/kda/gate.py:50-54）
+        g = -np.exp(A)[None, None, :, None] * np.log1p(
+            np.exp(fg.astype(np.float64) + dtb[None, None, :, :]))
+
+    eps = a.get("l2_eps", 1e-6)
+    q = q * (1.0 / np.sqrt((q * q).sum(-1, keepdims=True) + eps))
+    kk = kk * (1.0 / np.sqrt((kk * kk).sum(-1, keepdims=True) + eps))
+    q, kk, v, beta, g = [t.transpose(0, 2, 1, 3).astype(np.float64)
+                         for t in (q, kk, v, beta[..., None], g)]
+    q = q * (dk ** -0.5)
+    st = np.zeros((b, nv, dk, dv))
+    out = np.zeros((b, nv, s, dv))
+    for i in range(s):
+        st = st * np.exp(g[:, :, i])[..., None]
+        kvi = (st * kk[:, :, i][..., None]).sum(-2)
+        delta = (v[:, :, i] - kvi) * beta[:, :, i]
+        st = st + kk[:, :, i][..., None] * delta[..., None, :]
+        out[:, :, i] = (st * q[:, :, i][..., None]).sum(-2)
+    out = out.transpose(0, 2, 1, 3).reshape(b, s, nv, dv)
+
+    var = out.astype(np.float64).__pow__(2).mean(-1, keepdims=True)
+    y = out * (1.0 / np.sqrt(var + a.get("norm_eps", _DEFAULT_EPS)))
+    y = (P["o_norm.w"] * y) * silu(gtw)
+    return y.reshape(b, s, vd) @ P["o_proj"].T
+
+
 def op_ssm(P, a, ins, d):
     """**选择性状态空间**（Mamba2 · Nemotron-H 那一版）。
 
@@ -561,7 +642,7 @@ def op_external(P, a, ins, d):
 
 OPS = {"Norm": op_norm, "Add": op_add, "Attention": op_attention,
        "FFN": op_ffn, "MoE": op_moe, "Linear": op_linear, "MLA": op_mla,
-       "SSM": op_ssm,
+       "SSM": op_ssm, "KDA": op_kda,
        "External": op_external}
 
 
@@ -680,6 +761,41 @@ def shapes_of(ir):
                 out[pre + "D"] = (a["heads"],)
                 out[pre + "norm.w"] = (_di,)
                 out[pre + "out_proj"] = (d, _di)
+            elif k == "KDA":
+                # **Kimi Delta Attention。** 13 个张量，和契约里那一组对上。
+                #
+                # ⚠ **`P` 的键就是这张表自己定的** ✓ —— 上面 SSM 那支
+                # 契约里写的是 `conv1d.weight` ✓ 而这里叫 `conv` ✓，
+                # 两边不一样也一直是对的 ✓。**只要这张表和 `op_*` 里读的
+                # 名字一致就行** ✓。（我上一轮照着契约的名字去读 `P`，
+                # 于是拿到空的 P —— 那不是键名写错，是这张表根本没写 ✓。）
+                _nk, _nv = a["k_heads"], a["v_heads"]
+                _dk, _dv = a["k_dim"], a["v_dim"]
+                _kd, _vd = _nk * _dk, _nv * _dv
+                _ck = a["conv_kernel"]
+                out[pre + "q_proj"] = (_kd, d)
+                out[pre + "k_proj"] = (_kd, d)
+                out[pre + "v_proj"] = (_vd, d)
+                out[pre + "q_conv1d"] = (_kd, _ck)
+                out[pre + "k_conv1d"] = (_kd, _ck)
+                out[pre + "v_conv1d"] = (_vd, _ck)
+                out[pre + "A_log"] = (_nv,)
+                # **`dt_bias` 按维，不是按头** ✓ —— 这一条只有 fla 的源码里有
+                # （`gate_dim = num_v_heads * head_k_dim` ✓）。
+                out[pre + "dt_bias"] = (_nv * _dk,)
+                out[pre + "b_proj"] = (_nv, d)
+                if a.get("gate_lowrank"):
+                    _r = a["gate_rank"]
+                    out[pre + "f_a_proj"] = (_r, d)
+                    out[pre + "f_b_proj"] = (_nv * _dk, _r)
+                    out[pre + "g_a_proj"] = (_r, d)
+                    out[pre + "g_b_proj"] = (_vd, _r)
+                    out[pre + "g_b_proj.bias"] = (_vd,)
+                else:
+                    out[pre + "f_proj"] = (_nv * _dk, d)
+                    out[pre + "g_proj"] = (_vd, d)
+                out[pre + "o_norm.w"] = (_dv,)
+                out[pre + "o_proj"] = (d, _vd)
     out["embed.weight"] = (ir["vocab"], d)
     # **学习式位置表。** pos_kind=learned 的模型有一张 (n_pos, d) 的查表 ——
     # 它不在任何一层里，也不是 embed，所以以前这个后端**完全不知道它存在**。

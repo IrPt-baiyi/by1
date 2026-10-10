@@ -59,7 +59,7 @@ python src/by1irentry.py                    # 三个后端只从 IR 跑
 | `inputs` | `list[str]` | 是 | 输入的值引用（`hidden` 或 `opN.out`） |
 | `outputs` | `list[str]` | 是 | 输出的值引用 |
 
-`kind` 是**闭集**：`Add`, `Attention`, `Embed`, `External`, `FFN`, `Head`, `Linear`, `MLA`, `MoE`, `Norm`, `Raw`, `SSM`
+`kind` 是**闭集**：`Add`, `Attention`, `Embed`, `External`, `FFN`, `Head`, `KDA`, `Linear`, `MLA`, `MoE`, `Norm`, `Raw`, `SSM`
 
 ## 状态
 
@@ -134,6 +134,25 @@ python src/by1irentry.py                    # 三个后端只从 IR 跑
 ### `Head`
 
 （没有属性）
+
+### `KDA`
+
+| 属性 | 类型 | 必填 | 语义 |
+|---|---|---|---|
+| `k_heads` | `int` | 否 | k 的头数（GLM 那边叫 num_heads） |
+| `v_heads` | `int` | 否 | v 的头数。和 k_heads 不等就是 GVA |
+| `k_dim` | `int` | 否 | k 每头的宽度（GLM 那边叫 head_dim） |
+| `v_dim` | `int` | 否 | v 每头的宽度 |
+| `num_heads` | `int` | 否 | alias：k_heads / v_heads |
+| `head_dim` | `int` | 否 | alias：k_dim / v_dim |
+| `conv_kernel` | `int` | 是 | 深度因果卷积的核长 |
+| `conv_bias` | `bool` | 是 |  |
+| `gate_lowrank` | `bool` | 是 | 门是不是两层（GLM 的 f_a/f_b）。默认一层（Ling 的 f_proj） |
+| `gate_rank` | `int` | 否 | 低秩门的瓶颈宽度 |
+| `gate_lower` | `float` | 否 | 给定时走 lower_bound 那一支：g = lower * sigmoid(exp(A_log) * g)（GLM 是 -5.0） |
+| `l2_eps` | `float` | 否 | q/k 做 L2 归一化时的 eps |
+| `act` | `enum:silu,gptoss,gelu,gelu_new,relu2` | 是 |  |
+| `norm_eps` | `float` | 否 |  |
 
 ### `Linear`
 

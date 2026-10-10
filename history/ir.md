@@ -6787,3 +6787,173 @@ MTP 是第 45 层 —— 层号接着数」✓）。
 `by1diff` 对三个后端 ✓、判卷人对 fla 的 `naive_recurrent_kda` ✓。
 
 **这一轮的价值不在"写完了"** ✓ —— 在**搞清楚了"写完"之后该去哪儿验** ✓。
+
+
+---
+
+## 117. `op_kda` 写完了，而 `P` 是空的 —— **漏了 SSM 那次的后半句**
+
+### 一、这一轮做了三件
+
+    ① `by1exec.op_kda`（NumPy 侧）✓ —— 对着 `op_linear`（GDN）那支写，
+       递推部分**逐行一样** ✓（因为 NumPy 这一侧本来就是"另一个后端"，
+       不是"另一份实现" ✓）。四处差别按量到的写：
+         · q/k/v 分开的投影，各自一条深度卷积
+         · `dt_bias` 按维（`[b,s,nv,dk]`），不是按头 ✗
+         · `g_proj` 当输出门
+         · 门一层（`f_proj`/`g_proj`）或两层（`f_a`/`f_b`/`g_a`/`g_b`）
+       注册进 `OPS` ✓。
+    ② `models/kda-shaped.by1` ✓ —— 和 `ssm-shaped.by1` 同一个用途：
+       真实模型建不出来（GLM 76108 个张量、Ling 9283 个），
+       而"建不出来"是"验不了"，不是"算错了" ✓。
+       尺寸取小值（k/v_heads=4、k/v_dim=16、conv_kernel=4、d_model=128）✓。
+    ③ 运行时类 `KDA` 的属性名对齐契约的逻辑名 ✓
+       （`q_conv` -> `q_conv1d` ✓）。
+
+### 二、它现在跑到哪儿了
+
+    by1check   IR 出来了 ✓（报告 1 条 W，见下）
+    by1exec --compare
+      -> KeyError: 'q_conv1d'
+
+而探针说：
+
+    [探针] P 的键：**[]**     <- **空的** ✗
+
+**不是键名不对，是根本没有键** ✗。
+
+### 三、缺的那一环
+
+`by1exec` 里除了 `OPS`（kind -> 函数）✓，还有**一张形状表** ✓ ——
+"每种 kind 声明哪些张量、各是什么形状" ✓ —— 而
+**`op_kda` 只注册了前一半** ✗。
+
+**这一条在 SSM 那一轮就写过** ✓，原话是：
+
+    by1exec.py — 新增 op_ssm(P, a, ins, d) + OPS["SSM"]，
+                 **外加一个 elif k == "SSM" 的形状分支（8 个张量）**
+
+**我把后半句漏了** ✗ —— 而漏了之后的表现是 `P` 空 ✓、
+`KeyError` ✓ —— **看起来像"键名写错了"** ✗，实际是"分支没写" ✓。
+
+（和这个仓库里反复出现的那一族一样 ✓：
+ **"数没动"/"看起来像 A" 的现象，实际原因是 B** ✗ ——
+ 所以每一条都要单独有一个反例 ✓。）
+
+### 四、下一轮要做的（具体）
+
+    ① `by1exec` 里加 KDA 的形状分支，13 个张量：
+       q/k/v_proj · q/k/v_conv1d · A_log(nv) · dt_bias(nv*dk) ·
+       b_proj(nv, d_model) · f_proj(nv*dk, d_model) · g_proj(nv*dv, d_model) ·
+       o_norm(v_dim) · o_proj(d_model, nv*dv)
+       （两层门的变体是 f_a/f_b/g_a/g_b，另算）
+    ② 再跑 `--compare`，判据是 **NumPy 与 PyTorch 逐位一致** ✓
+    ③ 然后才是判卷人：对 fla 的 `naive_recurrent_kda` + `naive_kda_gate`
+
+### 五、顺带：`by1check` 报了一条新的 W
+
+    ('W', 36, 'shape', 'mech KDA_ (KDA) 未声明 heads/head_dim ——
+                       依赖它的 KV cache 与状态尺寸都无法推导')
+
+**它是 W 不是 E** ✓ —— 所以门不红 ✓ —— 但它说得对 ✓：
+KDA 的"头"叫 `k_heads`/`v_heads` ✓，而那条检查只认 `heads`/`head_dim` ✓。
+**要么在 `ATTRS["KDA"]` 里承认这两个别名，要么给那条检查加一个别名表** ✓ ——
+记在这里，别让它变成一个"一直在印而没人看"的东西 ✓。
+
+
+---
+
+## 118. **KDA 能算了** —— 而真差别是"门的秩"
+
+### 一、上一轮那两件，各自的下场
+
+    ① NumPy 的**形状分支**（我漏掉的那一环）
+       —— 补上 13 个张量 ✓。补的时候看了一眼 SSM 那支，发现一件解气的事：
+       **`P` 的键就是这张表自己定的** ✓ —— SSM 的契约写 `conv1d.weight` ✓
+       而表里叫 `conv` ✓，两边不一样也一直是对的 ✓。
+       **只要表和 `op_*` 一致就行** ✓。
+       （我上一轮照着契约的名字去读 `P`，于是拿到空的 —— 那不是键名写错，
+        是**这张表根本没写** ✓。而"空字典"看起来像"键名不对" ✓。）
+
+    ② PyTorch 那一侧：`'KDA' object has no attribute 'f_a'`
+       —— **是我自己类里的 bug** ✓：`_gate_out` 分了支 ✓ 而 `_gate_in`
+       直接 `self.f_a(x)` ✓，于是 `gate_lowrank=false` 的模型一跑就炸 ✓。
+       **`by1irentry` 把三个后端都从 IR 跑一遍 —— 就是它抓住的** ✓。
+
+    （另外 IR 那层还抓了两个：`kind = <KDA> 不在闭集` ✓ 和
+      `gate_lower 应当是数，实际 None` ✓ —— 都是我无条件写进去的 ✓。
+      补完这两处之后，IR 才合法 ✓。）
+
+### 二、而真正的差别，是在维度上炸出来的
+
+修完上面那些，PyTorch 报：
+
+    RuntimeError: The size of tensor a (4) must match the size of tensor b (16)
+                  at non-singleton dimension 2
+
+`4 = v_heads` ✓ · `16 = k_dim` ✓。而 `gated_delta_rule` 里那一行是：
+
+    st = st * g[:, :, i].exp().unsqueeze(-1).unsqueeze(-1)
+
+**那是"每个头一个标量"** ✗ —— `g[:, :, i]` 是 `[b, h]` ✓。
+而 KDA 的 `g` 是 `[b, h, s, dk]` ✓ —— **每一维一个** ✓：
+
+    # fla/ops/kda/naive.py:61
+    S = S * g_i[..., None].exp()      # g_i 是 [B, HV, K] -> 逐维 ✓
+
+**所以"KDA 和 GDN 的递推是同一套"这句话，只对了一半** ✓ ——
+更新式一样 ✓、读出一样 ✓、`beta` 一样 ✓，而**衰减门的秩不一样** ✗。
+
+**这正是 SSM 那段注释里写过的那类东西** ✓：
+「两处最容易写反（写反了会**炸在维度上**，不会静默算错）」✓ ——
+而这一次它**真的炸在维度上了** ✓，所以它是"看得见"的那种错 ✓。
+
+### 三、一处实现容纳两种，而不是写两份
+
+    _gi = g[:, :, i]
+    _gd = _gi.unsqueeze(-1) if _gi.dim() == 2 else _gi
+    st = st * _gd.exp().unsqueeze(-1)
+
+三行 ✓ —— **`gated_delta_rule` 一个函数同时是 GDN 和 KDA 的递推** ✓。
+**没有第二份实现** ✓。
+
+### 四、判据
+
+    $ python by1exec.py kda-shaped.by1 --compare
+    后端必须实现的算子：{'Norm': 8, 'KDA': 4, 'Add': 8, 'FFN': 4}
+    [OK] 全部已实现
+    跑通：输出 (1, 48, 512)，幅度 5.2786e-01
+    PyTorch 5.2786e-01   NumPy 5.2786e-01
+    最大绝对差 2.257e-07   相对 4.275e-07   **[PASS] 两个后端一致** ✓
+
+    顺带：ssm-shaped 仍然 1.739e-07 ✓（**一字未变** ✓）——
+    那次推广没有把 GDN 弄坏 ✓。
+
+**而且 IR 入口也过了** ✓：
+
+    kda-shaped.by1   [不支持] C 后端还没有 KDA
+
+—— `by1irentry` 说这是**覆盖率缺口，不是失败** ✓，
+所以三个后端里 **PyTorch 和 NumPy 都从 IR 跑通了** ✓，缺的是 C ✓。
+
+### 五、顺手修了一个生成物
+
+改了 `by1ir.py`（加 `KIND_ATTRS["KDA"]`）之后，`by1docs` 报：
+
+    [FAIL] 文档路径 0 处路径 + 0 个脚本 + 0 个数字 + **1 个生成物** 有问题
+
+**`ir-spec.md` 过期了** ✓ —— 它声称"从 `by1ir.spec_markdown()` 生成" ✓。
+重新生成 ✓（8039 字节 ✓，里面确实有 KDA ✓）。
+**这个坑踩过一次了** ✓：跑那条命令 ≠ 那条命令改了那个文件 ✓。
+
+### 六、现在的位置
+
+    机制 KDA：**PyTorch ✓ · NumPy ✓ · C ✗** · IR ✓ · codegen ✓
+    判卷人：**还没有** ✗ —— 而这是目标明写的要求 ✓
+
+    下一步就一件：写 `src/modelcheck/by1kda.py` ——
+    对着 fla 的 `naive_recurrent_kda` + `naive_kda_gate`（都是纯 PyTorch、
+     CPU 上跑得动 ✓），并证明它在反例上会红：
+      · 门写成"每头一个标量"（GDN 那一版）✗
+      · `dt_bias` 按头而不是按维 ✗
+      · `gate_lower` 那一支不走 ✗

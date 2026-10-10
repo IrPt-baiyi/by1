@@ -224,6 +224,33 @@ KIND_ATTRS = {
         "act": ("enum:silu,gptoss,gelu,gelu_new,relu2", True, ""),
         "norm_eps": ("float", False, ""),
     },
+    # **KDA（Kimi Delta Attention）。**
+    # 和 `Linear`（GDN）并列 —— **递推是同一个** ✓，差别在投影的形状：
+    # 那边融在一个 `in_proj_qkvz` 里，这边 q/k/v 分开，
+    # 外加一个低秩或单层的门、和一个喂给 `o_norm` 的输出门。
+    #
+    # 两套属性名都认 ✓ —— 两个真实模型各用一套，而两边都对着官方产物验过：
+    #   Ling  k_heads / v_heads / k_dim / v_dim
+    #   GLM   num_heads / head_dim
+    "KDA": {
+        "k_heads": ("int", False, "k 的头数（GLM 那边叫 num_heads）"),
+        "v_heads": ("int", False, "v 的头数。和 k_heads 不等就是 GVA"),
+        "k_dim": ("int", False, "k 每头的宽度（GLM 那边叫 head_dim）"),
+        "v_dim": ("int", False, "v 每头的宽度"),
+        "num_heads": ("int", False, "alias：k_heads / v_heads"),
+        "head_dim": ("int", False, "alias：k_dim / v_dim"),
+        "conv_kernel": ("int", True, "深度因果卷积的核长"),
+        "conv_bias": ("bool", True, ""),
+        "gate_lowrank": ("bool", True,
+                         "门是不是两层（GLM 的 f_a/f_b）。默认一层（Ling 的 f_proj）"),
+        "gate_rank": ("int", False, "低秩门的瓶颈宽度"),
+        "gate_lower": ("float", False,
+                       "给定时走 lower_bound 那一支："
+                       "g = lower * sigmoid(exp(A_log) * g)（GLM 是 -5.0）"),
+        "l2_eps": ("float", False, "q/k 做 L2 归一化时的 eps"),
+        "act": ("enum:silu,gptoss,gelu,gelu_new,relu2", True, ""),
+        "norm_eps": ("float", False, ""),
+    },
     "Raw": {
         "impl": ("str", True,
                  "逃生舱第一层：raw.py 里的工厂函数名。"

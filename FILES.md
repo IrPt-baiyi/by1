@@ -1,6 +1,6 @@
 # 这个仓库里每个文件是干什么的
 
-> 243 个跟踪文件。按"你会想找什么"分组，不按字母表。
+> 244 个跟踪文件。按"你会想找什么"分组，不按字母表。
 >
 > **这份文档是生成的**：`python src/by1files.py --write`。
 > 文件清单、每组的个数、每个文件的一句话都从目录树和 docstring 来 ——
@@ -246,7 +246,7 @@
 | `ir.md` | Block 0 · 中间表示（IR）规格 |
 | `plan.md` | by1 · 接下来的计划 |
 
-## `models/` —— 28 个
+## `models/` —— 29 个
 
 命名规矩：**文件名 = 长名 = HF 的模型名（去掉 owner）**，
 `model` 声明 = 短名（手写的）。两列的对照见 `models.tsv`。
@@ -271,6 +271,7 @@
 | `gpt2-tiny.by1` | 由 gpt2.by1 机械缩小维度得来，结构一个字没改 |
 | `gpt2.by1` | 真实模型 · HF id `openai-community/gpt2` |
 | `hello.by1` | 一个最小的语言模型。改数字就能改大小 —— 改完重新跑一次就行 |
+| `kda-shaped.by1` | KDA（Kimi Delta Attention）的最小可跑模型 |
 | `llama-shaped.by1` | 与 transformers 的 LlamaForCausalLM 结构完全一致的最小模型： |
 | `llama3-shaped.by1` | llama3 式 RoPE 缩放的最小可跑模型 |
 | `minimind-3.by1` | 真实模型 · HF id `jingyaogong/minimind-3` |
