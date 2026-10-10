@@ -113,6 +113,42 @@ def read_stacks(*, _mod, _):
 
     _['_main_stack_names'] = {st.name for st in _['stacks'] if not _['_is_aux'](st)}
 
+    # ---- 栈自己的宽度 ----------------------------------------------
+    #
+    # **一个栈可以有和模型不同的宽度。** 实测：Gemma-4-31B 的视觉塔宽
+    # **1152**，而模型的 `d_model` 是 **5376** —— 而张量形状里的
+    # `d_model` 原来是**模型级**的，所以那个栈的张量**写不出来** ✗
+    # （356 个视觉张量，一个都声明不了）。
+    #
+    # 形状语言里本来就有"宽度可以变"的先例：`out_dim` 管"注意力输出
+    # 宽度 ≠ d_model"。缺的那一半是**输入宽度**。
+    #
+    # 写法就是在 stack 块里多一行：
+    #
+    #     stack vision {
+    #       d_model = 1152
+    #       pattern = 27 * ViT
+    #     }
+    #
+    # 而**没写这一行的栈行为完全不变** ✓ —— 所以这个改动对现有 27 份
+    # `.by1` 是空的（映射为空）。
+    _['stack_d_model']: Dict[str, float] = {}
+    for _['st'] in _['stacks']:
+        _['_dm'] = eval_num(_['st'].assigns.get("d_model"))
+        if _['_dm']:
+            _['stack_d_model'][_['st'].name] = _['_dm']
+
+    #: 机制名 -> 它所在栈的宽度。**一个机制只该住在一个栈里** ——
+    #: 真住两个且宽度不同的话，`setdefault` 取先出现的那个，
+    #: 而那种写法本身就该被质疑（同一个机制两种宽度，名字就分不清了）。
+    _['mech_d_model']: Dict[str, float] = {}
+    for _['_sn'], _['_lays'] in (_['expansion'] or {}).items():
+        _['_dm'] = _['stack_d_model'].get(_['_sn'])
+        if not _['_dm']:
+            continue
+        for _['_lay'] in _['_lays']:
+            _['mech_d_model'].setdefault(_['_lay'].name, _['_dm'])
+
     # **辅助栈不算解码层。** MTP（多 token 预测）是训练时的辅助头，
     # 它在权重里、但不在 num_hidden_layers 里 —— 主干的层数才是那个数。
     # 靠栈名判断是魔法，所以让 .by1 显式写 ux = true。

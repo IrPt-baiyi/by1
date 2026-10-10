@@ -64,6 +64,19 @@ def instantiate(*, _mod, _):
             _['sk'], _['inner'] = split_selector(_['sel'])
             _['attach_rules'].append((_['alias'].get(_['sk'], _['sk']), make_layer_pred(_['inner']), _['base']))
 
+    # **挂在栈上的机制也要拿到那个栈的宽度。**
+    #
+    # `by1stacks` 建的映射只走了 `pattern` 里的机制 —— 而 `>>` 挂上去的
+    # 不在 pattern 里 ✗。实测：Gemma 的 `vision[:] >> ViTMlp`，
+    # `ViT` 拿到了 1152 而 `ViTMlp` 拿到的是模型的 5376 ✗ ——
+    # 于是它的 `gate_proj` 算出 (4304, 5376)，而官方是 (4304, 1152)。
+    #
+    # 这里正好有栈名和挂载目标，补上就是。
+    for _['_sn'], _['_pred'], _['_base'] in _['attach_rules']:
+        _['_dm'] = (_['stack_d_model'] or {}).get(_['_sn'])
+        if _['_dm']:
+            _['mech_d_model'].setdefault(_['_base'], _['_dm'])
+
     def attached_at(stack_name: str, li: int, attrs: Dict[str, str]) -> List[str]:
         return [b for (sn, pred, b) in _['attach_rules']
                 if sn == stack_name and pred(li, attrs)]
@@ -209,20 +222,30 @@ def instantiate(*, _mod, _):
                 if _['n'] is not None:
                     _['sym'][_['k']] = _['n']
 
+            # **栈自己的宽度覆盖模型的。** 视觉塔宽 1152，而 `d_model`
+            # 是 5376 —— 这个栈里的张量要用前者（见 `by1stacks` 里那段）。
+            # 没声明宽度的栈拿到的是 `None`，行为**一个字都不变** ✓。
+            _['_dm'] = (_['mech_d_model'] or {}).get(_['nm'])
+            if _['_dm']:
+                _['sym']["d_model"] = _['_dm']
+
             # 宽度不变式。注意：不能靠「比值是否好看」判定对错 —— Gemma 4 的
             # 注意力宽度本来就不等于 d_model。所以宽度变化必须显式声明。
             _['qq'], _['vv'], _['hdv'] = _['sym'].get("q"), _['sym'].get("v"), _['sym'].get("head_dim")
             _['w'] = (_['vv'] * _['hdv']) if (_['vv'] and _['hdv']) else ((_['qq'] * _['hdv']) if (_['qq'] and _['hdv']) else None)
             _['od'] = eval_num(_['attrs'].get("out_dim"))
+            # **有效宽度**：栈自己声明了就用栈的，否则用模型的。
+            # 视觉塔宽 1152、模型 d_model 5376 —— 这条不变式要拿前者比。
+            _['_dmv'] = _['sym'].get("d_model") or _['d_model']
             if _['w'] and _['od']:
                 if abs(_['w'] - _['od']) > 1e-9:
                     _['rep'].add(E, _['mechs'][_['nm']].line, "shape",
                             f"{_['nm']}({_['label']}): 声明 out_dim = {_fmt(_['od'])}，"
                             f"但 q x head_dim = {_fmt(_['w'])}")
-            elif _['w'] and _['d_model'] and abs(_['w'] - _['d_model']) > 1e-9:
+            elif _['w'] and _['_dmv'] and abs(_['w'] - _['_dmv']) > 1e-9:
                 _['rep'].add(W, _['mechs'][_['nm']].line, "shape",
                         f"{_['nm']}({_['label']}): q x head_dim = {_fmt(_['w'])} != d_model = "
-                        f"{_fmt(_['d_model'])}（比值 {_['w']/_['d_model']:.3f}）—— 若这是有意的宽度变化，"
+                        f"{_fmt(_['_dmv'])}（比值 {_['w']/_['_dmv']:.3f}）—— 若这是有意的宽度变化，"
                         f"声明 out_dim = {_fmt(_['w'])}")
             _['rows'] = []
             for _['lname'], _['shp'], _['guard'], _['ln'], _['pe'] in _['contracts'][_['nm']]:
