@@ -4692,3 +4692,94 @@ CI 看的是**退出码**，而它是五态的（0 过 / 1 错了 / 30 没验 /
 
 **这个 bug 是"CI 会抓到的第一件事"** —— 因为 CI 就是在克隆上跑。
 它在这里被提前抓到了，用的是同一招（克隆一遍），只是手动做的。
+
+
+---
+
+## 89. 三个机制的**判卷人侦察** —— 它决定每一件能不能诚实做
+
+要新增三样：KDA · Mamba/SSM · 多模态。而按这个项目的纪律，
+**每加一个机制必须同时给出判卷人** —— 所以第一件事不是写实现，
+是问"这个机制有没有独立实现能对拍"。
+
+### ① Mamba / SSM —— **判卷人在，本机就能做**
+
+装着的 transformers 里就有：
+
+    MambaForCausalLM  ✓   Mamba2ForCausalLM  ✓   FalconMambaForCausalLM  ✓
+    **NemotronHForCausalLM  ✓   NemotronHConfig  ✓**
+
+而**关键分歧**在这儿：官方 `MambaMixer`（纯 Mamba）的 `in_proj` 是
+`intermediate_size * 2`；而 Nemotron 声明的是
+
+    in_proj [10304, 2688] = 2*d_inner + 2*n_groups*ssm_state + n_heads
+                          = 2*4096 + 2*8*128 + 64 = 10304 ✓
+
+—— 那是 **Nemotron-H 那一版**的布局。**所以判卷人得是
+`NemotronHForCausalLM`，不是 `MambaForCausalLM`。**
+
+而它的参数和 `.by1` 注释里那套算术**逐个对上**：
+
+    NemotronHMamba2Mixer:
+      num_heads        = mamba_num_heads        64
+      intermediate_size= num_heads * head_dim   64*64 = 4096 = d_inner ✓
+      ssm_state_size   = ssm_state_size         128
+      n_groups         = n_groups               8
+      conv_kernel_size = conv_kernel            4
+      chunk_size       = chunk_size             128
+
+**所以 Mamba 这一件本机就能诚实地做**：判卷人已装好、形状已知、
+目标明确（`by1diff Nemotron-3.5-Lightning.by1` 对着 `NemotronHForCausalLM` 过）。
+
+（另外它还缺第二样：`机制 'MoE' 的属性 'gate' codegen 还不支持` ——
+同一个模型，小改动。）
+
+### ② KDA —— **判卷人看不到，本机做不了**
+
+这一条仓库里**早就写下了**（`gpu/by1kda.py` 的头注）：
+
+> KDA 的核心是 `fla.ops.kda.chunk_kda` —— **flash-linear-attention
+> 库里的实现**，要 Triton，没有 CUDA 就 import 不了。
+> 我在没有 CUDA 的机器上**看不到它的源码**。……我知道 KDA 的
+> **张量集**（那部分已经和官方产物对上了：Ling 9283/9283），
+> 但**它的门控语义我看不到**。
+> **所以在这里凭空写一个 KDA 实现，就是在猜。**
+
+本机实测确认：`fla` 没有 · `triton` 没有 · `torch 2.13.0+cpu` ·
+`cuda.is_available() = False`。
+
+**所以 KDA 不是"跑得慢"，是"看不到语义"。** 而那个脚本存在的目的
+就是把顺序倒过来：**先把判卷人立起来、把中间量 dump 出来** ——
+那是**有 CUDA 才能做**的事。
+
+**这一件该租卡。** 而且顺序是：先立判卷人，再写实现。
+
+### ③ 多模态 —— 不用判卷人，是**建模**的活
+
+量了一下"完全没建模"具体指什么：
+
+    gemma-4-31B.by1      mechs = {GQA: Attention, Dense: FFN}
+    Step-3.7-Flash.by1   mechs = {Attn, Dense, MoE}
+    GLM-5.3-Flash.by1    mechs = {KDA, SparseMLA, MoE}
+    **多模态相关的键：一个都没有**
+
+也就是说：**`.by1` 只描述了文本主干** ✗ —— 而 `refs/` 的官方
+config 里**有**那些视觉/音频字段 ✓。
+
+所以这是一件**语言层**的活（新的机制种类 + 张量命名 + 层类型），
+不是 codegen 的活 ✓ —— 而且它和"能描述 ≠ 能算"这条线直接相关：
+**做到哪一步要先说清楚**（能声明、能被 `by1verify` 覆盖，和能跑前向
+是两件事）。
+
+### ④ 顺带纠正我自己一个读法
+
+`info['mechs']` 是 `{名字: 种类}` —— 不是 `{名字: {kind, attrs}}`。
+我第一版按后者读，拿到一堆 `AttributeError`。**结构要读对，
+不然量出来的东西是假的。**
+
+### 结论：三件的顺序
+
+    1. **Mamba / SSM**（判卷人有）      —— 本机能做，先做这个
+    2. **MoE 的 gate 属性**（同一个模型）—— 小改动
+    3. **多模态建模**（不用判卷人）      —— 语言层的活
+    4. **KDA**（判卷人看不到）          —— **要租 CUDA，而且先立判卷人**
