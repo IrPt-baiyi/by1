@@ -1318,11 +1318,20 @@ def _emit_c_body(ir, params):
                     raise SystemExit(
                         f"  [不支持] 第 {i} 层的注意力用了 kv_tie/"
                         f"head_gate —— C 后端还没实现")
-                for nm in ("wq", "wk", "wv", "wo"):
-                    order.append((key(i, j, nm), pre + nm))
-                if a["bias"]:
-                    for nm in ("wq.bias", "wk.bias", "wv.bias", "wo.bias"):
+                if a.get("qkv_fused"):
+                    # **融合 q/k/v**（视觉塔）：注册 `qkv` / `proj`，不注册
+                    # wq/wk/wv/wo —— 和 `by1exec.shapes_of` **同一份形状表**。
+                    for nm in ("qkv", "proj"):
                         order.append((key(i, j, nm), pre + nm))
+                    if a["bias"]:
+                        for nm in ("qkv.bias", "proj.bias"):
+                            order.append((key(i, j, nm), pre + nm))
+                else:
+                    for nm in ("wq", "wk", "wv", "wo"):
+                        order.append((key(i, j, nm), pre + nm))
+                    if a["bias"]:
+                        for nm in ("wq.bias", "wk.bias", "wv.bias", "wo.bias"):
+                            order.append((key(i, j, nm), pre + nm))
                 if a["sink"]:
                     order.append((key(i, j, "sink"), pre + "sink"))
                 if _qk_on(a.get("qk_norm")):
@@ -1521,12 +1530,24 @@ def _emit_c_body(ir, params):
                     # key() 会把点也换成下划线，所以整个 "wq.bias" 一起传进去
                     return (f", P({key(i,j, nm + '.bias')})" if a["bias"] else "")
                 qw = nh * hd * (2 if a["q_gate"] else 1)
+                # **融合 q/k/v**（视觉塔）：一个 `qkv` 装下 [q | k | v] 三截，
+                # 所以 k / v 就是同一块内存的偏移 —— 指针加法，不用拷。
+                # 这是**布局**不是算法，和拆开的算出来必须一样。
+                _fz = bool(a.get("qkv_fused"))
+                _qn = "qkv" if _fz else "wq"
+                _kn = (f"P({key(i,j,'qkv')}) + {qw}" if _fz
+                       else f"P({key(i,j,'wk')})")
+                _vn = (f"P({key(i,j,'qkv')}) + {qw + nkv * hd}" if _fz
+                       else f"P({key(i,j,'wv')})")
+                _on = "proj" if _fz else "wo"
                 lb.append(f" {B}({'qf' if a['q_gate'] else 'q'}, {src[0]},"
-                          f" P({key(i,j,'wq')}){BA('wq')}, n, D, {qw});")
+                          f" P({key(i,j,_qn)}){BA(_qn)}, n, D, {qw});")
                 if a["q_gate"]:
                     lb.append(f" split_qg(q, gt, qf, n, {nh}, {hd});")
-                lb.append(f" {B}(kk, {src[0]}, P({key(i,j,'wk')}){BA('wk')}, n, D, {nkv*hd});")
-                lb.append(f" {B}(vv, {src[0]}, P({key(i,j,'wv')}){BA('wv')}, n, D, {nkv*hd});")
+                _bn = (lambda off: (f", P({key(i,j,'qkv.bias')}) + {off}"
+                                    if a["bias"] else ""))
+                lb.append(f" {B}(kk, {src[0]}, {_kn}{_bn(qw) if _fz else BA('wk')}, n, D, {nkv*hd});")
+                lb.append(f" {B}(vv, {src[0]}, {_vn}{_bn(qw + nkv*hd) if _fz else BA('wv')}, n, D, {nkv*hd});")
                 if _qk_on(a.get("qk_norm")):
                     # **eps 传 IR 里的那个**（宏也是按它生成的）——
                     # 这一行以前没有，于是 qk_norm 里那个写死的 1e-5f
@@ -1561,7 +1582,7 @@ def _emit_c_body(ir, params):
                           f" NULL);")
                 if a["q_gate"]:
                     lb.append(f" apply_qg(ob, gt, n, {nh*hd});")
-                lb.append(f" {B}({dst}, ob, P({key(i,j,'wo')}){BA('wo')}, n, {nh*hd}, D);")
+                lb.append(f" {B}({dst}, ob, P({key(i,j,_on)}){BA(_on)}, n, {nh*hd}, D);")
             elif k == "FFN":
                 hid = a["hidden"]
                 _b = bool(a.get("bias"))
