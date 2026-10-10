@@ -73,14 +73,37 @@ FAST_JUDGES = ['by1docs.py', 'by1files.py', 'by1refs.py', 'by1lint.py',
 IMPORT_ALL = r'''
 import importlib, sys, json
 mods = json.loads(sys.argv[1])
-bad = []
+third = set(json.loads(sys.argv[2]))
+bad, skip = [], []
 for m in mods:
     try:
         importlib.import_module(m)
+    except ModuleNotFoundError as e:
+        # **缺"我们自己的"和缺第三方是两件事。** 这条检查的本意是前者
+        # （打出来的包少了 by1skip.py，8 个模块 import 不了），而它
+        # 原来把后者也报成失败 —— 于是"档 1 什么依赖都不要"那句话
+        # **只在装了 torch 的机器上成立**。
+        #
+        # （它是怎么暴露的：CI 上 16 处失败，而且**正好等于**
+        #   src/ 里顶层 import 第三方的模块数。）
+        #
+        # **极性很重要：认不出来的一律算"我们自己的"。**
+        # 第一版是按"在场模块的名字表"判的 —— 而那个表**恰好不含
+        # 被删掉的那个**（它就是我们要抓的东西），于是 by1skip 被
+        # 当成了第三方。**白名单要写第三方，不能写自己。**
+        if (e.name or '').split('.')[0] in third:
+            skip.append([m, e.name])
+        else:
+            bad.append([m, type(e).__name__, str(e)[:60]])
     except BaseException as e:
         bad.append([m, type(e).__name__, str(e)[:60]])
-print(json.dumps(bad))
+print(json.dumps([bad, skip]))
 '''
+
+# 已知的第三方包 —— **白名单**。不在这个表里的缺失，一律算我们自己的。
+THIRD_PARTY = ('numpy', 'torch', 'transformers', 'safetensors', 'yaml',
+               'pytest', 'huggingface_hub', 'tokenizers', 'accelerate',
+               'sentencepiece', 'einops', 'tqdm', 'requests')
 
 
 def main():
@@ -133,16 +156,29 @@ def main():
     # 子进程跑的是 `import by1ir` 这种裸名 —— 它靠 `cwd` 在 `sys.path`
     # 上找。写成 `HERE`（= `src/checks/`）的话，顶层那 12 个模块
     # 一个都 import 不了，**而它们恰恰是被所有人 import 的底座**。
-    r = subprocess.run([sys.executable, '-c', IMPORT_ALL, json.dumps(mods)],
+    #
+    # **白名单写第三方，不写自己**（`THIRD_PARTY`）。第一版是按
+    # "在场模块的名字表"判的 —— 而被删掉的那个**恰好不在表里**
+    # （它就是这条检查要抓的东西），于是 `by1skip` 被当成了第三方。
+    r = subprocess.run([sys.executable, '-c', IMPORT_ALL, json.dumps(mods),
+                        json.dumps(sorted(THIRD_PARTY))],
                        cwd=by1paths.SRC, capture_output=True, text=True,
                        encoding='utf-8', errors='replace', timeout=300)
     try:
-        fails = json.loads((r.stdout or '').strip().split('\n')[-1])
+        fails, skipped = json.loads((r.stdout or '').strip().split('\n')[-1])
     except Exception:
-        fails = [['(整批)', 'Unknown', (r.stderr or '')[-70:]]]
+        fails, skipped = ([['(整批)', 'Unknown', (r.stderr or '')[-70:]]],
+                          [])
     for m, kind, msg in fails:
         bad.append('%s import 不了：%s: %s' % (m, kind, msg))
-    print('     %d / %d 个模块 import 成功' % (len(mods) - len(fails), len(mods)))
+    print('     %d / %d 个模块 import 成功%s'
+          % (len(mods) - len(fails), len(mods),
+             # **"缺第三方"要说出来，不能闷着。** 它们是"这一步没验"，
+             # 不是"验过且对" —— 和整个项目的五态一致。
+             ('  ·  %d 个缺第三方，这一步对它们没验：%s'
+              % (len(skipped),
+                 ', '.join(sorted({s[1] for s in skipped if s[1]}))))
+             if skipped else ''))
 
     # ── ③ 每份 .by1 都能解析 ────────────────────────────────────
     print()
