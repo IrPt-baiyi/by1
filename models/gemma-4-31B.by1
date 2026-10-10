@@ -118,17 +118,24 @@ model gemma-4-31B {
       down_proj : (d_model, hidden)
     }
     ViT {
-      q_proj : (q * head_dim, d_model)
-      k_proj : (kv * head_dim, d_model)
-      v_proj : (kv * head_dim, d_model)
-      o_proj : (d_model, q * head_dim)
-      q_norm : (head_dim,)
-      k_norm : (head_dim,)
+      # **逻辑名里带 `.linear`。** 官方的视觉张量叫
+      # `self_attn.q_proj.linear.weight` —— 比文本那边多一层。
+      # 而命名模板加的是 `.weight`，所以中间那层只能写在逻辑名里。
+      # （契约里带点的逻辑名本来就有先例：`shared_experts.gate_proj.weight`。）
+      #
+      # 层内那四个 norm **不走这条** —— 它们来自内建的 `LAYER_DEFAULT`，
+      # 名字是 `input_layernorm.weight`，没有 `.linear` ✓。
+      q_proj.linear : (q * head_dim, d_model)
+      k_proj.linear : (kv * head_dim, d_model)
+      v_proj.linear : (kv * head_dim, d_model)
+      o_proj.linear : (d_model, q * head_dim)
+      q_norm        : (head_dim,)
+      k_norm        : (head_dim,)
     }
     ViTMlp {
-      gate_proj : (hidden, d_model)
-      up_proj   : (hidden, d_model)
-      down_proj : (d_model, hidden)
+      gate_proj.linear : (hidden, d_model)
+      up_proj.linear   : (hidden, d_model)
+      down_proj.linear : (d_model, hidden)
     }
   }
 
@@ -230,7 +237,14 @@ model gemma-4-31B {
     # 权威产物：HuggingFace safetensors
     train -> torch.module {
       name  = "model.language_model.layers.{i}.{scope}.{logical}.weight"
-      scope { GQA = self_attn, Dense = mlp }
+      # **辅助栈可以有自己的前缀。** `render_name` 里的优先级是
+      # `expert_name > name_<栈名> > name`（见 `by1check.py`），
+      # 而 Nemotron 的 `name_model` / `name_mtp` 就是这么用的 ✓。
+      #
+      # 视觉塔挂在 `model.vision_tower.encoder.layers.N.` 下，而不是
+      # `model.language_model.layers.N.` —— 只差这一条前缀。
+      name_vision = "model.vision_tower.encoder.layers.{i}.{scope}.{logical}.weight"
+      scope { GQA = self_attn, Dense = mlp, ViT = self_attn, ViTMlp = mlp }
     }
 
     # 推理产物：GGUF

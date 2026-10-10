@@ -5576,3 +5576,72 @@ Step-3.7 有 `vision_config` / `image_token_len` / `vision_select_layer`
     "契约未覆盖的实物张量" 应该从 **658 掉到约 302**（少 356）。
 
 **这个数字是检查自己算的** ✓ —— 不需要新写判据，只要看它变不变 ✓。
+
+
+---
+
+## 101. 命名规则补上了：530 -> 773，而未覆盖 658 -> 415
+
+### 一、判据先立着，然后达成
+
+上一节说"补上 `emit` 的命名规则之后，未覆盖应该从 658 掉到约 302"。
+结果：
+
+    契约声明存在: 530 -> **773**    名字+形状一致 773   形状不符 0   缺失 0
+    [PASS] 773 个张量的名字与形状全部一致
+    契约**未覆盖**的实物张量: 658 -> **415**（55% -> 35%）
+
+**那 243 个原来落在"未映射机制跳过"里的，现在全进契约、而且全对** ✓。
+
+### 二、改动其实很小
+
+    ① 契约里把视觉的逻辑名写成带点的：`q_proj.linear` 而不是 `q_proj`
+    ② `emit` 里加一条 `name_vision = "model.vision_tower.encoder.layers.
+       {i}.{scope}.{logical}.weight"`
+
+第 ② 条不用改语言 ✓ —— `render_name` 里的优先级本来就是
+`expert_name > name_<栈名> > name`（`by1check.py:157`），
+而 Nemotron 的 `name_model` / `name_mtp` 就是这么用的 ✓。
+
+第 ① 条也不用改语言 ✓ —— 契约里带点的逻辑名本来就有先例
+（`shared_experts.gate_proj.weight`）✓。而层内那四个 norm **不走这条**
+（它们来自内建的 `LAYER_DEFAULT`），所以不会被加上 `.linear` ✓。
+
+### 三、而我预测的 302 错了 113 —— 错在**假设**
+
+差额是 **27 x 4 = 108**（加几个零头）= 视觉的层内 norm ✗。
+看清单才发现：**连文本的层 norm 也没覆盖** ✗
+
+    60  model.language_model.layers.N.input_layernorm.weight
+    60  model.language_model.layers.N.post_attention_layernorm.weight
+    60  model.language_model.layers.N.pre_feedforward_layernorm.weight
+    60  model.language_model.layers.N.post_feedforward_layernorm.weight
+    60  model.language_model.layers.N.layer_scalar
+
+**我上一轮写的是"这几个 norm 已经被覆盖，`by1verify` 已经在 530 个
+张量上验过这条规则"** ✗ —— 那句是**假设的**：我看到它们在**官方清单**里，
+就以为契约里有 ✓。
+
+**而真正难看的地方是**：这个缺口 **`by1verify` 一直在印** ✓ ——
+
+    [覆盖缺口] 参考产物里有 16 类张量没有契约对应物:
+    （这是**范围边界**，不是失败 —— 但必须看得见）
+
+**是我不看，不是它没说。** 这比"检查没报"轻，但轻不了多少 ——
+一个印在那里、而我读过去的东西，和一个没印的东西，
+对结果来说是一样的。
+
+（`pre_feedforward` / `post_feedforward` 这两个 norm 是 Gemma 家族独有的：
+`use_double_wide_mlp` / `hidden_size_per_layer_input` 只在
+`google__*` 的 config 里出现 ✓。所以那 240 个是 Gemma 特有的四个 norm。）
+
+### 四、下一步
+
+    415 = 文本 4 norm x 60 = 240
+        + 视觉 4 norm x 27 = 108
+        + layer_scalar x 60
+        + patch_embedder / std_bias / embed_vision 那几个
+
+把 Gemma 那四个 norm 和 `layer_scalar` 声明进 `tensors { layer { ... } }`，
+415 应该掉到 5 上下（只剩 patch embedder 那几个真正没建模的）。
+**而判据还是同一个数** ✓ —— 不需要新写。
