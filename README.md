@@ -102,6 +102,10 @@ python src/checks/by1run.py --status    # 推送的节奏现在轮到哪一档
 档的轴是每加一档多要一样东西：静态 → +numpy → +refs/ → **+torch** → +gcc/下载 → +显卡。
 日常用 2~4；完整表在 [`FILES.md`](FILES.md)。
 
+**想帮我验它、而不是想知道它是什么** —— 看
+[`TESTING.md`](TESTING.md)：三档各跑多久、"通过/没验/失败"分别长什么样、
+失败了把什么贴回来。**只想跑第一档的话，一个依赖都不用装。**
+
 > "多少项"跟着机器和档位走，别当成常数 —— 每次跑都要重新读。
 
 三种结论，不是两种：`ok` 验过了 · `--` **这台机器上没验**（不算失败，但也不是通过）· `!!` 验了不对。
@@ -190,5 +194,9 @@ docs/ history/ drafts/ gpu/ tools/
 
 深处的账在 [`history/ir.md`](history/ir.md) · 每个文件在 [`FILES.md`](FILES.md) ·
 该租哪张卡在 [`docs/which-gpu.md`](docs/which-gpu.md) · 主张与现实的对照在 [`1.md`](1.md)
+
+**而"这套判据本身对不对"没有人验过** —— 那是
+[`docs/criteria-review.md`](docs/criteria-review.md)：一份几小时能做完、
+有确定判据的活，请人**重算**，不是请人"看看"。
 
 **作者是 AI（见最上面那一节）。语言名称暂定 by1。**
