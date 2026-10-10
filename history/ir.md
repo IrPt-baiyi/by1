@@ -5441,3 +5441,69 @@ Step-3.7 有 `vision_config` / `image_token_len` / `vision_select_layer`
 而我第一次数出来是 11 个 ✗ —— 那是因为我把 JSON 的结构读错了
 （以为是 `{tensors: {...}}`，实际是**扁平的 `{名字: {shape, dtype}}`** ✓）。
 **读错结构量出来的数字是假的** ✓ —— 这个坑这个仓库里踩过不止一次。
+
+
+---
+
+## 99. 视觉塔量清楚了，而它卡在**一处具体的语言缺口**上
+
+上一节把形状量出来了。这一节试着写，结果**写不出来** —— 而卡住的地方
+很具体。
+
+### 一、先确认两件前提，都满足
+
+    多 stack 支持 ✓    Nemotron / Qwen3.6 / Qwen3.8 各有 2 个 stack
+    层内四个 norm 不用声明 ✓
+                        `input_layernorm` / `post_attention_layernorm` /
+                        `pre_feedforward_layernorm` / `post_feedforward_layernorm`
+                        来自**内建的层规则**，而 `by1verify` 已经在文本那
+                        530 个张量上验过这条规则 ✓
+
+### 二、照着写了一个，它**解析得过**
+
+    mech ViT     : Attention { heads = { q = 16, kv = 16, head_dim = 72 },
+                               out_dim = 1152, qk_norm = true }
+    mech ViTMlp  : FFN { hidden = 4304 }
+    stack vision { pattern = 27 * ViT
+                   vision[:] >> ViTMlp }
+
+    mechs  = {GQA, Dense, ViT, ViTMlp}
+    stacks = [('main', '', 60), ('vision', '', 27)]      **两个栈都认了** ✓
+
+**机制全是现成的** —— 不需要新种类 ✓。
+
+### 三、而契约写不出来：`d_model` 是**模型级**的
+
+    ('E', 19, 'layers', 'hparams.n_layer = 60，但主栈合计 87 层')
+    ('W', 122, 'tensors', 'mech ViT 无张量契约')
+
+第一条有现成解法（`aux = true`，MTP 栈就是这么写的 ✓ ——
+视觉塔**在语义上也确实不是解码层** ✓）。
+
+而第二条卡住了：
+
+    张量形状里的 `d_model` 是**模型级**的（5376）
+    而视觉塔宽 **1152**
+    `out_dim` 只管"注意力输出宽度 ≠ d_model"
+    **没有"给一个栈自己的输入宽度"的写法** ✗
+
+**所以"能描述"这一步的真实前置不是"再写一段 `.by1`"** ✓ ——
+是**给 stack 加一个宽度** —— 一行语言改动 ✓。
+
+### 四、这一节没留下代码，留下的是**一个准确的定位**
+
+那段测量写进了 `gemma-4-31B.by1` 的注释里（356 个张量的形状、
+27 层一致、和文本层同形、判卷人是谁）✓ ——
+而 `ViT` / `stack vision` 那几行**撤掉了** ✗：它们现在会让门红，
+而红的理由（"契约写不出来"）不是一两行能补上的 ✓。
+
+**这比留一段半成品好** ✓ —— 半成品会让人以为"快好了"，
+而实际差的是一个语言设计决定 ✓。
+
+### 五、下一步的形状
+
+    ① 给 `stack` 加一个宽度（例如 `d_model = 1152`）
+    ② 把那三个 mech + 两个 stack 写回去
+    ③ 判据：`by1verify --tensors` 要覆盖到 **530 + 356 = 886** 个张量
+
+**判卷人早就现成** ✓ —— 这一步不需要任何新判据。

@@ -91,38 +91,50 @@ model gemma-4-31B {
   head LmHead { tie_embedding = true, logit_softcap = 30.0 }
   head Draft  { kind = speculative }
 
-  # ── 视觉塔：**现在没有建模，而这里原来写着一段假的** ──────────────
+  # ── 视觉塔：**量清楚了，而它还写不出来** ──────────────────────────
   #
-  # 原来这里有：
+  # 这里原来是一段 `vision ViT { ... }` —— 而 `vision` 不是这个语言
+  # 认识的顶层关键字，**那一段从来没被读过** ✗（实测：删掉它，`check()`
+  # 的 24 个输出键里唯一变化的是行号）。
   #
-  #     vision ViT {
-  #       n_layer = 27, d_model = 1152, head_dim = 72,
-  #       patch = 16, pooling = 3
-  #     }
+  # 后来量了一遍官方产物（`refs/google__gemma-4-31B.tensors.json`，
+  # **356 个视觉张量**），结果如下：
   #
-  # —— 而 `vision` 不是这个语言认识的顶层关键字，**那一段从来没被读过**
-  # ✗。实测：删掉它，`check()` 的 24 个输出键里**唯一变化的是行号**
-  # （每个正好差 7，就是删掉的行数）。
+  #   vision_tower.encoder.layers.{0..26}   27 层，**每层 13 个，27 层一致**
+  #     input_layernorm.weight                       [1152]
+  #     post_attention_layernorm.weight              [1152]
+  #     pre_feedforward_layernorm.weight             [1152]
+  #     post_feedforward_layernorm.weight            [1152]
+  #     self_attn.{q,k,v,o}_proj.linear.weight       [1152, 1152]
+  #     self_attn.{q,k}_norm.weight                  [72]
+  #     mlp.{gate,up}_proj.linear.weight             [4304, 1152]
+  #     mlp.down_proj.linear.weight                  [1152, 4304]
+  #   patch_embedder.input_proj.weight               [1152, 768]
+  #   patch_embedder.position_embedding_table        [2, 10240, 1152]
+  #   std_bias / std_scale                           [1152]
+  #   embed_vision.embedding_projection.weight       [5376, 1152]
   #
-  # **它比"没写"更坏** —— 看起来像声明了视觉塔的规模，而实际是零。
-  # 现在 `check()` 会为这种块报错（`TOP_KEYWORDS`），所以留着它反而红。
+  # **形状和文本层是同一个**（四个 norm 的位置也一样，Gemma 式三明治），
+  # 机制全是现成的：`Attention` + `qk_norm` + `FFN`。
   #
-  # 官方那边确实有东西：`config.vision_config`、以及 11 个视觉张量
-  # （`model.vision_embedder.patch_dense.weight` 之类）、
-  # 外加一个 `audio_tower`。**都没建模。**
+  # 我照着写了一个 `ViT` / `ViTMlp` / `stack vision`，它**解析得过**：
   #
-  # 真要建模时，形状应该是一个**第二个 stack** ——
-  # ViT 那几层是现成的 Attention + FFN，不需要新机制。
+  #     mechs  = {GQA, Dense, ViT, ViTMlp}
+  #     stacks = [('main', '', 60), ('vision', '', 27)]
   #
-  # **这里原来我写的是"`stack` 本来就认模态"—— 那句是错的** ✗。
-  # 查过：`MODAL`（`by1blocks.py`）只用在 **position 块的键**上
-  # （`position { vision = rope(...) }` 那种），而 `stack` 的正则是
+  # 而**契约写不出来** —— 卡在一处具体的语言缺口：
   #
-  #     ^stack\s+(\w+)(?:\s+(\w+))?\s*(?:\[\s*(\d+)\s*\])?
+  #     张量形状里的 `d_model` 是**模型级**的（5376），
+  #     而视觉塔宽 **1152**。`out_dim` 只管"注意力输出宽度 ≠ d_model"，
+  #     **没有"给一个栈自己的输入宽度"的写法** ✗。
   #
-  # —— 第二个词是**别名**，没有模态位 ✓。所以"模态的 stack"这个说法
-  # 不成立，得写成普普通通的第二个 stack。
-  # （**一个没查过就写下的具体，正是这个仓库一直在猎的东西。**）
+  # 所以"能描述"这一步的真实前置不是"再写一段 .by1" ✓，
+  # 而是**给 stack 加一个宽度** —— 一行语言改动 ✓。
+  #
+  # 那一步做完，判卷人是现成的：
+  #     by1verify gemma-4-31B.by1 refs/google__gemma-4-31B.config.json \
+  #               --tensors refs/google__gemma-4-31B.tensors.json
+  # 现在它覆盖的是文本主干（530 个），视觉那 356 个一个没查 ✓。
 
   # ── 后端：物理命名与 config 字段都由这里生成 ──────────────────────
   emit {
