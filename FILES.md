@@ -1,6 +1,6 @@
 # 这个仓库里每个文件是干什么的
 
-> 241 个跟踪文件。按"你会想找什么"分组，不按字母表。
+> 242 个跟踪文件。按"你会想找什么"分组，不按字母表。
 >
 > **这份文档是生成的**：`python src/by1files.py --write`。
 > 文件清单、每组的个数、每个文件的一句话都从目录树和 docstring 来 ——
@@ -41,7 +41,7 @@
 
 ---
 
-## `src/` —— 64 个模块 + 1 个非 .py
+## `src/` —— 65 个模块 + 1 个非 .py
 
 ### 底座（留在 src/ 顶层）
 
@@ -146,6 +146,7 @@
 | `by1mla.py` | MLA 的差分验证 |
 | `by1moe.py` | noaux_tc 分组路由的差分验证 |
 | `by1rope.py` | llama3 式 RoPE 缩放的差分验证 |
+| `by1ssm.py` | Mamba2 的判卷人**：by1 要生成的递推 vs 官方 mixer |
 | `by1real.py` | 真权重、真维度，跑一个 27B 模型的前向 |
 | `by1load.py` | 把**真权重**装进 by1 生成的模型 |
 | `by1mem.py` | 从 IR 的 state 声明推出**内存计划**，并可选地用真实模型核它 |
@@ -360,7 +361,7 @@
 | `by1tens.py` | 张量契约实例化：把契约按等价类求值出形状 |
 | `by1vocab.py` | 真实数据的词汇表。模式从这里来，不从想象来 |
 
-## `src/modelcheck/` —— 11 个
+## `src/modelcheck/` —— 12 个
 
 | 文件 | 用途 |
 |---|---|
@@ -374,6 +375,7 @@
 | `by1moe.py` | noaux_tc 分组路由的差分验证 |
 | `by1real.py` | 真权重、真维度，跑一个 27B 模型的前向 |
 | `by1rope.py` | llama3 式 RoPE 缩放的差分验证 |
+| `by1ssm.py` | Mamba2 的判卷人**：by1 要生成的递推 vs 官方 mixer |
 | `by1train.py` | 按 .by1 的描述搭一个模型，训练它，然后让它写字 |
 
 ## `tools/remote/` —— 34 个
