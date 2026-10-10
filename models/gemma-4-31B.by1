@@ -147,6 +147,38 @@ model gemma-4-31B {
       # 旧的 `{logical}.weight` 模板会把它渲染成 layer_scalar.weight ✗。
       layer_scalar                      : (1,) unless Dense
     }
+
+    # ── **不属于任何层的 8 个张量** ────────────────────────────────
+    #
+    # 这一块是这一轮补上的 ✓。补之前：契约 1181 个 ✓、**全部对得上** ✓，
+    # 而官方有 1188 个 —— 差的那 **7 个**就是下面这些（第 8 行是 `--`）✓。
+    #
+    # **这一块以前一个都没有** ✗：`global_rows` 是空的 ✓，
+    # 而没有 `global_name` 模板时 `by1verify` **整段全局张量都不检查** ✗
+    # （`check_tensors` 里 `if render_g is None: break` ✓）——
+    # 也就是"嵌入表和最终 norm 从来没被任何一个检查看过" ✓。
+    #
+    # 逻辑名直接写**官方全名** ✓：`physical = rename.get(logical, logical)` ✓，
+    # 而 `global_name = "{physical}"` ✓ —— 于是渲染出来就是它本身 ✓，
+    # 不需要 `rename` 那一段（写了反而是第二处同一件事）✓。
+    #
+    # 那 5 个视觉张量的宽度是 **1152**（见上面 `stack vision` 的 `d_model`）✓，
+    # 而 `1152` / `2` / `10240` 在这里是**字面量** ✓ ——
+    # `global` 行没有"哪个栈"这个上下文 ✓，取不到栈的宽度 ✓。
+    global {
+      model.language_model.embed_tokens.weight          : (vocab, d_model)
+      model.language_model.norm.weight                  : (d_model,)
+      # 权重共享，checkpoint 里**没有** lm_head ✓ ——
+      # `--` 是"声明为不该存在"，by1verify 会查它确实不存在 ✓。
+      lm_head.weight                                    : --
+      # ── 视觉塔里不属于层的那几个 ──
+      model.vision_tower.patch_embedder.input_proj.weight : (1152, 768)
+      model.vision_tower.patch_embedder.position_embedding_table : (2, 10240, 1152)
+      model.vision_tower.std_bias                       : (1152,)
+      model.vision_tower.std_scale                      : (1152,)
+      # 视觉 -> 文本的投影：宽度是**两边**的（1152 -> d_model）✓
+      model.embed_vision.embedding_projection.weight    : (d_model, 1152)
+    }
   }
 
   # ── 附属 ──────────────────────────────────────────────────────────
@@ -155,50 +187,50 @@ model gemma-4-31B {
   head LmHead { tie_embedding = true, logit_softcap = 30.0 }
   head Draft  { kind = speculative }
 
-  # ── 视觉塔：**量清楚了，而它还写不出来** ──────────────────────────
+  # ── 视觉塔：**已经写出来了** ──────────────────────────────────────
   #
-  # 这里原来是一段 `vision ViT { ... }` —— 而 `vision` 不是这个语言
-  # 认识的顶层关键字，**那一段从来没被读过** ✗（实测：删掉它，`check()`
-  # 的 24 个输出键里唯一变化的是行号）。
+  # 这一段的标题原来是"**量清楚了，而它还写不出来**" ✗ —— 现在过期了 ✓，
+  # 所以留着过程，改掉结论 ✓（删掉的话，就看不出来这里曾经差在哪一步）。
   #
-  # 后来量了一遍官方产物（`refs/google__gemma-4-31B.tensors.json`，
-  # **356 个视觉张量**），结果如下：
+  # ① 最早这里是一段 `vision ViT { ... }` —— 而 `vision` 不是这个语言
+  #    认识的顶层关键字，**那一段从来没被读过** ✗（实测：删掉它，`check()`
+  #    的 24 个输出键里唯一变化的是行号）。
   #
-  #   vision_tower.encoder.layers.{0..26}   27 层，**每层 13 个，27 层一致**
-  #     input_layernorm.weight                       [1152]
-  #     post_attention_layernorm.weight              [1152]
-  #     pre_feedforward_layernorm.weight             [1152]
-  #     post_feedforward_layernorm.weight            [1152]
-  #     self_attn.{q,k,v,o}_proj.linear.weight       [1152, 1152]
-  #     self_attn.{q,k}_norm.weight                  [72]
-  #     mlp.{gate,up}_proj.linear.weight             [4304, 1152]
-  #     mlp.down_proj.linear.weight                  [1152, 4304]
-  #   patch_embedder.input_proj.weight               [1152, 768]
-  #   patch_embedder.position_embedding_table        [2, 10240, 1152]
-  #   std_bias / std_scale                           [1152]
-  #   embed_vision.embedding_projection.weight       [5376, 1152]
+  # ② 后来量了一遍官方产物（`refs/google__gemma-4-31B.tensors.json`，
+  #    **356 个视觉张量**），结果如下：
   #
-  # **形状和文本层是同一个**（四个 norm 的位置也一样，Gemma 式三明治），
-  # 机制全是现成的：`Attention` + `qk_norm` + `FFN`。
+  #    vision_tower.encoder.layers.{0..26}   27 层，**每层 13 个，27 层一致**
+  #      input_layernorm.weight                       [1152]
+  #      post_attention_layernorm.weight              [1152]
+  #      pre_feedforward_layernorm.weight             [1152]
+  #      post_feedforward_layernorm.weight            [1152]
+  #      self_attn.{q,k,v,o}_proj.linear.weight       [1152, 1152]
+  #      self_attn.{q,k}_norm.weight                  [72]
+  #      mlp.{gate,up}_proj.linear.weight             [4304, 1152]
+  #      mlp.down_proj.linear.weight                  [1152, 4304]
+  #    patch_embedder.input_proj.weight               [1152, 768]
+  #    patch_embedder.position_embedding_table        [2, 10240, 1152]
+  #    std_bias / std_scale                           [1152]
+  #    embed_vision.embedding_projection.weight       [5376, 1152]
   #
-  # 我照着写了一个 `ViT` / `ViTMlp` / `stack vision`，它**解析得过**：
+  #    **形状和文本层是同一个**（四个 norm 的位置也一样，Gemma 式三明治），
+  #    机制全是现成的：`Attention` + `qk_norm` + `FFN`。
   #
-  #     mechs  = {GQA, Dense, ViT, ViTMlp}
-  #     stacks = [('main', '', 60), ('vision', '', 27)]
+  # ③ 当时的结论是"**契约写不出来**，卡在一处语言缺口"：
+  #    张量形状里的 `d_model` 是**模型级**的（5376），而视觉塔宽 **1152**，
+  #    没有"给一个栈自己的宽度"的写法 ✗。
   #
-  # 而**契约写不出来** —— 卡在一处具体的语言缺口：
+  # ④ **那一步后来做了** ✓：`stack` 现在可以带 `d_model` ✓
+  #    （见上面 `stack vision` 和 `by1stacks` 里那段）✓，
+  #    于是 356 个视觉张量**全部写得出来** ✓。
   #
-  #     张量形状里的 `d_model` 是**模型级**的（5376），
-  #     而视觉塔宽 **1152**。`out_dim` 只管"注意力输出宽度 ≠ d_model"，
-  #     **没有"给一个栈自己的输入宽度"的写法** ✗。
-  #
-  # 所以"能描述"这一步的真实前置不是"再写一段 .by1" ✓，
-  # 而是**给 stack 加一个宽度** —— 一行语言改动 ✓。
-  #
-  # 那一步做完，判卷人是现成的：
+  # 判据（这一份现在对得上**两套**发布命名）：
   #     by1verify gemma-4-31B.by1 refs/google__gemma-4-31B.config.json \
   #               --tensors refs/google__gemma-4-31B.tensors.json
-  # 现在它覆盖的是文本主干（530 个），视觉那 356 个一个没查 ✓。
+  #         -> 契约 1188 个，**名字+形状 1188 全部一致，未覆盖 0** ✓
+  #     同一份 `.by1` 对 GGUF 那一套命名是 530 / 未覆盖 303 ✓
+  #     （差的 303 是**层内四个 norm 和 `layer_output_scale` 在 ggml
+  #       命名下的样子** —— ggml 那支的 `scope` 里没有 `layer`/`global` ✓）。
 
   # ── 后端：物理命名与 config 字段都由这里生成 ──────────────────────
   emit {
@@ -247,12 +279,21 @@ model gemma-4-31B {
     # 权威产物：HuggingFace safetensors
     train -> torch.module {
       name  = "model.language_model.layers.{i}.{scope}{physical}"
+      # **全局张量必须有自己的模板，否则它们一个都不被检查。**
+      # `by1verify.check_tensors` 里是 `if render_g is None: break` ✓ ——
+      # 而 `render_g` 只在 `global_name` 存在时才建 ✓。
+      # 所以这一行不是"锦上添花" ✓，是"嵌入表和最终 norm 到底查不查" ✓。
+      global_name = "{physical}"
       # 辅助栈可以有自己的前缀（`render_name` 的优先级是
       # `expert_name > name_<栈名> > name`，Nemotron 的
       # `name_model` / `name_mtp` 就是这么用的）。视觉塔只差这一条 ✓。
       name_vision = "model.vision_tower.encoder.layers.{i}.{scope}{physical}"
       #
-      # ⚠ **`layer` / `global` 这两行我试过、撤了。** 试的写法是
+      # ⚠ **`layer` / `global` 这两行我试过、撤了，后来又加上了。**
+      # （这一段是过程记录，**结论已经过期** ✓ —— 那两行现在就在
+      #   下面那个 `scope` 里 ✓。）
+      #
+      # 试的写法是
       #
       #     scope { ..., layer = "", global = "" }
       #
@@ -264,8 +305,14 @@ model gemma-4-31B {
       # 那是一件**要读懂 `by1check` 里 `scope` 怎么被消费**的活，
       # 而不是往这里加两行 ✓。
       #
-      # ⚠ **`layer` 块：试过，成了大半，又撤了。** 记下量到的东西，
-      # 免得下一个人重走。
+      # **后来那件活做了** ✓，两行也加回来了 ✓，而真正让它们生效的
+      # 不是这两行本身 ✓ —— 是下面那三件（见各自的注释）：
+      # `layer` 行要能**带后缀或不带后缀** ✓、`layer` 行要**按栈算宽度** ✓、
+      # 全局张量要**有自己的模板** ✓。三者缺一个，表现都是
+      # "未覆盖数一点没变" ✓ —— 也就是**看起来像声明没生效** ✓。
+      #
+      # ⚠ **`layer` 块：试过，成了大半，又撤了 —— 后来又加上了。**
+      # （同样是过程记录：①②③ 现在是**做完了** ✓。）
       #
       # ① **`layer` 必须也在 `scope` 映射里。** `by1verify` 按 owner 查
       #    这张表，不在表里就记成"未映射"直接跳过 ✗ —— 少一行，
@@ -277,20 +324,22 @@ model gemma-4-31B {
       #    `...input_layernorm.weight.weight` ✗。
       #    （这条是**看渲染出来的名字**才发现的，读代码看不出来 ✓。）
       #
-      # ③ **`layer_scalar` 表达不了** ✗ —— 它的官方名字
+      # ③ **`layer_scalar` 现在表达得出来** ✓ —— 它的官方名字
       #    `...layers.N.layer_scalar` **没有 `.weight` 后缀**，
-      #    而模板无条件加。要它得有一条"不加后缀"的规则。
+      #    所以要有一条"不加后缀"的规则 ✓（逻辑名里自己带 `.weight`
+      #    就加、不带就不加 ✓）。
       #
       # 做了 ① ② 之后：**未覆盖 415 -> 67** ✓，而**多出 108 个形状不符** ✗
       # —— 视觉那 27 x 4 个 norm：`layer` 行只算一次、用的是模型的
       # `d_model`（5376），而视觉栈宽 1152。class 行没这个问题
       # （逐实例算 ✓），`layer` 行有。
       #
-      # 我补了一张按栈的 `layer_rows_by_stack` ✓，而**它没生效** ✗ ——
-      # `layer_out` 里仍是 5376。原因没查到，那一版会让门变红，所以撤了。
+      # 补的是一张按栈的 `layer_rows_by_stack` ✓ —— 第一版**它没生效** ✗
+      # （`layer_out` 里仍是 5376），因为读的是 `hp` 的 `d_model`
+      # 而不是那个按栈算出来的值 ✓。**第二版生效了** ✓。
       #
-      # **要接着做，入口是两处**：`by1tens` 的 `layer_rows`（只算一次）、
-      # 和 `by1check` 里逐层拼 `layer_out` 那一段。
+      # **教训**：那一次的表现是"数没动" ✓，而"数没动"有三种：
+      # 没人读 ✓ / 读了被覆盖 ✓ / 静默跳过 ✓ —— 三种要三种不同的反例 ✓。
       scope { GQA = self_attn., Dense = mlp., ViT = self_attn., ViTMlp = mlp., layer = "", global = "" }
     }
 

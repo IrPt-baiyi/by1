@@ -81,6 +81,14 @@ REAL = [
      'ggml', []),
     ('gemma-4-31B.by1', 'refs/google__gemma-4-31B.gguf-tensors.json',
      'ggml', []),
+    # **同一个 `.by1`，两套发布命名，两份清单。**
+    #
+    # 上面那行只测了 GGUF 那一侧 ✓ —— 于是 `torch.module` 那一侧
+    # **从来没进过护栏** ✗：视觉塔的 `name_vision`、`layer` 块、
+    # 全局张量，全都是在"没人跑"的状态下改的 ✓。
+    # （实测：`torch.module` 1188/1188、未覆盖 0 ✓ —— 而这一行是
+    #   这一轮才加上来的 ✓，在那之前没有东西看它 ✓。）
+    ('gemma-4-31B.by1', None, 'torch.module', []),
     ('Laguna-XS-2_1.by1', None, 'torch.module', []),
     ('Instella-3B.by1', None, 'torch.module', []),
     # 剪枝版。和官方**同名不同源**，所以短名带 owner（见 models.tsv）。

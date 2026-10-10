@@ -7600,3 +7600,161 @@ C 那份 `kda()` 的数值路径逐条对着 `by1exec.op_kda` 抄 ✓
 所以下一步是那两件 ✓ —— 而它们**各自有出处** ✓：
 `qk_head`/`index_heads`/`index_dim`/`index_topk` 都是**真模型
 config 里的字段** ✓，不是我加的形状 ✓。
+
+## 123. 多模态：**先量清楚"没建模"到底指什么**
+
+### 一、这一步是目标里自己写的第一步
+
+目标第 3 条写着：
+
+> 先量清楚"没建模"具体指什么（是 hparams 里没有、还是层类型里没有、
+> 还是张量契约里没有），再决定支持到哪一层：**能描述**和**能算前向**
+> 是两件事，要先说清楚做到哪一步。
+
+所以这一轮**不是先写代码** ✓，是先把那张 14 行的审计表整张重测一遍 ✓。
+
+### 二、重测的仪器不新写
+
+`1.md` 里那张表的每一格，都来自 `by1all` 跑的那两条命令 ✓：
+
+    by1verify.py <模型> <config> --config
+    by1verify.py <模型> <config> --tensors <清单> --backend <后端>
+
+而"哪个模型配哪份产物"**不手抄** ✓ —— 直接用 `by1all.REAL` 和
+`by1all.tensor_list` ✓（那两处是路径规则的真相源 ✓）。
+
+### 三、而它先纠正的是**我上一轮的一个猜测**
+
+上一轮我在文档里写过一句："`1.md` 那张表至少 Gemma 一行已经过期" ✗。
+**那句话是错的** ✓ —— 量完发现：
+
+    gemma-4-31B [ggml]     decl 530    ok 530    未覆盖 303   <- 表里那一行量的是**这个**
+    gemma-4-31B            decl 1188   ok 1188   未覆盖 0     <- 而这个是**这一轮才进表的**
+
+**那一行没过期** ✓，它量的是 **GGUF 那一套命名** ✓（`by1all.REAL` 里
+Gemma 只登记了 `ggml` 那一行 ✓）。而同一个 `.by1` 的
+**`torch.module` 那一侧，从来没有进过这张表、也没有进过门** ✗ ——
+视觉塔的 `name_vision`、`layer` 块、全局张量，**全都是在"没人跑"的
+状态下改的** ✓。
+
+**猜和量的差别就在这儿** ✓：猜出来的是"数字旧了" ✗，
+量出来的是"**有一整条路没人看**" ✓ —— 后者严重得多 ✓。
+
+### 四、Gemma 的 `torch.module` 那一侧，差的正是 7 个
+
+    契约声明存在: 1181   名字+形状一致 1181   缺失 0
+    契约**未覆盖**的实物张量: 7 个（共 1188 个里的 1%）
+
+而那 7 个**恰好就是"不属于任何层"的那 7 个** ✓（官方一共 1188 个，
+减去 1181 个 = 7 ✓）：
+
+    model.language_model.embed_tokens.weight
+    model.language_model.norm.weight
+    model.vision_tower.patch_embedder.input_proj.weight
+    model.vision_tower.patch_embedder.position_embedding_table
+    model.vision_tower.std_bias
+    model.vision_tower.std_scale
+    model.embed_vision.embedding_projection.weight
+
+也就是：**层内的一千多个早就齐了 ✓，层外的 7 个一个没提** ✓。
+`by1tens` 里 `global_rows` 只从契约的 `global` 块来 ✓，
+而 Gemma 那份**根本没有 `global` 块** ✗。
+
+### 五、比"没声明"更糟的一点：**全局张量根本不在检查范围里**
+
+就算声明了也未必有人查 ✗ —— `by1verify.check_tensors` 里那一段是：
+
+    for (lname, shape_txt, note, _pe) in (global_rows or []):
+        if render_g is None:
+            break                      # <- 整段跳过
+
+而 `render_g` **只在 emit 里有 `global_name` 时才建** ✓。
+Gemma 的 `torch.module` emit 里没有 `global_name` ✗ ——
+所以那一行不是"锦上添花" ✓，是"**嵌入表和最终 norm 到底查不查**" ✓。
+
+### 六、改法：一个 `global` 块 + 一行模板
+
+逻辑名直接写官方全名 ✓ —— `physical = rename.get(logical, logical)` ✓，
+而 `global_name = "{physical}"` ✓，于是渲染出来就是它本身 ✓，
+**不需要 `rename` 那一段** ✓（写了反而是第二处同一件事）✓。
+
+    global {
+      model.language_model.embed_tokens.weight          : (vocab, d_model)
+      model.language_model.norm.weight                  : (d_model,)
+      lm_head.weight                                    : --     <- 权重共享，声明"不该存在"
+      model.vision_tower.patch_embedder.input_proj.weight : (1152, 768)
+      model.vision_tower.patch_embedder.position_embedding_table : (2, 10240, 1152)
+      model.vision_tower.std_bias                       : (1152,)
+      model.vision_tower.std_scale                      : (1152,)
+      model.embed_vision.embedding_projection.weight    : (d_model, 1152)
+    }
+
+结果 ✓：
+
+    契约声明存在: 1188   名字+形状一致 1188   形状不符 0   缺失 0
+    [PASS] 1188 个张量的名字与形状全部一致，11 处抑制也正确
+    未覆盖: **0**
+
+**1188 是官方那一份的全部** ✓ —— 也就是说 Gemma-4-31B 的
+`torch.module` 侧现在是**逐张量全覆盖** ✓，视觉塔那 356 个也在里面 ✓。
+
+（`1152` / `2` / `10240` 在这里是**字面量** ✓ —— `global` 行没有
+"哪个栈"这个上下文 ✓，取不到栈的宽度 ✓。**这是这语言现在的一个小缺口** ✓，
+不是这一轮要修的 ✓。）
+
+### 七、门跟着补了一行
+
+`by1all.REAL` 里 Gemma 原来只有 `ggml` 那一行 ✓，
+补上 `torch.module` 那一行 ✓ 之后：
+
+    档 5：**76 项**，0 项失败，1 项跳过（只剩显卡那项）✓
+
+（上一轮是 75 项 ✓ —— **多出来的那一项就是 Gemma 的 `torch.module`** ✓。）
+
+### 八、量出来的"没建模"是什么样：**几乎全是视觉那一半**
+
+    模型                     契约    命中    未覆盖   未覆盖长什么样
+    clef                     851     851     333     全是 model.visual.*
+    Qwen3.8-27B              866     866     333     全是 model.visual.*
+    Qwen3.6-35B-A3B          712     712     333     全是 model.visual.*
+    GLM-5.3-Flash            37534   37534   38574   FP8 的 weight_scale_inv + 视觉塔
+    Step-3.7-Flash           753     753     718     视觉塔
+    Gemma（ggml）             530     530     303     层内四个 norm + layer_output_scale 的 ggml 名
+    Gemma（torch.module）     1188    1188    **0**  ——
+    Laguna-XS-2_1            30430   30430   83     少数层的 norm + embed + norm
+    其余 7 个                  —       —       0     —
+
+**文本主干早就收敛了** ✓：`claude` 之外的 7 个模型未覆盖是 0 ✓，
+而所有非零的都指向**同三件事** ✓：
+
+    ① 视觉塔（clef / Qwen3.8 / Qwen3.6 / GLM / Step-3.7）
+       —— 而 clef 那三个的 333 个名字**长得一模一样**（`model.visual.*`）✓
+    ② GGUF 那一套命名下的层内张量（Gemma 的 303）
+    ③ FP8 的 `weight_scale_inv`（GLM 的一大半）
+
+### 九、所以"支持到哪一层"，这一轮能给出确切的答案
+
+**能描述** ✓ —— 而且现在有一个模型是 **100%**（Gemma 的
+`torch.module` 侧，1188/1188）✓。视觉塔**不需要新机制** ✓：
+它的每一层就是 `Attention` + `qk_norm` + `FFN` ✓，
+真正缺过的语言能力只有一样 —— **栈自己的宽度** ✓，而那个早就加了 ✓。
+
+**能算前向** ✗ —— 一件都没做 ✓，而且**本轮不假装做了** ✗：
+
+    · by1 的三个后端**没有任何视觉前向** ✓（没有 patch 切分、
+      没有位置插值、没有视觉-文本拼接）
+    · Gemma-4-31B 有 346 亿参数 ✓，这一项在**算力**这一层也过不去 ✓
+    · 所以视觉那 356 个张量现在的状态是"**描述得住、算不了**" ✓
+      —— 和 KDA 在补完之前的状态**字面上一样** ✓
+
+### 十、下一步（按"能描述"这条线，三件，都不大）
+
+    ① clef / Qwen3.8-27B / Qwen3.6-35B-A3B 的 333 x 3
+       —— 三个模型的名字**长得一样** ✓，所以大概率是**一份视觉栈 +
+          一个契约块**同时覆盖三个 ✓。先量它们的层数和宽度是不是也一样 ✓。
+    ② Gemma 的 ggml 那 303
+       —— ggml 那支的 `scope` 里没有 `layer` / `global` ✓，
+          补的是"层内四个 norm 在 GGUF 命名下叫什么" ✓。
+    ③ Laguna 的 83
+       —— 量出来是**少数几层**的 norm 加全局那两个 ✓，
+          像是"某几层的层类型不同" ✓，得先看是哪几层 ✓。
