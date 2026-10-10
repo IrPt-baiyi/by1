@@ -40,7 +40,7 @@
 
 ---
 
-## `src/` —— 60 个模块 + 1 个非 .py
+## `src/` —— 64 个模块 + 1 个非 .py
 
 ### 底座（留在 src/ 顶层）
 
@@ -95,6 +95,10 @@
 | `by1blocks.py` | 读 `.by1` 里那些"块"，把不一致报出来 |
 | `by1tens.py` | 张量契约实例化：把契约按等价类求值出形状 |
 | `by1lower.py` | emit lowering：把 emit 块降成 `字段名 -> 规则` |
+| `by1hp.py` | hparams 块：模型有多宽、多少层、词表多大 |
+| `by1sched.py` | schedule：命名子序列的多趟展开 |
+| `by1stacks.py` | stacks：栈怎么排、每层挂什么机制 |
+| `by1state.py` | 按选择器把 state 声明落到具体的层上 |
 
 ### `checks/` —— 判卷人 · 神谕 · 跑检查
 

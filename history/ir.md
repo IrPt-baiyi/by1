@@ -4443,3 +4443,58 @@ debug 打出来是 `bound=['path']`，只有 `check()` 的形参 ✗。
 `汇报` 31 行 · `未填占位符` 22 行 · `schedule` 14 行 · `hparams` 10 行。
 
 **照同一个办法搬就行** —— 一个 `extract(...)` 调用，加一次对拍。
+
+
+---
+
+## 85. **`check()` 只剩骨架了** —— 1243 行 -> 167 行
+
+同一个 `extract(...)` 又搬了四段：
+
+    hparams     10 行 -> by1hp.py       360 -> 352 行  ✓ 逐字节相同
+    schedule    14 行 -> by1sched.py    352 -> 340 行  ✓
+    stacks     105 行 -> by1stacks.py   340 -> 237 行  ✓
+    状态尺寸     72 行 -> by1state.py    237 -> 167 行  ✓
+
+而 `check()` 的主体现在长这样：
+
+    by1hp.read_hparams(_mod=globals(), _=_)
+    by1sched.read_schedule(_mod=globals(), _=_)
+    by1stacks.read_stacks(_mod=globals(), _=_)
+    by1blocks.check_blocks(_mod=globals(), _=_)
+    by1tens.instantiate(_mod=globals(), _=_)
+    by1lower.emit_rules(_mod=globals(), _=_)
+    by1state.state_sizes(_mod=globals(), _=_)
+
+**七处调用，一句"搬去哪个文件"。** 这就是这个目标一开始说的"只剩骨架"。
+
+### 三套词汇表现在分居三处
+
+    语义/调度        by1hp 34 · by1sched 38 · by1stacks 129
+                     by1blocks 189 · by1state 96
+    契约（形状）      by1tens 266
+    导出（config 字段）by1export 513 · by1lower 135
+
+**这正是当初"劈开"要的那个区分**：`check()` 里曾经同时住着
+数学语义、内存布局、权重命名三套词汇表 —— 而唯一有外部判卷人
+（`refs/`）的只有第三套。
+
+### 数字
+
+    check()      1243 -> 1064 -> 833 -> 701 -> 360 -> **167 行**
+    by1check.py  2102 -> **1034 行**
+    新模块        八个，合计约 1400 行
+
+    覆盖**全程只升不降**：编译 62 -> **69** · import 57 -> **64**
+                        · 行尾 103 -> **110**
+    档 4：64 项，0 项失败
+    26 份 `.by1` 输出**逐字节不变**（每一段搬完各对拍一次，共六次）
+
+### 这一轮又踩了一次括号
+
+给 `by1files.py` 加归组时用正则替换，**把括号层级弄错两次** ✗
+（`'by1state'),` -> 先改成 `'],` 又改成 `']),`）。
+两次都是 `py_compile` 当场抓住的 —— **而它值得记的原因是：
+这就是"改文本要按结构改，不要按字符串改"**。
+前面命名空间改写之所以能成，正是因为它**按 AST 位置**改而不是
+按正则改；而我给 `by1files` 加一行却用了正则 ✗。

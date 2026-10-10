@@ -26,6 +26,10 @@ import by1export
 import by1blocks
 import by1tens
 import by1lower
+import by1hp
+import by1sched
+import by1stacks
+import by1state
 
 #: **"这个 field 映射指不到东西"的占位符。**
 #
@@ -745,135 +749,12 @@ def check(path: str) -> Tuple[Report, dict]:
         elif _['c'].kind == "residual":
             _['residuals'][_['c'].name] = _['c']
 
-    # ---- hparams -------------------------------------------------
-    _['hp']: Dict[str, str] = {}
-    _['nlayer_decl'] = None
-    _['hb'] = _['scope'].first("hparams")
-    if _['hb']:
-        _['hp'] = dict(_['hb'].assigns)
-        _['nlayer_decl'] = eval_num(_['hp'].get("n_layer"))
-    _['d_model'] = eval_num(_['hp'].get("d_model"))
-    _['vocab'] = eval_num(_['hp'].get("vocab"))
-
-    # ---- schedule 命名子序列 --------------------------------------
-    _['named']: Dict[str, List[Rec]] = {}
-    _['sb'] = _['scope'].first("schedule")
-    if _['sb']:
-        # 多趟展开：命名子序列可以引用别的命名子序列，直到不再变化
-        for _['_'] in range(8):
-            _['before'] = {k: [str(r) for r in v] for k, v in _['named'].items()}
-            for _['k'], _['v'] in _['sb'].assigns.items():
-                _['ex'] = expand_pattern(_['v'], _['named'])
-                if _['ex'] is not None:
-                    _['named'][_['k']] = _['ex']
-            if _['before'] == {k: [str(r) for r in v] for k, v in _['named'].items()}:
-                break
-
-    # ---- stacks --------------------------------------------------
-    _['stacks'] = _['scope'].kids("stack")
-    _['alias'] = {}
-    _['expansion']: Dict[str, List[Rec]] = {}
-    # (栈, 层号, 机制) -> {属性: 值}
-    _['overrides']: Dict[Tuple[str, int, str], Dict[str, str]] = {}
-    _['pending_ov']: List[tuple] = []
-    _['total_layers'] = 0
-    for _['st'] in _['stacks']:
-        if _['st'].alias:
-            _['alias'][_['st'].alias] = _['st'].name
-        _['alias'][_['st'].name] = _['st'].name
-
-    for _['st'] in _['stacks']:
-        _['pexpr'] = _['st'].assigns.get("pattern")
-        if _['pexpr'] is None:
-            _['rep'].add(W, _['st'].line, "pattern", f"stack {_['st'].name} 没有 pattern")
-            continue
-        _['ex'] = expand_pattern(_['pexpr'], _['named'])
-        if _['ex'] is None:
-            _['rep'].add(E, _['st'].line, "pattern", f"stack {_['st'].name} 的 pattern 无法解析")
-            continue
-        _['expansion'][_['st'].name] = _['ex']
-        _['total_layers'] += len(_['ex'])
-
-        # 逐层属性覆盖：`main[3..44] : MoE.experts = [255, 266, ...]`
-        # 值按被选中的层顺序分配。逐层变化的专家数、swiglu_limit 都靠它。
-        for _['_k'], _['_v'], _['_ln'] in _['st'].entries:
-            _['_m'] = re.match(r"^([A-Za-z_]\w*)\s*\[\s*(.*?)\s*\]$", _['_k'])
-            if not _['_m']:
-                _['rep'].add(W, _['_ln'], "override",
-                        f"stack {_['st'].name} 里的条目 '{_['_k']}' 不是逐层覆盖"
-                        f"（要写成像 main[3..44] : MoE.experts = [...]）")
-                continue
-            _['_sn'], _['_sel'] = _['_m'].group(1), _['_m'].group(2)
-            if _['alias'].get(_['_sn'], _['_sn']) != _['st'].name:
-                _['rep'].add(E, _['_ln'], "override",
-                        f"逐层覆盖 '{_['_k']}' 指的是栈 '{_['_sn']}'，但它写在 stack {_['st'].name} 里")
-                continue
-            _['_mq'] = re.match(r"^([A-Za-z_]\w*)\.([A-Za-z_]\w*)\s*=\s*(.*)$", _['_v'])
-            if not _['_mq']:
-                _['rep'].add(E, _['_ln'], "override",
-                        f"逐层覆盖 '{_['_k']}' 的值要写成 <机制>.<属性> = [...]")
-                continue
-            _['_mech'], _['_attr'], _['_vals'] = _['_mq'].group(1), _['_mq'].group(2), _['_mq'].group(3).strip()
-            if not (_['_vals'].startswith("[") and _['_vals'].endswith("]")):
-                _['rep'].add(E, _['_ln'], "override",
-                        f"逐层覆盖 '{_['_k']}' 的值必须是列表")
-                continue
-            if _['_mech'] not in _['mechs']:
-                _['rep'].add(E, _['_ln'], "override", f"逐层覆盖引用了未声明的机制 '{_['_mech']}'")
-                continue
-            _['_items'] = [x.strip() for x in split_top(_['_vals'][1:-1]) if x.strip()]
-            # resolve_attrs 还没定义，先把原始的攒起来，等它可用再分配
-            _['pending_ov'].append((_['st'].name, _['_sel'], _['_mech'], _['_attr'], _['_items'], _['_ln'], _['_k']))
-        if _['st'].decl_len is not None and _['st'].decl_len != len(_['ex']):
-            _['rep'].add(E, _['st'].line, "layers",
-                    f"stack {_['st'].name} 声明 {_['st'].decl_len} 层，pattern 展开出 {len(_['ex'])} 层")
-        elif _['st'].decl_len is not None:
-            _['rep'].add(I, _['st'].line, "layers",
-                    f"stack {_['st'].name} 的层数在两处声明（[{_['st'].decl_len}] 与 pattern），"
-                    f"当前一致 —— 建议 [N] 只作断言")
-        for _['r'] in _['ex']:
-            if _['r'].name not in _['mechs']:
-                if _['r'].name in _['memories']:
-                    _['rep'].add(W, _['st'].line, "resolve",
-                            f"{_['r'].name} 声明在 memory 块，却被 pattern 当作层机制引用")
-                elif _['r'].name in _['residuals']:
-                    _['rep'].add(E, _['st'].line, "resolve",
-                            f"{_['r'].name} 是 residual，不能出现在 pattern 里")
-                else:
-                    _['rep'].add(E, _['st'].line, "resolve",
-                            f"pattern 引用了未声明的机制 '{_['r'].name}'")
-            else:
-                _['m'] = _['mechs'][_['r'].name]
-                for _['a'] in _['r'].attrs:
-                    if _['a'] not in _['m'].assigns and _['a'] not in BUILTIN_ATTRS:
-                        _['rep'].add(W, _['st'].line, "attr",
-                                f"{_['r'].name}({_['a']} = ...) 的属性 '{_['a']}' 既未在 mech "
-                                f"{_['r'].name} 声明，也不在已知属性表里")
-
-    def _is_aux(st):
-        """栈是不是辅助栈（MTP / 投机解码头之类）。
-        **显式声明，不靠栈名猜。** 定义必须在使用之前 ——
-        闭包在运行时才解析名字，放后面会 NameError。
-        """
-        _['v'] = (st.assigns.get("aux") or "").strip().lower()
-        return _['v'] in ("true", "1", "yes", "on")
-    _['_is_aux'] = _is_aux    # 让 stage 也取得到它
-
-    _['_main_stack_names'] = {st.name for st in _['stacks'] if not _['_is_aux'](st)}
-
-    # **辅助栈不算解码层。** MTP（多 token 预测）是训练时的辅助头，
-    # 它在权重里、但不在 num_hidden_layers 里 —— 主干的层数才是那个数。
-    # 靠栈名判断是魔法，所以让 .by1 显式写 ux = true。
-    _['_main_layers'] = sum(len(_['expansion'].get(st.name, []))
-                       for st in _['stacks']
-                       if not _['_is_aux'](st))
-    if _['nlayer_decl'] is not None and _['stacks']:
-        if _['nlayer_decl'] != _['_main_layers']:
-            _['rep'].add(E, _['hb'].line, "layers",
-                    f"hparams.n_layer = {int(_['nlayer_decl'])}，但主栈合计 {_['_main_layers']} 层"
-                    + (f"（另有辅助栈 {_['total_layers'] - _['_main_layers']} 层）"
-                       if _['total_layers'] != _['_main_layers'] else ""))
-
+    # ---- hparams：**搬去 by1hp.py 了**
+    by1hp.read_hparams(_mod=globals(), _=_)
+    # ---- schedule 命名子序列：**搬去 by1sched.py 了**
+    by1sched.read_schedule(_mod=globals(), _=_)
+    # ---- stacks：**搬去 by1stacks.py 了**
+    by1stacks.read_stacks(_mod=globals(), _=_)
     # ---- 各块一致性检查：**搬去 by1blocks.py 了** ------------------
     #
     # 九个块只看"声明之间自相不相容"，和张量契约不是一回事。
@@ -938,78 +819,8 @@ def check(path: str) -> Tuple[Report, dict]:
                 _['rep'].add(E, _['rule']["line"], "config",
                         f"emit {_['key']} 的字段 '{_['fname']}' 的值无法解析：{_['cfg_out'][_['fname']]}")
 
-    # ---- 状态尺寸 -------------------------------------------------
-    # 按「选择器」把 state 声明落到具体的层上。同一个机制的两类层状态可以不同：
-    #   GQA[window = none]  : kv_cache(grows_with_seq)
-    #   GQA[window != none] : kv_cache(bounded_by = window - 1)
-    _['states'] = []
-    _['dtype_b'] = 2  # bf16 默认
-    _['em'] = _['scope'].first("emit")
-    if _['em']:
-        for _['a'], _['b'] in _['em'].assigns.items():
-            _['m'] = re.search(r"dtype\s*=\s*(\w+)", _['b'])
-            if _['m'] and _['m'].group(1) in ("fp32", "float32"):
-                _['dtype_b'] = 4
-
-    _['inst_by_mech']: Dict[str, List[Dict[str, str]]] = {}
-    for (_['_s'], _['_m'], _['_a'], _['_k'], _['_t']) in _['layer_seq']:
-        _['inst_by_mech'].setdefault(_['_m'], []).append(_['_a'])
-
-    def eval_with(expr: str, attrs: Dict[str, str]):
-        _['s2'] = expr
-        for _['k2'], _['v2'] in attrs.items():
-            _['n2'] = eval_num(_['v2'])
-            if _['n2'] is not None:
-                _['s2'] = re.sub(r"\b" + re.escape(_['k2']) + r"\b", _fmt(_['n2']), _['s2'])
-        return eval_num(_['s2'])
-    _['eval_with'] = eval_with    # 让 stage 也取得到它
-
-    for _['nm'], _['ents'] in _['state_src'].items():
-        _['blk'] = _['mechs'].get(_['nm']) or _['memories'].get(_['nm'])
-        for _['key'], _['val'], _['ln'] in _['ents']:
-            _['_n'], _['conds'] = parse_state_key(_['key'])
-            _['sel'] = [a for a in _['inst_by_mech'].get(_['nm'], []) if selector_matches(_['conds'], a)]
-            _['n'] = len(_['sel'])
-            _['tag'] = _['key'] if _['conds'] else _['nm']
-            _['h'] = _['heads_of'](_['blk']) if _['blk'] else None
-            _['hd'] = _['head_dim_of'].get(_['nm'])
-            if "recurrent" in _['val']:
-                if _['h'] and "v" in _['h'] and _['hd']:
-                    _['per'] = _['h']["v"] * _['hd'] * _['hd'] * _['dtype_b']
-                    _['states'].append((f"{_['tag']} recurrent", f"{_['per']/2**20:,.2f} MiB/层",
-                                   f"{_['n']} 层", f"{_['per']*_['n']/2**20:,.2f} MiB"))
-                else:
-                    _['states'].append((f"{_['tag']} recurrent", "无法推导", f"{_['n']} 层",
-                                   "缺 heads(v)/head_dim"))
-            elif "kv_cache" in _['val']:
-                _['kv'] = None
-                if _['h']:
-                    _['kv'] = _['h'].get("kv", _['h'].get("kv_heads"))
-                if _['kv'] is None and _['blk'] is not None:
-                    _['kv'] = eval_num(_['blk'].assigns.get("kv_heads"))
-                if not (_['kv'] and _['hd']):
-                    _['states'].append((f"{_['tag']} kv_cache", "无法推导", f"{_['n']} 层",
-                                   "缺 kv heads 或 head_dim —— 算不出来"))
-                    continue
-                _['per_tok'] = _['kv'] * _['hd'] * 2 * _['dtype_b']
-                _['mb'] = re.search(r"bounded_by\s*=\s*([^,)]+)", _['val'])
-                if _['mb']:
-                    _['bounds'] = [_['eval_with'](_['mb'].group(1).strip(), a) for a in _['sel']]
-                    if any(b is None for b in _['bounds']):
-                        _['states'].append((f"{_['tag']} kv_cache(bounded)",
-                                       f"{_['per_tok']:,.0f} B/token", f"{_['n']} 层",
-                                       "有界，但上界表达式算不出来"))
-                    else:
-                        _['tot'] = _['per_tok'] * sum(_['bounds'])
-                        _['bset'] = sorted({int(b) for b in _['bounds']})
-                        _['bt'] = str(_['bset'][0]) if len(_['bset']) == 1 else str(_['bset'])
-                        _['states'].append((f"{_['tag']} kv_cache(bounded)",
-                                       f"{_['per_tok']:,.0f} B/token", f"{_['n']} 层",
-                                       f"上界 {_['bt']} → {_['tot']/2**20:,.2f} MiB 常量"))
-                else:
-                    _['states'].append((f"{_['tag']} kv_cache", f"{_['per_tok']:,.0f} B/token",
-                                   f"{_['n']} 层", f"{_['per_tok']*_['n']:,.0f} B/token (全模型)"))
-
+    # ---- 状态尺寸：**搬去 by1state.py 了**
+    by1state.state_sizes(_mod=globals(), _=_)
     # ---- 未填占位符 ----------------------------------------------
     _['nq'] = 0
     for _['line'] in _['text'].splitlines():

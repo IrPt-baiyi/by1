@@ -82,7 +82,8 @@ GROUPS = [
 （那个函数因此有 1243 行）。**劈开的理由写在那个文件的头注里。**''', [
         'by1', 'by1contract', 'by1emit', 'by1name', 'by1vocab',
         'by1export', 'by1blocks', 'by1tens',
-        'by1lower']),
+        'by1lower', 'by1hp', 'by1sched', 'by1stacks',
+        'by1state']),
 
     ('`checks/` —— 判卷人 · 神谕 · 跑检查', 'checks', '''这个项目最核心的资产。
 
