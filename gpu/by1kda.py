@@ -14,15 +14,71 @@
 > **在 CPU 上就能跑** ✓，`einops` 装了就够 ✓。
 > 实测：`naive_recurrent_kda` 和 `naive_chunk_kda` 相对差 **3.2e-06** ✓。
 >
-> 所以"KDA 卡在 CUDA 上"这个结论**作废** ✓。真正的语义在 `naive.py`
-> 的 55-66 行，五行：
->
->     S = S * exp(g_i)
->     S = S + (beta_i * k_i)  ⊗  (v_i - (k_i ⊗ S).sum(-2))
->     o_i = q_i @ S
->
+> 所以"KDA 卡在 CUDA 上"这个结论**作废** ✓。
 > **这个脚本仍然有用** —— 它 dump 的是 **Triton 核**的输出 ✓，
-> 那是"官方实现"，而 `naive.py` 是它自己的参考 ✓。两者都值得比。
+> 那是官方实现，而 `naive.py` 是它自己的参考 ✓。两者都值得比。
+
+## KDA 的语义 —— **从源码读出来的，不是猜的**
+
+下面这些全部来自 `fla` 0.5.2 的源码 ✓，逐条标了出处：
+
+### ① 模块（`fla/layers/kda.py:142-176`）
+
+    q_proj = Linear(hidden, key_dim)      key_dim   = num_heads   * head_k_dim
+    k_proj = Linear(hidden, key_dim)
+    v_proj = Linear(hidden, value_dim)    value_dim = num_v_heads * head_v_dim
+    q/k/v_conv1d = ShortConvolution       # 只有 use_short_conv 时
+    f_proj = Sequential(Linear(hidden, head_v_dim), Linear(head_v_dim, gate_dim))
+                                          gate_dim  = num_v_heads * head_k_dim
+    b_proj = Linear(hidden, num_v_heads)
+    A_log  = Parameter(zeros(num_v_heads))
+    dt_bias= Parameter(...)               # 形状 num_v_heads * head_k_dim
+    o_norm = FusedRMSNormGated(head_v_dim)
+    o_proj = Linear(value_dim, hidden)
+
+    head_k_dim = head_dim                  head_v_dim = head_dim * expand_v
+
+### ② 前向（`fla/layers/kda.py:223-297`）
+
+    q, k, v = conv1d(proj(x))   或   silu(proj(x))       # 后者是没有 short conv 时
+    g    = f_proj(x)            # 进来先按 head_k_dim 重排成 [.., HV, K]
+    beta = b_proj(x)            # [.., HV]
+
+    chunk_kda(q, k, v, g, beta, A_log, dt_bias,
+              use_qk_l2norm_in_kernel    = True,     <- q/k 做 L2 归一化
+              use_gate_in_kernel         = True,
+              use_beta_sigmoid_in_kernel = True,     <- beta 是 logits
+              allow_neg_eigval           = 层的属性,
+              safe_gate / lower_bound    = 层的属性,
+              state_v_first              = True)     <- 状态是 [K, V]
+
+### ③ 门（`fla/ops/kda/gate.py:50-54`）
+
+    g = g + dt_bias.view(H, -1)
+    g = -A_log.view(H, 1).exp() * softplus(g)
+
+`lower_bound` 那支（第 69 行）换成：
+
+    g = lower_bound * sigmoid(A_log.view(H, 1).exp() * g)
+
+### ④ 递推（`fla/ops/kda/naive.py:55-66`）—— **这就是定义**
+
+    S = zeros(B, HV, K, V)
+    for i in range(T):
+        S = S * exp(g_i)                                     # 逐维衰减
+        S = S + (beta_i * k_i) ⊗ (v_i - (k_i ⊗ S).sum(-2))    # delta 规则
+        o_i = q_i @ S                                        # 读出
+
+`q` 先乘 `1/sqrt(K)` ✓；`q`/`k` 按 `G = HV/H` 复制（GVA）✓；
+`beta_i` 已经在 sigmoid 之后（见 ② 的开关）✓。
+
+### ⑤ 判卷人
+
+    naive_recurrent_kda  vs  naive_chunk_kda     相对差 3.2e-06 ✓（实测）
+    by1 的 op_kda        vs  naive_recurrent_kda   <- **要做的**
+
+反例（判卷人必须在这些上变红）：
+把 `exp(g)` 换成 `g` ✗ · 把 delta 那一项去掉 ✗ · `q` 不除 `sqrt(K)` ✗
 
 ## 为什么要有这个脚本，而不是直接把 KDA 实现写出来
 

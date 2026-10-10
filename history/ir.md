@@ -6057,3 +6057,76 @@ GGUF 里它们叫 `blk.N.attn_q_norm.weight` ✓，而我的规则渲染成
 前提拆掉** ✓。而它的形状和前面几次一样：
 
     我以为"卡住了"的那个东西，其实只是**我没试另一条路**。
+
+
+---
+
+## 107. KDA 的语义，**五处出处，全部从源码读出来**
+
+上一节把"看不到源码"这个前提拆了 ✓。这一节把**看到的东西**落到仓库里 ✓ ——
+不然下一轮又要重新下载一遍 ✓。
+
+### ① 模块（`fla/layers/kda.py:142-176`）
+
+    q_proj = Linear(hidden, key_dim)      key_dim   = num_heads   * head_k_dim
+    k_proj = Linear(hidden, key_dim)
+    v_proj = Linear(hidden, value_dim)    value_dim = num_v_heads * head_v_dim
+    q/k/v_conv1d = ShortConvolution       # 只有 use_short_conv 时
+    f_proj = Sequential(Linear(hidden, head_v_dim),
+                        Linear(head_v_dim, gate_dim))     # gate_dim = num_v_heads * head_k_dim
+    b_proj = Linear(hidden, num_v_heads)
+    A_log  = Parameter(zeros(num_v_heads))
+    o_proj = Linear(value_dim, hidden)
+
+    head_k_dim = head_dim        head_v_dim = head_dim * expand_v
+
+**`f_proj` 是两层** ✓ —— 这一条光看 config 是猜不出来的 ✓。
+
+### ② 前向（`fla/layers/kda.py:223-297`）
+
+    q, k, v = conv1d(proj(x))   或   silu(proj(x))    # 没有 short conv 时是后者
+    g    = f_proj(x)          # 按 head_k_dim 重排成 [.., HV, K]
+    beta = b_proj(x)          # [.., HV]
+
+而**四个开关层里全是 True**（第 270-276 行）：
+
+    use_qk_l2norm_in_kernel    = True     <- q/k 做 L2 归一化
+    use_gate_in_kernel         = True
+    use_beta_sigmoid_in_kernel = True     <- beta 进来是 logits
+    state_v_first              = True     <- 状态是 [K, V]
+
+**这四条每一条写错都会静默算错** ✓ —— 而它们的值只能从这一处看到 ✓。
+
+### ③ 门（`fla/ops/kda/gate.py:50-54`）
+
+    g = g + dt_bias.view(H, -1)
+    g = -A_log.view(H, 1).exp() * softplus(g)
+
+`lower_bound` 那支（第 69 行）换成
+`g = lower_bound * sigmoid(A_log.view(H,1).exp() * g)` ✓。
+
+### ④ 递推（`fla/ops/kda/naive.py:55-66`）—— **这就是定义**
+
+    S = zeros(B, HV, K, V)
+    for i in range(T):
+        S = S * exp(g_i)                                     # 逐维衰减
+        S = S + (beta_i * k_i) ⊗ (v_i - (k_i ⊗ S).sum(-2))    # delta 规则
+        o_i = q_i @ S                                        # 读出
+
+`q` 先乘 `1/sqrt(K)` ✓、`q`/`k` 按 `G = HV/H` 复制（GVA）✓。
+
+### ⑤ 判卷人
+
+    naive_recurrent_kda vs naive_chunk_kda   相对差 3.2e-06 ✓（实测）
+    by1 的 op_kda       vs naive_recurrent_kda     <- **要做的**
+
+反例（判卷人必须在这些上变红）：把 `exp(g)` 换成 `g` ✗ ·
+把 delta 那一项去掉 ✗ · `q` 不除 `sqrt(K)` ✗。
+
+### 这一轮改了什么
+
+`gpu/by1kda.py` —— 把上面五节写进它的 docstring ✓。
+那个文件原来整篇是"我看不到所以不能写" ✗，现在整篇是"这是它，出处在这" ✓。
+
+**一行实现代码都还没写** ✓ —— 而这一轮之后，
+写实现不再需要任何外部信息 ✓。**这正是"先把判卷人立起来"的意思** ✓。
