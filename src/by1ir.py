@@ -206,6 +206,24 @@ KIND_ATTRS = {
         "act": ("enum:silu,gptoss,gelu,gelu_new,relu2", True, ""),
         "norm_eps": ("float", False, ""), "l2_eps": ("float", False, ""),
     },
+    # **选择性状态空间（Mamba2 · Nemotron-H 那一版）。**
+    # 和 `Linear` 并列，但参数完全不同：那里是 k/v 头 + delta 规则，
+    # 这里是逐头的 `A_log` / `D` / `dt_bias` + 一个深度卷积。
+    "SSM": {
+        "heads": ("int", True, "头数。**可以写成裸数字** `heads = 64`"),
+        "head_dim": ("int", True, "每个头的宽度"),
+        "ssm_state": ("int", True, "状态维 —— 和 head_dim 是两个东西"),
+        "n_groups": ("int", True, "B / C 的分组数。和 GQA 的 kv 头同一个意思"),
+        "conv_kernel": ("int", True, "深度因果卷积的核长"),
+        "expand": ("int", True, "d_inner = heads * head_dim 的那个倍数来源"),
+        "chunk_size": ("int", True,
+                       "分块扫描的块长。**by1 走的是递推** —— "
+                       "这个属性只进契约，不进计算"),
+        "conv_bias": ("bool", True, ""),
+        "proj_bias": ("bool", True, ""),
+        "act": ("enum:silu,gptoss,gelu,gelu_new,relu2", True, ""),
+        "norm_eps": ("float", False, ""),
+    },
     "Raw": {
         "impl": ("str", True,
                  "逃生舱第一层：raw.py 里的工厂函数名。"

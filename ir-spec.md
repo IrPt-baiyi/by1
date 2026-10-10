@@ -59,7 +59,7 @@ python src/by1irentry.py                    # 三个后端只从 IR 跑
 | `inputs` | `list[str]` | 是 | 输入的值引用（`hidden` 或 `opN.out`） |
 | `outputs` | `list[str]` | 是 | 输出的值引用 |
 
-`kind` 是**闭集**：`Add`, `Attention`, `Embed`, `External`, `FFN`, `Head`, `Linear`, `MLA`, `MoE`, `Norm`, `Raw`
+`kind` 是**闭集**：`Add`, `Attention`, `Embed`, `External`, `FFN`, `Head`, `Linear`, `MLA`, `MoE`, `Norm`, `Raw`, `SSM`
 
 ## 状态
 
@@ -205,6 +205,22 @@ python src/by1irentry.py                    # 三个后端只从 IR 跑
 |---|---|---|---|
 | `impl` | `str` | 是 | 逃生舱第一层：raw.py 里的工厂函数名。**这一层要改编译器** —— 加一个机制就得动 src/by1codegen.py。第二层见 External |
 
+### `SSM`
+
+| 属性 | 类型 | 必填 | 语义 |
+|---|---|---|---|
+| `heads` | `int` | 是 | 头数。**可以写成裸数字** `heads = 64` |
+| `head_dim` | `int` | 是 | 每个头的宽度 |
+| `ssm_state` | `int` | 是 | 状态维 —— 和 head_dim 是两个东西 |
+| `n_groups` | `int` | 是 | B / C 的分组数。和 GQA 的 kv 头同一个意思 |
+| `conv_kernel` | `int` | 是 | 深度因果卷积的核长 |
+| `expand` | `int` | 是 | d_inner = heads * head_dim 的那个倍数来源 |
+| `chunk_size` | `int` | 是 | 分块扫描的块长。**by1 走的是递推** —— 这个属性只进契约，不进计算 |
+| `conv_bias` | `bool` | 是 |  |
+| `proj_bias` | `bool` | 是 |  |
+| `act` | `enum:silu,gptoss,gelu,gelu_new,relu2` | 是 |  |
+| `norm_eps` | `float` | 否 |  |
+
 ---
 
 ## 几条**为什么这样定**
@@ -223,4 +239,3 @@ python src/by1irentry.py                    # 三个后端只从 IR 跑
 - **`by1-ir` 是必填的。** 没有版本号的 IR 不该被接受：
   读的一方无从判断自己理解的是哪一版。大版本不匹配直接拒，
   不做兼容猜测。
-

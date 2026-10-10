@@ -470,6 +470,73 @@ def op_linear(P, a, ins, d):
     return y.reshape(b, s, vd) @ P["out_proj"].T
 
 
+def op_ssm(P, a, ins, d):
+    """**选择性状态空间**（Mamba2 · Nemotron-H 那一版）。
+
+    和注意力是不同的算法族 —— 没有 q/k/v，状态由 `A_log` / `D` /
+    `dt_bias` 驱动、随 token 递推：
+
+        h_t = exp(dt_t * A) * h_{t-1} + dt_t * (x_t ⊗ B_t)
+        y_t = C_t · h_t + D * x_t
+
+    **判卷人**：`src/modelcheck/by1ssm.py` —— 对着官方
+    `NemotronHMamba2Mixer` 验过（两种尺寸 + 三条反例）。
+
+    状态是 `[b, heads, head_dim, ssm_state]`，所以两处最容易写反
+    （写反了会炸在维度上，不会静默算错）：
+
+        更新是**外积**   x[head_dim] ⊗ B[ssm_state]
+        读出是 **h 右乘 C**
+    """
+    x = ins[0]
+    b, s, _ = x.shape
+    h, hd = a["heads"], a["head_dim"]
+    ng, ssm, k = a["n_groups"], a["ssm_state"], a["conv_kernel"]
+    di = h * hd
+    cd = di + 2 * ng * ssm
+    rep = h // ng
+
+    proj = x @ P["in_proj"].T
+    gate, bc, dt = np.split(proj, [di, di + cd], -1)
+
+    # ② 因果深度卷积 + 激活
+    pad = np.zeros((b, k - 1, cd))
+    mp = np.concatenate([pad, bc], 1)
+    conv = np.zeros_like(bc)
+    for i in range(k):
+        conv += mp[:, i:i + s, :] * P["conv"][:, i][None, None, :]
+    if a.get("conv_bias"):
+        conv = conv + P["conv.bias"]
+    bc = silu(conv)
+
+    xs, B, C = np.split(bc, [di, di + ng * ssm], -1)
+    xs = xs.reshape(b, s, h, hd)
+    B = np.repeat(B.reshape(b, s, ng, ssm), rep, axis=2)
+    C = np.repeat(C.reshape(b, s, ng, ssm), rep, axis=2)
+
+    # ③ SSM 递推
+    A = -np.exp(P["A_log"].astype(np.float64))
+    dtt = np.log1p(np.exp(dt.astype(np.float64) + P["dt_bias"]))   # softplus
+    st = np.zeros((b, h, hd, ssm))
+    out = np.zeros((b, h, s, hd))
+    for i in range(s):
+        d_i = dtt[:, i][..., None, None]
+        st = (np.exp(d_i * A[None, :, None, None]) * st
+              + d_i * (xs[:, i][..., None] * B[:, i][:, :, None, :]))
+        out[:, :, i] = ((st @ C[:, i][..., None])[..., 0]
+                        + P["D"][None, :, None] * xs[:, i])
+    y = out.transpose(0, 2, 1, 3).reshape(b, s, di)
+
+    # ④ 按组 gated norm（**gate 乘在 norm 之前**），再输出投影
+    y = y * silu(gate)
+    gs = di // ng
+    g = y.reshape(b, s, di // gs, gs)
+    g = g * (1.0 / np.sqrt((g * g).mean(-1, keepdims=True)
+                           + a.get("norm_eps", _DEFAULT_EPS)))
+    y = P["norm.w"] * g.reshape(b, s, di)
+    return y @ P["out_proj"].T
+
+
 def op_external(P, a, ins, d):
     """**逃生舱第二层：调外部符号。**
 
@@ -494,6 +561,7 @@ def op_external(P, a, ins, d):
 
 OPS = {"Norm": op_norm, "Add": op_add, "Attention": op_attention,
        "FFN": op_ffn, "MoE": op_moe, "Linear": op_linear, "MLA": op_mla,
+       "SSM": op_ssm,
        "External": op_external}
 
 
@@ -597,6 +665,21 @@ def shapes_of(ir):
                 out[pre + "A_log"] = (nv,)
                 out[pre + "norm.w"] = (a["v_dim"],)
                 out[pre + "out_proj"] = (d, vd)
+            elif k == "SSM":
+                # 选择性状态空间（Mamba2 · Nemotron-H 那一版）。
+                # 8 个张量，和契约里那一组逐个对上 ——
+                # `by1tens` 算出来的 'Mamba' 组就是这 8 行。
+                _di = a["heads"] * a["head_dim"]
+                _cd = _di + 2 * a["n_groups"] * a["ssm_state"]
+                out[pre + "in_proj"] = (_di + _cd + a["heads"], d)
+                out[pre + "conv"] = (_cd, a["conv_kernel"])
+                if a.get("conv_bias"):
+                    out[pre + "conv.bias"] = (_cd,)
+                out[pre + "dt_bias"] = (a["heads"],)
+                out[pre + "A_log"] = (a["heads"],)
+                out[pre + "D"] = (a["heads"],)
+                out[pre + "norm.w"] = (_di,)
+                out[pre + "out_proj"] = (d, _di)
     out["embed.weight"] = (ir["vocab"], d)
     # **学习式位置表。** pos_kind=learned 的模型有一张 (n_pos, d) 的查表 ——
     # 它不在任何一层里，也不是 embed，所以以前这个后端**完全不知道它存在**。

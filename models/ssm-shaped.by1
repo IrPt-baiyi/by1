@@ -1,0 +1,100 @@
+# ── ssm-shaped.by1 ────────────────────────────────────────────────────
+# SSM（选择性状态空间 / Mamba2）的最小可跑模型。
+#
+# 存在理由：Nemotron-3.5-Lightning 是 30B，**这台机器上建不出来**
+# （numpy 报 Unable to allocate 2.38 GiB for (128, 1856, 2688)）——
+# 而"建不出来"是"验不了"，不是"算错了"。所以把 SSM 单独拎出来，
+# 用一个小尺寸让它走完三个后端。
+#
+#   python by1exec.py ssm-shaped.by1 --compare      NumPy vs PyTorch
+#   python modelcheck/by1ssm.py                     对官方 NemotronHMamba2Mixer
+#   python by1c.py ssm-shaped.by1 --gcc <gcc> --seq 16
+#
+# **判卷人是官方的 `NemotronHMamba2Mixer`**，不是 `MambaForCausalLM` ——
+# 纯 Mamba 的 in_proj 是 intermediate_size*2，而这一版是
+# d_inner + conv_dim + heads。
+#
+# 维度取小值即可 —— 验的是语义，不是规模。
+
+model SSM-shaped {
+  arch  ssm_shaped
+  ctx   1024
+
+  hparams {
+    d_model = 128
+    n_layer = 4
+    vocab   = 512
+    rms_eps = 1e-05
+  }
+
+  # 选择性状态空间：没有 q/k/v。
+  #   d_inner  = heads * head_dim          = 4 * 16 = 64
+  #   conv_dim = d_inner + 2*n_groups*ssm  = 64 + 2*2*32 = 192
+  #   in_proj  = d_inner + conv_dim + heads = 64 + 192 + 4 = 260
+  mech Mamba_ : SSM {
+    heads       = 4
+    head_dim    = 16
+    ssm_state   = 32
+    n_groups    = 2
+    conv_kernel = 4
+    expand      = 2
+    chunk_size  = 8
+    conv_bias   = true
+    proj_bias   = false
+    act         = silu
+    structural  = [ heads, head_dim, ssm_state, n_groups, conv_kernel ]
+  }
+
+  mech MLP_ : FFN { hidden = 256 }
+
+  stack main {
+    pattern = 4 * Mamba_
+    main[:] >> MLP_
+  }
+
+  position {
+    # SSM 不转位置 —— 状态随 token 递推，位置信息在递推里。
+    default = none
+  }
+
+  tensors {
+    Mamba_ {
+      in_proj.weight   : (260, d_model)
+      conv1d.weight    : (192, 1, conv_kernel)
+      conv1d.bias      : (192,)
+      A_log            : (heads,)
+      D                : (heads,)
+      dt_bias          : (heads,)
+      norm.weight      : (64,)
+      out_proj.weight  : (d_model, 64)
+    }
+    MLP_ {
+      gate_proj.weight : (hidden, d_model)
+      up_proj.weight   : (hidden, d_model)
+      down_proj.weight : (d_model, hidden)
+    }
+    layer {
+      attn_norm.weight : (d_model,)
+      mlp_norm.weight  : (d_model,)
+    }
+    global {
+      embed.weight      : (vocab, d_model)
+      final_norm.weight : (d_model,)
+      lm_head.weight    : (vocab, d_model)
+    }
+  }
+
+  emit {
+    train -> torch.module {
+      name        = "model.layers.{i}.{scope}{physical}"
+      global_name = "{physical}"
+      scope { Mamba_ = mixer., MLP_ = mlp., layer = "", global = "" }
+      rename {
+        attn_norm.weight  = input_layernorm.weight,
+        mlp_norm.weight   = post_attention_layernorm.weight,
+        embed.weight      = model.embed_tokens.weight,
+        final_norm.weight = model.norm.weight
+      }
+    }
+  }
+}

@@ -5090,3 +5090,69 @@ dt 不做 softplus ✓ —— **一个碰不到被测东西的测试不是测试
 
 **而判卷人已经就位** ✓：`src/modelcheck/by1ssm.py` 把要实现的式子
 和官方对拍过（两种尺寸 + 三条反例）。后端照着它写就行。
+
+
+---
+
+## 94. SSM 在 NumPy 后端落地，而且**两个后端一致**
+
+上一节是 codegen 层（编得出来）。这一节是**算得出来**。
+
+### 一、`op_ssm` + 参数表 + 登记
+
+三处，照着 `op_linear`（GDN）的形状写：
+
+    ① `op_ssm(P, a, ins, d)`  —— 递推，和 `by1ssm.py` 里那份逐字对应
+    ② 参数表加 `SSM` 分支     —— 8 个张量，和契约那一组逐个对上
+    ③ `OPS` 加 `"SSM": op_ssm`
+
+### 二、真正的判据：**两个后端一致**
+
+Nemotron 是 30B，**这台机器上建不出来**：
+
+    numpy._ArrayMemoryError: Unable to allocate 2.38 GiB
+    for an array with shape (128, 1856, 2688)
+
+—— 那是"验不了"，不是"算错了" ✓。所以新建了一个最小的
+**`models/ssm-shaped.by1`**（`d_model=128` / `heads=4` / `head_dim=16` /
+`ssm_state=32` / `n_groups=2`），让它走完后端：
+
+    后端必须实现的算子：{'Norm': 8, 'SSM': 4, 'Add': 8, 'FFN': 4}
+    [OK] 全部已实现
+
+    与 PyTorch 后端逐位对比（同一份 IR、同一组权重）
+    最大绝对差 1.441e-07   相对 3.604e-07   **[PASS] 两个后端一致**
+
+**而这两边又各自和官方 `NemotronHMamba2Mixer` 对过** ✓
+（`src/modelcheck/by1ssm.py`，两种尺寸 + 三条反例）——
+所以这条链是：by1-NumPy == by1-torch == 官方 ✓。
+
+### 三、加一个机制要动的地方，比想的多
+
+新模型一进来，`by1irentry` 立刻报：
+
+    IRError: IR 不合法：
+    layers[0].ops[1]: kind = <SSM> 不在闭集 ['Add', 'Atten...
+
+**IR 规格有自己的闭集** ✗（`by1ir.KIND_ATTRS`）—— 加机制必须**同时**
+登记进规格 ✓。这是好的失败：规格被强制执行了 ✓。
+
+补上之后 `ir-spec.md` 就过期了 ✗ —— 而 `by1docs` 拿它和
+`by1ir.spec_markdown()` **逐字符**比 ✓。**改一处、要同步三处。**
+
+### 四、而 `ir-spec.md` 差点被我"重新生成"错
+
+我跑了 `python src/by1ir.py --spec` ✓、rc=0 ✓ —— 但它是**打到 stdout**
+✗，我顺手把输出重定向进了一个临时文件 ✗。于是文件没变、
+`by1docs` 照样红 ✓。
+
+**"跑了那条命令"和"命令改了那个文件"是两件事** —— 而判据（逐字符比）
+没被骗 ✓。
+
+### 五、还差：C 后端
+
+`by1irentry` 现在说：
+
+    ssm-shaped.by1    [不支持] C 后端还没有 SSM
+
+—— **而它是"不支持"，不是"失败"** ✓（五态里那两种不能混）。
