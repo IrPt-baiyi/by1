@@ -1,6 +1,6 @@
 # 这个仓库里每个文件是干什么的
 
-> 229 个跟踪文件。按"你会想找什么"分组，不按字母表。
+> 233 个跟踪文件。按"你会想找什么"分组，不按字母表。
 >
 > **这份文档是生成的**：`python src/by1files.py --write`。
 > 文件清单、每组的个数、每个文件的一句话都从目录树和 docstring 来 ——
@@ -330,7 +330,7 @@
 | `by1raw.py` | 逃生舱的**判卷人** |
 | `ext-demo.c` | 逃生舱第二层的示例：两个语言里没有的机制。`by1extdemo` 编它 |
 
-## `src/lang/` —— 9 个
+## `src/lang/` —— 13 个
 
 | 文件 | 用途 |
 |---|---|
@@ -339,8 +339,12 @@
 | `by1contract.py` | 从机制声明**推出**张量契约 |
 | `by1emit.py` | 从 IR 生成 **ggml 侧的后端需求 + 声明式图**，并和 GGUF manifest 双向对拍 |
 | `by1export.py` | 导出策略层：把算好的语义变成 HF config 的字段 |
+| `by1hp.py` | hparams 块：模型有多宽、多少层、词表多大 |
 | `by1lower.py` | emit lowering：把 emit 块降成 `字段名 -> 规则` |
 | `by1name.py` | 模型命名的唯一执行者 |
+| `by1sched.py` | schedule：命名子序列的多趟展开 |
+| `by1stacks.py` | stacks：栈怎么排、每层挂什么机制 |
+| `by1state.py` | 按选择器把 state 声明落到具体的层上 |
 | `by1tens.py` | 张量契约实例化：把契约按等价类求值出形状 |
 | `by1vocab.py` | 真实数据的词汇表。模式从这里来，不从想象来 |
 
