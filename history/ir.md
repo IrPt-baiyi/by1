@@ -8086,12 +8086,25 @@ config 也对得上：`scoring_func = "sigmoid"` · `topk_method = "noaux_tc"`�
 
 GLM-5.3-Flash 的 `indexer.` 下面除了 DSA 那四个投影，还有两个：
 `index_kpool_compress_gate` [128, 4096] 和 `index_kpool_compress_ape` [4, 128]。
-**整套依赖里找不到任何官方实现可比**（实测 transformers 5.15.1 全库
-搜 `kpool` / `compress_ape` / `Glm5Next` **0 处命中**）。
+
+**两处都查过，都没有参照物：**
+
+① 本地依赖里没有。`transformers` 5.15.1 全库搜 `kpool` / `compress_ape` /
+   `Glm5Next` **0 处命中**。
+② **官方模型仓库里也没有源码。** 实测拉 ModelScope 的
+   `ZhipuAI/GLM-5.3-Flash` 文件树（HF 这台机器上不通，ModelScope 通）：
+   只有 `config.json` / `generation_config.json` / `chat_template.jinja` /
+   `tokenizer*` / `processor_config.json` / 62 个 safetensors 分片 /
+   `model.safetensors.index.json` —— **一个 `modeling_*.py` 都没有**。
+   （`config.json` 69416 字节，和 `refs/zai-org__GLM-5.3-Flash.config.json`
+   同一个大小 ✓ —— 是同一份产物。）
 
 所以：**不实现，也不假装验过。** 它们**描述得出来**（契约里有、名字形状验过），
 **算不了**。这一条挡住的是 GLM-5.3-Flash 的**完整**前向 ——
 不是索引器本身（索引器验过 ✓）。
+
+**要重开这一条，需要的是 GLM-5.3 的官方 modeling 源码**
+（它不在模型仓库里，得从发布方的代码仓库拿）。
 
 ### 五、视觉前向：**决定不做，停在「描述」**
 
@@ -8155,3 +8168,48 @@ GLM-5.3-Flash 的 `indexer.` 下面除了 DSA 那四个投影，还有两个：
 两处失败（后者还被归成"检查器自己坏了"）。**重跑两次都是 0 失败**，
 单跑这两个也都绿。**没复现 ≠ 没发生** —— 记在这里，
 下次再见到就不是第一次了。（怀疑是并行判卷人和前向争 CPU。）
+
+---
+
+## 128. **IR 说不出来"这一层的输入宽度"** —— 视觉栈因此「算不了」，这句话现在有个具体的形状
+
+这一轮为了给 SparseMLA 补三个后端，去看 `by1exec.shapes_of` ——
+它给每个 op 推参数形状。**推出来的视觉栈参数形状是错的**：
+
+    模型            栈        生成的参数              checkpoint 的实际形状
+    clef          visual   wq (1152, 5120)      qkv.weight (3456, 1152)
+    GLM-5.3       visual   wq (1024, 4096)      qkv.weight (3072, 1024)
+    Step-3.7      visual   wq (1536, 4096)      in_proj_weight (4608, 1536)
+
+**根因只有一行**：`shapes_of` 里 `d = ir["d_model"]` —— **模型级宽度**，
+每一层都用它。而视觉塔的 `d_model` 是 1152 / 1024 / 1536（各自的 `stack visual`）。
+
+**两处都是对的、一处是错的，要分清：**
+
+| | |
+|---|---|
+| ✅ **张量契约是对的** | `by1verify` 76108/76108 用的是 `stack_d_model`（`by1tens` 算的），视觉张量形状逐个对上 |
+| ✅ **MTP 栈是对的** | GLM 的 `q_a_proj (1536, 4096)`、Step 的 `wq (12288, 4096)` —— 因为 MTP 用的就是模型宽度 |
+| ❌ **后端参数形状是错的** | `by1exec.shapes_of` 和 `by1c` 用模型级 `d_model` |
+
+**而这不是一个现役的假绿** ✓：**门里跑三后端的 9 个模型逐个查过，没有一个
+有"自己 `d_model` 的栈"** ——
+
+    llama-shaped / mixtral-shaped / gpt-oss-shaped / qwen3-next-shaped
+    mla-shaped / llama3-shaped / clef-tiny / gpt2-tiny / hello
+    -> 自己宽度的栈：无（9/9）
+
+所以那三个后端互拍的绿**没被污染**。但它是**潜在**的：
+**任何带独立宽度栈的模型，"三个后端一致"都会是自洽而错的** ——
+因为三个后端用的是同一份 `shapes_of`，它们会**一致地错**。
+这正是 README 里写的那条："三个后端互拍只能证明自洽，它们可以一致地错。"
+
+**真正的问题比这一行更深：IR 说不出来"这一层的输入宽度"。**
+`by1ir` 的 `Attention` 属性里有 `out_dim`（输出投影的输入宽度），**没有
+`in_dim`**。而"三个后端只拿 IR 跑"（`by1irentry` 那条）要求 IR 自足 ——
+所以这个缺口**没法靠调用方补**，要么 IR 加字段，要么 op 的属性里带上它。
+这是个设计决定，不该顺手改。
+
+**它同时给「视觉：算不了」这句话一个具体的形状**：
+不是"没人写那几个算子"，而是**生成出来的运行时参数连形状都对不上** ——
+要算得先把"每层输入宽度"放进 IR。这一条写进 `1.md` 的已知缺口。
