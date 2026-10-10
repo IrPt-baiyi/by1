@@ -6212,3 +6212,75 @@ GGUF 里它们叫 `blk.N.attn_q_norm.weight` ✓，而我的规则渲染成
 
 **先补契约、再动 codegen** ✓ —— 因为契约不全的时候，
 codegen 生成的模块**没法验** ✓，而"没法验的实现"正是这个项目一直拒绝的东西 ✓。
+
+
+---
+
+## 109. GLM 的 KDA 契约补上了 —— 而**它根本没被计数** ✗
+
+### 一、补的那五行，形状是量出来的
+
+    b_proj.weight   [64, 4096]   = (num_heads, d_model)
+    f_a_proj.weight [128, 4096]  = (head_dim, d_model)
+    f_b_proj.weight [8192, 128]  = (num_heads * head_dim, head_dim)
+    g_a_proj.weight [128, 4096]
+    g_b_proj.weight [8192, 128]
+
+而它们**和 fla 的 `KDA.__init__` 逐项吻合** ✓：
+
+    f_proj = Sequential(Linear(hidden, head_v_dim), Linear(head_v_dim, gate_dim))
+    g_proj = Sequential(Linear(hidden, head_v_dim), Linear(head_v_dim, value_dim))
+
+`head_v_dim = 128` ✓、`gate_dim = 64 x 128 = 8192` ✓、`value_dim = 8192` ✓ ——
+**对上了** ✓。所以 GLM 的 `f_a/f_b`、`g_a/g_b` 就是那两个两层投影 ✓，
+而 `g_proj` 是 `o_norm` 的门 ✓。
+
+契约现在 **15 行** ✓，解析出来的形状全对 ✓。
+
+### 二、而 `by1verify` 的数**一点没变**
+
+    补之前   契约声明存在: 37534   名字+形状一致 37534
+    补之后   契约声明存在: 37534   名字+形状一致 37534   ✗
+
+我以为是缓存或没生效 ✓，于是逐层查：
+
+    layer_out 有 45 层
+    第一个 KDA 层：stack=model mech=KDA，**KDA 行 15 条** ✓
+    各机制出现层数：{'KDA': 34, 'SparseMLA': 11}
+
+**行在 `layer_out` 里** ✓ —— 而 `check_tensors` 就是遍历它的 ✓ ——
+可那个数不动 ✗。
+
+### 三、做了一次干净的判定
+
+从契约里**删掉一行** ✓，再跑：**数还是 37534** ✗。
+
+**那一行本该让计数变 34**（34 个 KDA 层）✓ —— 而它纹丝不动 ✓。
+**所以 KDA 这 15 行对 `by1verify` 的计数没有任何贡献** ✓ —— 确认。
+
+（顺带：我第一版"删 5 行"的脚本只删掉了 1 行 ✓ —— 匹配写得比行的实际内容细 ✗。
+ 如果没去数删了几行，我会把一个**无效的实验**当成有效的结论 ✓。
+ **删除类实验要数删掉了几行** ✓。）
+
+### 四、为什么，这一轮没查到
+
+排除了的：
+    `scope` 映射里有 `KDA = self_attn.` ✓
+    `layer_out` 里 KDA 行是 15 条 ✓（34 层）
+    没有"未映射跳过"的数冒出来 ✓
+
+**没排除的**：`check_tensors` 里那几处提前 `continue` 的条件
+（`quant` 那条、形状解析失败那条）✓ —— 需要把那个函数读透 ✓。
+
+**不写猜测的结论** ✓ —— 记下现象和已经排除的，下一轮从 `check_tensors` 进去 ✓。
+
+### 五、为什么这件事重要
+
+GLM 的 KDA 有 **34 层 x 15 = 510 个张量** ✓ —— 而 `by1verify` 报
+"37534 个全对" ✓ 时，**这 510 个一个都没参与** ✗。
+
+**也就是说：在 GLM 上跑出 PASS，不代表 KDA 的契约被查过** ✗ ——
+而我本来是要**照着这份契约去写 codegen** 的 ✓。
+
+**先把这个搞明白，再动 codegen** ✓ —— 否则我是在照一份
+"看起来验过、实际没验"的契约写实现 ✓ —— 而那正是这个项目最不能接受的事 ✓。
