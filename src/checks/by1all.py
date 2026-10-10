@@ -158,6 +158,10 @@ SHAPED = ['llama-shaped.by1', 'mixtral-shaped.by1', 'gpt-oss-shaped.by1',
           # 1×SparseMLA（带 DSA 索引器）+ noaux_tc MoE。视觉塔和 mHC 不在里面
           # —— 前者卡在 IR 没有「每层输入宽度」，后者只有契约没有算子。
           'glm-text-tiny.by1',
+          # **融合 q/k/v 的注意力**（视觉塔那种布局）。`qkv_fused` 不进门就会烂：
+          # 实测它原来只有 PyTorch 侧对，C 侧的指针偏移少乘了行宽，
+          # 而**门里没有任何模型用它**，那 5.6e-01 一直看不见。
+          'attn-fused-shaped.by1',
           # **由 clef.by1 机械缩小维度得来，结构一个字没改。**
           # 它证明"对着真 checkpoint 验过的那份描述"**同时是能跑的** ——
           # 不是两套东西。
@@ -719,7 +723,7 @@ def main():
         _todo = [f for f in SHAPED
                  if f not in ('mla-shaped.by1', 'mla-sparse-shaped.by1',
                               'moe-routing-shaped.by1', 'ling-tiny.by1',
-                              'glm-text-tiny.by1',
+                              'glm-text-tiny.by1', 'attn-fused-shaped.by1',
                               'llama3-shaped.by1',
                               'clef-tiny.by1', 'gpt2-tiny.by1', 'hello.by1')]
         for f, (st, out) in zip(_todo, run_many(

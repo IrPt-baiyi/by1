@@ -1342,14 +1342,28 @@ class Attention(nn.Module):
         self.rope = bool(a.get("rope", True))
         # q_gate：q_proj 的输出是 2 倍，一半当 query、一半当门（Qwen3-Next）
         self.q_gate = a.get("q_gate", False)
-        self.wq = nn.Linear(d, self.q * self.hd * (2 if self.q_gate else 1),
-                            bias=a["bias"])
-        self.wk = nn.Linear(d, self.kv * self.hd, bias=a["bias"])
-        # kv_tie: V 就是 K 的那份投影，不另建张量
+        # **融合 q/k/v**（视觉塔）：一个 `qkv` 装 [q | k | v] 三截，`proj` 是
+        # 输出投影。**布局不同、算法一样** —— 形状要和产物对得上
+        # （clef 契约 `qkv.weight (3*q*head_dim, in_dim)`）。
+        self.qkv_fused = bool(a.get("qkv_fused"))
         self.kv_tie = a.get("kv_tie", False)
-        if not self.kv_tie:
-            self.wv = nn.Linear(d, self.kv * self.hd, bias=a["bias"])
-        self.wo = nn.Linear(a["out_dim"], d, bias=a["bias"])
+        if self.qkv_fused:
+            # **融合时不再建 wq/wk/wv/wo** —— 多建就会多出四个参数，
+            # 而 `shapes_of` 只有 qkv/proj，`load_state_dict(strict=True)`
+            # 会当场对不上。**两种布局各有各的参数表，不混。**
+            self.qkv = nn.Linear(d, self.q * self.hd + 2 * self.kv * self.hd,
+                                 bias=a["bias"])
+            self.proj = nn.Linear(a["out_dim"], d, bias=a["bias"])
+        else:
+            self.wq = nn.Linear(d, self.q * self.hd * (2 if self.q_gate else 1),
+                                bias=a["bias"])
+        self.kv_tie = a.get("kv_tie", False)
+        if not self.qkv_fused:
+            self.wk = nn.Linear(d, self.kv * self.hd, bias=a["bias"])
+            # kv_tie: V 就是 K 的那份投影，不另建张量
+            if not self.kv_tie:
+                self.wv = nn.Linear(d, self.kv * self.hd, bias=a["bias"])
+            self.wo = nn.Linear(a["out_dim"], d, bias=a["bias"])
         self.window = a["window"]
         self.base = a["rope_base"]
         self.pairing = a["rope_pairing"]
@@ -1381,8 +1395,18 @@ class Attention(nn.Module):
     def forward(self, x):
         b, n, _ = x.shape
         w = self.hd * (2 if self.q_gate else 1)
-        qflat = self.wq(x)
-        kflat = self.wk(x)
+        if self.qkv_fused:
+            # **融合 q/k/v**（视觉塔）：一个 `qkv` 装下 [q | k | v] 三截。
+            # **只是布局不同，算法一模一样** —— 所以这里拆回三截，
+            # 后面一格不动。和拆开的喂同一批数必须逐位相同（实测 0.000e+00）。
+            _a, _b = self.q * self.hd, self.kv * self.hd
+            _all = self.qkv(x)
+            qflat, kflat = _all[..., :_a], _all[..., _a:_a + _b]
+            vflat = _all[..., _a + _b:_a + 2 * _b]
+        else:
+            qflat = self.wq(x)
+            kflat = self.wk(x)
+            vflat = None
         if self.qk_norm == "full":
             # 整宽：作用在**扁平化之后、拆头之前**的输出上
             qflat = self.qn(qflat)
@@ -1396,7 +1420,8 @@ class Attention(nn.Module):
         q = q.transpose(1, 2)
         kraw = kflat.view(b, n, self.kv, self.hd).transpose(1, 2)
         v = kraw if self.kv_tie else \
-            self.wv(x).view(b, n, self.kv, self.hd).transpose(1, 2)
+            (vflat if self.qkv_fused else self.wv(x)
+             ).view(b, n, self.kv, self.hd).transpose(1, 2)
         k = kraw
         if self.qk_norm not in ("off", "", None) and self.qk_norm != "full":
             q, k = self.qn(q), self.kn(k)
@@ -1446,7 +1471,7 @@ class Attention(nn.Module):
                 o = (o.view(b, n, self.q, self.hd) * g.unsqueeze(-1)).view(b, n, -1)
             else:
                 o = o * g
-        return self.wo(o)
+        return (self.proj(o) if self.qkv_fused else self.wo(o))
 
 
 def _gelu(x, style="gelu"):

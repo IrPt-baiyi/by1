@@ -1535,9 +1535,14 @@ def _emit_c_body(ir, params):
                 # 这是**布局**不是算法，和拆开的算出来必须一样。
                 _fz = bool(a.get("qkv_fused"))
                 _qn = "qkv" if _fz else "wq"
-                _kn = (f"P({key(i,j,'qkv')}) + {qw}" if _fz
+                # ⚠ **偏移要乘这一层的输入宽度。** `P(nm)` 展开成
+                # `W + OFF_nm` —— 那是**元素**指针；而 k 那一截从第 qw **行**
+                # 开始，一行是 `in_dim` 个元素。第一版写成 `P(qkv) + qw`，
+                # 等于把 k 接到了第 qw 个 float 上（实测 5.6e-01 不过）。
+                _ld = int(L.get("in_dim") or d)
+                _kn = (f"P({key(i,j,'qkv')}) + {qw * _ld}" if _fz
                        else f"P({key(i,j,'wk')})")
-                _vn = (f"P({key(i,j,'qkv')}) + {qw + nkv * hd}" if _fz
+                _vn = (f"P({key(i,j,'qkv')}) + {(qw + nkv * hd) * _ld}" if _fz
                        else f"P({key(i,j,'wv')})")
                 _on = "proj" if _fz else "wo"
                 lb.append(f" {B}({'qf' if a['q_gate'] else 'q'}, {src[0]},"

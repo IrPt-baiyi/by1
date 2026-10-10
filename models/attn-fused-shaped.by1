@@ -1,0 +1,49 @@
+# ── attn-fused-shaped.by1 ────────────────────────────────────────────
+# **融合 q/k/v 的注意力**（视觉塔那种布局）。
+#
+# 为什么要单独一份：视觉塔（clef / GLM-5.3 / Step-3.7 / Qwen3.8 / Qwen3.6）
+# 的 `qkv.weight` / `in_proj_weight` 是 **q/k/v 三截拼在一起**的一个张量，
+# 而文本主干是拆开的 `q_proj` / `k_proj` / `v_proj`。**这是布局，不是算法** ——
+# 计算完全一样，参数的形状和名字不同。
+#
+# 不说的话后端只能按拆开的推，于是**形状和产物对不上**：
+#   契约 `qkv.weight (3456, 1152)`  vs  后端 `wq/wk/wv` 各 `(1152, 1152)`
+#
+# 这份就是让 `qkv_fused` **留在门里**。实测（`by1exec --compare` /
+# `by1c --seq 16`，同一份权重）：
+#     拆开  NumPy<->PyTorch 1.7e-07   C<->NumPy 1.7e-07
+#     融合  NumPy<->PyTorch 1.7e-07   C<->NumPy 1.7e-07
+# **融合和拆开喂同一批数必须逐位相同**（`by1sparse` 之外，判据是这条）。
+#
+#   python by1exec.py attn-fused-shaped.by1 --compare
+#   python by1c.py    attn-fused-shaped.by1 --gcc <gcc> --seq 16
+
+model AttnFusedShaped {
+  ctx 512
+
+  hparams {
+    d_model = 128
+    n_layer = 2
+    vocab   = 256
+    rms_eps = 1e-05
+  }
+
+  mech Attention : Attention {
+    heads      = { q = 4, kv = 2, head_dim = 32 }
+    bias       = true
+    # **q/k/v 融合成一个张量。** 视觉塔是这么存的。
+    qkv_fused  = true
+    structural = [ head_dim ]
+  }
+
+  mech FFN_ : FFN { hidden = 256 }
+
+  stack main {
+    pattern = 2 * Attention
+    main[:] >> FFN_
+  }
+
+  position {
+    default = rope(base = 10000, pairing = half)
+  }
+}
