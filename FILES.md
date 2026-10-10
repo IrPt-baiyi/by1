@@ -1,6 +1,6 @@
 # 这个仓库里每个文件是干什么的
 
-> 236 个跟踪文件。按"你会想找什么"分组，不按字母表。
+> 241 个跟踪文件。按"你会想找什么"分组，不按字母表。
 >
 > **这份文档是生成的**：`python src/by1files.py --write`。
 > 文件清单、每组的个数、每个文件的一句话都从目录树和 docstring 来 ——
@@ -293,10 +293,11 @@
 | `SOURCES.tsv` | 1 | |
 
 
-## `src/checks/` —— 22 个
+## `src/checks/` —— 23 个
 
 | 文件 | 用途 |
 |---|---|
+| `__init__.py` | 让这个目录成为一个包，这样 setuptools 装得上 |
 | `by1all.py` | 一次跑完全部验证，失败就非零退出 |
 | `by1blind.py` | 量"看不见的东西" |
 | `by1bootir.py` | 两条路的判卷人**：从 .by1 出来的 IR，和从产物反推出来的 IR |
@@ -320,28 +321,31 @@
 | `by1smoke.py` | """冒烟测：把每个 by1*.py 都单独跑一遍 |
 | `by1verify.py` | 差分验证：把 .by1 的展开结果与官方产物对拍 |
 
-## `src/data/` —— 5 个
+## `src/data/` —— 6 个
 
 | 文件 | 用途 |
 |---|---|
+| `__init__.py` | 让这个目录成为一个包，这样 setuptools 装得上 |
 | `by1cloud.py` | 驱动一台租来的显卡机器**（AutoDL 或任何 SSH 可达的） |
 | `by1cmp.py` | 把所有模型的架构摆成一张表 |
 | `by1fetch.py` | 一条命令，把 refs/ 全部重抓回来 |
 | `by1index.py` | 抓张量名清单。**免费，而且这是"能不能描述"的真正判据 |
 | `by1triage.py` | 把一批新 config 过一遍 by1，看谁需要新原语 |
 
-## `src/escape/` —— 3 个
+## `src/escape/` —— 4 个
 
 | 文件 | 用途 |
 |---|---|
+| `__init__.py` | 让这个目录成为一个包，这样 setuptools 装得上 |
 | `by1extdemo.py` | 逃生舱第二层的**判卷人** |
 | `by1raw.py` | 逃生舱的**判卷人** |
 | `ext-demo.c` | 逃生舱第二层的示例：两个语言里没有的机制。`by1extdemo` 编它 |
 
-## `src/lang/` —— 13 个
+## `src/lang/` —— 14 个
 
 | 文件 | 用途 |
 |---|---|
+| `__init__.py` | 让这个目录成为一个包，这样 setuptools 装得上 |
 | `by1.py` | 用一份描述，写一个语言模型 |
 | `by1blocks.py` | 读 `.by1` 里那些"块"，把不一致报出来 |
 | `by1contract.py` | 从机制声明**推出**张量契约 |
@@ -356,10 +360,11 @@
 | `by1tens.py` | 张量契约实例化：把契约按等价类求值出形状 |
 | `by1vocab.py` | 真实数据的词汇表。模式从这里来，不从想象来 |
 
-## `src/modelcheck/` —— 10 个
+## `src/modelcheck/` —— 11 个
 
 | 文件 | 用途 |
 |---|---|
+| `__init__.py` | 让这个目录成为一个包，这样 setuptools 装得上 |
 | `by1dev.py` | 设备无关性**的判卷人 |
 | `by1gpt2.py` | GPT-2 前向的差分验证，**用真的 GPT-2** |
 | `by1instella.py` | Instella-3B 前向的差分验证，**用真实维度** |
