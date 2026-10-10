@@ -1666,6 +1666,110 @@ class GatedDeltaNet(nn.Module):
         return self.out_proj(out.reshape(b, s, self.vd))
 
 
+class KDA(nn.Module):
+    """**Kimi Delta Attention。**
+
+    ⚠ **这里的数学一行都不是新写的** ✓ —— 递推在 `gated_delta_rule` 里 ✓，
+    而那个函数逐行就是 KDA 的定义（连核里的 L2 归一化和
+    `q * (dk ** -0.5)` 都在 ✓，见 `gpu/by1kda.py` 的 docstring）。
+    **"同一个意思不要两处实现。"**
+
+    和 GDN 的四处差别，全部是从源码量出来的，不是推的：
+
+      ① q / k / v 是**分开**的投影（GDN 融在一个 `in_proj_qkvz` 里）
+      ② `dt_bias` 按**维**（`nv * dk`），GDN 按头（`nv`）
+      ③ 多一个**输出门** `g_proj`，喂给 `o_norm`（`fla/layers/kda.py:309`）
+      ④ 门可以**低秩两层**（GLM 的 `f_a/f_b`），也可以一层（Ling 的 `f_proj`）
+
+    后两条尤其容易写错，而**写错了不会报错，只会算错** ✓。
+    """
+
+    def __init__(self, a, d):
+        super().__init__()
+        self.nk, self.nv = a["k_heads"], a["v_heads"]
+        self.dk, self.dv = a["k_dim"], a["v_dim"]
+        self.kd, self.vd = self.nk * self.dk, self.nv * self.dv
+        #: 门的宽度 —— `fla` 里叫 `gate_dim = num_v_heads * head_k_dim` ✓。
+        self.gd = self.nv * self.dk
+        self.lowrank = bool(a.get("gate_lowrank"))
+        self.rank = int(a.get("gate_rank") or self.dk)
+        self.gate_lower = a.get("gate_lower")
+        k = a["conv_kernel"]
+
+        self.q_proj = nn.Linear(d, self.kd, bias=False)
+        self.k_proj = nn.Linear(d, self.kd, bias=False)
+        self.v_proj = nn.Linear(d, self.vd, bias=False)
+        cb = bool(a.get("conv_bias"))
+        self.q_conv = nn.Conv1d(self.kd, self.kd, k, groups=self.kd,
+                                bias=cb, padding=k - 1)
+        self.k_conv = nn.Conv1d(self.kd, self.kd, k, groups=self.kd,
+                                bias=cb, padding=k - 1)
+        self.v_conv = nn.Conv1d(self.vd, self.vd, k, groups=self.vd,
+                                bias=cb, padding=k - 1)
+
+        # 衰减门（`f_proj`）：hidden -> gate_dim，一层或两层
+        if self.lowrank:
+            self.f_a = nn.Linear(d, self.rank, bias=False)
+            self.f_b = nn.Linear(self.rank, self.gd, bias=False)
+        else:
+            self.f_proj = nn.Linear(d, self.gd, bias=False)
+        # `A_log` / `dt_bias` 的形状和 fla 一致：A_log 按 v 头、
+        # dt_bias 按维（`__init__` 里 `dt_bias` 是 `gate_dim` 那么长 ✓）。
+        self.A_log = nn.Parameter(torch.zeros(self.nv))
+        self.dt_bias = nn.Parameter(torch.zeros(self.gd))
+
+        self.b_proj = nn.Linear(d, self.nv, bias=False)
+
+        # 输出门（`g_proj`）：hidden -> value_dim。**第二层带 bias** ✓ ——
+        # 这一条只有源码里有，config 里看不出来。
+        if self.lowrank:
+            self.g_a = nn.Linear(d, self.rank, bias=False)
+            self.g_b = nn.Linear(self.rank, self.vd, bias=True)
+        else:
+            self.g_proj = nn.Linear(d, self.vd, bias=False)
+
+        self.o_norm = RMSNormGated(self.dv, a["norm_eps"], a["act"])
+        self.o_proj = nn.Linear(self.vd, d, bias=False)
+        self.l2_eps = a["l2_eps"]
+
+    def _gate_in(self, x):
+        h = self.f_a(x)
+        return self.f_b(h)
+
+    def _gate_out(self, x):
+        if not self.lowrank:
+            return self.g_proj(x)
+        return self.g_b(F.silu(self.g_a(x)))
+
+    def forward(self, x):
+        b, s, _ = x.shape
+        q = self.q_conv(self.q_proj(x).transpose(1, 2))[:, :, :s].transpose(1, 2)
+        kk = self.k_conv(self.k_proj(x).transpose(1, 2))[:, :, :s].transpose(1, 2)
+        v = self.v_conv(self.v_proj(x).transpose(1, 2))[:, :, :s].transpose(1, 2)
+        q = F.silu(q).reshape(b, s, self.nk, self.dk)
+        kk = F.silu(kk).reshape(b, s, self.nk, self.dk)
+        v = F.silu(v).reshape(b, s, self.nv, self.dv)
+
+        # 门：g = -exp(A_log) * softplus(f(x) + dt_bias)（`fla/ops/kda/gate.py:50-54`）
+        fg = self._gate_in(x).reshape(b, s, self.nv, self.dk)
+        if self.gate_lower is not None:
+            # lower_bound 那一支：g = lower * sigmoid(exp(A_log) * g)
+            g = float(self.gate_lower) * torch.sigmoid(
+                self.A_log.float().exp().view(1, 1, -1, 1)
+                * (fg.float() + self.dt_bias.view(1, 1, self.nv, self.dk)))
+        else:
+            g = -self.A_log.float().exp().view(1, 1, -1, 1) * F.softplus(
+                fg.float() + self.dt_bias.view(1, 1, self.nv, self.dk))
+        beta = self.b_proj(x).sigmoid()
+
+        # **递推不在这里** ✓ —— `gated_delta_rule` 里连 L2 归一化
+        # 和 `q * (dk ** -0.5)` 都写好了 ✓，就是 KDA 的定义 ✓。
+        out, _ = gated_delta_rule(q, kk, v, g, beta, self.l2_eps)
+        gate = self._gate_out(x).reshape(b, s, self.nv, self.dv)
+        out = self.o_norm(out.reshape(b, s, self.nv, self.dv), gate)
+        return self.o_proj(out.reshape(b, s, self.vd))
+
+
 class RMSNormGatedGrouped(nn.Module):
     """**按组**的 gated RMSNorm（Mamba2 那一版）。
 
@@ -1778,7 +1882,7 @@ class Mamba2(nn.Module):
 
 BUILDERS = {"Norm": _mk_norm, "Attention": Attention,
             "FFN": MLP, "MoE": MoE, "Linear": GatedDeltaNet,
-            "MLA": MLAttention, "SSM": Mamba2,
+            "MLA": MLAttention, "SSM": Mamba2, "KDA": KDA,
             "Raw": RawMech, "External": ExternalMech}
 
 

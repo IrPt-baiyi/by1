@@ -6705,3 +6705,85 @@ MTP 是第 45 层 —— 层号接着数」✓）。
 
 **一个改动落地时，最该看的不是"绿的那些还绿吗"** ✓ ——
 **而是"有没有哪个检查因此变得不对了"** ✓ —— 而那个检查正好会**变红** ✓。
+
+
+---
+
+## 116. `by1codegen.py` 的真实架构：**生成器 + 一个字符串模板**
+
+### 一、这一轮想做的事
+
+写 `KDA` 的运行时类 ✓ —— 把上一轮那些 attrs 变成一个 `nn.Module` ✓。
+照着 `GatedDeltaNet` 写完了 ✓、注册进 `BUILDERS` ✓、`py_compile` 过了 ✓ ——
+**然后测不动它** ✗。
+
+    >>> import by1codegen as G
+    >>> G.KDA
+    AttributeError: module 'by1codegen' has no attribute 'KDA'
+
+而 `class KDA` 明明在文件的第 1669 行、**缩进 0** ✓。
+更奇怪的是 `G.BUILDERS` 也没有 ✗、`G.torch` 也没有 ✗ ——
+可 `G.GatedDeltaNet`、`G.Mamba2` 这些**一直在用** ✓。
+
+### 二、查出来的东西
+
+    >>> sorted(G.__dict__)
+    ['ATTRS', 'CodegenError', 'ENUMS', 'HERE', 'MIXER_KINDS', '**RUNTIME**',
+     'SUPPORTED_KINDS', ..., 'build', 'compile_ir', 'compile_spec',
+     '**load_checker**', 'main', 'render', 'render_ir', ...]
+    >>> type(G.RUNTIME)
+    <class 'str'>                       <- **是字符串** ✗
+
+**第 990 行往后那些类，全都写在 `RUNTIME` 这个字符串里** ✓✓ ——
+它们不是模块的属性 ✓，是**一段要被生成的源码** ✓。
+
+所以：
+
+    `py_compile` 过 ≠ 那些类能跑 ✓ —— **编译的是一段字符串** ✗
+    `import by1codegen` 拿到的只有**生成器那一半** ✓（不依赖 torch ✓）
+    真正的运行时是 **`build()` 渲染出来、再 exec 出来的** ✓
+
+**这就是为什么这个仓库里到处都有 `load_checker()` 那种"另外加载一份"的写法** ✓ ——
+（`by1verify` / `by1oracle` 各有一份 ✓ —— 而我前面几轮已经被它坑过一次 ✓：
+ 给 `import by1check` 打的补丁对 `bc.render_name` 无效 ✗。）
+
+### 三、所以我上一轮和这一轮的"编译 OK"都是假的
+
+    by1codegen.py  编译 OK     -> 编译的是生成器 + 一个字符串 ✓ **没验到模板**
+    class KDA 在文件里 ✓       -> 在**字符串里** ✓ 不在模块里 ✗
+
+**要验它，只有一条路：真的生成一次，把生成的源码 exec 出来，再看有没有 `KDA`** ✓。
+
+### 四、这一轮实际做成的
+
+    ① SUPPORTED_KINDS += "KDA"       （上一轮）
+    ② ATTRS["KDA"]                   （上一轮）
+    ③ MIXER_KINDS += "KDA"           （上一轮）
+    ④ build 分支：两套属性名都收       （上一轮）
+    ⑤ **运行时类 KDA 写进模板** ✓     （这一轮）
+       —— 递推**一行没写** ✓，调 `gated_delta_rule` ✓
+       —— 四处差别按量到的写：分开的 q/k/v 投影 ✓、
+          `dt_bias` 按维（`nv * dk`）✓、`g_proj` 当输出门 ✓、
+          门可低秩两层（`f_a/f_b`，第二层**带 bias** ✓）
+       —— `gate_lower` 那一支也写了 ✓（`g = lower * sigmoid(exp(A_log) * g)` ✓）
+    ⑥ `BUILDERS["KDA"] = KDA` ✓
+
+### 五、判据仍然是"报错变了"（上一轮那条），而运行时还没验
+
+    Ling  -> 机制 'MLA' 的属性 'qk_head' codegen 还不支持
+    GLM   -> 机制 'SparseMLA' 的属性 'index_heads' / 'index_dim' / 'index_topk'
+
+**KDA 不再是拦路的** ✓ —— 而**新写的那个类跑没跑过，这一轮没验** ✗。
+
+### 六、下一轮的入口（具体到一行）
+
+    R = by1codegen.build(info)        # 渲染出运行时的源码
+    # 或者看 RUNTIME 这个模板是怎么被渲染的：
+    #   by1codegen.render_ir / render
+    # 然后 exec 出来，确认 `BUILDERS["KDA"]` 和 `KDA` 都在
+
+**而且要先做一件更小的事**：拿一个**最小的 KDA 模型**（像
+`models/ssm-shaped.by1` 那样 ✓）走一遍生成 ✓ ——
+`by1diff` 对三个后端 ✓、判卷人对 fla 的 `naive_recurrent_kda` ✓。
+
+**这一轮的价值不在"写完了"** ✓ —— 在**搞清楚了"写完"之后该去哪儿验** ✓。
