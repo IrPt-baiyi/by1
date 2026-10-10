@@ -265,8 +265,75 @@ def op_attention(P, a, ins, d):
     return o
 
 
+def _dsa_index(P, a, x, q_resid):
+    """DSA 稀疏索引器：返回 [b, n, n] 的布尔掩码（query t 留下哪些 key）。
+
+    **和 `by1codegen.DSAIndexer`（PyTorch 侧）逐行对应**；判卷人是
+    transformers 的 `GlmMoeDsaIndexer`，见 `src/modelcheck/by1sparse.py`。
+    三个后端都按这一份数学算 —— **不是各写各的**。
+
+    两处容易抄错，先写在这：
+
+    ① **rope 那一半在前**：`split([qk_rope, hd - qk_rope])`，和主 MLA 的
+       `[qk_nope | qk_rope]` **正好相反**。
+    ② **索引器的 rope 配对约定固定是 `interleaved`**，和主 MLA 的 `pairing`
+       无关 —— 参考实现的注释就写着 "the indexer applies interleaved RoPE"。
+       实测 interleaved 4/4 组和参考逐个相同，half 只在 rope 不起作用时碰巧一样。
+
+    **并列怎么取 —— 这一条是量出来的，不是想出来的。**
+    DSA 打分要过 ReLU，所以大量分数**恰好是 0**（实测：48 个 key 里有 49 个
+    是精确的 0），于是 top-k 的边界上很容易撞并列。实测 44 个"有得挑"的
+    query 里，**1 个第 4/5 名间隙正好是 0，4 个间隙小于 1e-7**。
+    **并列处挑谁没有定义** —— 参考那边是 `torch.topk` 的行为，
+    这里是 `argpartition` 的行为，两个都会"挑出一批"，而**不是同一批**。
+    后果不是小数值差：挑中的 key 不同，注意力输出当场不同（实测 2.7e-01）。
+    所以定死一条：**并列取较小的 key 下标**（稳定排序）。
+    三个后端都按这条算，"三个后端一致"才是个有意义的判据。
+    """
+    b, n, _ = x.shape
+    nh, hd = int(a["index_heads"]), int(a["index_dim"])
+    topk = int(a["index_topk"])
+    nr = int(a.get("qk_rope") or 0)
+
+    q = (q_resid @ P["indexer.wq_b.weight"].T).reshape(b, n, nh, hd)
+    q_rot, q_pass = q[..., :nr], q[..., nr:]
+    # **k 过 LayerNorm（带 bias，eps=1e-6），不是 RMSNorm** —— 参考就是这么写的
+    k = layer_norm(x @ P["indexer.wk.weight"].T,
+                   P["indexer.k_norm.weight"], P["indexer.k_norm.bias"], 1e-6)
+    k_rot, k_pass = k[..., :nr], k[..., nr:]
+    if nr:
+        c, s = rope_tables(nr, n, a["rope_base"])
+        q_rot = apply_rope(q_rot.transpose(0, 2, 1, 3), c, s,
+                           "interleaved").transpose(0, 2, 1, 3)
+        k_rot = apply_rope(k_rot, c, s, "interleaved")
+    q = np.concatenate([q_rot, q_pass], -1)            # [b, n, nh, hd]
+    k = np.concatenate([k_rot, k_pass], -1)            # [b, n, hd]
+    # [b,n,nh,hd] @ [b,1,hd,n] -> [b,n,nh,n]（每头一个分数）
+    scores = np.maximum(q @ k.transpose(0, 2, 1)[:, None], 0.0) * (hd ** -0.5)
+    w = (x @ P["indexer.weights_proj.weight"].T) * (nh ** -0.5)  # [b, n, nh]
+    sc = (w[..., None, :] @ scores).squeeze(-2)          # [b, n, n]
+    ar = np.arange(n)
+    sc = np.where(ar[None, :] > ar[:, None], -np.inf, sc)   # 因果
+    t = min(topk, n)
+    keep = np.zeros((b, n, n), dtype=bool)
+    if t >= n:
+        keep[:] = True
+    else:
+        for bi in range(b):
+            for ti in range(n):
+                # **并列取较小的 key 下标** —— 见下面那段注释。
+                sel = np.argsort(-sc[bi, ti], kind="stable")[:t]
+                keep[bi, ti, sel] = True
+    return keep
+
+
 def op_mla(P, a, ins, d):
-    """MLA：低秩压缩的注意力。和 PyTorch 后端逐行对应。"""
+    """MLA：低秩压缩的注意力。和 PyTorch 后端逐行对应。
+
+    带 `index_heads` 的时候是 **SparseMLA**：先用 DSA 索引器挑出 top-k 个 key，
+    注意力只在被挑中的那些上算。索引器的数学见 `by1codegen.DSAIndexer`，
+    判卷人是 transformers 的 `GlmMoeDsaIndexer`（`by1sparse.py`）。
+    """
     x = ins[0]
     b, n, _ = x.shape
     nh, nope, nr = a["q"], a["qk_nope"], a["qk_rope"]
@@ -274,8 +341,8 @@ def op_mla(P, a, ins, d):
     _op = a.get("norm_one_plus", False)
     _eps = a.get("norm_eps", _DEFAULT_EPS)
 
-    q = rms_norm(x @ P["q_a_proj"].T, P["q_a_layernorm.w"], _eps, _op)
-    q = (q @ P["q_b_proj"].T).reshape(b, n, nh, nope + nr).transpose(0, 2, 1, 3)
+    q_resid = rms_norm(x @ P["q_a_proj"].T, P["q_a_layernorm.w"], _eps, _op)
+    q = (q_resid @ P["q_b_proj"].T).reshape(b, n, nh, nope + nr).transpose(0, 2, 1, 3)
     q_pass, q_rot = q[..., :nope], q[..., nope:]
 
     ckv = x @ P["kv_a_proj_with_mqa"].T
@@ -295,7 +362,11 @@ def op_mla(P, a, ins, d):
     kk = np.concatenate([k_pass, k_rot], -1)
     att = (qq @ kk.transpose(0, 1, 3, 2)) * (1.0 / np.sqrt(nope + nr))
     idx = np.arange(n)
-    att = softmax(np.where(idx[None, :] <= idx[:, None], att, -np.inf), -1)
+    causal = idx[None, :] <= idx[:, None]
+    if a.get("index_heads"):
+        keep = _dsa_index(P, a, x, q_resid)          # [b, n, n] 布尔
+        causal = causal[None] & keep
+    att = softmax(np.where(causal, att, -np.inf), -1)
     o = (att @ v).transpose(0, 2, 1, 3).reshape(b, n, nh * vd)
 
     if a.get("head_gate", "off") != "off":
@@ -725,6 +796,26 @@ def shapes_of(ir):
                     out[pre + "dense.bias"] = (d,)
                 if a.get("head_gate", "off") != "off":
                     out[pre + "g_proj"] = (a["q"], d)
+                # ── DSA 稀疏索引器（有 index_* 才有）────────────────
+                # 索引器有自己的一套轻量投影，和主 MLA 的 q/k **是分开的**：
+                #   wq_b  q_lora -> index_heads * index_dim
+                #   wk    d      -> index_dim（后面过 LayerNorm，带 bias）
+                #   weights_proj  d -> index_heads
+                # 判卷人是 transformers 的 `GlmMoeDsaIndexer`，
+                # 见 `src/modelcheck/by1sparse.py`。
+                #
+                # ⚠ **这里的名字写全（带 `.weight` / `.bias`），不走"去掉后缀"
+                #   那条配对** —— 因为它们在 PyTorch 侧挂在 `indexer.` 子模块下
+                #   （`...indexer.wq_b.weight`），而去掉后缀只能配到
+                #   `...indexer.wq_b`；`k_norm` 有 weight 也有 bias，去掉后缀
+                #   两个会撞成同一个名字。写全就都精确命中。
+                if a.get("index_heads"):
+                    nh_, hd_ = int(a["index_heads"]), int(a["index_dim"])
+                    out[pre + "indexer.wq_b.weight"] = (nh_ * hd_, a["q_lora"])
+                    out[pre + "indexer.wk.weight"] = (hd_, d)
+                    out[pre + "indexer.k_norm.weight"] = (hd_,)
+                    out[pre + "indexer.k_norm.bias"] = (hd_,)
+                    out[pre + "indexer.weights_proj.weight"] = (nh_, d)
             elif k == "FFN":
                 out[pre + "w1"] = (a["hidden"], d)
                 out[pre + "w2"] = (d, a["hidden"])

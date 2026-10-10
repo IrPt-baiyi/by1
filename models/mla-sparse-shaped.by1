@@ -1,0 +1,117 @@
+# ── mla-sparse-shaped.by1 ──────────────────────────────────────────────
+# **SparseMLA** 的最小可跑模型：MLA 加一个 DSA 稀疏索引器。
+#
+# 存在理由：`mla-shaped.by1` 验的是 MLA 本身；而 GLM-5.3-Flash 的那一层
+# 是 MLA **加索引器**（`self_attn.indexer.*`）。索引器只在 PyTorch 运行时里
+# 算过（判卷人 `src/modelcheck/by1sparse.py`，对着 transformers 的
+# `GlmMoeDsaIndexer`），**没走过 NumPy / C 两个后端** ——
+# 而这个仓库说"算得了"指的是三个后端都算得了。这份就是补那一格。
+#
+#   python by1exec.py mla-sparse-shaped.by1 --compare
+#   python by1c.py    mla-sparse-shaped.by1 --gcc <gcc> --seq 16
+#
+# ⚠ **`index_topk` 必须小于序列长**，否则"挑中了哪些"退化成"全都要"，
+#   判据就瞎了（by1sparse 里踩过一次）。C 那边跑 `--seq 16`，所以这里取 4。
+#
+# 维度取小值即可 —— 验的是语义，不是规模。
+
+model MLA-sparse-shaped {
+  arch  mla_sparse_shaped
+  ctx   1024
+
+  hparams {
+    d_model = 256
+    n_layer = 4
+    vocab   = 512
+    rms_eps = 1e-06          # MLA 的两个 latent norm 跟着它走
+  }
+
+  # 低秩压缩 + 稀疏索引器。维度和 `mla-shaped.by1` 一样，只是多了索引器那三个。
+  mech MLA_ : MLA {
+    heads     = { q = 4, head_dim = 48 }
+    q_lora    = 96
+    kv_lora   = 128
+    qk_nope   = 40
+    qk_rope   = 8
+    # **`qk_head` 是别名，不是新维度** —— 官方 config 的 `qk_head_dim`。
+    # 值必须等于 `qk_nope + qk_rope`，不等会被 codegen 拒（有反例守着）。
+    qk_head   = 48
+    v_dim     = 32
+    head_gate = per_head
+    gate_act  = sigmoid       # Ling 用 sigmoid；Laguna 的普通注意力用 softplus
+    # ── DSA 稀疏索引器 ────────────────────────────────────────────
+    # 索引器有自己的一套轻量投影（和主 MLA 的 q/k 是分开的）：
+    #   wq_b  q_lora -> index_heads * index_dim
+    #   wk    d      -> index_dim        （后面过 LayerNorm，**带 bias**）
+    #   weights_proj  d -> index_heads   每头一个权重
+    # 判卷人是 transformers 的 `GlmMoeDsaIndexer`，见 `by1sparse.py`。
+    index_heads = 4
+    index_dim   = 32
+    index_topk  = 4           # **必须 < 序列长**（C 侧 --seq 16）
+    structural = [ q, q_lora, kv_lora, qk_nope, qk_rope, v_dim, head_gate,
+                   index_heads, index_dim, index_topk ]
+  }
+
+  mech MLP_ : FFN { hidden = 512 }
+
+  stack main {
+    pattern = 4 * MLA_
+    main[:] >> MLP_
+  }
+
+  position {
+    # MLA 的 rope 只作用在 qk_rope 那一段（8 维），是**奇偶进、拼接着出**
+    default = rope(base = 10000, pairing = interleaved)
+  }
+
+  tensors {
+    MLA_ {
+      q_a_proj.weight           : (q_lora, d_model)
+      q_a_layernorm.weight      : (q_lora,)
+      q_b_proj.weight           : (q * head_dim, q_lora)
+      kv_a_proj_with_mqa.weight : (kv_lora + qk_rope, d_model)
+      kv_a_layernorm.weight     : (kv_lora,)
+      kv_b_proj.weight          : (q * (qk_nope + v_dim), kv_lora)
+      dense.weight              : (d_model, q * v_dim)
+      g_proj.weight             : (q, d_model)
+      # ── 索引器的四个投影（GLM-5.3 的命名是 indexer.*，逐个量过的）──
+      # 形状按 index_heads*index_dim / index_dim 推：
+      #   wq_b (4*32, 96) = (128, 96)   wk (32, 256)
+      #   k_norm (32,) 有 weight 也有 bias（是 LayerNorm，不是 RMSNorm）
+      #   weights_proj (4, 256)
+      indexer.wq_b.weight         : (128, 96)
+      indexer.wk.weight           : (32, d_model)
+      indexer.k_norm.weight       : (32,)
+      indexer.k_norm.bias         : (32,)
+      indexer.weights_proj.weight : (4, d_model)
+    }
+    MLP_ {
+      gate_proj.weight : (hidden, d_model)
+      up_proj.weight   : (hidden, d_model)
+      down_proj.weight : (d_model, hidden)
+    }
+    layer {
+      attn_norm.weight : (d_model,)
+      mlp_norm.weight  : (d_model,)
+    }
+    global {
+      embed.weight      : (vocab, d_model)
+      final_norm.weight : (d_model,)
+      lm_head.weight    : (vocab, d_model)
+    }
+  }
+
+  emit {
+    train -> torch.module {
+      name        = "model.layers.{i}.{scope}{physical}"
+      global_name = "{physical}"
+      scope { MLA_ = self_attn., MLP_ = mlp., layer = "", global = "" }
+      rename {
+        attn_norm.weight = input_layernorm.weight,
+        mlp_norm.weight  = post_attention_layernorm.weight,
+        embed.weight      = model.embed_tokens.weight,
+        final_norm.weight = model.norm.weight
+      }
+    }
+  }
+}

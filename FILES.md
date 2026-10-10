@@ -1,6 +1,6 @@
 # 这个仓库里每个文件是干什么的
 
-> 248 个跟踪文件。按"你会想找什么"分组，不按字母表。
+> 249 个跟踪文件。按"你会想找什么"分组，不按字母表。
 >
 > **这份文档是生成的**：`python src/by1files.py --write`。
 > 文件清单、每组的个数、每个文件的一句话都从目录树和 docstring 来 ——
@@ -248,7 +248,7 @@
 | `ir.md` | Block 0 · 中间表示（IR）规格 |
 | `plan.md` | by1 · 接下来的计划 |
 
-## `models/` —— 31 个
+## `models/` —— 32 个
 
 命名规矩：**文件名 = 长名 = HF 的模型名（去掉 owner）**，
 `model` 声明 = 短名（手写的）。两列的对照见 `models.tsv`。
@@ -281,6 +281,7 @@
 | `minimind-3.by1` | 真实模型 · HF id `jingyaogong/minimind-3` |
 | `mixtral-shaped.by1` | Block 1.1 的判卷对象：MoE |
 | `mla-shaped.by1` | MLA 的最小可跑模型 |
+| `mla-sparse-shaped.by1` | SparseMLA** 的最小可跑模型：MLA 加一个 DSA 稀疏索引器 |
 | `qwen3-next-shaped.by1` | Block 1.3 的判卷对象：**混合栈 + 递归状态** |
 | `raw-escape.by1` | 逃生舱的**可证伪对照** |
 | `raw.py` | **不是模型，是逃生舱的工厂函数实现**。必须和 `raw-escape.by1` 挨着（`by1codegen` 按名字找它） |

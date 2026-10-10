@@ -821,10 +821,16 @@ static void qk_norm(float *q, float *k, const float *qn, const float *kn,
 }
 
 
-/* mla() 会用到 attention()，而它定义在后面 —— 前置声明。 */
+/* mla() 会用到 attention()，而它定义在后面 —— 前置声明。
+   最后那个 `keep` 是稀疏掩码（NULL = 全要），SparseMLA 用。 */
 static void attention(float *o, float *q, const float *k, const float *v,
                       int n, int nh, int nkv, int hd, int vd, int window,
-                      const float *sink);
+                      const float *sink, const unsigned char *keep);
+static void dsa_index(unsigned char *keep, const float *x, const float *qres,
+                      int n, int d, int ql, int nh, int hd, int nr, int topk,
+                      const float *wqb, const float *wk, const float *knw,
+                      const float *knb, const float *wp,
+                      float base, int interleaved);
 
 /* 把 [rows, len] 的每一行做 RoPE。MLA 的 rope 只作用在解耦出来的那一段。 */
 static void rope_rows(float *x, int rows, int per, int len, float base,
@@ -862,7 +868,10 @@ static void mla(float *o, const float *x, int n, int d,
                 const float *wkva, const float *nkva, const float *wkvb,
                 const float *wd, const float *wg,
                 float neps, int one_plus, float base, int interleaved,
-                int sigmoid_gate) {
+                int sigmoid_gate,
+                int ix_nh, int ix_hd, int ix_topk,
+                const float *ix_wqb, const float *ix_wk, const float *ix_knw,
+                const float *ix_knb, const float *ix_wp) {
     int qk = nope + nr;
     float *qa  = (float *)malloc(sizeof(float) * n * ql);
     float *qb  = (float *)malloc(sizeof(float) * n * nh * qk);
@@ -911,7 +920,16 @@ static void mla(float *o, const float *x, int n, int d,
                    sizeof(float) * vd);
         }
 
-    attention(o, qq, kk, vv, n, nh, nh, qk, vd, 0, NULL);
+    /* SparseMLA：先挑 top-k 个 key，只在挑中的那些上算注意力。
+       `qa` 正是索引器要的 q_resid（q_a_layernorm(q_a_proj(x))）。 */
+    unsigned char *keep = NULL;
+    if (ix_nh > 0) {
+        keep = (unsigned char *)malloc((size_t)n * n);
+        dsa_index(keep, x, qa, n, d, ql, ix_nh, ix_hd, nr, ix_topk,
+                  ix_wqb, ix_wk, ix_knw, ix_knb, ix_wp, base, interleaved);
+    }
+    attention(o, qq, kk, vv, n, nh, nh, qk, vd, 0, NULL, keep);
+    free(keep);
 
     if (wg) {
         float *g = (float *)malloc(sizeof(float) * n * nh);
@@ -941,18 +959,22 @@ static void mla(float *o, const float *x, int n, int d,
    原来只有一个 hd，于是 V 被按 Q/K 的步长读，堆越界（0xC0000005）。 */
 static void attention(float *o, float *q, const float *k, const float *v,
                       int n, int nh, int nkv, int hd, int vd, int window,
-                      const float *sink) {
+                      const float *sink, const unsigned char *keep) {
     int rep = nh / nkv;
     float sc = 1.0f / sqrtf((float)hd);
     float *att = (float *)malloc(sizeof(float) * n);
     float *vb = (float *)malloc(sizeof(float) * vd);
+    /* keep：稀疏掩码，[n*n]，0 = 这个 key 不要。NULL = 全要。
+       和 window 用的是同一条"跳过"路径，所以三条循环都改到了 ——
+       少改一条就是"算了一半"，而且看起来还是对的。 */
     for (int h = 0; h < nh; h++) {
         int kh = h / rep;
         for (int i = 0; i < n; i++) {
             const float *qi = q + ((size_t)i * nh + h) * hd;
             float mx = -INFINITY;
             for (int j = 0; j <= i; j++) {
-                if (window && j <= i - window) { att[j] = 0.f; continue; }
+                if ((window && j <= i - window) ||
+                    (keep && !keep[(size_t)i * n + j])) { att[j] = 0.f; continue; }
                 const float *kj = k + ((size_t)j * nkv + kh) * hd;
                 float s = 0.f;
                 for (int t = 0; t < hd; t++) s += qi[t] * kj[t];
@@ -963,7 +985,8 @@ static void attention(float *o, float *q, const float *k, const float *v,
             if (sink && sink[h] > mx) mx = sink[h];
             float sum = 0.f;
             for (int j = 0; j <= i; j++) {
-                if (window && j <= i - window) continue;
+                if ((window && j <= i - window) ||
+                    (keep && !keep[(size_t)i * n + j])) continue;
                 att[j] = expf(att[j] - mx);
                 sum += att[j];
             }
@@ -973,7 +996,8 @@ static void attention(float *o, float *q, const float *k, const float *v,
             float *oi = o + ((size_t)i * nh + h) * vd;
             for (int t = 0; t < vd; t++) vb[t] = 0.f;
             for (int j = 0; j <= i; j++) {
-                if (window && j <= i - window) continue;
+                if ((window && j <= i - window) ||
+                    (keep && !keep[(size_t)i * n + j])) continue;
                 float a = att[j] / sum;
                 const float *vj = v + ((size_t)j * nkv + kh) * vd;
                 for (int t = 0; t < vd; t++) vb[t] += a * vj[t];
@@ -983,6 +1007,99 @@ static void attention(float *o, float *q, const float *k, const float *v,
     }
     free(att);
     free(vb);
+}
+
+/* DSA 稀疏索引器：给每个 query 挑 top-k 个 key，写进 keep[n*n]。
+   **和 `by1codegen.DSAIndexer`（PyTorch）/ `by1exec._dsa_index`（NumPy）
+   逐行对应**；判卷人是 transformers 的 `GlmMoeDsaIndexer`（by1sparse.py）。
+
+   两处容易抄错：
+   ① rope 那一半**在前**（`[qk_rope | hd - qk_rope]`），和主 MLA 的
+      `[nope | rope]` 相反。
+   ② 索引器的 rope 配对约定**固定 interleaved**，和主 MLA 的 pairing 无关。
+
+   并列取**较小的 key 下标**（下面那个插入排序用严格 `>`，所以是稳定的）。
+   —— 实测：并列处挑谁没有定义，两个后端会挑出不同的 key，
+   而那会让输出当场差 1e-1。见 history/ir.md 129。 */
+static void dsa_index(unsigned char *keep, const float *x, const float *qres,
+                      int n, int d, int ql, int nh, int hd, int nr, int topk,
+                      const float *wqb, const float *wk, const float *knw,
+                      const float *knb, const float *wp,
+                      float base, int interleaved) {
+    float *q = (float *)malloc(sizeof(float) * (size_t)n * nh * hd);
+    float *k0 = (float *)malloc(sizeof(float) * (size_t)n * hd);
+    float *w = (float *)malloc(sizeof(float) * (size_t)n * nh);
+    float *sc = (float *)malloc(sizeof(float) * n);
+    int *ord = (int *)malloc(sizeof(int) * n);
+
+    linear(q, qres, wqb, n, ql, nh * hd);
+    linear(k0, x, wk, n, d, hd);
+    /* LayerNorm（带 bias，eps=1e-6）—— 参考就是这么写的，不是 RMSNorm */
+    for (int t = 0; t < n; t++) {
+        float *r = k0 + (size_t)t * hd;
+        float mu = 0.f;
+        for (int c = 0; c < hd; c++) mu += r[c];
+        mu /= (float)hd;
+        float var = 0.f;
+        for (int c = 0; c < hd; c++) { float z = r[c] - mu; var += z * z; }
+        var /= (float)hd;
+        float inv = 1.f / sqrtf(var + 1e-6f);
+        for (int c = 0; c < hd; c++) r[c] = (r[c] - mu) * inv * knw[c] + knb[c];
+    }
+    /* rope 只作用在**前 nr 维**（索引器里 rope 段在前，和主 MLA 相反）。
+       `rope_rows` 按"整行"转，所以先把那一段抠出来单独转，再放回去。 */
+    {
+        float *qrot = (float *)malloc(sizeof(float) * (size_t)n * nh * nr);
+        float *krot = (float *)malloc(sizeof(float) * (size_t)n * nr);
+        for (int t = 0; t < n; t++)
+            for (int h = 0; h < nh; h++)
+                memcpy(qrot + ((size_t)t * nh + h) * nr,
+                       q + ((size_t)t * nh + h) * hd, sizeof(float) * nr);
+        for (int t = 0; t < n; t++)
+            memcpy(krot + (size_t)t * nr, k0 + (size_t)t * hd, sizeof(float) * nr);
+        rope_rows(qrot, (size_t)n * nh, nh, nr, base, interleaved);
+        rope_rows(krot, n, 1, nr, base, interleaved);
+        for (int t = 0; t < n; t++)
+            for (int h = 0; h < nh; h++)
+                memcpy(q + ((size_t)t * nh + h) * hd,
+                       qrot + ((size_t)t * nh + h) * nr, sizeof(float) * nr);
+        for (int t = 0; t < n; t++)
+            memcpy(k0 + (size_t)t * hd, krot + (size_t)t * nr, sizeof(float) * nr);
+        free(qrot); free(krot);
+    }
+    {
+        float *tmp = (float *)malloc(sizeof(float) * (size_t)n * nh);
+        linear(tmp, x, wp, n, d, nh);
+        for (int i = 0; i < n * nh; i++) w[i] = tmp[i] * powf((float)nh, -0.5f);
+        free(tmp);
+    }
+    for (int t = 0; t < n; t++) {
+        for (int s = 0; s < n; s++) sc[s] = -INFINITY;
+        for (int s = 0; s <= t; s++) {
+            float acc = 0.f;
+            for (int h = 0; h < nh; h++) {
+                const float *qi = q + ((size_t)t * nh + h) * hd;
+                const float *ks = k0 + (size_t)s * hd;
+                float dot = 0.f;
+                for (int c = 0; c < hd; c++) dot += qi[c] * ks[c];
+                dot *= powf((float)hd, -0.5f);
+                if (dot < 0.f) dot = 0.f;             /* ReLU */
+                acc += w[(size_t)t * nh + h] * dot;
+            }
+            sc[s] = acc;
+        }
+        for (int s = 0; s < n; s++) ord[s] = s;
+        /* 稳定插入排序：严格 `>`，相等时保持原序 -> 取较小下标 */
+        for (int a = 1; a < n; a++) {
+            int v = ord[a], b = a - 1;
+            while (b >= 0 && sc[ord[b]] < sc[v]) { ord[b + 1] = ord[b]; b--; }
+            ord[b + 1] = v;
+        }
+        int take = topk < n ? topk : n;
+        for (int s = 0; s < n; s++) keep[(size_t)t * n + s] = 0;
+        for (int s = 0; s < take; s++) keep[(size_t)t * n + ord[s]] = 1;
+    }
+    free(q); free(k0); free(w); free(sc); free(ord);
 }
 '''
 
@@ -1208,6 +1325,13 @@ def _emit_c_body(ir, params):
                     order.append((key(i, j, nm), pre + nm))
                 if a.get("head_gate", "off") != "off":
                     order.append((key(i, j, "g_proj"), pre + "g_proj"))
+                # DSA 稀疏索引器的五个张量。**名字和 by1exec.shapes_of 一致**
+                # （带 `.weight` / `.bias` 全写）—— 不一致的话权重表会对不上。
+                if a.get("index_heads"):
+                    for nm in ("indexer.wq_b.weight", "indexer.wk.weight",
+                               "indexer.k_norm.weight", "indexer.k_norm.bias",
+                               "indexer.weights_proj.weight"):
+                        order.append((key(i, j, nm), pre + nm))
                 body.append((i, j, "MLA", a))
             elif k == "MoE":
                 for nm in ("router", "w1", "w3", "w2"):
@@ -1370,7 +1494,8 @@ def _emit_c_body(ir, params):
                           f" {float(_y.get('low_freq',1))}f);")
                 lb.append(f" attention(ob, q, kk, vv, n, {nh}, {nkv}, {hd}, {hd},"
                           f" {a['window'] if a['window'] else 0},"
-                          f" {'P(' + key(i,j,'sink') + ')' if a['sink'] else 'NULL'});")
+                          f" {'P(' + key(i,j,'sink') + ')' if a['sink'] else 'NULL'},"
+                          f" NULL);")
                 if a["q_gate"]:
                     lb.append(f" apply_qg(ob, gt, n, {nh*hd});")
                 lb.append(f" {B}({dst}, ob, P({key(i,j,'wo')}){BA('wo')}, n, {nh*hd}, D);")
@@ -1455,6 +1580,8 @@ def _emit_c_body(ir, params):
                     f" {_p('o_norm.w')}, {_p('o_proj')});")
             elif k == "MLA":
                 hg = a.get("head_gate", "off") != "off"
+                ix = a.get("index_heads")
+                _p = (lambda nm: "P(" + key(i, j, nm) + ")") if ix else (lambda nm: "NULL")
                 lb.append(
                     f" mla({dst}, {src[0]}, n, D, {a['q']}, {a['q_lora']},"
                     f" {a['kv_lora']}, {a['qk_nope']}, {a['qk_rope']},"
@@ -1469,7 +1596,12 @@ def _emit_c_body(ir, params):
                     f" {1 if a.get('norm_one_plus') else 0},"
                     f" {float(a['rope_base'])}f,"
                     f" {0 if a.get('pairing') == 'half' else 1},"
-                    f" {1 if a.get('gate_act') == 'sigmoid' else 0});")
+                    f" {1 if a.get('gate_act') == 'sigmoid' else 0},"
+                    f" {int(ix or 0)}, {int(a.get('index_dim') or 0)},"
+                    f" {int(a.get('index_topk') or 0)},"
+                    f" {_p('indexer.wq_b.weight')}, {_p('indexer.wk.weight')},"
+                    f" {_p('indexer.k_norm.weight')}, {_p('indexer.k_norm.bias')},"
+                    f" {_p('indexer.weights_proj.weight')});")
             elif k == "MoE":
                 E, K, hid = a["experts"], a["top_k"], a["hidden"]
                 sh = a["shared"]

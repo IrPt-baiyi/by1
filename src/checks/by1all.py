@@ -131,8 +131,21 @@ REAL = [
 ]
 
 # 六个合成模型：三后端
+#
+# **序列长度逐个可以定。** 默认 48；而 `mla-sparse-shaped.by1` 必须短一些，
+# 原因是量出来的、不是猜的：**DSA 的 top-k 选择在近并列处不连续**。
+# 实测（`history/ir.md` §129）—— 同一份权重、同一个输入，
+# NumPy 和 PyTorch 在 4 层里的第 1 层有 2/44 个 query 挑出不同的 key，
+# 于是输出当场差 1e-1 量级；而 seq<=32 时一个都不翻。
+# **这不是后端写错，是"挑中哪些 key"在并列处没有唯一答案。**
+# 所以：三后端互拍只在 seq 16 上做（和 by1c 那一步同一个长度），
+# **挑选本身对不对由 `by1sparse.py` 对着 transformers 的 `GlmMoeDsaIndexer` 判。**
+EXEC_SEQ = {'mla-sparse-shaped.by1': 16}
+
 SHAPED = ['llama-shaped.by1', 'mixtral-shaped.by1', 'gpt-oss-shaped.by1',
           'qwen3-next-shaped.by1', 'mla-shaped.by1', 'llama3-shaped.by1',
+          # **SparseMLA**：MLA 加一个 DSA 稀疏索引器（GLM-5.3-Flash 那一路）。
+          'mla-sparse-shaped.by1',
           # **由 clef.by1 机械缩小维度得来，结构一个字没改。**
           # 它证明"对着真 checkpoint 验过的那份描述"**同时是能跑的** ——
           # 不是两套东西。
@@ -688,8 +701,12 @@ def main():
         #
         # 它该验的是"三个后端自洽"（第 5 步 `by1exec --compare`
         # 和后面的 C 后端），那不依赖任何外部参考。
+        # `mla-sparse-shaped.by1` 同理 —— 它是 `mla-shaped.by1` 加索引器，
+        # **也没有参考实现**。它该验的是三后端自洽 + `by1sparse.py` 对
+        # transformers 的 `GlmMoeDsaIndexer` 比"挑中了哪些 key"。
         _todo = [f for f in SHAPED
-                 if f not in ('mla-shaped.by1', 'llama3-shaped.by1',
+                 if f not in ('mla-shaped.by1', 'mla-sparse-shaped.by1',
+                              'llama3-shaped.by1',
                               'clef-tiny.by1', 'gpt2-tiny.by1', 'hello.by1')]
         for f, (st, out) in zip(_todo, run_many(
                 [(['by1diff.py', f], 'diff ' + f) for f in _todo])):
@@ -710,7 +727,9 @@ def main():
     else:
         t0 = time.time()
         for f, (st, out) in zip(SHAPED, run_many(
-                [(['by1exec.py', f, '--compare'], 'exec ' + f)
+                [(['by1exec.py', f, '--compare']
+                  + (['--seq', str(EXEC_SEQ[f])] if f in EXEC_SEQ else []),
+                  'exec ' + f)
                  for f in SHAPED])):
             line = [l.strip() for l in out.splitlines() if '最大绝对差' in l]
             # **"输出否决退出码"这条规矩现在在 `confirmed()` 里**，对每一段
