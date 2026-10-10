@@ -96,43 +96,21 @@ model GLM-5.3-Flash {
   }
 
   tensors {
-    KDA {
-      q_proj.weight   : (num_heads * head_dim, d_model)
-      k_proj.weight   : (num_heads * head_dim, d_model)
-      v_proj.weight   : (num_heads * head_dim, d_model)
-      q_conv1d.weight : (num_heads * head_dim, 1, conv_kernel)
-      k_conv1d.weight : (num_heads * head_dim, 1, conv_kernel)
-      v_conv1d.weight : (num_heads * head_dim, 1, conv_kernel)
-      A_log           : (num_heads,)
-      dt_bias         : (num_heads * head_dim,)
-      # ── 这五行是**补上的**，而它们是 KDA 的一半 ───────────────────
-      #
-      # 原来这里没有它们，`by1verify` 说"37534 个全对、缺失 0" ✓ ——
-      # 而它同时报"契约未覆盖 **51%**" ✗。
-      # **两个数都对，是读的人只看了一个。**
-      #
-      # 量出来的真实形状（第 0 层实测）：
-      #     b_proj.weight   [64, 4096]   = (num_heads, d_model)
-      #     f_a_proj.weight [128, 4096]  = (head_dim, d_model)
-      #     f_b_proj.weight [8192, 128]  = (num_heads * head_dim, head_dim)
-      #     g_a_proj.weight [128, 4096]
-      #     g_b_proj.weight [8192, 128]
-      #
-      # 而它们**和 fla 的 `KDA.__init__` 逐项吻合** ✓：
-      #     f_proj = Sequential(Linear(hidden, head_v_dim),
-      #                         Linear(head_v_dim, gate_dim))
-      #     g_proj = Sequential(Linear(hidden, head_v_dim),
-      #                         Linear(head_v_dim, value_dim))
-      # 也就是 `f_a/f_b`、`g_a/g_b` 是那两个**两层**投影 ✓ ——
-      # 而 `g_proj` 是 `o_norm` 的门（`fla/layers/kda.py:309`）✓。
-      b_proj.weight   : (num_heads, d_model)
-      f_a_proj.weight : (head_dim, d_model)
-      f_b_proj.weight : (num_heads * head_dim, head_dim)
-      g_a_proj.weight : (head_dim, d_model)
-      g_b_proj.weight : (num_heads * head_dim, head_dim)
-      o_norm.weight   : (head_dim,)
-      o_proj.weight   : (d_model, num_heads * head_dim)
-    }
+    # ⚠ **这里原来有第二个 `KDA { }` 块** —— 10 行、不完整，
+    # 而它在第 159 行那个完整块**之前**，于是被静默覆盖 ✓。
+    #
+    # 后果：谁往那个块里加东西，**等于没加** ✓。我上一轮就往里加了 5 行
+    # （`b_proj` / `f_a/f_b` / `g_a/g_b`），跑了三遍 `by1verify` 数都没动 ✓，
+    # 于是得出了"检查漏验了这 510 个张量"的错误结论 ✗。
+    #
+    # 真因是：**同一个 `tensors` 里两个同名契约块，后来的直接覆盖先前的，
+    # 一声不响**（`by1tens.py:166` 的 `_['contracts'][base] = _['lst']`）。
+    #
+    # 删掉它 ✓ —— 而真正的 KDA 契约是下面第 159 行那个（现在 15 行 ✓）。
+    #
+    # **要防的是下一个**：`by1lint` 该加一条"同名契约块出现两次就报" ✓，
+    # 否则这个坑会再埋一次 ✓。
+
     # ── 全量层：MLA **加一个稀疏索引器** ──────────────────────────
     # 索引器是**独立的一套投影**：它自己从 q_lora 出发（wq_b [4096,1536]
     # = 32 头 × 128），自己算 key（wk [128,4096]），再用 weights_proj
