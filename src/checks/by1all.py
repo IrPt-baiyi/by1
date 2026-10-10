@@ -146,6 +146,10 @@ SHAPED = ['llama-shaped.by1', 'mixtral-shaped.by1', 'gpt-oss-shaped.by1',
           'qwen3-next-shaped.by1', 'mla-shaped.by1', 'llama3-shaped.by1',
           # **SparseMLA**：MLA 加一个 DSA 稀疏索引器（GLM-5.3-Flash 那一路）。
           'mla-sparse-shaped.by1',
+          # **MoE 的两种 sigmoid 路由。** 名字只差一个词、选出来的专家不一样；
+          # 而它们原来是**落进 else 分支走 softmax_topk** 的 ——
+          # 实测 3.8e-02 / 6.4e-01 对不上（见 history/ir.md 130）。
+          'moe-routing-shaped.by1',
           # **由 clef.by1 机械缩小维度得来，结构一个字没改。**
           # 它证明"对着真 checkpoint 验过的那份描述"**同时是能跑的** ——
           # 不是两套东西。
@@ -706,6 +710,7 @@ def main():
         # transformers 的 `GlmMoeDsaIndexer` 比"挑中了哪些 key"。
         _todo = [f for f in SHAPED
                  if f not in ('mla-shaped.by1', 'mla-sparse-shaped.by1',
+                              'moe-routing-shaped.by1',
                               'llama3-shaped.by1',
                               'clef-tiny.by1', 'gpt2-tiny.by1', 'hello.by1')]
         for f, (st, out) in zip(_todo, run_many(

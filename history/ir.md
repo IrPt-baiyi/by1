@@ -8193,6 +8193,32 @@ transformers 的 `DeepseekV3TopkRouter`）。
 ⚠ **在这之前，任何"Ling / GLM 能跑前向"的说法都不成立** ——
 三后端跑得起来，但跑的是 softmax 路由。
 
+### 补上了（同一轮内）
+
+`op_moe` / C 的 `moe()` 各自补齐四条分支，并**逐行对着 PyTorch 那份**
+（`MoE.forward`，`by1moe` 用它当判据）。补的时候顺带修了原来那两支的
+两处偏差 —— 它们在 `score_bias` 存在时也不一样：
+`topk_softmax` 该用**未加偏置**的 logits 选和算权重；
+`softmax_topk` 的权重要**重算**（用未加偏置的 logits 做 softmax）。
+
+    routing                  NumPy vs PyTorch      C vs NumPy
+    topk_softmax             3.0e-07  过           2.6e-07  过
+    softmax_topk             2.6e-07  过           2.9e-07  过
+    sigmoid_topk             2.9e-07  过           3.3e-07  过      （原来 3.8e-02 不过）
+    sigmoid_group_topk       3.0e-07  过           3.4e-07  过      （原来 6.4e-01 不过）
+
+**进门了**：新增 `models/moe-routing-shaped.by1`，一层挂 `sigmoid_topk`、
+一层挂 `sigmoid_group_topk`，**两个 `score_bias` 都开**（它只影响选择、
+不影响权重 —— 不开这条差别测不出来）。三后端一起对拍，进 `SHAPED`。
+
+**反例**（改坏一处必须红，改完复跑确认复原）：
+    C 把 noaux_tc 改回 softmax 分支      相对 6.7e-02   红
+    C 把 sigmoid_topk 改回 softmax 分支   相对 7.1e-02   红
+
+**还剩的**：MoE 的路由现在四个后端齐了；Ling / GLM **端到端前向**
+仍然没跑（真尺寸跑不动）。要做到那一步，得像 `clef-tiny` 那样
+各出一份机械缩小版。
+
 ### 五、视觉前向：**决定不做，停在「描述」**
 
 结论写进 `1.md` 的「视觉前向：决定不做」，一句话：

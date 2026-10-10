@@ -259,14 +259,25 @@ static float act_gate_(float g, float u, int gptoss, float lim, float alpha) {
 }
 
 static void moe(float *o, const float *x, int n, int d, int E, int K, int H,
-                const float *router, const float *rb, const float *w1, const float *w3,
+                const float *router, const float *rb, const float *sb,
+                const float *w1, const float *w3,
                 const float *w2, const float *b1, const float *b2,
                 const float *b3, int sh, int shh, const float *sw1,
                 const float *sw3, const float *sw2, const float *sg,
-                int routing, int gptoss, float lim, float alpha, float scale) {
+                int routing, int ng, int tg,
+                int gptoss, float lim, float alpha, float scale) {
+    /* routing: 0 = softmax_topk（Mixtral）  1 = topk_softmax（GPT-OSS）
+                2 = sigmoid_topk（Step-3.7） 3 = sigmoid_group_topk（noaux_tc，
+                    Ling / DeepSeek V3 / GLM）
+       **四种是四个机制。** 这里原来只有 0 / 1 两种，`sigmoid_topk` 和
+       `sigmoid_group_topk` 落进 else —— 那一支一直是 softmax_topk。
+       见 history/ir.md 130。 */
     int *idx = (int *)malloc(sizeof(int) * n * K);
     float *wts = (float *)malloc(sizeof(float) * n * K);
     float *lg = (float *)malloc(sizeof(float) * E);
+    float *sc = (float *)malloc(sizeof(float) * E);
+    float *ch = (float *)malloc(sizeof(float) * E);
+    float *gs = (float *)malloc(sizeof(float) * (ng > 0 ? ng : 1));
     float *gu = (float *)malloc(sizeof(float) * H);
     float *uu = (float *)malloc(sizeof(float) * H);
     float *hh = (float *)malloc(sizeof(float) * H);
@@ -290,6 +301,54 @@ static void moe(float *o, const float *x, int n, int d, int E, int K, int H,
             float s = 0.f;
             for (int k = 0; k < K; k++) { wts[i * K + k] = expf(wts[i * K + k] - mx); s += wts[i * K + k]; }
             for (int k = 0; k < K; k++) wts[i * K + k] = wts[i * K + k] / s * scale;
+        } else if (routing == 2 || routing == 3) {
+            /* sigmoid 打分。**sb 只影响选择** —— 权重用未加偏置的 sc。 */
+            for (int e = 0; e < E; e++) {
+                sc[e] = 1.f / (1.f + expf(-lg[e]));
+                ch[e] = sc[e] + (sb ? sb[e] : 0.f);
+            }
+            if (routing == 3) {
+                int per = E / ng;
+                for (int g = 0; g < ng; g++) {
+                    float a1 = -INFINITY, a2 = -INFINITY;
+                    for (int e = 0; e < per; e++) {
+                        float v = ch[g * per + e];
+                        if (v > a1) { a2 = a1; a1 = v; }
+                        else if (v > a2) a2 = v;
+                    }
+                    gs[g] = a1 + a2;          /* 每组前 2 之和 */
+                }
+                /* 选 topk_group 个组，再把别的组整组屏蔽掉 */
+                for (int k = 0; k < tg; k++) {
+                    int best = -1; float bv = -INFINITY;
+                    for (int g = 0; g < ng; g++) {
+                        int used = 0;
+                        for (int q = 0; q < k; q++) if (idx[i * K + q] == -(g + 1)) used = 1;
+                        if (!used && gs[g] > bv) { bv = gs[g]; best = g; }
+                    }
+                    idx[i * K + k] = -(best + 1);   /* 暂存选中的组 */
+                }
+                char *ok = (char *)calloc((size_t)E, 1);
+                for (int k = 0; k < tg; k++) {
+                    int g = -idx[i * K + k] - 1;
+                    for (int e = 0; e < per; e++) ok[g * per + e] = 1;
+                }
+                for (int e = 0; e < E; e++) if (!ok[e]) ch[e] = -INFINITY;
+                free(ok);
+            }
+            for (int k = 0; k < K; k++) {
+                int best = -1; float bv = -INFINITY;
+                for (int e = 0; e < E; e++) {
+                    int used = 0;
+                    for (int q = 0; q < k; q++) if (idx[i * K + q] == e) used = 1;
+                    if (!used && ch[e] > bv) { bv = ch[e]; best = e; }
+                }
+                idx[i * K + k] = best;
+            }
+            float s = 0.f;
+            for (int k = 0; k < K; k++) s += sc[idx[i * K + k]];
+            for (int k = 0; k < K; k++)
+                wts[i * K + k] = sc[idx[i * K + k]] / (s + 1e-20f) * scale;
         } else {
             float mx = -INFINITY;
             for (int e = 0; e < E; e++) if (lg[e] > mx) mx = lg[e];
@@ -342,7 +401,8 @@ static void moe(float *o, const float *x, int n, int d, int E, int K, int H,
             free(sh1); free(sh3);
         }
     }
-    free(idx); free(wts); free(lg); free(gu); free(uu); free(hh);
+    free(idx); free(wts); free(lg); free(sc); free(ch); free(gs);
+    free(gu); free(uu); free(hh);
 }
 
 
@@ -1338,6 +1398,9 @@ def _emit_c_body(ir, params):
                     order.append((key(i, j, nm), pre + nm))
                 if a["router_bias"]:
                     order.append((key(i, j, "router.bias"), pre + "router.bias"))
+                # noaux_tc / sigmoid_topk 的专家偏置：**只影响选择，不影响权重**
+                if a.get("score_bias"):
+                    order.append((key(i, j, "score_bias"), pre + "score_bias"))
                 if a["expert_bias"]:
                     for nm in ("b1", "b3", "b2"):
                         order.append((key(i, j, nm), pre + nm))
@@ -1605,10 +1668,15 @@ def _emit_c_body(ir, params):
             elif k == "MoE":
                 E, K, hid = a["experts"], a["top_k"], a["hidden"]
                 sh = a["shared"]
+                # 路由：0 = softmax_topk, 1 = topk_softmax,
+                #      2 = sigmoid_topk, 3 = sigmoid_group_topk（noaux_tc）
+                _RT = {"softmax_topk": 0, "topk_softmax": 1,
+                       "sigmoid_topk": 2, "sigmoid_group_topk": 3}
                 lb.append(
                     f" moe({dst}, {src[0]}, n, D, {E}, {K}, {hid},"
                     f" P({key(i,j,'router')}),"
                     f" {'P(' + key(i,j,'router.bias') + ')' if a['router_bias'] else 'NULL'},"
+                    f" {'P(' + key(i,j,'score_bias') + ')' if a['score_bias'] else 'NULL'},"
                     f" P({key(i,j,'w1')}),"
                     f" P({key(i,j,'w3')}), P({key(i,j,'w2')}),"
                     f" {'P(' + key(i,j,'b1') + ')' if a['expert_bias'] else 'NULL'},"
@@ -1619,7 +1687,8 @@ def _emit_c_body(ir, params):
                     f" {'P(' + key(i,j,'sw3') + ')' if sh else 'NULL'},"
                     f" {'P(' + key(i,j,'sw2') + ')' if sh else 'NULL'},"
                     f" {'P(' + key(i,j,'shared_gate') + ')' if a['shared_gate'] else 'NULL'},"
-                    f" {1 if a['routing'] == 'topk_softmax' else 0},"
+                    f" {_RT.get(a['routing'], 0)}, {int(a.get('n_group') or 0)},"
+                    f" {int(a.get('topk_group') or 0)},"
                     f" {1 if a['act'] == 'gptoss' else 0},"
                     f" {float(a['limit']) if a['limit'] else 0.0}f,"
                     f" {float(a['alpha'])}f, {float(a['routed_scale'])}f);")

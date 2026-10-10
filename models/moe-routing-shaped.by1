@@ -1,0 +1,74 @@
+# ── moe-routing-shaped.by1 ────────────────────────────────────────────
+# MoE 的**两种 sigmoid 路由**。名字只差一个词，选出来的专家不一样：
+#
+#   sigmoid_topk          sigmoid 打分 + 直接 top-k              （Step-3.7）
+#   sigmoid_group_topk    sigmoid 打分 + **分组** top-k（noaux_tc）（Ling / DeepSeek V3 / GLM）
+#
+# 为什么单独要一份：`mixtral-shaped`（softmax_topk）和 `gpt-oss-shaped`
+# （topk_softmax）只覆盖了四种路由里的两种。**另外两种落进了 else 分支，
+# 一直在走 softmax_topk** —— 实测把 routing 换掉再对拍 PyTorch：
+#     topk_softmax        3.0e-07  过
+#     softmax_topk        2.6e-07  过
+#     sigmoid_topk        3.8e-02  不过     <- 落进 else
+#     sigmoid_group_topk  6.4e-01  不过     <- 落进 else
+# 而 Ling-3.0-tiny 和 GLM-5.3-Flash 用的正是 `sigmoid_group_topk`。
+# （见 history/ir.md 130。）
+#
+# 这份就是让那两条分支**留在门里**：三个后端一起对拍。
+#
+#   python by1exec.py moe-routing-shaped.by1 --compare
+#   python by1c.py    moe-routing-shaped.by1 --gcc <gcc> --seq 16
+#
+# **`score_bias` 都开** —— 它只影响选择、不影响权重（noaux_tc 的关键），
+# 不开的话这条差别测不出来。
+
+model MoERoutingShaped {
+  ctx 512
+
+  hparams {
+    d_model = 128
+    n_layer = 2
+    vocab   = 256
+    rms_eps = 1e-05
+  }
+
+  mech Attn : Attention {
+    heads      = { q = 4, kv = 2, head_dim = 32 }
+    structural = [ head_dim ]
+  }
+
+  # 逐层各挂一种路由，一份文件覆盖两条分支
+  mech MoEA : MoE {
+    experts      = 8
+    top_k        = 2
+    hidden       = 32
+    shared       = 0
+    score_bias   = true
+    routing      = sigmoid_topk
+    routed_scale = 2.5
+    structural   = [ experts, hidden ]
+  }
+
+  mech MoEB : MoE {
+    experts      = 8
+    top_k        = 2
+    hidden       = 32
+    shared       = 0
+    score_bias   = true
+    routing      = sigmoid_group_topk
+    n_group      = 4
+    topk_group   = 2
+    routed_scale = 2.5
+    structural   = [ experts, hidden, n_group, topk_group ]
+  }
+
+  stack main {
+    pattern = 2 * Attn
+    main[0] >> MoEA
+    main[1] >> MoEB
+  }
+
+  position {
+    default = rope(base = 10000, pairing = half)
+  }
+}

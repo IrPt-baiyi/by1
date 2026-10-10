@@ -438,21 +438,66 @@ def op_moe(P, a, ins, d):
     logits = xf @ P["router"].T
     if a.get("router_bias") and "router.bias" in P:
         logits = logits + P["router.bias"]
-    if a.get("score_bias") and "score_bias" in P:
-        sel = logits + P["score_bias"]
+    sb = P.get("score_bias") if a.get("score_bias") else None
+
+    def _topk(v, k):
+        """取每行前 k 大的下标。**并列取较小下标**（稳定排序）——
+        和稀疏索引器同一个理由：并列处取谁没有定义，两个后端会挑出不同的，
+        而那不是 bug。见 history/ir.md 129。"""
+        return np.argsort(-v, axis=-1, kind="stable")[:, :k]
+
+    # ── 四种路由，四种选法。**这四条各是各的机制** ────────────────
+    # 这里原来只有 topk_softmax / softmax_topk 两支，而 `sigmoid_topk`
+    # 和 `sigmoid_group_topk` **落进了 else**，走成 softmax_topk ——
+    # 也就是说 Step-3.7 和 Ling/DeepSeek 的路由**一直在算另一个模型**。
+    # 实测（把 routing 换掉再对拍 PyTorch）：
+    #     topk_softmax        3.0e-07  过
+    #     softmax_topk        2.6e-07  过
+    #     sigmoid_topk        3.8e-02  不过     <- 落进 else
+    #     sigmoid_group_topk  6.4e-01  不过     <- 落进 else
+    # 门里的 shaped 模型只用了前两种，所以从来没红过。见 history/ir.md 130。
+    rt = (a.get("routing") or "softmax_topk")
+    if rt == "sigmoid_group_topk":
+        # noaux_tc（Ling / DeepSeek V3 / GLM）：sigmoid 打分 + **分组** top-k。
+        # 关键：`score_bias` **只影响选择**，权重用未加偏置的 sc。
+        ng, tg = a.get("n_group") or 0, a.get("topk_group") or 0
+        if not ng or not tg:
+            raise ValueError("routing = sigmoid_group_topk 需要 n_group 与 topk_group")
+        sc = 1.0 / (1.0 + np.exp(-logits))
+        choice = sc + sb if sb is not None else sc
+        gs = choice.reshape(-1, ng, choice.shape[-1] // ng)
+        # 每组取前 2 之和排名，选 topk_group 个组
+        gs = np.sort(gs, -1)[..., -2:].sum(-1)
+        gi = _topk(gs, tg)
+        gm = np.zeros_like(gs)
+        np.put_along_axis(gm, gi, 1.0, axis=-1)
+        mask = np.repeat(gm[:, :, None], choice.shape[-1] // ng, 2)
+        choice = np.where(mask.reshape(choice.shape) > 0, choice, -np.inf)
+        topi = _topk(choice, a["top_k"])
+        tv = np.take_along_axis(sc, topi, -1)         # **未加偏置**的分数
+        topv = tv / (tv.sum(-1, keepdims=True) + 1e-20)
+    elif rt == "sigmoid_topk":
+        # sigmoid 打分 + 直接 top-k，**不分组**（Step-3.7）。
+        # 和 sigmoid_group_topk 只差"先选组"那一步，名字只差一个词。
+        sc = 1.0 / (1.0 + np.exp(-logits))
+        choice = sc + sb if sb is not None else sc
+        topi = _topk(choice, a["top_k"])
+        tv = np.take_along_axis(sc, topi, -1)
+        topv = tv / (tv.sum(-1, keepdims=True) + 1e-20)
+    elif rt == "topk_softmax":
+        # 先 top-k，再只对这 k 个 logits 做 softmax（GPT-OSS）。
+        # **选和权重都用 `logits`，不看 score_bias** —— 参考就是这么写的。
+        # （原来这里用的是加了偏置的 sel，两处都不一样。）
+        topi = _topk(logits, a["top_k"])
+        topv = softmax(np.take_along_axis(logits, topi, -1), -1)
     else:
-        sel = logits
-    if a.get("routing") == "topk_softmax":
-        part = np.argpartition(-sel, a["top_k"] - 1, axis=-1)[:, :a["top_k"]]
-        tv = np.take_along_axis(sel, part, -1)
-        topv = softmax(tv, -1)
-        topi = part
-    else:
-        probs = softmax(sel, -1)
-        part = np.argpartition(-probs, a["top_k"] - 1, axis=-1)[:, :a["top_k"]]
-        tv = np.take_along_axis(probs, part, -1)
+        # 全体 softmax -> top-k -> 重新归一（Mixtral）。
+        # `score_bias` **只影响选择**：权重要重算，用未加偏置的 logits。
+        sel = logits + sb if sb is not None else logits
+        topi = _topk(softmax(sel, -1), a["top_k"])
+        base = logits if sb is not None else sel
+        tv = np.take_along_axis(softmax(base, -1), topi, -1)
         topv = tv / np.maximum(tv.sum(-1, keepdims=True), 1e-9)
-        topi = part
     topv = topv * a.get("routed_scale", 1.0)
     out = np.zeros_like(xf)
     for e in range(a["experts"]):
