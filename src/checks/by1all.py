@@ -181,6 +181,21 @@ REAL = [
     ('Qwen3.5-0.8B.by1', None, 'torch.module', []),
     ('gemma-4-12B.by1', None, 'torch.module', []),
     ('mamba-130m-hf.by1', None, 'torch.module', []),
+    # **Qwen3.5 家族的另外两个尺寸 + Coder-Next。**
+    #
+    #   9B    —— 和 0.8B **逐张量同名**，只差尺寸。唯一的坑：
+    #            `tie_word_embeddings` 只在 config **顶层**，`text_config` 里没有
+    #            （0.8B 是两处都有）—— 所以它**不能**写进 emit 的 field 块。
+    #   397B  —— 这一族唯一的 MoE 号，也是**同一份 .by1 里两种专家存储**：
+    #            主干 `experts.gate_up_proj`（融合）、MTP `experts.{e}.gate_proj.weight`
+    #            （逐专家）。所以是两个机制声明（`MoE` / `MTPMoe`）——
+    #            契约按机制名存，同名会互相覆盖。
+    #   Coder-Next —— `qwen3_next` 的**扁平 config**（没有 `text_config` 那一层，
+    #            所以默认 `--sub text_config` 退化成整份）；**逐专家 MoE**；
+    #            线性注意力是 `in_proj_qkvz` / `in_proj_ba` **两块融合**。
+    ('Qwen3.5-9B.by1', None, 'torch.module', ['--sub', 'text_config']),
+    ('Qwen3.5-397B-A17B.by1', None, 'torch.module', ['--sub', 'text_config']),
+    ('Qwen3-Coder-Next.by1', None, 'torch.module', []),
 ]
 
 # 六个合成模型：三后端

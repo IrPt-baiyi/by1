@@ -53,14 +53,14 @@
 # ─────────────────────────────────────────────────────────────────────
 #
 # HF id	说明
-Qwen/Qwen3-Coder-Next	同代候选（代码向）：产物在 refs/，还没写 .by1
+Qwen/Qwen3-Coder-Next	同代候选（代码向）：**已毕业** 2026-10-11（models/Qwen3-Coder-Next.by1，逐专家 MoE）
 Qwen/Qwen3-Omni-30B-A3B-Thinking	多模态候选：**已毕业** 2026-10-11（models/Qwen3-Omni-30B-A3B-Thinking.by1，音频塔 525 个）
 Qwen/Qwen3-VL-235B-A22B-Thinking	多模态候选（最大号）：**已毕业** 2026-10-11（models/Qwen3-VL-235B-A22B-Thinking.by1）
 Qwen/Qwen3-VL-2B-Thinking	多模态候选（最小号）：**已毕业** 2026-10-11（models/Qwen3-VL-2B-Thinking.by1）
 Qwen/Qwen3-VL-30B-A3B-Thinking	多模态候选：**已毕业** 2026-10-11（models/Qwen3-VL-30B-A3B-Thinking.by1）
 Qwen/Qwen3.5-0.8B	Qwen3.5 家族最小号：**已毕业** 2026-10-11（models/Qwen3.5-0.8B.by1）
-Qwen/Qwen3.5-397B-A17B	Qwen3.5 家族最大号：还没写 .by1
-Qwen/Qwen3.5-9B	Qwen3.5 家族：还没写 .by1
+Qwen/Qwen3.5-397B-A17B	Qwen3.5 家族最大号：**已毕业** 2026-10-11（models/Qwen3.5-397B-A17B.by1，MoE 号）
+Qwen/Qwen3.5-9B	Qwen3.5 家族：**已毕业** 2026-10-11（models/Qwen3.5-9B.by1）
 Qwen/Qwen3.8-Flash-Next	Qwen3.8 的 Flash 分支：草稿在 drafts/，过不了检查器
 deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B	早期对拍用的小模型：**已毕业** 2026-10-11（models/DeepSeek-R1-Distill-Qwen-1.5B.by1）
 deepseek-ai/DeepSeek-R1-Distill-Qwen-7B	早期对拍用的模型：还没写 .by1

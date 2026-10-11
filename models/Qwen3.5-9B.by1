@@ -1,0 +1,229 @@
+# ── Qwen3.5-9B.by1 ───────────────────────────────────────────────────
+# Qwen/Qwen3.5-9B —— Qwen3.5 家族中间号。
+#
+# 和 `Qwen3.5-0.8B` **同一套骨架**（线性注意力 GDN 3+1 混合 + 输出门控
+# + 按头 QK-norm + MTP + 视觉塔，且视觉塔同样**没有 deepstack**），
+# 逐张量名字**一个不差** —— 差别全在尺寸：
+#
+#              0.8B            9B
+#   d_model    1024            4096
+#   n_layer    24              32          （都是 3 线性 + 1 全量）
+#   稠密 FFN   3584            12288
+#   Lin v 头   16              32          ← **k 头不变（16）**
+#   视觉塔     768 / 12 层     1152 / 27 层（head_dim 64 -> 72）
+#   视觉 MLP   3072            4304
+#   tie        true            **false**   ← 所以 9B **有 `lm_head`**
+#
+# 线性注意力的头数是 **16 k / 32 v**（0.8B 是 16/16）——
+# `in_proj_qkv (8192, 4096)` = 16x128x2 + 32x128 = 4096 + 4096 ✓。
+#
+# 全量注意力 `q x head_dim = 16 x 256 = 4096` **正好等于 d_model** ——
+# 所以这里不像 0.8B 那样需要显式 `out_dim` 去消警告（0.8B 是 8x256 = 2048
+# 而 d_model 只有 1024）。这里显式写出来只是为了和 0.8B 对齐。
+#
+# 事实来源：
+#   refs/Qwen__Qwen3.5-9B.config.json
+#   refs/Qwen__Qwen3.5-9B.tensors.json（775 个张量）
+# by1-model: Qwen3.5-9B
+# by1-repo:  Qwen/Qwen3.5-9B
+# by1-short: Qwen3.5-9B
+
+model Qwen3.5-9B {
+  arch  qwen3_5
+  ctx   262144
+
+  hparams {
+    d_model = 4096
+    n_layer = 32
+    vocab   = 248320
+    rms_eps = 1e-06
+  }
+
+  # GDN 线性注意力：16 头 k、**32 头 v**，都是 128 维，卷积核 4。
+  mech Lin : Linear {
+    k_heads     = 16
+    k_dim       = 128
+    v_heads     = 32
+    v_dim       = 128
+    conv_kernel = 4
+    act         = silu
+    structural  = [ k_heads, k_dim, v_heads, v_dim, conv_kernel, out_dim ]
+  }
+
+  # 全量注意力：16 头 x 256 = 4096（= d_model），**输出门控**（q_proj 是 2 倍宽）。
+  mech GQA : Attention {
+    heads      = { q = 16, kv = 4, head_dim = 256 }
+    out_dim    = 4096
+    q_gate     = true
+    qk_norm    = per_head
+    structural = [ head_dim, out_dim, q_gate, qk_norm ]
+  }
+
+  mech FFN_ : FFN { hidden = 12288 }
+
+  # ── 视觉塔（27 层，宽 1152）──────────────────────────────────────
+  # 16 头 x 72 = 1152 ✓（qkv.weight 是 3 x 1152 = 3456 ✓）。
+  mech Vis : Attention {
+    qkv_fused  = true
+    heads      = { q = 16, kv = 16, head_dim = 72 }
+    bias       = true
+    structural = [ head_dim ]
+  }
+  mech VisMlp : FFN { hidden = 4304, gate = none, bias = true }
+
+  schedule {
+    lin   = 3 * Lin
+    full  = 1 * GQA
+    block = lin + full
+  }
+
+  stack model {
+    pattern = 8 * block            # 32 层 = 8 × 4
+    model[:] >> FFN_
+  }
+
+  stack mtp {
+    aux     = true
+    pattern = 1 * GQA
+    mtp[:] >> FFN_
+  }
+
+  stack visual {
+    d_model = 1152
+    aux     = true
+    pattern = 27 * Vis
+    visual[:] >> VisMlp
+  }
+
+  position {
+    default = partial(rope(base = 10000000, pairing = half), ratio = 0.25)
+  }
+
+  tensors {
+    Lin {
+      in_proj_qkv.weight : (k_heads * k_dim * 2 + v_heads * v_dim, d_model)
+      in_proj_z.weight   : (v_heads * v_dim, d_model)
+      in_proj_a.weight   : (v_heads, d_model)
+      in_proj_b.weight   : (v_heads, d_model)
+      conv1d.weight      : (k_heads * k_dim * 2 + v_heads * v_dim, 1, conv_kernel)
+      A_log              : (v_heads,)
+      dt_bias            : (v_heads,)
+      norm.weight        : (v_dim,)
+      out_proj.weight    : (d_model, v_heads * v_dim)
+    }
+    GQA {
+      q_proj.weight : (q * head_dim * 2, d_model)
+      k_proj.weight : (kv * head_dim, d_model)
+      v_proj.weight : (kv * head_dim, d_model)
+      o_proj.weight : (d_model, q * head_dim)
+      q_norm.weight : (head_dim,)
+      k_norm.weight : (head_dim,)
+    }
+    FFN_ {
+      gate_proj.weight : (hidden, d_model)
+      up_proj.weight   : (hidden, d_model)
+      down_proj.weight : (d_model, hidden)
+    }
+    Vis {
+      qkv.weight  : (3 * q * head_dim, d_model)
+      qkv.bias    : (3 * q * head_dim,)
+      proj.weight : (d_model, q * head_dim)
+      proj.bias   : (d_model,)
+    }
+    VisMlp {
+      linear_fc1.weight : (hidden, d_model)
+      linear_fc1.bias   : (hidden,)
+      linear_fc2.weight : (d_model, hidden)
+      linear_fc2.bias   : (d_model,)
+    }
+    layer {
+      input_layernorm.weight          : (d_model,)
+      post_attention_layernorm.weight : (d_model,)
+    }
+    layer visual {
+      norm1.weight : (d_model,)
+      norm1.bias   : (d_model,)
+      norm2.weight : (d_model,)
+      norm2.bias   : (d_model,)
+    }
+    global {
+      embed.weight      : (vocab, d_model)
+      final_norm.weight : (d_model,)
+      # **tie = false**（0.8B 是 true）—— 所以 `lm_head` **在**。
+      lm_head.weight    : (vocab, d_model)
+      mtp_fc.weight             : (d_model, 2 * d_model)
+      mtp_norm_embedding.weight : (d_model,)
+      mtp_norm_hidden.weight    : (d_model,)
+      mtp_norm.weight           : (d_model,)
+      # ── 视觉塔层外（9 个）—— **没有 deepstack**（`deepstack_visual_indexes = []`）
+      # merger 的输出宽度是**文本的 d_model**（4096），而 `linear_fc1` 是
+      # `4h x 4h` = 4608（4 x 1152）。
+      model.visual.patch_embed.proj.weight  : (1152, 3, 2, 16, 16)
+      model.visual.patch_embed.proj.bias    : (1152,)
+      model.visual.pos_embed.weight         : (2304, 1152)
+      model.visual.merger.norm.weight       : (1152,)
+      model.visual.merger.norm.bias         : (1152,)
+      model.visual.merger.linear_fc1.weight : (4608, 4608)
+      model.visual.merger.linear_fc1.bias   : (4608,)
+      model.visual.merger.linear_fc2.weight : (d_model, 4608)
+      model.visual.merger.linear_fc2.bias   : (d_model,)
+    }
+  }
+
+  emit {
+    train -> transformers.config {
+      field {
+        model_type                  = "qwen3_5_text"
+        vocab_size                  = vocab
+        hidden_size                 = d_model
+        num_hidden_layers           = n_layer
+        intermediate_size           = FFN_.hidden
+        num_attention_heads         = GQA.q
+        num_key_value_heads         = GQA.kv
+        head_dim                    = GQA.head_dim
+        max_position_embeddings     = ctx
+        rms_norm_eps                = rms_eps
+        hidden_act                  = "silu"
+        attention_bias              = false
+        attention_dropout           = 0.0
+        initializer_range           = 0.02
+        rope_parameters             = {"mrope_interleaved": true, "mrope_section": [11, 11, 10], "rope_type": "default", "rope_theta": 10000000, "partial_rotary_factor": 0.25}
+        use_cache                   = true
+        layer_types                 = layer_types
+        full_attention_interval     = 4
+        attn_output_gate            = true
+        linear_conv_kernel_dim      = 4
+        linear_key_head_dim         = 128
+        linear_num_key_heads        = 16
+        linear_num_value_heads      = 32
+        linear_value_head_dim       = 128
+        mamba_ssm_dtype             = "float32"
+        mlp_only_layers             = []
+        mtp_num_hidden_layers       = 1
+        mtp_use_dedicated_embeddings = false
+        # ⚠ **这里没有 `tie_word_embeddings`** —— 它只在 config 的**顶层**，
+        # `text_config` 里**没有**（0.8B 是两处都有）。而 emit 这一块产出的
+        # 就是 `text_config`，多写一个字段会被逐字段对拍报成"by1 多出"。
+        # tie = false 这件事由上面 `lm_head.weight : (vocab, d_model)` 表达。
+        eos_token_id                = 248044
+      }
+    }
+
+    train -> torch.module {
+      name_model  = "model.language_model.layers.{i}.{scope}{physical}"
+      name_mtp    = "mtp.layers.{i}.{scope}{physical}"
+      name_visual = "model.visual.blocks.{i}.{scope}{physical}"
+      name        = "{stack}.layers.{i}.{scope}{physical}"
+      global_name = "{physical}"
+      scope { Lin = linear_attn., GQA = self_attn., FFN_ = mlp., Vis = attn., VisMlp = mlp., layer = "", global = "" }
+      rename {
+        embed.weight      = model.language_model.embed_tokens.weight,
+        final_norm.weight = model.language_model.norm.weight,
+        mtp_fc.weight             = mtp.fc.weight,
+        mtp_norm_embedding.weight = mtp.pre_fc_norm_embedding.weight,
+        mtp_norm_hidden.weight    = mtp.pre_fc_norm_hidden.weight,
+        mtp_norm.weight           = mtp.norm.weight
+      }
+    }
+  }
+}
