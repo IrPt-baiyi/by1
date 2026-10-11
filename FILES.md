@@ -1,6 +1,6 @@
 # 这个仓库里每个文件是干什么的
 
-> 253 个跟踪文件。按"你会想找什么"分组，不按字母表。
+> 258 个跟踪文件。按"你会想找什么"分组，不按字母表。
 >
 > **这份文档是生成的**：`python src/by1files.py --write`。
 > 文件清单、每组的个数、每个文件的一句话都从目录树和 docstring 来 ——
@@ -237,13 +237,14 @@
 | `ir.md` | > **同一份 IR，两个后端（PyTorch / 自建执行器）跑出同一个前向 |
 | `plan.md` | by1 · 接下来的计划 |
 
-## `models/` —— 41 个
+## `models/` —— 45 个
 
 命名规矩：**文件名 = 长名 = HF 的模型名（去掉 owner）**，
 `model` 声明 = 短名（手写的）。两列的对照见 `models.tsv`。
 
 | 文件 | 用途 |
 |---|---|
+| `DeepSeek-R1-Distill-Qwen-1.5B.by1` | 真实模型 · HF id `deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B` |
 | `GLM-5.3-Flash.by1` | 真实模型 · HF id `zai-org/GLM-5.3-Flash` |
 | `Instella-3B.by1` | 真实模型 · HF id `amd/Instella-3B` |
 | `Laguna-XS-2_1.by1` | 真实模型 · HF id `poolside/Laguna-XS-2_1` |
@@ -253,6 +254,7 @@
 | `Qwen3-VL-235B-A22B-Thinking.by1` | 真实模型 · HF id `Qwen/Qwen3-VL-235B-A22B-Thinking` |
 | `Qwen3-VL-2B-Thinking.by1` | 真实模型 · HF id `Qwen/Qwen3-VL-2B-Thinking` |
 | `Qwen3-VL-30B-A3B-Thinking.by1` | 真实模型 · HF id `Qwen/Qwen3-VL-30B-A3B-Thinking` |
+| `Qwen3.5-0.8B.by1` | 真实模型 · HF id `Qwen/Qwen3.5-0.8B` |
 | `Qwen3.6-35B-A3B.by1` | 真实模型 · HF id `Qwen/Qwen3.6-35B-A3B` |
 | `Qwen3.8-27B.by1` | 真实模型 · HF id `Qwen/Qwen3.8-27B` |
 | `Step-3.7-Flash.by1` | 真实模型 · HF id `stepfun-ai/Step-3.7-Flash` |
@@ -261,6 +263,7 @@
 | `clef-tiny.by1` | 目的：证明"对着真 checkpoint 验过的那份描述"**同时是能跑的** |
 | `clef.by1` | 真实模型 · HF id `Cloudflare/clef` |
 | `gate-probe.by1` | 取值门的**反例**：故意写一个 codegen 没实现的取值 |
+| `gemma-4-12B.by1` | 真实模型 · HF id `google/gemma-4-12B` |
 | `gemma-4-31B.by1` | 真实模型 · HF id `google/gemma-4-31B` |
 | `glm-text-tiny.by1` | GLM-5.3-Flash 文本主干的机械缩小版。** 结构一个字没改： |
 | `gpt-oss-120b.by1` | 真实模型 · HF id `openai/gpt-oss-120b` |
@@ -275,6 +278,7 @@
 | `ling-tiny.by1` | 由 Ling-3.0-tiny.by1 机械缩小维度得到，结构一个字没改 |
 | `llama-shaped.by1` | 与 transformers 的 LlamaForCausalLM 结构完全一致的最小模型： |
 | `llama3-shaped.by1` | llama3 式 RoPE 缩放的最小可跑模型 |
+| `mamba-130m-hf.by1` | 真实模型 · HF id `state-spaces/mamba-130m-hf` |
 | `minimind-3.by1` | 真实模型 · HF id `jingyaogong/minimind-3` |
 | `mixtral-shaped.by1` | Block 1.1 的判卷对象：MoE |
 | `mla-shaped.by1` | MLA 的最小可跑模型 |
@@ -327,7 +331,7 @@
 | `by1smoke.py` | """冒烟测：把每个 by1*.py 都单独跑一遍 |
 | `by1verify.py` | 差分验证：把 .by1 的展开结果与官方产物对拍 |
 
-## `src/data/` —— 6 个
+## `src/data/` —— 7 个
 
 | 文件 | 用途 |
 |---|---|
@@ -336,6 +340,7 @@
 | `by1cmp.py` | 把所有模型的架构摆成一张表 |
 | `by1fetch.py` | 一条命令，把 refs/ 全部重抓回来 |
 | `by1index.py` | 抓张量名清单。**免费，而且这是"能不能描述"的真正判据 |
+| `by1shapes.py` | 把 `{名: null}` 的 refs 补成 F1（带 dtype + shape） |
 | `by1triage.py` | 把一批新 config 过一遍 by1，看谁需要新原语 |
 
 ## `src/escape/` —— 4 个
