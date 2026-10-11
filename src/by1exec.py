@@ -36,6 +36,43 @@ try:
 except ImportError:                     # 单独拷一个文件出去时兜底
     _DEFAULT_EPS = 1e-5
 
+# **MoE 打分函数的解析和计算只有一份实现**（`by1ir`）——
+# 三个后端都从这儿取。这条规则原来在三个后端里各写各的，于是
+# `sigmoid_group_topk` 曾经在两个后端里都落进 else（ir.md 130），
+# 而这一轮补 `sqrtsoftplus` 时又来了一次：只在 `compile_ir` 里填 `_score`，
+# NumPy 这条"直读 IR"的路看不见它，两后端差了 1.6e-02。
+# **一条规则三处实现 = 迟早对不上**，所以这里不再自己算。
+try:
+    from by1ir import moe_score, moe_scores_array
+except ImportError:                     # 兜底：和 by1ir 里那两份逐字相同
+    _SCORE_FROM_ROUTING = {"sigmoid_topk": "sigmoid",
+                           "sigmoid_group_topk": "sigmoid",
+                           "softmax_topk": "softmax",
+                           "topk_softmax": "softmax"}
+
+    def moe_score(attrs):
+        a = attrs or {}
+        for key in ("score", "_score"):
+            v = a.get(key)
+            if v is not None and str(v).strip():
+                return str(v).strip().lower()
+        return _SCORE_FROM_ROUTING.get(
+            str(a.get("routing", "")).strip().lower())
+
+    def moe_scores_array(kind, logits, np):
+        if kind == "softmax":
+            e = np.exp(logits - logits.max(-1, keepdims=True))
+            return e / e.sum(-1, keepdims=True)
+        if kind == "sigmoid":
+            return 1.0 / (1.0 + np.exp(-logits))
+        sp = np.maximum(logits, 0) + np.log1p(np.exp(-np.abs(logits)))
+        if kind == "softplus":
+            return sp
+        if kind == "sqrtsoftplus":
+            return np.sqrt(sp)
+        raise ValueError("不认识的打分函数 <%s> —— 不许静默退回 softmax"
+                         % (kind,))
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
@@ -552,13 +589,25 @@ def op_moe(P, a, ins, d):
     #     sigmoid_group_topk  6.4e-01  不过     <- 落进 else
     # 门里的 shaped 模型只用了前两种，所以从来没红过。见 history/ir.md 130。
     rt = (a.get("routing") or "softmax_topk")
+    # **打分函数：和选法正交。** 解析走 `by1ir.moe_score` 那一份实现
+    # （`by1codegen` 也从它取）—— 这里**不能**读编译期填的 `_score`：
+    # 这一条走的是 IR 直读，`compile_ir` 根本没跑过，`_score` 不存在。
+    # 第一版就是只在 `compile_ir` 里填 `_score`，于是 torch 走 sqrtsoftplus、
+    # NumPy 退回"按前缀猜"走 sigmoid，两后端差 1.6e-02 ——
+    # **正是这条规则不该有两份实现的原因。**
+    _sc = moe_score(a)
+    if _sc is None:
+        raise ValueError(
+            "MoE 的打分函数推不出来：routing = <%r> 不在闭集里，"
+            "而 score 也没写 —— **不许静默退回 softmax**" % (rt,))
     if rt == "sigmoid_group_topk":
-        # noaux_tc（Ling / DeepSeek V3 / GLM）：sigmoid 打分 + **分组** top-k。
+        # noaux_tc（Ling / DeepSeek V3 / GLM / **DeepSeek V4**）：
+        # **先打分**再分组 top-k。
         # 关键：`score_bias` **只影响选择**，权重用未加偏置的 sc。
         ng, tg = a.get("n_group") or 0, a.get("topk_group") or 0
         if not ng or not tg:
             raise ValueError("routing = sigmoid_group_topk 需要 n_group 与 topk_group")
-        sc = 1.0 / (1.0 + np.exp(-logits))
+        sc = moe_scores_array(_sc, logits, np)
         choice = sc + sb if sb is not None else sc
         gs = choice.reshape(-1, ng, choice.shape[-1] // ng)
         # 每组取前 2 之和排名，选 topk_group 个组
@@ -572,9 +621,9 @@ def op_moe(P, a, ins, d):
         tv = np.take_along_axis(sc, topi, -1)         # **未加偏置**的分数
         topv = tv / (tv.sum(-1, keepdims=True) + 1e-20)
     elif rt == "sigmoid_topk":
-        # sigmoid 打分 + 直接 top-k，**不分组**（Step-3.7）。
+        # **先打分**再直接 top-k，不分组（Step-3.7）。
         # 和 sigmoid_group_topk 只差"先选组"那一步，名字只差一个词。
-        sc = 1.0 / (1.0 + np.exp(-logits))
+        sc = moe_scores_array(_sc, logits, np)
         choice = sc + sb if sb is not None else sc
         topi = _topk(choice, a["top_k"])
         tv = np.take_along_axis(sc, topi, -1)
@@ -583,11 +632,21 @@ def op_moe(P, a, ins, d):
         # 先 top-k，再只对这 k 个 logits 做 softmax（GPT-OSS）。
         # **选和权重都用 `logits`，不看 score_bias** —— 参考就是这么写的。
         # （原来这里用的是加了偏置的 sel，两处都不一样。）
+        # **这一支不经过打分函数** —— 配非 softmax 的 score 是矛盾。
+        if _sc != "softmax":
+            raise ValueError(
+                "routing = topk_softmax 不经过打分函数，score = <%r> 不会被读 "
+                "—— 要么去掉，要么换 sigmoid_topk" % (_sc,))
         topi = _topk(logits, a["top_k"])
         topv = softmax(np.take_along_axis(logits, topi, -1), -1)
     else:
         # 全体 softmax -> top-k -> 重新归一（Mixtral）。
         # `score_bias` **只影响选择**：权重要重算，用未加偏置的 logits。
+        # 同上：这一支的 score 就是 softmax 本身。
+        if _sc != "softmax":
+            raise ValueError(
+                "routing = softmax_topk 不经过打分函数，score = <%r> 不会被读 "
+                "—— 要么去掉，要么换 sigmoid_topk" % (_sc,))
         sel = logits + sb if sb is not None else logits
         topi = _topk(softmax(sel, -1), a["top_k"])
         base = logits if sb is not None else sel

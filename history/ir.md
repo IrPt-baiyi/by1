@@ -1013,3 +1013,72 @@ NumPy vs PyTorch   相对 4.0e-07   过 C vs NumPy         相对 8.0e-07   过
 | ✅ **MTP 栈是对的** | GLM 的 `q_a_proj (1536, 4096)`、Step 的 `wq (12288, 4096)` —— 因为 MTP 用的就是模型宽度 |
 | ❌ **后端参数形状是错的** | `by1exec.shapes_of` 和 `by1c` 用模型级 `d_model` |
 **它同时给「视觉：算不了」这句话一个具体的形状**： 不是"没人写那几个算子"，而是**生成出来的运行时参数连形状都对不上** —— 要算得先把"每层输入宽度"放进 IR。这一条写进 `1.md` 的已知缺口。
+
+## 132. **打分函数是一个原语，不是 `routing` 名字的前缀** —— 而补它的时候，三后端对拍抓到了一个只有它会抓的 bug
+
+这一条的起点是 130 留下的那句话：`routing_vs_config` 只能靠
+`rt.startswith('sigmoid')` 猜 —— 而**猜不出来的（`sqrtsoftplus`）就完全没有位置放**。
+DeepSeek V4 的 `scoring_func = "sqrtsoftplus"` 因此表达不出来。
+
+**根因是"两件事糊在一个属性里"**。`routing` 一个名字同时说了两件事：
+① `logits` 怎么变成 `scores`（打分函数）；② `scores` 怎么挑出 top-k（选法）。
+名字里的前缀（`sigmoid_*` / `softmax_*`）被当成①的来源，于是①**没有独立的位置**。
+补法不是"再加一个 routing 取值"，而是**把①拆出来**：新增 `score` 属性，
+取值照抄 `transformers.activations.ACT2FN` 的键（`softmax` / `sigmoid` /
+`sqrtsoftplus` / `softplus`）—— **不自造名字**。
+
+**权威语义取自本地就有的 `transformers 5.15.1`**：
+`SqrtSoftplusActivation` 的 docstring 逐字写着
+`sqrt(softplus(x)) — the router scoring function used by DeepSeek V4.`，
+而 `DeepseekV4TopKRouter` 用的是 `ACT2FN[config.scoring_func]`。
+实测：`sqrtsoftplus` 与参考差 **1.11e-16**，`softplus` 与
+`torch.nn.functional.softplus` 差 **9.24e-14**，±100 极端值无 NaN。
+
+**向后兼容是硬要求**：4 个已毕业的模型只写 `routing = sigmoid_group_topk`，
+一个都不用改 —— `moe_score` 的优先级是 `score` > `_score` > 按前缀推，
+只有第三支给老模型兜底，推断结果和以前逐字相同。
+
+**两处硬护栏**（IR 层 + 三个后端运行期各一道），都是"写了等于没写"那类：
+① `sigmoid_group_topk`（noaux_tc，先打分再分组选）配 `score = softmax` = 矛盾；
+② `softmax_topk` / `topk_softmax` 配非 softmax 的 `score` —— 那两支的
+top-k 直接在 logits 或 softmax(logits) 上做，**根本不经过打分函数**，
+`score` 写了没人读。这正是 KDA 的 `gate_act` 被删掉的理由（同名同形的那一类）。
+
+**三后端对拍抓到了一个单后端抓不到的 bug —— 这一条比原语本身值钱。**
+给夹具加第三层（`sqrtsoftplus`）之后，`by1exec --compare` 报
+**最大绝对差 1.658e-02**（两层的原始版本 PASS 1.935e-07）。
+排查过程记在这里，因为它是**这类 bug 的形状**：
+- **先排除精度**：用 float64 重跑，误差**一模一样 1.658e-02** —— 不是浮点。
+- 单点对拍四个打分函数：torch vs NumPy 差 1e-16 —— 打分函数本身没错。
+- 精确复现两侧 `sigmoid_topk` 的选择与权重：**完全一致**。
+- 打印 torch 侧三个 MoE 模块的 `score`：`sigmoid / sigmoid / sqrtsoftplus` ✓ 正确。
+- 隔离第 2 层单独对拍：差 **2.609e+00** —— 确认在 MoE 内。
+- 根因：我写的 `moe_score` **只读 `score`，忽略了 `_score`**。
+  torch 侧读的是 `a.get("score") or a.get("_score")`（拿到 sqrtsoftplus），
+  NumPy 侧走 `moe_score`（退回按前缀猜 -> sigmoid）—— **两条路分叉**。
+修法：`moe_score` 的查找循环改成 `for key in ("score", "_score")`，
+三处兜底副本同步。重跑 **PASS 2.158e-07**（torch vs NumPy）/
+**1.846e-07**（C vs NumPy，1404 行、36 张量）。
+
+**教训（这是 130 那条的第二次兑现）**：130 说"一条规则三处实现 = 迟早对不上"，
+于是把推断逻辑收进了 `by1ir.moe_score` 一处。**但对拍仍然抓到了分叉** ——
+因为三处实现里只有一处（`moe_score`）漏读了 `_score`，
+而**只有跑三条路互拍才看得见**。单后端跑完全绿。
+→ **"一处定义"要配"三处对拍"才成立**：定义集中解决"写法不一致"，
+  对拍解决"实现有疏漏"。两个都要有。
+
+**补原语路上的第二个坑：推导值必须能通过 `validate`。**
+`compile_ir` 会把解析出的打分函数填进 IR 的 `_score`（NumPy 后端直读 IR，
+需要那个已解析好的值，否则又变成"两条路各推一遍"）。
+而 `_score` 一开始**不在规格表里** —— 于是 `by1irentry` 报
+"多出来的字段 `_score`"，**6 个走 `compile_ir` 的模型全红**。
+根因是 `validate` 的 `_keys_bad` 是"规格表是合法东西的唯一定义"，
+而**编译器往 IR 里填了一个表外的键**。修法是把 `_score` 加进 `MoE` 规格表，
+标明它是**推导值**（不是给人写的），并加一条一致性约束：
+`score` 和 `_score` 都在又不相等 = 两个真相源 = 错误。
+**推导值也是 IR 的一部分** —— 只要它是"序列化再读回来还得能跑"的接口。
+
+**这一轮的结果**：`by1all --tier 4` **105 项，0 项失败，5 项跳过**（[全过]）；
+`by1fast` PASS；判卷人 `by1moe.py` 三节全 PASS，并**诚实标出** GLM / Ling
+两处是"推的"而非"写的"（它们没写 `score`，但推断结果与官方 config 一致）。
+

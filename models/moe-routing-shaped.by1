@@ -1,5 +1,5 @@
 # ── moe-routing-shaped.by1 ────────────────────────────────────────────
-# MoE 的**两种 sigmoid 路由**。名字只差一个词，选出来的专家不一样：
+# MoE 的**三种选法 + 三种打分**。名字只差一个词，选出来的专家不一样：
 #
 #   sigmoid_topk          sigmoid 打分 + 直接 top-k              （Step-3.7）
 #   sigmoid_group_topk    sigmoid 打分 + **分组** top-k（noaux_tc）（Ling / DeepSeek V3 / GLM）
@@ -21,13 +21,21 @@
 #
 # **`score_bias` 都开** —— 它只影响选择、不影响权重（noaux_tc 的关键），
 # 不开的话这条差别测不出来。
+#
+# ── 2026-10-11：加了第三层，把**打分函数**这条新原语也钉在门里 ──────
+# `score` 和 `routing` 原来是糊在一起的（打分函数靠 `routing` 的名字前缀猜），
+# 于是 `sqrtsoftplus`（DeepSeek V4 的 `scoring_func`）**根本没有位置放**。
+# 现在两个是正交属性，这一层就是 `sqrtsoftplus` + `sigmoid_topk`：
+# 打分改成 sqrt(softplus(x))，**选法一个字没动** —— 所以它验的是
+# "换打分函数确实换了模型"，而不是"换了个写法"。
+# 判卷人：`transformers` 的 `DeepseekV4TopKRouter`（`src/modelcheck/by1moe.py`）。
 
 model MoERoutingShaped {
   ctx 512
 
   hparams {
     d_model = 128
-    n_layer = 2
+    n_layer = 3
     vocab   = 256
     rms_eps = 1e-05
   }
@@ -37,7 +45,7 @@ model MoERoutingShaped {
     structural = [ head_dim ]
   }
 
-  # 逐层各挂一种路由，一份文件覆盖两条分支
+  # 逐层各挂一种路由，一份文件覆盖三条分支
   mech MoEA : MoE {
     experts      = 8
     top_k        = 2
@@ -62,10 +70,26 @@ model MoERoutingShaped {
     structural   = [ experts, hidden, n_group, topk_group ]
   }
 
+  # **打分函数是另一个属性** —— 这一层选法和 MoEA 一模一样，
+  # 只有打分从 sigmoid 换成 sqrtsoftplus。两个模型前向不同
+  # （softplus 不过 [0,1]，所以权重归一化出来和 sigmoid 不是一个分布）。
+  mech MoEC : MoE {
+    experts      = 8
+    top_k        = 2
+    hidden       = 32
+    shared       = 0
+    score_bias   = true
+    routing      = sigmoid_topk
+    score        = sqrtsoftplus
+    routed_scale = 2.5
+    structural   = [ experts, hidden ]
+  }
+
   stack main {
-    pattern = 2 * Attn
+    pattern = 3 * Attn
     main[0] >> MoEA
     main[1] >> MoEB
+    main[2] >> MoEC
   }
 
   position {

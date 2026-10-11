@@ -144,7 +144,7 @@
 | `by1gpt2.py` | GPT-2 前向的差分验证，**用真的 GPT-2** |
 | `by1instella.py` | Instella-3B 前向的差分验证，**用真实维度** |
 | `by1mla.py` | MLA 的差分验证 |
-| `by1moe.py` | noaux_tc 分组路由的差分验证 |
+| `by1moe.py` | MoE 路由的差分验证：**分组选法** + **打分函数** |
 | `by1rope.py` | llama3 式 RoPE 缩放的差分验证 |
 | `by1ssm.py` | Mamba2 的判卷人**：by1 要生成的递推 vs 官方 mixer |
 | `by1kda.py` | KDA（Kimi Delta Attention）的验证。它在 `by1check` 里是独立种类，不是 GDN |
@@ -292,7 +292,7 @@
 | `mixtral-shaped.by1` | Block 1.1 的判卷对象：MoE |
 | `mla-shaped.by1` | MLA 的最小可跑模型 |
 | `mla-sparse-shaped.by1` | SparseMLA** 的最小可跑模型：MLA 加一个 DSA 稀疏索引器 |
-| `moe-routing-shaped.by1` | MoE 的**两种 sigmoid 路由**。名字只差一个词，选出来的专家不一样： |
+| `moe-routing-shaped.by1` | MoE 的**三种选法 + 三种打分**。名字只差一个词，选出来的专家不一样： |
 | `qwen3-next-shaped.by1` | Block 1.3 的判卷对象：**混合栈 + 递归状态** |
 | `raw-escape.by1` | 逃生舱的**可证伪对照** |
 | `raw.py` | **不是模型，是逃生舱的工厂函数实现**。必须和 `raw-escape.by1` 挨着（`by1codegen` 按名字找它） |
@@ -392,7 +392,7 @@
 | `by1load.py` | 把**真权重**装进 by1 生成的模型 |
 | `by1mem.py` | 从 IR 的 state 声明推出**内存计划**，并可选地用真实模型核它 |
 | `by1mla.py` | MLA 的差分验证 |
-| `by1moe.py` | noaux_tc 分组路由的差分验证 |
+| `by1moe.py` | MoE 路由的差分验证：**分组选法** + **打分函数** |
 | `by1real.py` | 真权重、真维度，跑一个 27B 模型的前向 |
 | `by1rope.py` | llama3 式 RoPE 缩放的差分验证 |
 | `by1sparse.py` | DSA 稀疏索引器的验证（对着 transformers 的 `GlmMoeDsaIndexer`）。**`index_kpool_compress_*` 那两个张量没验** —— 没有可比的官方实现 |

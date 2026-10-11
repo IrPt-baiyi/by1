@@ -31,6 +31,20 @@ try:
 except ImportError:                     # 单独拷一个文件出去时兜底
     _DEFAULT_EPS = 1e-5
 
+# **打分函数的序数表只有一份**（`by1ir.SCORE_KINDS`）——
+# C 端只收整数，而"哪个整数是哪个函数"必须和 by1ir 那张表同源。
+try:
+    from by1ir import _score_kind_id
+    from by1ir import SCORE_KINDS as _SCORE_KINDS
+except ImportError:                     # 兜底：和 by1ir 里那份逐字相同
+    _SCORE_KINDS = ("softmax", "sigmoid", "sqrtsoftplus", "softplus")
+
+    def _score_kind_id(kind):
+        try:
+            return _SCORE_KINDS.index(str(kind).strip().lower())
+        except ValueError:
+            return None
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 MANGLE = re.compile(r"[^0-9A-Za-z]")
 
@@ -264,14 +278,20 @@ static void moe(float *o, const float *x, int n, int d, int E, int K, int H,
                 const float *w2, const float *b1, const float *b2,
                 const float *b3, int sh, int shh, const float *sw1,
                 const float *sw3, const float *sw2, const float *sg,
-                int routing, int ng, int tg,
+                int routing, int score, int ng, int tg,
                 int gptoss, float lim, float alpha, float scale) {
     /* routing: 0 = softmax_topk（Mixtral）  1 = topk_softmax（GPT-OSS）
                 2 = sigmoid_topk（Step-3.7） 3 = sigmoid_group_topk（noaux_tc，
                     Ling / DeepSeek V3 / GLM）
        **四种是四个机制。** 这里原来只有 0 / 1 两种，`sigmoid_topk` 和
        `sigmoid_group_topk` 落进 else —— 那一支一直是 softmax_topk。
-       见 history/ir.md 130。 */
+       见 history/ir.md 130。
+
+       score: **打分函数，和 routing 正交** —— 0 = softmax, 1 = sigmoid,
+              2 = sqrtsoftplus, 3 = softplus。
+              取值和 by1ir.SCORE_KINDS 同序（由 codegen 传序数，不传字符串）。
+              `routing` 2/3 两支读它；0/1 两支**不经过打分函数**（top-k 直接
+              做在 logits / softmax(logits) 上），所以那两支忽略 score。 */
     int *idx = (int *)malloc(sizeof(int) * n * K);
     float *wts = (float *)malloc(sizeof(float) * n * K);
     float *lg = (float *)malloc(sizeof(float) * E);
@@ -302,11 +322,33 @@ static void moe(float *o, const float *x, int n, int d, int E, int K, int H,
             for (int k = 0; k < K; k++) { wts[i * K + k] = expf(wts[i * K + k] - mx); s += wts[i * K + k]; }
             for (int k = 0; k < K; k++) wts[i * K + k] = wts[i * K + k] / s * scale;
         } else if (routing == 2 || routing == 3) {
-            /* sigmoid 打分。**sb 只影响选择** —— 权重用未加偏置的 sc。 */
-            for (int e = 0; e < E; e++) {
-                sc[e] = 1.f / (1.f + expf(-lg[e]));
-                ch[e] = sc[e] + (sb ? sb[e] : 0.f);
+            /* **先打分，再选** —— 打分函数是 score 那个参数，不是写死的 sigmoid。
+               sqrtsoftplus（DeepSeek V4）= sqrt(softplus(x))，
+               softplus 用数值稳定写法 max(x,0) + log1p(exp(-|x|))。
+               闭集由上层（codegen 的 `_score_kind_id`）卡死，这里只认 0..3。 */
+            if (score == 0) {
+                /* softmax 打分：整行归一化。这一支理论上不该出现在
+                   routing 2/3 下（by1ir 会拦），照算以免 C 端和 torch 端分叉。 */
+                float mx = -INFINITY;
+                for (int e = 0; e < E; e++) if (lg[e] > mx) mx = lg[e];
+                float s0 = 0.f;
+                for (int e = 0; e < E; e++) { sc[e] = expf(lg[e] - mx); s0 += sc[e]; }
+                for (int e = 0; e < E; e++) sc[e] = sc[e] / s0;
+            } else {
+                for (int e = 0; e < E; e++) {
+                    float v = lg[e];
+                    if (score == 1) {
+                        sc[e] = 1.f / (1.f + expf(-v));
+                    } else {
+                        /* softplus（score 2 再开方）—— 两个共用这一段 */
+                        float sp = (v > 0.f ? v : 0.f)
+                                 + log1pf(expf(-(v > 0.f ? v : -v)));
+                        sc[e] = (score == 2) ? sqrtf(sp) : sp;
+                    }
+                }
             }
+            /* **sb 只影响选择** —— 权重用未加偏置的 sc。 */
+            for (int e = 0; e < E; e++) ch[e] = sc[e] + (sb ? sb[e] : 0.f);
             if (routing == 3) {
                 int per = E / ng;
                 for (int g = 0; g < ng; g++) {
@@ -1815,6 +1857,19 @@ def _emit_c_body(ir, params):
                 #      2 = sigmoid_topk, 3 = sigmoid_group_topk（noaux_tc）
                 _RT = {"softmax_topk": 0, "topk_softmax": 1,
                        "sigmoid_topk": 2, "sigmoid_group_topk": 3}
+                # 打分函数：**和路由正交**，序数取自 `by1ir.SCORE_KINDS`
+                # （0=softmax 1=sigmoid 2=sqrtsoftplus 3=softplus）。
+                # 取不到就把 score 当 0 —— 但先在这里拦一道：推断不出来
+                # 说明 routing 不在闭集里，那种 IR 本来就不该编译到这一步。
+                _rt = str(a.get("routing", "softmax_topk")).strip().lower()
+                _sc_name = a.get("score") or a.get("_score") or (
+                    "sigmoid" if _rt.startswith("sigmoid") else "softmax")
+                _SC = _score_kind_id(_sc_name)
+                if _SC is None:
+                    raise SystemExit(
+                        f"  [不支持] MoE 的打分函数 <%s> 不在 %s 里 —— "
+                        "C 后端不知道该怎么算它，**不许当 softmax 混过去**"
+                        % (_sc_name, list(_SCORE_KINDS)))
                 lb.append(
                     f" moe({dst}, {src[0]}, n, D, {E}, {K}, {hid},"
                     f" P({key(i,j,'router')}),"
@@ -1830,7 +1885,7 @@ def _emit_c_body(ir, params):
                     f" {'P(' + key(i,j,'sw3') + ')' if sh else 'NULL'},"
                     f" {'P(' + key(i,j,'sw2') + ')' if sh else 'NULL'},"
                     f" {'P(' + key(i,j,'shared_gate') + ')' if a['shared_gate'] else 'NULL'},"
-                    f" {_RT.get(a['routing'], 0)}, {int(a.get('n_group') or 0)},"
+                    f" {_RT.get(a['routing'], 0)}, {_SC}, {int(a.get('n_group') or 0)},"
                     f" {int(a.get('topk_group') or 0)},"
                     f" {1 if a['act'] == 'gptoss' else 0},"
                     f" {float(a['limit']) if a['limit'] else 0.0}f,"

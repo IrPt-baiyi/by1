@@ -206,7 +206,9 @@ python src/by1irentry.py                    # 三个后端只从 IR 跑
 | `shared` | `int` | 是 | 共享专家个数 |
 | `shared_hidden` | `int` | 是 |  |
 | `shared_gate` | `bool` | 是 |  |
-| `routing` | `enum:softmax_topk,topk_softmax,sigmoid_group_topk,sigmoid_topk` | 是 | **四种，名字只差一个词** |
+| `routing` | `enum:softmax_topk,topk_softmax,sigmoid_group_topk,sigmoid_topk` | 是 | **选法**（怎么挑专家）。打分函数是另一个属性 `score` |
+| `score` | `enum:softmax,sigmoid,sqrtsoftplus,softplus` | 否 | 打分函数。缺省由 routing 推（sigmoid_* -> sigmoid，其余 -> softmax）；**sqrtsoftplus 推不出来，必须写** |
+| `_score` | `enum:softmax,sigmoid,sqrtsoftplus,softplus` | 否 | **推导值**：`score` 解析后的结果，由 compile_ir 填。不是给人写的；写了就必须和 `score` 一致 |
 | `router_bias` | `bool` | 是 |  |
 | `expert_bias` | `bool` | 是 |  |
 | `score_bias` | `bool` | 是 | noaux_tc 的 e_score_correction_bias |

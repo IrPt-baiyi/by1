@@ -2,7 +2,7 @@
   by1 验证清单  ——  每个模型验到了什么，判卷人是谁
 ====================================================================================================
 
-  这份清单和 `by1all` 的输出对齐（数字取自最近一次全量：103 项，0 项失败，5 项跳过，1 项已知缺口）。
+  这份清单和 `by1all` 的输出对齐（数字取自最近一次全量：105 项，0 项失败，5 项跳过，1 项已知缺口）。
   **"项数"跟着机器走** —— 缺 gcc / 缺显卡 / 缺 HF 缓存都会改它。
   以 `python src/by1all.py` 的最后三行为准，不要引用这一行。
 
@@ -87,7 +87,8 @@
   脚本           机制               判卷人                                          结果
   ------------------------------------------------------------------------------------------------
   src/by1mla.py    MLA              transformers DeepseekV3Attention             PASS
-  src/by1moe.py    noaux_tc 分组路由    transformers DeepseekV3TopkRouter            PASS
+  src/by1moe.py    路由选法 + 打分函数    transformers DeepseekV3TopkRouter            PASS
+                                   · DeepseekV4TopKRouter（sqrtsoftplus）
   src/by1rope.py   llama3 RoPE      transformers _compute_llama3_parameters      PASS
 
 【D】反向梯度 · 四个合成模型，对 transformers 参考

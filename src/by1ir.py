@@ -225,7 +225,49 @@ KIND_ATTRS = {
         "shared_hidden": ("int", True, ""),
         "shared_gate": ("bool", True, ""),
         "routing": ("enum:softmax_topk,topk_softmax,sigmoid_group_topk,sigmoid_topk",
-                    True, "**四种，名字只差一个词**"),
+                    True, "**选法**（怎么挑专家）。打分函数是另一个属性 `score`"),
+        # ── 打分函数（**和选法是两件事**）──────────────────────────────
+        # 打分：`logits` 怎么变成 `scores`。选法：`scores` 怎么挑出 top-k。
+        # 这两个**正交** —— 而原来只有一个 `routing` 把两件事糊在一起：
+        # 名字里的前缀（`sigmoid_*` / `softmax_*`）被当成了打分函数的来源。
+        #
+        # 那个糊法的代价是实测出来的（`history/ir.md 130` + 判卷人第二把尺子）：
+        # GLM-5.3 写 `routing = softmax_topk` 而官方 config 是
+        # `scoring_func = "sigmoid"` —— **契约全对、config 逐字段全对，
+        # 前向算的是另一个模型**。`routing_vs_config` 当时只能靠
+        # `rt.startswith('sigmoid')` 猜，而猜不出来的（`sqrtsoftplus`）
+        # 就完全没有位置放。
+        #
+        # 取值是 `transformers.activations.ACT2FN` 的键 —— **照抄，不自造**：
+        #   softmax       Mixtral / GPT-OSS
+        #   sigmoid       DeepSeek V3 / Ling / GLM
+        #   sqrtsoftplus  **DeepSeek V4** —— sqrt(softplus(x))，
+        #                 实测自 `SqrtSoftplusActivation`（5.15.1）：
+        #                 `return nn.functional.softplus(input).sqrt()`
+        #   softplus      Laguna 的普通 Attention 门（备用，同表）
+        #
+        # **不给就是 undefined，由 `routing` 推**（见 `moe_score`）——
+        # 这样 4 个已经毕业的模型一个都不用改，而新模型必须显式写。
+        "score": ("enum:softmax,sigmoid,sqrtsoftplus,softplus", False,
+                  "打分函数。缺省由 routing 推（sigmoid_* -> sigmoid，"
+                  "其余 -> softmax）；**sqrtsoftplus 推不出来，必须写**"),
+        # ── 推导值（**编译器填，不是给人写的**）──────────────────────
+        # 它必须在这张表里：`compile_ir` 会把解析出的打分函数填进 `_score`，
+        # 而那份 IR 要能通过 `validate` —— `by1irentry` 的整个意义就是
+        # 「编译出来的 IR 序列化再读回来，三个后端还能跑」。
+        # **不在表里的话，那份 IR 自己就不合法**（第一版就是这样：
+        # 6 个走 compile_ir 的模型在 by1irentry 里报"多出来的字段 `_score`"）。
+        #
+        # 为什么不是"编译器别填"：NumPy 后端**直读 IR**，
+        # 它需要那个已解析好的值，否则就得重新推一遍 ——
+        # 而"两条路各推一遍"正是 1.6e-02 那次分叉的成因。
+        # 所以推导值就得躺在 IR 里。它是 IR 的一部分。
+        #
+        # 但不许和 `score` 各说各的（见下面 `_check_op` 的一致性约束）：
+        # **两个来源同一个意思 = 迟早对不上。**
+        "_score": ("enum:softmax,sigmoid,sqrtsoftplus,softplus", False,
+                   "**推导值**：`score` 解析后的结果，由 compile_ir 填。"
+                   "不是给人写的；写了就必须和 `score` 一致"),
         "router_bias": ("bool", True, ""), "expert_bias": ("bool", True, ""),
         "score_bias": ("bool", True, "noaux_tc 的 e_score_correction_bias"),
         "n_group": ("int", True, "分组路由"), "topk_group": ("int", True, ""),
@@ -337,6 +379,88 @@ KIND_ATTRS = {
 }
 
 KINDS = sorted(KIND_ATTRS)
+
+
+# ── MoE 的打分函数：**一处定义，三个后端都从这儿取** ────────────────
+# 三个后端（torch / NumPy / C）都要知道"logits 怎么变成 scores"。
+# 这三处原来各写各的 —— 于是 `sigmoid_group_topk` 曾经在两个后端里
+# 都落进 else 走成 softmax（`history/ir.md 130`）。
+# **一条规则三处实现 = 迟早对不上**，所以推断逻辑只放这里。
+_SCORE_FROM_ROUTING = {
+    "sigmoid_topk": "sigmoid",
+    "sigmoid_group_topk": "sigmoid",
+    "softmax_topk": "softmax",
+    "topk_softmax": "softmax",
+}
+
+
+def moe_score(attrs):
+    """MoE 的打分函数：`logits` -> `scores`。
+
+    **优先级：`score` > `_score` > 从 `routing` 推。**
+
+    · `score`  —— `.by1` 里显式写的那个
+    · `_score` —— 编译期解析出来的（`compile_ir` 会填）。**必须认它**：
+      否则 NumPy 这条"直读 IR"的路会拿一个已解析好的结果当没看见，
+      退回按前缀猜 —— 而两条路猜出不同的值就是静默错。
+      （这一版真出过：torch 走 sqrtsoftplus、NumPy 走 sigmoid，差 1.6e-02。）
+    · 都没有才按前缀推。这一支是给**只写了 `routing` 的老模型**兜底的 ——
+      4 个已毕业的模型都是这么写的，推断结果和以前一模一样。
+
+    推断表是**穷举**的：`routing` 是个闭集，四种全在里面。
+    真出现表外的值，返回 None —— **调用方必须当错误处理，不许退回 softmax**：
+    退回正是 ir.md 130 记的那个错。
+    """
+    a = attrs or {}
+    for key in ("score", "_score"):
+        v = a.get(key)
+        if v is not None and str(v).strip():
+            return str(v).strip().lower()
+    return _SCORE_FROM_ROUTING.get(str(a.get("routing", "")).strip().lower())
+
+
+def moe_scores_array(kind, logits, np):
+    """给定打分函数名，把 `logits` 变成 `scores`。**NumPy 侧唯一的一份。**
+
+    torch 侧在 `by1codegen.RUNTIME` 里、C 侧在 `by1c` 里各有一份 ——
+    但三份的**取值表**都来自上面那张 `_SCORE_FROM_ROUTING` + 这个函数的
+    语义表（见 `SCORE_KINDS`），所以"支持哪些打分函数"只有一个答案。
+
+    `kind` 不在表里就抛 —— **不静默退回**。
+    """
+    if kind == "softmax":
+        e = np.exp(logits - logits.max(-1, keepdims=True))
+        return e / e.sum(-1, keepdims=True)
+    if kind == "sigmoid":
+        return 1.0 / (1.0 + np.exp(-logits))
+    if kind == "softplus":
+        # 数值稳定写法：log1p(exp(-|x|)) + max(x, 0)
+        return np.maximum(logits, 0) + np.log1p(np.exp(-np.abs(logits)))
+    if kind == "sqrtsoftplus":
+        # DeepSeek V4：sqrt(softplus(x))。softplus 恒正 -> sqrt 恒有定义
+        # （这一点很重要：sqrt 不会出 NaN，所以它不需要额外的 eps）
+        sp = np.maximum(logits, 0) + np.log1p(np.exp(-np.abs(logits)))
+        return np.sqrt(sp)
+    raise ValueError("不认识的打分函数 <%s> —— 不许静默退回 softmax" % kind)
+
+
+# **支持哪些打分函数**：三个后端共用的那一张表。
+# **顺序就是 C 后端的整数编码** —— `by1c` 那边按这个序数传参，
+# 所以这张表动一处，C 那边跟着动（`_score_kind_id` 保证两边同源）。
+SCORE_KINDS = ("softmax", "sigmoid", "sqrtsoftplus", "softplus")
+
+
+def _score_kind_id(kind):
+    """打分函数名 -> C 后端的整数编码。**不在表里就炸。**
+
+    C 那边只收整数（它不认识字符串）。这个映射放在这里而不是 `by1c`
+    里，是为了让它和 `SCORE_KINDS` **同源** —— 两处各写一张表，
+    迟早会漂。返回 None 时由调用方报错。
+    """
+    try:
+        return SCORE_KINDS.index(str(kind).strip().lower())
+    except ValueError:
+        return None
 
 
 class IRError(Exception):
@@ -506,6 +630,59 @@ def _check_op(where, op, errs):
         e = _ty(name, t, attrs[name])
         if e:
             errs.append("%s (%s): %s" % (where, k, e))
+
+    # ── MoE：**打分函数 vs 选法**的跨字段约束 ─────────────────────
+    # 这两个属性正交，但不是随便配。写错的组合有两种坏法，
+    # 而**两种都必须是错误，不能静默**：
+    #
+    #   ① 分组选法（`routing = sigmoid_group_topk`，noaux_tc）配一个
+    #      **没有写出来的** 打分函数 —— 靠 `startswith('sigmoid')` 猜。
+    #      这在 GLM-5.3 上真错过一次（见 history/ir.md 130）：
+    #      `.by1` 写 `softmax_topk` + 官方 `scoring_func = "sigmoid"`，
+    #      契约和 config 全对，前向算的是另一个模型。
+    #
+    #   ② 写了 `score = sqrtsoftplus` 却配 `softmax_topk` ——
+    #      `routing` 那一支是"先 top-k 再对这 k 个做 softmax"，
+    #      **`scores` 根本用不上**，于是 `score` 写了等于没写。
+    #      这正是 KDA 的 `gate_act` 被删掉的理由（同名同形的那一类）：
+    #      "声明了、不报错、什么也不做"是这仓库最忌讳的一种。
+    if k == "MoE":
+        rt = str(attrs.get("routing", "")).strip().lower()
+        sc = attrs.get("score")
+        if sc is not None:
+            sc = str(sc).strip().lower()
+        # ② 打分函数必须真的被用到。四种选法里，只有两种读 `scores`：
+        #    softmax_topk  -> 打分就是 softmax 本身，"score" 无从插入
+        #    topk_softmax  -> 先选后 softmax，同样不经过 `score`
+        #    sigmoid_topk / sigmoid_group_topk -> 先打分再选，读 `scores` ✓
+        if sc and sc != "softmax" and rt in ("softmax_topk", "topk_softmax"):
+            errs.append(
+                "%s (MoE): routing = %s **不经过打分函数**（它的 top-k 直接在 "
+                "logits 或 softmax(logits) 上做），可是写了 score = %s —— "
+                "那个属性不会被任何人读。要么去掉 score，要么换成 "
+                "sigmoid_topk / sigmoid_group_topk 这类先打分的选法"
+                % (where, rt, sc))
+        # ① 分组选法 + 不写打分函数 = 靠前缀猜。允许（4 个已毕业的模型
+        #    都是这么写的），但**显式写出来必须和选法自洽**：noaux_tc 的
+        #    语义要求先 sigmoid 打分，写别的就是矛盾。
+        if rt == "sigmoid_group_topk" and sc and sc == "softmax":
+            errs.append(
+                "%s (MoE): routing = sigmoid_group_topk 是 noaux_tc（先打分"
+                "再分组选），score 不能是 softmax —— 那两个是不同算法的两半"
+                % where)
+        # ③ `_score` 是 `score` 的**推导值**，不是第二个来源。
+        #    两个都在、又不相等 = 两个真相源 —— 那就是 `history/ir.md 130`
+        #    那类 bug 的形状：两条路各推一遍，谁对不知道。
+        #    （`.by1` 的标识符允许下划线开头，所以手写是够得着的。）
+        sc2 = attrs.get("_score")
+        if sc2 is not None:
+            sc2 = str(sc2).strip().lower()
+        if sc and sc2 and sc != sc2:
+            errs.append(
+                "%s (MoE): `score` = %s 和 `_score` = %s 对不上 —— "
+                "`_score` 是 `score` 的推导值（编译器填），"
+                "**两个各写各的就是两个真相源**。只写 `score` 就行"
+                % (where, sc, sc2))
 
 
 def to_json(ir, indent=1):

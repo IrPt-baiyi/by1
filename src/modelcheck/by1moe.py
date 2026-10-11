@@ -1,13 +1,24 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""by1moe -- noaux_tc 分组路由的差分验证。
+"""by1moe -- MoE 路由的差分验证：**分组选法** + **打分函数**。
 
-把 by1 的 MoE 路由和 **transformers 的 DeepseekV3TopkRouter** 放在一起，
-喂同样的权重，比选中的专家下标和权重。
+两把尺子，各自对一层的不同东西：
 
-判卷人成立的理由：DeepseekV3TopkRouter 和 Ling 的 BailingMoeV3Gate
-语义逐行相同（sigmoid 打分、偏置只影响选择、每组前 2 之和选组、
-组内 top-k、权重归一化 × routed_scaling_factor），但是**两个团队写的**。
+  ① **选法的数学**：`noaux_tc` 分组路由 vs transformers 的
+     `DeepseekV3TopkRouter`（sigmoid 打分）。
+     判卷人成立的理由：它和 Ling 的 `BailingMoeV3Gate` 语义逐行相同
+     （sigmoid 打分、偏置只影响选择、每组前 2 之和选组、组内 top-k、
+     权重归一化 × routed_scaling_factor），但是**两个团队写的**。
+
+  ② **打分函数**（2026-10-11 新增原语）：`sqrtsoftplus` vs transformers 的
+     `DeepseekV4TopKRouter`。V4 的 `scoring_func = "sqrtsoftplus"`
+     （= `sqrt(softplus(x))`），而 by1 原来**没有位置放它** ——
+     打分函数是从 `routing` 的名字前缀推的（`sigmoid_*` -> sigmoid），
+     推不出来的就静默走 softmax。
+
+  ③ **编码 vs 官方 config**（`routing_vs_config`）：`.by1` 写的打分函数
+     和官方 `scoring_func` 对不对得上。**这一项原来靠名字前缀猜**
+     （`rt.startswith('sigmoid')`），是错的来源之一 —— 现在读 `score`。
 
 用法:  python by1moe.py
 """
@@ -25,10 +36,15 @@ import sys
 import torch
 
 import by1codegen as cg
+import by1ir
 from transformers.models.deepseek_v3.modeling_deepseek_v3 import (
     DeepseekV3TopkRouter)
 from transformers.models.deepseek_v3.configuration_deepseek_v3 import (
     DeepseekV3Config)
+from transformers.models.deepseek_v4.modeling_deepseek_v4 import (
+    DeepseekV4TopKRouter)
+from transformers.models.deepseek_v4.configuration_deepseek_v4 import (
+    DeepseekV4Config)
 
 D, E, K, NG, TG = 256, 32, 4, 8, 4
 NT = 12
@@ -122,8 +138,119 @@ def main():
     ok = same and dd < 1e-6
     print("\n  [%s] noaux_tc %s" % ("PASS" if ok else "FAIL",
                                     "与参考一致" if ok else "对不上"))
-    ok2 = routing_vs_config()
-    return 0 if (ok and ok2) else 1
+    ok2 = sqrtsoftplus_vs_v4()
+    ok3 = routing_vs_config()
+    return 0 if (ok and ok2 and ok3) else 1
+
+
+def sqrtsoftplus_vs_v4():
+    """**打分函数独立于选法** —— 拿 DeepSeek V4 的 `sqrtsoftplus` 验一遍。
+
+    V4 的 config `scoring_func = "sqrtsoftplus"`（`SqrtSoftplusActivation`：
+    `nn.functional.softplus(x).sqrt()`），而 by1 原来把这个信息**塞在
+    `routing` 的名字里**（`sigmoid_topk` / `softmax_topk` …）——
+    于是 `sqrtsoftplus` 根本没有位置放。
+
+    这一节验两件事：
+      ① **打分函数的数学**：by1 的 `_score(logits, "sqrtsoftplus")`
+         和 `DeepseekV4TopKRouter.score_fn` 逐点一致
+      ② **选法没被动过**：同一组 logits 换成 sqrtsoftplus 之后，
+         选出来的专家**和 sigmoid 不同** —— 否则这个属性白加了
+         （那正是这个仓库最忌讳的一类："声明了、不报错、什么也不做"）
+      ③ **解析只有一份**：`by1ir.moe_score`（三个后端都从它取）
+         对同一组 attrs 给出的答案，必须和编译器填进 `_score` 的**一致** ——
+         这一条单独列出来，是因为"一条规则三处实现"正是上一次静默错的根因。
+    """
+    print("\n" + "=" * 74)
+    print("  sqrtsoftplus 打分   by1  vs  transformers 的 DeepseekV4TopKRouter")
+    print("=" * 74)
+
+    # ③ 先验"解析只有一份"—— 它不依赖 transformers，先跑
+    _cases = [
+        ({"routing": "sigmoid_topk"}, "sigmoid"),
+        ({"routing": "sigmoid_group_topk"}, "sigmoid"),
+        ({"routing": "softmax_topk"}, "softmax"),
+        ({"routing": "topk_softmax"}, "softmax"),
+        ({"routing": "sigmoid_topk", "score": "sqrtsoftplus"}, "sqrtsoftplus"),
+        ({"routing": "sigmoid_group_topk", "score": "softplus"}, "softplus"),
+        # `_score` 是编译期填的 —— 必须优先于"按前缀推"
+        ({"routing": "sigmoid_topk", "score": None,
+          "_score": "sqrtsoftplus"}, "sqrtsoftplus"),
+    ]
+    bad_resolve = []
+    for a, want in _cases:
+        got = by1ir.moe_score(a)
+        if got != want:
+            bad_resolve.append("%r -> %r（期望 %r）" % (a, got, want))
+    # 闭集外的 routing 必须返回 None（而不是退回 softmax）
+    if by1ir.moe_score({"routing": "nonsense"}) is not None:
+        bad_resolve.append("闭集外的 routing 竟然推出了一个值")
+    print("\n  ③ 解析一致性（by1ir.moe_score，%d 组）: %s"
+          % (len(_cases) + 1,
+             "全部一致" if not bad_resolve else "**不一致**"))
+    for b in bad_resolve:
+        print("       %s" % b)
+    if bad_resolve:
+        print("\n  [FAIL] sqrtsoftplus 的解析就不对，后面不用比了")
+        return False
+    torch.manual_seed(0)
+    cfg = DeepseekV4Config(
+        hidden_size=D, num_hidden_layers=1, num_attention_heads=4,
+        num_key_value_heads=4, vocab_size=128, intermediate_size=64,
+        num_local_experts=E, num_experts_per_tok=K, routed_scaling_factor=1.5,
+        norm_topk_prob=True, scoring_func="sqrtsoftplus")
+    ref = DeepseekV4TopKRouter(cfg).eval()
+
+    ns = {}
+    exec(cg.RUNTIME, ns)
+    _score = ns["_score"]
+
+    # ① 打分函数的数学：逐点比
+    logits = torch.randn(NT, E) * 3.0
+    with torch.no_grad():
+        a = _score(logits, "sqrtsoftplus")
+        b = ref.score_fn(logits)
+    dscore = (a - b).abs().max().item()
+    print("\n  ① 打分函数逐点最大差: %.3e   %s"
+          % (dscore, "一致" if dscore < 1e-6 else "**对不上**"))
+
+    # ② 选法没被换掉：sqrtsoftplus 与 sigmoid 选出来的专家**必须不同**
+    with torch.no_grad():
+        sb = torch.randn(E) * 0.5
+        i_sig = (_score(logits, "sigmoid") + sb).topk(K, dim=-1,
+                                                      sorted=False)[1]
+        i_sqr = (_score(logits, "sqrtsoftplus") + sb).topk(K, dim=-1,
+                                                           sorted=False)[1]
+    n_diff = sum(1 for r in range(NT)
+                 if set(i_sig[r].tolist()) != set(i_sqr[r].tolist()))
+    print("  ② sqrtsoftplus 与 sigmoid 的选择有 %d/%d 行不同   %s"
+          % (n_diff, NT,
+             "（这个属性确实在改前向）" if n_diff else
+             "（!! 选了等价的专家 —— 这个属性没起作用）"))
+
+    with torch.no_grad():
+        xh = torch.randn(NT, D)
+        # V4 的偏置是 buffer（初始为 0），喂一点非零值才测得出"只影响选择"
+        ref.e_score_correction_bias.copy_(torch.randn(E) * 0.5)
+        _, rw, ri = ref(xh)
+        lg = ref.weight @ xh.T                       # [E, NT]
+        sc = _score(lg.T, "sqrtsoftplus")
+        mi = (sc + ref.e_score_correction_bias).topk(
+            K, dim=-1, sorted=False)[1]
+        mv = sc.gather(1, mi)
+        mw = mv / (mv.sum(-1, keepdim=True) + 1e-20) * 1.5
+    same = all(set(ri[r].tolist()) == set(mi[r].tolist()) for r in range(NT))
+    rmap = torch.zeros(NT, E); rmap.scatter_(1, ri, rw)
+    mmap = torch.zeros(NT, E); mmap.scatter_(1, mi, mw)
+    dw = (rmap - mmap).abs().max().item()
+    print("  ③ 选中专家集合一致: %s   权重最大绝对差: %.3e"
+          % ("是" if same else "否", dw))
+
+    ok = dscore < 1e-6 and same and dw < 1e-6 and n_diff > 0
+    print("\n  [%s] sqrtsoftplus %s" % ("PASS" if ok else "FAIL",
+                                        "与参考一致，且确实改了前向"
+                                        if ok else "对不上"))
+    return ok
 
 
 def routing_vs_config():
@@ -138,6 +265,18 @@ def routing_vs_config():
 
     这一类错**契约看不出来、config 逐字段也看不出来** —— 那两处都是对的。
     只有"编码 ↔ 官方字段"这条对拍看得见。所以它进判卷人，不进注释。
+
+    ── 2026-10-11：**这一节原来自己是错的来源** ──────────────────
+    它靠 `routing` 的名字前缀猜打分函数：
+        got = 'sigmoid' if rt.startswith('sigmoid') else 'softmax'
+    这在两种情况下失明：
+      · `sqrtsoftplus`（V4）—— 前缀里根本没有它，猜成 softmax
+      · 选法叫 `softmax_topk` 而 `scoring_func = "sigmoid"`
+        （GLM-5.3 的真错）—— 猜成 softmax，**和写错的那份对上了**，
+        于是这一项当时是绿的，而模型是错的
+    现在 `score` 是**显式属性**，这一节直接读它（含编译期填的 `_score`），
+    **不再猜**。读不到（老模型只写了 `routing`）才退回前缀——并把
+    那种情况标成 `~`（"推的，不是写的"），让它和"显式写对了"在输出上分开。
     """
     print("\n  路由编码 vs 官方 config 的 scoring_func:")
     import importlib.util
@@ -146,7 +285,7 @@ def routing_vs_config():
     sp = importlib.util.spec_from_file_location('bcm', by1paths.tool('by1check.py'))
     bc = importlib.util.module_from_spec(sp)
     sp.loader.exec_module(bc)
-    bad, seen = [], 0
+    bad, guessed, seen = [], [], 0
     for f in by1paths.names():
         try:
             p = by1refs.paths(f, 'config')   # 返回字符串或 None，不是列表
@@ -165,17 +304,27 @@ def routing_vs_config():
             rt = str(a.get('routing', '')).strip().lower()
             if not rt:
                 continue
-            # `routing` 的前缀就是打分函数：sigmoid_* -> sigmoid，
-            # softmax_topk / topk_softmax -> softmax
-            got = 'sigmoid' if rt.startswith('sigmoid') else 'softmax'
+            # **显式写的优先**；没有才退回按前缀推（并且标出来）
+            explicit = str(a.get('score') or '').strip().lower()
+            if explicit:
+                got, how = explicit, '写'
+            else:
+                got = 'sigmoid' if rt.startswith('sigmoid') else 'softmax'
+                how = '推'
+                guessed.append(f)
             mark = 'ok' if got == sf else '!!'
             if got != sf:
                 bad.append(f)
-            print("     %s %-26s %-22s routing=%-20s -> %s / config %s"
-                  % (mark, f, mech, rt, got, sf))
+            print("     %s %-26s %-22s score=%-14s(%s) / config %s"
+                  % (mark, f, mech, got, how, sf))
     if not seen:
         print("     （没有带 scoring_func 的官方 config —— 这一项没验）")
         return True
+    if guessed:
+        print("     ~  有 %d 处是**按前缀推的**（模型没写 score）：%s"
+              % (len(guessed), ', '.join(sorted(set(guessed)))))
+        print("        → 能用，但推不出 `sqrtsoftplus` 这类值；")
+        print("          新模型请显式写 `score = ...`。")
     print("     -> %s" % ("逐个一致" if not bad else
                           "**不一致：%s**" % ', '.join(sorted(set(bad)))))
     return not bad
