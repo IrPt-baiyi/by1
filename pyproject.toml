@@ -11,7 +11,10 @@ dynamic = ["version"]
 description = "描述大模型架构的语言 —— 接口是一份规范化 IR 规格"
 readme = "README.md"
 requires-python = ">=3.9"
-license = "MIT"
+# SPDX 表达式，一处。**不另加 license classifier** ——
+# 那是同一个意思写两遍，而这个仓库的约定是"同一个意思不要两处实现"。
+# 第三方元数据（`refs/`）不在这个许可证覆盖范围内，见 `NOTICE`。
+license = "GPL-3.0-or-later"
 keywords = ["llm", "architecture", "ir", "codegen", "ggml"]
 classifiers = [
     "Programming Language :: Python :: 3",

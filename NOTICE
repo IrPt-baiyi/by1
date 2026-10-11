@@ -1,0 +1,19 @@
+# NOTICE
+
+by1 本身的代码与文档：Copyright (C) 2026 by1 contributors，
+按 GNU General Public License v3.0 或更新版本发布（见 `LICENSE`）。
+
+---
+
+## `refs/` 里那些文件不是这个项目的作品
+
+`refs/*.config.json` 和 `refs/*.tensors.json` 是从 HuggingFace /
+ModelScope 抓下来的**模型元数据**（配置和张量名/形状清单），
+**不是权重**，也不是这个项目的创作。
+
+它们的版权属于各自的模型发布方，各自适用各自的许可证
+（Apache-2.0 / MIT / Gemma 条款 / 其它）。
+这里收录它们**只为了验证 by1 的描述能力**，
+对应关系记在 `models.tsv` 的 `HF id` 一列里。
+
+**`LICENSE` 里的 GPL 只覆盖本项目自己写的东西，不覆盖 `refs/`。**
