@@ -62,7 +62,7 @@ ok gpt2-tiny.by1          前向里没有裸的创建
 前向期间任何**不带 `device=`** 的创建都会被记下来 ✓
 在显卡上，那就是 `Expected all tensors to be on the same device`。
 
-**这条规则是可证伪的**：拆掉任何一处 `device=`，对应的模型当场变红 ✓
+**这条规则是可证伪的**：拆掉任何一处 `device=`，对应的模型立即变红 ✓
 （第一次验的时候挑错了模型 —— `llama-shaped` 不走 MLA 那条路，
 所以拆了也不红。**一个碰不到被测东西的测试不是测试。**）
 
@@ -130,7 +130,7 @@ by1 自己用的 torch：rsqrt / tril / atan2 / outer / finfo …
 判卷人要           GptOssConfig / Qwen3NextConfig   -> >= 4.55
 **5.x 改过因果掩码的行为**                            -> 必须钉住
   （HF 在 attention_mask=None 时不再自动做因果 ——
-    这个坑在 MLA 和 GPT-2 上各踩过一次）
+    该问题在 MLA 和 GPT-2 上各出现过一次）
 ```
 
 ```bash
