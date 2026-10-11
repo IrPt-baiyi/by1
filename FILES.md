@@ -1,6 +1,6 @@
 # 这个仓库里每个文件是干什么的
 
-> 249 个跟踪文件。按"你会想找什么"分组，不按字母表。
+> 250 个跟踪文件。按"你会想找什么"分组，不按字母表。
 >
 > **这份文档是生成的**：`python src/by1files.py --write`。
 > 文件清单、每组的个数、每个文件的一句话都从目录树和 docstring 来 ——
@@ -232,7 +232,7 @@
 | `ir.md` | > **同一份 IR，两个后端（PyTorch / 自建执行器）跑出同一个前向 |
 | `plan.md` | by1 · 接下来的计划 |
 
-## `models/` —— 37 个
+## `models/` —— 38 个
 
 命名规矩：**文件名 = 长名 = HF 的模型名（去掉 owner）**，
 `model` 声明 = 短名（手写的）。两列的对照见 `models.tsv`。
@@ -244,6 +244,7 @@
 | `Laguna-XS-2_1.by1` | 真实模型 · HF id `poolside/Laguna-XS-2_1` |
 | `Ling-3.0-tiny.by1` | 真实模型 · HF id `inclusionAI/Ling-3.0-tiny` |
 | `NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16.by1` | 真实模型 · HF id `nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16` |
+| `Qwen3-VL-2B-Thinking.by1` | 真实模型 · HF id `Qwen/Qwen3-VL-2B-Thinking` |
 | `Qwen3.6-35B-A3B.by1` | 真实模型 · HF id `Qwen/Qwen3.6-35B-A3B` |
 | `Qwen3.8-27B.by1` | 真实模型 · HF id `Qwen/Qwen3.8-27B` |
 | `Step-3.7-Flash.by1` | 真实模型 · HF id `stepfun-ai/Step-3.7-Flash` |
