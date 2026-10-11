@@ -1,207 +1,141 @@
 # by1
 
-**一个试验性项目：验证能否用声明式语法描述大模型架构，并由独立的判卷人判定其正确性。**
+**用声明式语法描述大模型架构，并由机器验证描述是否正确。**
+**A declarative language for describing LLM architectures, with machine verification.**
 
 ```
 by1 0.9.0 · by1-ir 1.0
 ```
 
+[English](#english) · [中文](#中文) · [License](#license)
+
 ---
 
-## 说明：本仓库几乎全部由 AI 编写
+## English
 
-**代码、文档、提交信息 —— 由一名人员与一个 agent 完成，其中绝大部分出自该 agent。**
+**The problem.** Adding one architecture to llama.cpp takes ~800 lines of
+graph-building C++ and 15 edits across 3 files. But mainstream models keep
+reusing the same mechanisms — GQA, MLA, sliding window, Mamba, Gated DeltaNet,
+MoE. What is actually new is *how they are composed*. Qwen3-Next's 48 layers
+are one line:
 
-运行环境为 **DeepSeek Harness**：读取产物、修改代码、执行检查、将失败原因写入提交信息，
-并把每一轮的错误分析按节记录在 [`history/ir.md`](history/ir.md) 中。
-人的职责是另外两项 —— 确定方向、判定完成标准，包括多次否定并要求重做。
+```
+48 layers = 12 × (3 GatedDeltaNet + 1 GatedAttention)
+```
 
-**之所以置于最前，是为了提高审慎程度，而非增加信任。**
-AI 生成内容最常见的问题不是能力不足，而是**结果看似正确** ——
-本仓库中确实发生过：三个后端"一致地错误"、互拍全绿；一份工具报告了虚假的绿
-（"45 项 0 失败"，实际静默跳过了 11 项）。
+That should not need a thousand lines of code.
 
-**判卷人是外部的，但判据由本项目确定。** 此处需要精确表述：
+**What works today.**
 
 | | |
 |---|---|
-| **外部** | `refs/` 是各模型发布方的公开元数据，不是这里产生的 |
-| **外部** | 前向数值对着**官方实现**比，不是自己和自己比 |
-| **本项目确定** | 1e-4 那个阈值 · "覆盖"的定义 · 选定哪 32 个模型 · **连那 10 条神谕的期望值也是编写的** |
+| **53** `.by1` files in `models/` | declarative architecture descriptions |
+| **15** real models verified | config field-by-field, tensor name-by-name and shape-by-shape, against the publisher's own artifacts |
+| **6** mechanisms computable | `Attention` · `FFN` · `KDA` · `MLA` · `MoE` · `SSM` |
+| **3** independent backends | NumPy · PyTorch · generated C, cross-checked |
+| **6** models, forward numerics | compared bitwise against official implementations |
 
-因此，"运行一遍即可验证"这一说法只能说明：**在该判据下，数据对得上。**
-它不说明判据本身是否成立 —— **而这一层尚无他人复核。**
+**Run it.** Tier 1 needs no dependencies at all; the core is pure standard library.
+
+```bash
+python src/checks/by1all.py --tier 1     # no dependencies
+pip install -e .                         # optional: the `by1` CLI
+```
+
+**What does not work.**
+
+- **No external users. Zero.** No evidence anyone wants this.
+- **llama.cpp is not connected.** Graph and tensor names were cross-checked
+  against `qwen3next.cpp`, but not one line of ggml has been generated.
+- **The criteria themselves are unaudited.** The `1e-4` threshold, the
+  definition of "covered", the 15 chosen models — all written here.
+  See [`docs/criteria-review.md`](docs/criteria-review.md).
+- Vision towers are *described* but not *computed* — deliberately, for lack of
+  an official implementation to compare against.
+
+**The most expensive lesson.**
+
+> **Describable ≠ computable.**
+
+`gpt2.by1` once compiled to byte-identical IR as `llama-shaped.by1`. Three
+backends, the verifier and the whole check suite all said *pass* — because the
+tensor contract checks names and shapes, not what is computed. The rule since:
+**implement it or reject it, no third path.**
+
+**How this was made.** Nearly all code, docs and commit messages were written by
+an AI agent (DeepSeek Harness) in a few days. A human set direction and decided
+what counted as done. Stated first to raise scrutiny, not to raise trust.
+
+**Read next.** [`1.md`](1.md) — why · [`history/ir.md`](history/ir.md) — what
+went wrong · [`TESTING.md`](TESTING.md) — how to verify it ·
+[`FILES.md`](FILES.md) — every file.
 
 ---
 
-## 项目规模与成熟度
+## 中文
 
-由一名人员与一个 agent 在数月内完成，**无外部用户、未被任何项目采用、
-设计未经第二人阅读**。
-
-它不是语言产品，而是一次可行性验证：验证一条路线是否走得通，
-目前进度为"32 个模型描述得出来、6 个机制算得出来"。
-**该路线是否值得继续，尚无结论。**
-
-> **能描述 ≠ 能算，而"算得了"还要再分一层**：算得了 ≠ 算的是那个模型。
-> 这个仓库里两种都发生过 —— 视觉塔那批张量是前者（描述得住、算不了），
-> GLM-5.3-Flash 的 MoE 路由是后者（契约对、config 对、生成出来是另一个模型）。
-
----
-
-## 目标
-
-为 llama.cpp 增加一个新架构，需要在多处修改代码、编写建图函数、重复书写张量命名。
-而主流模型反复使用的是同一批机制 —— GQA、MLA、滑动窗口、Mamba、
-Gated DeltaNet、MoE —— **新的东西往往是这些机制如何组合、
-按什么比例排列、各自需要什么状态。**
-
-Qwen3-Next 的 48 层可以表示为一行：
+**要解决的问题。** 今天给 llama.cpp 加一个新架构，要在 3 个文件里改 15 处、
+写约 800 行建图 C++。而主流模型反复用的是同一批机制 —— GQA、MLA、滑动窗口、
+Mamba、Gated DeltaNet、MoE。**真正新的只是它们怎么组合。**
+Qwen3-Next 的 48 层是一句话：
 
 ```
 48 层 = 12 × (3 层 GatedDeltaNet + 1 层 GatedAttention)
 ```
 
-**能否将该表示写成声明，并由机器自行验证？** 本仓库即为此项尝试。
-（`pattern` 目前表达不了"同一机制、不同模式"那种排法，
-见 [`docs/pattern-design.md`](docs/pattern-design.md) 和它的[审查](docs/pattern-design-review.md)。）
+这句话不该需要上千行代码才能表达。
 
----
-
-## 已验证的内容与结果
-
-**① 把一份已发布的 checkpoint 描述出来，对着官方产物核对**
-
-```bash
-python src/checks/by1verify.py models/clef.by1 refs/Cloudflare__clef.config.json \
-    --config --tensors refs/Cloudflare__clef.tensors.json --backend torch.module
-```
-
-**32 个真实模型**：config 逐字段 + 张量逐名字逐形状对上了。
-其中 6 个还比过前向数值（最好 0.000e+00，最差 1.058e-06）。
-**这 32 个是人工选定的，不是随机抽样。**
-
-**② 从产物反推一份草稿**
-
-```bash
-python src/data/by1boot.py <config.json> <tensors.json> --run
-```
-
-推得出的：`pos_kind` · `norm_kind` · `norm_eps` · 每层的机制种类 · `out_dim` · `hidden`。
-推不出的按规格填默认值，并且报出来。
-
-**③ 端到端：真产物 → IR → 三个后端 → 对官方实现**
-
-```bash
-python src/checks/by1e2e.py
-```
-
-**④ 单条命令验证状态 —— 分六档**
-
-```bash
-python src/checks/by1all.py --tier 3    # 跑某一档
-python src/checks/by1run.py --status    # 推送的节奏现在轮到哪一档
-```
-
-档的轴是每加一档多要一样东西：静态 → +numpy → +refs/ → **+torch** → +gcc/下载 → +显卡。
-日常用 2~4；完整表在 [`FILES.md`](FILES.md)。
-
-**若目的是复现验证、而非了解本项目** —— 看
-[`TESTING.md`](TESTING.md)：三档各跑多久、"通过/没验/失败"分别长什么样、
-失败了把什么贴回来。**只想跑第一档的话，一个依赖都不用装。**
-
-> "多少项"取决于机器与档位，不是常量 —— 每次运行都需要重新读取。
-
-三种结论，不是两种：`ok` 验过了 · `--` **这台机器上没验**（不算失败，但也不是通过）· `!!` 验了不对。
-
----
-
-## 当前局限
-
-**描述得了 32 个模型，算得了 6 种机制**（`Attention` · `FFN` · `KDA` ·
-`MLA` · `MoE` · `SSM` —— 即 `by1exec.OPS` 去掉结构件、去掉两个逃生舱）。
+**现在能做什么。**
 
 | | |
 |---|---|
-| **没有外部用户** | 工具在本机可用，但**没有证据表明存在外部需求** |
-| **真正的目标后端（llama.cpp）没接** | 图结构和 `qwen3next.cpp` 逐行核对过，张量名双向 612=612，但一行 ggml 代码都没生成过 |
-| **覆盖率追上来了，代价是一个新缺口** | 6 种机制**三个后端都算得了**。挡住 `Ling-3.0-tiny` 的 **MLA `qk_head`** 和挡住 `GLM-5.3-Flash` 的**稀疏索引器**（`index_heads` 那一组）本轮均已通过 —— 索引器的判卷人是 `by1sparse.py`，对着 transformers 的 `GlmMoeDsaIndexer` 比"挑中了哪些 key"。**而 GLM 的 checkpoint 上还有两个 `index_kpool_compress_*`** |
-| **视觉"描述得住、算不了"** | 视觉塔的张量**逐个进契约、逐个验过名字和形状**（GLM 347 · Step 666 · clef 那三份 999），而**前向一步没做**。**决定不做** —— 本地找不到这些视觉塔的官方实现，做了就是自己和自己比。结论和理由在 [`1.md`](1.md) 的「视觉前向：决定不做」 |
-| **C 后端不全** | 遇到没实现的取值会报错退出，不会静默换个算法算 —— 但"可拒绝"不等于"可用" |
-| **反向传播没在真权重上验过** | `by1train.py` 用的是 PyTorch 的 autograd，只在缩小模型上跑过 |
-| **数值分布不是真的** | 对拍用的是随机权重，不是真权重的分布 |
-| **判据没人复核** | 见最上面那一节 —— 这是最需要外部复核的一项 |
+| `models/` 里 **53** 份 `.by1` | 声明式的架构描述 |
+| **15** 个真实模型验过 | config 逐字段 · 张量逐名字逐形状，判卷人是发布方的官方产物 |
+| **6** 种机制算得了 | `Attention` · `FFN` · `KDA` · `MLA` · `MoE` · `SSM` |
+| **3** 个独立后端 | NumPy · PyTorch · 生成的 C，互相交叉验证 |
+| **6** 个模型比过前向数值 | 对着官方实现逐位对拍 |
 
----
-
-## 装
+**跑一下。** 第一档一个依赖都不用装，核心是纯标准库。
 
 ```bash
-pip install -e .
-by1 --version
+python src/checks/by1all.py --tier 1     # 不要任何依赖
+pip install -e .                         # 可选：装 `by1` 命令行
 ```
 
-核心不需要 torch：读规格、跑检查器只用标准库。
-NumPy / C 后端要 numpy；对拍那一套走 `pip install -e '.[verify]'`。
+**还没做到的。**
 
-**IR 作为接口，`.by1` 只是前端之一** —— 这是设计意图，但目前尚无第三方使用。实现第四个后端：
+- **没有外部用户。零。** 没有任何证据表明别人想要它。
+- **llama.cpp 没接。** 图和张量名与 `qwen3next.cpp` 逐行核对过，
+  但一行 ggml 代码都没生成过。
+- **判据本身没人复核。** `1e-4` 那个阈值、"覆盖"的定义、选定的这 15 个模型
+  —— 全是这里写的。见 [`docs/criteria-review.md`](docs/criteria-review.md)。
+- 视觉塔**描述得住、算不了** —— 决定不做，因为本地找不到可比的官方实现。
 
-```bash
-python src/by1ir.py --spec                      # 规格（字段、必填、语义、闭集）
-python src/by1ir.py --emit models/hello.by1     # 出一份规范化 JSON
-```
-
----
-
-## 显卡
-
-开发机为 **AMD RX 5600 XT**（6 GB，RDNA1），`torch` 为 CPU 版 ——
-三条实现路径均已评估，均不可用。因此 `by1gpu.py` 在此为跳过状态，
-每一轮报告里都印着「没有可用的 CUDA 设备」。
-
-换一张 N 卡能多验什么、哪些结论是实测的哪些是读来的：**[`docs/which-gpu.md`](docs/which-gpu.md)**。
-
----
-
-## 目录
-
-```
-src/            12 个底座模块 + 5 个子目录
-  checks/       判卷人 · 神谕 · 跑检查
-  modelcheck/   一个模型一个判卷人
-  lang/         语言本身
-  data/         抓数据 / 推模型
-  escape/       逃生舱
-models/         `models/`（53 个 .by1），其中 32 份对真实 checkpoint 验过
-refs/           从 HF / ModelScope 抓的公开元数据（不是权重）
-docs/ history/ drafts/ gpu/ tools/
-```
-
-每个文件的用途在 [`FILES.md`](FILES.md) —— 该文件由工具生成，因此不会过期。
-
----
-
-## 最重要的经验
+**最贵的一课。**
 
 > **能描述 ≠ 能算。**
 
-`gpt2.by1` 曾经和 `llama-shaped.by1` 编译出**一模一样的 IR**，
-而三个后端、`by1verify`、`by1all` **全说"过"** ——
-因为张量契约查的是参数的名字和形状，不是算了什么。
+`gpt2.by1` 曾经和 `llama-shaped.by1` 编译出**一模一样的 IR**。三个后端、
+`by1verify`、整套检查**全说"过"** —— 因为张量契约查的是名字和形状，
+不是算了什么。此后确立的规矩：**要么实现，要么拒绝，没有第三条路。**
 
-此后确立了一条规则：**要么实现，要么拒绝**。
-它自身也有一条护栏（`by1gate.py`：三个必须被拒的反例、三个必须通过的正例）。
+**这份仓库是怎么来的。** 代码、文档、提交信息几乎全部由一个 AI agent
+（DeepSeek Harness）在几天内写出；人定方向、判定什么算做完。
+**写在最前，是为了提高审慎程度，而非增加信任。**
 
-**三个后端互拍只能证明自洽 —— 它们可以一致地错。**
-这一点是后来才明确的，也是设立那 10 条神谕的原因。
+**接着读。** [`1.md`](1.md) 为什么做 · [`history/ir.md`](history/ir.md) 撞上了什么 ·
+[`TESTING.md`](TESTING.md) 怎么验它 · [`FILES.md`](FILES.md) 每个文件干嘛的。
 
 ---
 
-完整记录在 [`history/ir.md`](history/ir.md) · 每个文件在 [`FILES.md`](FILES.md) ·
-显卡选择在 [`docs/which-gpu.md`](docs/which-gpu.md) · 主张与现实的对照在 [`1.md`](1.md)
+## License
 
-**而"这套判据本身对不对"尚无他人复核** ——
-[`docs/criteria-review.md`](docs/criteria-review.md) 是一份几小时能做完、
-有确定判据的工作，请他人**独立重算**，而非仅作评阅。
+**GPL-3.0-or-later** —— 全文见 [`LICENSE`](LICENSE)，逐字未改。
 
-**作者为 AI（见首节）。语言名称暂定 by1。**
+`refs/` 里的模型元数据**不是本项目的作品**，版权属各自发布方，
+各自适用各自的许可证 —— 详见 [`NOTICE`](NOTICE)。
+
+---
+
+> 数字为 2026-10-12 现量。**"多少项"随机器与档位变化，不是常量** ——
+> 以你自己那次跑出来的为准，见 [`TESTING.md`](TESTING.md)。
