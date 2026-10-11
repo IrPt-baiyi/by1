@@ -77,3 +77,4 @@ DeepSeek-R1-Distill-Qwen-7B	DeepSeek-R1-Distill-Qwen-7B	deepseek-ai/DeepSeek-R1-
 Qwen3.8-Flash-Next	Qwen3.8-Flash-Next	Qwen/Qwen3.8-Flash-Next	`qwen4_exp`：**mHC 超连接 + 稀疏索引器 + PLE（128 个 ngram 分片）** + MTP 改名
 gemma-4-26B-A4B	gemma-4-26B-A4B	google/gemma-4-26B-A4B	gemma4 MoE 号：**稠密 FFN 与专家并存**（专家不在 `mlp.` 下）+ 自定义 `router.*` 三件套 + 层内 7 个 norm
 GLM-4.7-Flash	GLM-4.7-Flash	zai-org/GLM-4.7-Flash	`glm4_moe_lite`：GLM-5.3 去掉 KDA/索引器/mHC/视觉塔/FP8 之后的样子 —— 只剩 **MLA + 64 选 4 专家** + 前 1 层稠密 + 1 层 MTP
+embeddinggemma-2	embeddinggemma-2	google/embeddinggemma-2	**唯一一个不是生成模型的**（没有 `lm_head`，出 768 维嵌入）：三塔都在 —— 文本 512 宽（PLE 走投影）+ 视觉 768 宽 16 层 + **conformer 音频塔**（相对位置 + 每个 Linear 带 4 个零维激活范围标量）

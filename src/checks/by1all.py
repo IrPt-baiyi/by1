@@ -236,6 +236,22 @@ REAL = [
     #   它也是**扁平 config**（34 个架构字段，没有 `text_config` 那一层），
     #   所以不用 `--sub`。
     ('GLM-4.7-Flash.by1', None, 'torch.module', []),
+    # **embeddinggemma-2 —— 这一批里唯一一个不是"生成模型"的。**
+    #
+    #   它没有 `lm_head`，`language_model.norm` 之后接的是
+    #   `embedding_projection (768, 512)`（768 是 `embedding_dim`）。
+    #   三个塔都在，而且**三个塔的层内张量各不相同**，所以 `layer` 块要
+    #   分成三块（`layer_rows_by_stack` 是 `or` 不是相加）：
+    #     文本 17/层（4 norm + layer_scalar + PLE 三件 + 6 attn + 3 ffn）
+    #     视觉 13/层（4 norm + 6 attn + 3 ffn —— 和 gemma-4 家族同一套 `.linear`）
+    #     音频 62/层（**conformer**：相对位置 `relative_k_proj` + `per_dim_scale`
+    #                 + 两块 FFN + `lconv1d`，而且每个 Linear 多 4 个**零维标量**
+    #                 `input_max`/`input_min`/`output_max`/`output_min`）
+    #   那 4 个标量的官方形状是 `[]`，by1 里写 `()`（`parse_shape` 解成空表）——
+    #   全库第一次用到零维形状。
+    #   ⚠ 视觉塔**没有**这些标量（`use_clipped_linears = false`），所以两个
+    #     塔的层内张量数不一样 —— 这是"照命名习惯猜"一定会猜错的地方。
+    ('embeddinggemma-2.by1', None, 'torch.module', ['--sub', 'text_config']),
 ]
 
 # 六个合成模型：三后端
