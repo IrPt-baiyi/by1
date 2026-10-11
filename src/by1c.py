@@ -1153,24 +1153,31 @@ static void dsa_index(unsigned char *keep, const float *x, const float *qres,
         linear(gate, x, ix_kgate, n, d, hd);
         int np_ = (n + P - 1) / P;
         float *pk = (float *)malloc(sizeof(float) * (size_t)np_ * hd);
-        float *lg = (float *)malloc(sizeof(float) * P * hd);
-        float *pb = (float *)malloc(sizeof(float) * P * hd);
+        /* ⚠ **`_ape` 只影响"挑中哪些池"，而输出只看挑选结果。**
+           实测踩过一跤：把 `+ ix_kape[...]` **整个去掉**，`logits.bin`
+           **逐字节不变**（差 0.0）；而乘 1000 就变（差 1.7e-01）。
+           量了挑选掩码才看清：丢掉 `_ape` -> **0 格不同**、×1000 -> **32 格不同**。
+           所以**判 `_ape` 不能看输出，要看挑选集合**（`by1sparse` 就是这么判的）。
+           这里用 double 累是为了和 NumPy 那边同精度，不是为了修这个。 */
+        double *lg = (double *)malloc(sizeof(double) * P * hd);
+        double *pb = (double *)malloc(sizeof(double) * P * hd);
         for (int p = 0; p < np_; p++) {
             int lo = p * P;
             for (int j = 0; j < P; j++) {
                 int id = lo + j;
                 for (int c = 0; c < hd; c++)
                     lg[j * hd + c] = (id < n)
-                        ? gate[(size_t)id * hd + c] + ix_kape[j * hd + c]
+                        ? (double)gate[(size_t)id * hd + c]
+                          + (double)ix_kape[j * hd + c]
                         : -INFINITY;
             }
             /* softmax 沿池内那一维（每个通道各一次） */
             for (int c = 0; c < hd; c++) {
-                float mx = -INFINITY;
+                double mx = -INFINITY;
                 for (int j = 0; j < P; j++) if (lg[j * hd + c] > mx) mx = lg[j * hd + c];
-                if (mx == -INFINITY) { for (int j = 0; j < P; j++) pb[j * hd + c] = 0.f; continue; }
-                float s = 0.f;
-                for (int j = 0; j < P; j++) { float e = expf(lg[j * hd + c] - mx); pb[j * hd + c] = e; s += e; }
+                if (mx == -INFINITY) { for (int j = 0; j < P; j++) pb[j * hd + c] = 0.0; continue; }
+                double s = 0.0;
+                for (int j = 0; j < P; j++) { double e = exp(lg[j * hd + c] - mx); pb[j * hd + c] = e; s += e; }
                 for (int j = 0; j < P; j++) pb[j * hd + c] = pb[j * hd + c] / s;
             }
             for (int c = 0; c < hd; c++) {
