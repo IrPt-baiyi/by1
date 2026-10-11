@@ -6,7 +6,7 @@
   **"项数"跟着机器走** —— 缺 gcc / 缺显卡 / 缺 HF 缓存都会改它。
   以 `python src/by1all.py` 的最后三行为准，不要引用这一行。
 
-【A】真实模型 · config 与张量名，对着**官方产物**   —— 28 个，**28 个都在护栏里**
+【A】真实模型 · config 与张量名，对着**官方产物**   —— 29 个，**29 个都在护栏里**
 
   模型                           config         张量               来源
   ------------------------------------------------------------------------------------------------
@@ -40,12 +40,24 @@
   Qwen3-Coder-Next             37 中 / 0 不同  74391 中 / 0 不符     Qwen/Qwen3-Coder-Next
   DeepSeek-R1-Distill-Qwen-7B  21 中 / 0 不同    339 中 / 0 不符     deepseek-ai/DeepSeek-R1-...-7B
   Qwen3.8-Flash-Next           53 中 / 0 不同   1658 中 / 0 不符     Qwen/Qwen3.8-Flash-Next
+  gemma-4-26B-A4B              35 中 / 0 不同   1013 中 / 0 不符     google/gemma-4-26B-A4B
 
   **后四个是"一口气做完"那一轮加的**（2026-10-11）。各自压着一条"推不出来"的路：
   1.5B 的 q/k/v 都带 bias 而 o_proj 不带（`_attn` 模板套不上）· 0.8B 无 deepstack
   且 tie · 12B **没有视觉 transformer 塔**（只有 9 个 `vision_embedder.*` 全局张量）·
   130m 是 **Mamba1** 参数化（`d_inner` 逐通道、`dt_proj` 单独投）—— 它的
   `in_proj` 是 `(2*d_inner, d_model)`，第一版写成 `(2*d_model, d_model)` 少了整整一倍。
+
+  **26B-A4B 是同一轮里最后一个**（gemma-4 家族的 MoE 号）。它压着三处 12B/31B 都没有的：
+  ① 一层的 FFN 里**稠密支与专家支并存**，而且**专家不在 `mlp.` 下面**（官方是
+     `layers.N.experts.*`，稠密那支才是 `layers.N.mlp.*`）—— 前缀不同，所以
+     `MoE` 的 `scope` 只能是空串、`mlp.` 写进逻辑名；
+  ② 路由器是自定义的 `router.proj.weight` / `router.scale` / `router.per_expert_scale`
+     三件套，**不是** `_moe` 默认模板里的 `gate.weight`；
+  ③ 层内 **7 个 norm**（稠密支与专家支各一套前后 norm，官方就叫 `_1` / `_2`），
+     而视觉层只有前 4 个 —— 所以 `layer` 块必须**按栈分成两块**：
+     `layer_rows_by_stack` 是 `layer:<栈名>` **或** 不带栈名那一份（是 `or`，
+     不是相加），只写一块会让另一栈拿到错的宽度。
 
   GLM-5.3 那一行**原来不在这个清单里，也不在护栏里**：它带着"36289（97%）"
   的记录，而那 97% 几乎全是专家权重（走另一条命名模板，那条是对的）；
@@ -79,7 +91,7 @@
   llama 39/39 · mixtral 35/35 · gpt-oss 31/31 · qwen3-next 62/62  —— 全在阈值内
 
 【E】refs 语料（每次全量都会查）
-  72 个文件：能解析 72/72 · 有出处 72/72（by1 27 · models.tsv 28 · SOURCES 21）
+  72 个文件：能解析 72/72 · 有出处 72/72（by1 27 · models.tsv 29 · SOURCES 21）
   出处规则见 refs/SOURCES.tsv；重建例外：3 个 .gguf-tensors.json（by1fetch 不产这种）
 
 【E2】文档、数字、以及"不出声的写法"（每次全量都会查）
@@ -94,14 +106,18 @@
                     （该自检立即发现了编写时改动出错的规则⑨）
 
 【F】没验到的
-  · **22 个真实模型的前向**：要显存（`by1gpu.py --plan 80` 会列出来谁能装下）
+  · **27 个真实模型的前向**：要显存（`by1gpu.py --plan 80` 会列出来谁能装下）
+      29 个真实模型里**只有两个**验过前向 —— Instella-3B 与 GPT-2（见【B】最后两行）。
+      其余 27 个的 config 与张量名都对着官方产物验过了，**前向没跑过**。
   · **KDA / SSM 的计算**：codegen 还不支持（Ling / GLM-5.3 / Nemotron）
   · **llama.cpp 本身**：图核对过，但没生成过一行 ggml 并跑起来
-  · **多模态的"值"没验过**：Qwen3-VL（2B/30B/235B）的视觉塔和 Qwen3-Omni 的音频塔
+  · **多模态的"值"没验过**：Qwen3-VL（2B/30B/235B）的视觉塔、Qwen3-Omni 的音频塔、
+      **Gemma 4 的视觉塔**（31B 的 27 层 ViT、26B-A4B 同一套；12B 那一支**没有塔**，
+      只有 9 个 `vision_embedder.*` 全局张量）
       现在**建模了**（张量名与形状对着官方产物验过），但**前向没跑过** ——
       要显存；而且它们的视觉/音频 config 段（`vision_config` / `audio_config`）
       还没纳入 config 逐字段对拍（只对了文本那一段）。
-      Gemma 的 vision/audio、GLM-5.3 的 visual、Step-3.7 的视觉塔：**完全没建模**
+      GLM-5.3 的 visual、Step-3.7 的视觉塔、Gemma 4 的音频：**完全没建模**
   · **显卡上的任何东西**：这台机器没有独立显卡，所以 `by1gpu` 每次都印"跳过"。
       **不要在这台机器上试着跑显卡** —— 那不是"没验"，是"验不了"。
   · **这台机器上没有的**（每次跑都会印成"跳过"，不是失败）：

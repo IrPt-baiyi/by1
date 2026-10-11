@@ -1,0 +1,304 @@
+# ── gemma-4-26B-A4B.by1 ──────────────────────────────────────────────
+# google/gemma-4-26B-A4B —— gemma-4 家族的**MoE 号**（26B 总参 / 4B 激活）。
+#
+# 骨架和 gemma-4-31B 是同一支 `gemma4`（滑窗 5 + 全量 1 的 6 层一块、
+# 全量层 K=V 没有 `v_proj`、`layer_scalar`、分层视觉塔），
+# 把 31B 的稠密 FFN 换成 **稠密 FFN + 专家** 两条并行：
+#
+#                    31B              26B-A4B
+#   d_model          5376             2816
+#   n_layer            60               30        （10 块 / 5 块）
+#   d_ff            21504             2112        （稠密那一支，仍**每层都有**）
+#   专家                —            128 选 8，每个 704
+#   滑窗层          q32 kv16 hd256    q16 kv8  hd256
+#   全量层          q32 kv4  hd512    q16 kv2  hd512
+#
+# ## 这一号独有的三处，都不在 12B/31B 里
+#
+# ① **一层的 FFN 块里同时有稠密与专家。** 官方产物里两者并存：
+#
+#      layers.N.mlp.gate_proj.weight      [2112, 2816]   稠密那一支
+#      layers.N.mlp.up_proj.weight        [2112, 2816]
+#      layers.N.mlp.down_proj.weight      [2816, 2112]
+#      layers.N.experts.gate_up_proj      [128, 1408, 2816]   = (E, 2*704, d)
+#      layers.N.experts.down_proj         [128, 2816, 704]    = (E, d, 704)
+#      layers.N.router.proj.weight        [128, 2816]
+#      layers.N.router.scale              [2816]
+#      layers.N.router.per_expert_scale   [128]
+#
+#   注意 **专家不在 `mlp.` 下面** —— 官方是 `layers.N.experts.*` /
+#   而稠密那支才是 `layers.N.mlp.*`。Qwen3 系的 MoE 是 `mlp.experts.*`，
+#   这一支不是，所以 `MoE` 的 `scope` 只能是空串（见 `emit` 那段）。
+#
+# ② **路由器不是 `mlp.gate.weight`，是自定义的 `router.*` 三件套。**
+#   `router.proj` 出 logits、`router.scale` 是输入侧的逐维缩放、
+#   `router.per_expert_scale` 是逐专家的缩放。三者都不在上面的
+#   `_moe` 默认模板里，得照产物手写进契约。
+#
+# ③ **层内 7 个 norm**（12B/31B 是 4 个）。稠密支和专家支各有一套前后 norm：
+#
+#      input_layernorm                 注意力前
+#      post_attention_layernorm        注意力后
+#      pre_feedforward_layernorm       稠密支前
+#      post_feedforward_layernorm      稠密支后
+#      pre_feedforward_layernorm_2     专家支前
+#      post_feedforward_layernorm_1    专家支中
+#      post_feedforward_layernorm_2    专家支后
+#
+#   （官方就叫 `_1` / `_2`，**没有** `pre_feedforward_layernorm_1` —— 照抄。）
+#   这 7 个是**主干独有**的：视觉层只有前面 4 个。所以不能都塞进
+#   不带栈名的 `layer {}`（那一份会**同时**套到视觉栈上，宽度还不同），
+#   得按栈分成 `layer main` / `layer vision` 两块（见下面 `tensors`）。
+#
+# ## 视觉塔：和 31B **逐张量同名同形状**
+#
+# 27 层 `vision_tower.encoder.layers.{0..26}`，每层 13 个、27 层一致，
+# 宽 1152 / hidden 4304 / q = kv = 16 / head_dim 72（16 x 72 = 1152 ✓）。
+# 每个 Linear 后面多一层 `.linear`（`q_proj.linear.weight` 等）——
+# 和 31B 一样，逻辑名里直接写出来。
+# 音频塔**没有**（config 的 `audio_config` 是 null；12B 那种才有）。
+#
+# 事实来源：
+#   refs/google__gemma-4-26B-A4B.config.json
+#   refs/google__gemma-4-26B-A4B.tensors.json（1013 个张量）
+# by1-model: gemma-4-26B-A4B
+# by1-repo:  google/gemma-4-26B-A4B
+# by1-short: gemma-4-26B-A4B
+
+model gemma-4-26B-A4B {
+  arch    gemma4
+  license apache-2.0
+  ctx     262144
+
+  hparams {
+    d_model = 2816
+    n_layer = 30
+    vocab   = 262144
+    d_ff    = 2112
+    act     = gelu_pytorch_tanh
+    rms_eps = 1e-06
+  }
+
+  # 局部层与全量层是同一个 mech 的两个**结构属性等价类**（同 12B/31B）。
+  # 实测（`refs/…tensors.json` 逐层）：
+  #   局部层（25 个）  q_proj [4096, 2816] = 16 x 256
+  #                    k_proj [2048, 2816] =  8 x 256   （kv = 8）
+  #                    v_proj [2048, 2816] =  8 x 256
+  #                    o_proj [2816, 4096]、q/k_norm [256]
+  #   全量层（5 个）   q_proj [8192, 2816] = 16 x 512
+  #                    k_proj [1024, 2816] =  2 x 512   （kv = 2）
+  #                    **没有 v_proj**（`attention_k_eq_v`，K = V）
+  #                    o_proj [2816, 8192]、q/k_norm [512]
+  mech GQA : Attention {
+    heads      = { q = 16, kv = 8, head_dim = 256 }
+    out_dim    = 4096                 # = q * head_dim（局部那类）
+    qk_norm    = true
+    kv_tie     = false
+    attn_bias  = false
+    structural = [ kv, head_dim, out_dim, kv_tie ]
+  }
+
+  # ── MoE：**融合存储** + 自定义 `router.*` ────────────────────────
+  # 实测：experts.gate_up_proj [128, 1408, 2816] = (E, 2 * 704, d)
+  #       experts.down_proj    [128, 2816, 704]  = (E, d, 704)
+  #       router.proj.weight   [128, 2816]、router.scale [2816]、
+  #       router.per_expert_scale [128]
+  mech MoE : MoE {
+    experts       = 128
+    top_k         = 8
+    hidden        = 704
+    shared        = 0
+    shared_gate   = false
+    routing       = softmax_topk
+    layer_kind    = sparse
+    structural    = [ experts, hidden ]
+  }
+
+  # ── 视觉塔（27 层，宽 1152）—— 和 31B **逐张量同名同形状** ────────
+  mech ViT : Attention {
+    heads      = { q = 16, kv = 16, head_dim = 72 }
+    out_dim    = 1152                 # = q * head_dim
+    qk_norm    = true
+    attn_bias  = false
+    structural = [ head_dim, out_dim ]
+  }
+
+  mech ViTMlp : FFN { hidden = 4304 }
+
+  schedule {
+    local  = 5 * GQA(window = 1024, kv = 8, head_dim = 256, out_dim = 4096,
+                      kv_tie = false)
+    # 全量层：**kv = 2**（`num_global_key_value_heads`）、head_dim 512、
+    # 而且 **K = V**（`attention_k_eq_v = true`）—— 所以没有 `v_proj`。
+    global = 1 * GQA(window = none, kv = 2, head_dim = 512, out_dim = 8192,
+                     kv_tie = true)
+    block  = local + global
+  }
+
+  stack main {
+    pattern = 5 * block           # 30 层 = 25 局部 + 5 全量
+    main[:] >> MoE
+  }
+
+  # `aux = true`：不是解码层，不进 `n_layer` 的合计（和 31B 一样）。
+  stack vision {
+    d_model = 1152
+    aux     = true
+    pattern = 27 * ViT
+    vision[:] >> ViTMlp
+  }
+
+  # 位置按**层类型**分区（官方 config 的 `rope_parameters` 就是这么键控的）。
+  position {
+    local  = rope(base = 10000, type = default)
+    global = partial(rope(base = 1000000, type = proportional), ratio = 0.25)
+  }
+
+  tensors {
+    GQA {
+      q_proj.weight : (q * head_dim, d_model)
+      k_proj.weight : (kv * head_dim, d_model)
+      # K = V 的那些层**没有** v_proj。
+      v_proj.weight : (kv * head_dim, d_model) unless kv_tie
+      o_proj.weight : (d_model, q * head_dim)
+      q_norm.weight : (head_dim,)
+      k_norm.weight : (head_dim,)
+    }
+
+    # 专家是**融合存储**（checkpoint 里就是 `experts.gate_up_proj`），
+    # 路由器是自定义的三件套 —— 默认模板给的是 `gate.weight`，照产物改。
+    # 逻辑名写全后缀：`physical = rename.get(logical, logical)`，
+    # 而 `scope { MoE = "" }`，所以渲染出来就是它本身。
+    MoE {
+      experts.gate_up_proj    : (experts, 2 * hidden, d_model)
+      experts.down_proj       : (experts, d_model, hidden)
+      router.proj.weight      : (experts, d_model)
+      router.scale            : (d_model,)
+      router.per_expert_scale : (experts,)
+    }
+
+    ViT {
+      # **逻辑名里带 `.linear`。** 官方的视觉张量叫
+      # `self_attn.q_proj.linear.weight` —— 比文本那边多一层。
+      q_proj.linear.weight : (q * head_dim, d_model)
+      k_proj.linear.weight : (kv * head_dim, d_model)
+      v_proj.linear.weight : (kv * head_dim, d_model)
+      o_proj.linear.weight : (d_model, q * head_dim)
+      q_norm.weight        : (head_dim,)
+      k_norm.weight        : (head_dim,)
+    }
+    ViTMlp {
+      gate_proj.linear.weight : (hidden, d_model)
+      up_proj.linear.weight   : (hidden, d_model)
+      down_proj.linear.weight : (d_model, hidden)
+    }
+
+    # ── 层内张量：**按栈分成两块** ──────────────────────────────────
+    #
+    # ⚠ **不能只用不带栈名的 `layer {}`。** 那一份会**同时**套到视觉栈上
+    #   （`by1tens` 里对每个栈都算一遍 `layer_rows_by_stack`），
+    #   而这里的 7 个 norm 是主干独有的 —— 视觉层只有前 4 个。
+    #   而 `layer_rows_by_stack` 是 `layer:<栈名>` **或** 不带栈名那一份
+    #   （`or`，不是相加）—— 所以两块都要写全，不能"共用前半"。
+    layer main {
+      input_layernorm.weight              : (d_model,)
+      post_attention_layernorm.weight     : (d_model,)
+      pre_feedforward_layernorm.weight    : (d_model,)
+      post_feedforward_layernorm.weight   : (d_model,)
+      # 专家支那一套（官方就是 `_2` / `_1` / `_2`，没有 `pre_..._1`）。
+      pre_feedforward_layernorm_2.weight  : (d_model,)
+      post_feedforward_layernorm_1.weight : (d_model,)
+      post_feedforward_layernorm_2.weight : (d_model,)
+      # ── 稠密那一支（`use_double_wide_mlp = false`，宽度是 `d_ff`）──
+      # 它和专家**并行**，所以两层 FFN 的张量在同一层里并存。
+      mlp.gate_proj.weight                : (d_ff, d_model)
+      mlp.up_proj.weight                  : (d_ff, d_model)
+      mlp.down_proj.weight                : (d_model, d_ff)
+      # **没有 `.weight` 后缀的那个。** 逻辑名自带 `.weight` 才加后缀，
+      # 所以裸名渲染出来就是裸名。
+      layer_scalar                        : (1,)
+    }
+    # 视觉层：只有前 4 个 norm，宽度由 `stack vision` 的 `d_model` 给（1152）。
+    layer vision {
+      input_layernorm.weight            : (d_model,)
+      post_attention_layernorm.weight   : (d_model,)
+      pre_feedforward_layernorm.weight  : (d_model,)
+      post_feedforward_layernorm.weight : (d_model,)
+    }
+
+    # ── 不属于任何层的 7 个 ────────────────────────────────────────
+    # 逻辑名直接写**官方全名**（`physical = rename.get(logical, logical)`，
+    # 而 `global_name = "{physical}"` —— 于是渲染出来就是它本身）。
+    # 视觉那 5 个的宽度是**字面量** —— `global` 行没有"哪个栈"这个上下文，
+    # 取不到栈的宽度。
+    global {
+      model.language_model.embed_tokens.weight          : (vocab, d_model)
+      model.language_model.norm.weight                  : (d_model,)
+      # tie = true（顶层与 text_config 两处都是）—— checkpoint 里没有 lm_head。
+      lm_head.weight                                    : --
+      # ── 视觉塔里不属于层的那几个 ──
+      model.vision_tower.patch_embedder.input_proj.weight : (1152, 768)
+      model.vision_tower.patch_embedder.position_embedding_table : (2, 10240, 1152)
+      model.vision_tower.std_bias                       : (1152,)
+      model.vision_tower.std_scale                      : (1152,)
+      # 视觉 -> 文本的投影：宽度是**两边**的（1152 -> d_model）。
+      # **没有** `embed_audio.embedding_projection` —— 这一号没有音频塔。
+      model.embed_vision.embedding_projection.weight    : (d_model, 1152)
+    }
+  }
+
+  head LmHead { tie_embedding = true, logit_softcap = 30.0 }
+
+  emit {
+    train -> transformers.config {
+      field {
+        model_type              = "gemma4_text"
+        hidden_size             = d_model
+        num_hidden_layers       = n_layer
+        vocab_size              = vocab
+        intermediate_size       = d_ff
+        hidden_activation       = act
+        rms_norm_eps            = rms_eps
+        max_position_embeddings = ctx
+        num_attention_heads     = GQA.q
+        head_dim                = GQA[window != none].head_dim
+        global_head_dim         = GQA[window = none].head_dim
+        num_key_value_heads     = GQA[window != none].kv
+        num_global_key_value_heads = GQA[window = none].kv
+        attention_k_eq_v        = GQA[window = none].kv_tie
+        sliding_window          = GQA[window != none].window
+        attention_bias          = GQA.attn_bias
+        attention_dropout       = 0.0
+        layer_types             = schedule
+        rope_parameters         = position
+        tie_word_embeddings     = LmHead.tie_embedding
+        final_logit_softcapping = LmHead.logit_softcap
+        vocab_size_per_layer_input = vocab
+        num_kv_shared_layers    = 0
+        hidden_size_per_layer_input = 0
+        # 这一号**是** MoE 号：三个 MoE 键都有真值（12B 那边三个都是 null）。
+        enable_moe_block        = true
+        num_experts             = MoE.experts
+        moe_intermediate_size   = MoE.hidden
+        top_k_experts           = MoE.top_k
+        use_double_wide_mlp     = false
+        use_bidirectional_attention = "vision"
+        use_cache               = true
+        initializer_range       = 0.02
+        bos_token_id            = 2
+        eos_token_id            = 1
+        pad_token_id            = 0
+      }
+    }
+
+    train -> torch.module {
+      # **专家不在 `mlp.` 下面**（官方是 `layers.N.experts.*`），
+      # 而稠密那支在 `layers.N.mlp.*` —— 两处的前缀不同，
+      # 所以 `MoE` 的 scope 是空串，`mlp.` 写在逻辑名里。
+      name        = "model.language_model.layers.{i}.{scope}{physical}"
+      global_name = "{physical}"
+      name_vision = "model.vision_tower.encoder.layers.{i}.{scope}{physical}"
+      scope { GQA = self_attn., MoE = "", ViT = self_attn., ViTMlp = mlp., layer = "", global = "" }
+    }
+  }
+}

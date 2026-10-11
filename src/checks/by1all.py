@@ -208,6 +208,21 @@ REAL = [
     #       **也没有 `model.language_model.norm`**（最终归一化也在 `hc_norm` 里）。
     ('DeepSeek-R1-Distill-Qwen-7B.by1', None, 'torch.module', []),
     ('Qwen3.8-Flash-Next.by1', None, 'torch.module', ['--sub', 'text_config']),
+    # **gemma-4 家族的 MoE 号。**
+    #
+    #   26B-A4B —— 骨架和 31B 同一支 `gemma4`（滑窗 5 + 全量 1、全量层 K=V
+    #       没有 `v_proj`、`layer_scalar`、分层视觉塔 27 层），把稠密 FFN
+    #       换成**稠密 + 专家并存**。三处这一号独有的：
+    #       ① 专家**不在 `mlp.` 下面**（官方是 `layers.N.experts.*`），
+    #          而稠密那支在 `layers.N.mlp.*` —— 前缀不同，所以 `MoE` 的
+    #          `scope` 只能是空串，`mlp.` 写进逻辑名。
+    #       ② 路由器是自定义的 `router.proj.weight` / `router.scale` /
+    #          `router.per_expert_scale` 三件套，不是 `mlp.gate.weight`。
+    #       ③ 层内 **7 个 norm**（稠密支与专家支各一套），而视觉层只有
+    #          前 4 个 —— 所以 `layer` 块必须**按栈分成两块**
+    #          （`layer_rows_by_stack` 是 `layer:<栈名>` **或** 不带栈名
+    #          那一份，是 `or` 不是相加，两块都得写全）。
+    ('gemma-4-26B-A4B.by1', None, 'torch.module', ['--sub', 'text_config']),
 ]
 
 # 六个合成模型：三后端

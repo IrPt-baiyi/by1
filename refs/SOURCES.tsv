@@ -67,7 +67,7 @@ deepseek-ai/DeepSeek-R1-Distill-Qwen-7B	早期对拍用的模型：**已毕业**
 deepseek-ai/DeepSeek-V4.1-Flash	分 encoder/decoder 两半的那个：草稿在 drafts/，过不了检查器
 google/embeddinggemma-2	嵌入模型候选：还没写 .by1
 google/gemma-4-12B	gemma-4 家族中间号：**已毕业** 2026-10-11（models/gemma-4-12B.by1）
-google/gemma-4-26B-A4B	gemma-4 家族 MoE 号：还没写 .by1
+google/gemma-4-26B-A4B	gemma-4 家族 MoE 号：**已毕业** 2026-10-11（models/gemma-4-26B-A4B.by1）
 google/gemma-4-E4B	gemma-4 家族小号：还没写 .by1
 inclusionAI/LLaDA2.2-flash	扩散语言模型候选：还没写 .by1
 openai/gpt-oss-20b	gpt-oss-120b 的小号（同一个架构族）：**已毕业** 2026-10-11（models/gpt-oss-20b.by1）
