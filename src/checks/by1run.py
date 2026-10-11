@@ -203,7 +203,7 @@ def push(args, tier=None):
 
 
 HOOK_BODY = '''#!/bin/sh
-# 由 `python src/by1run.py --install-hook` 装。
+# 由 `python {self} --install-hook` 装。
 #
 # **推送前的门。** 门不过就推不出去 —— 这样"每次推送前跑档 1"
 # 不依赖"我记得"。
@@ -222,7 +222,11 @@ if [ -z "$PY" ]; then
   exit 1
 fi
 
-exec "$PY" src/by1all.py --tier 1
+# **这一行里的路径也是装的时候算出来的，不是写死的。**
+# 原来写死 `src/by1all.py` —— 模块搬进 `src/checks/` 之后没人改它，
+# 于是钩子拦下**每一次**推送，而报错是"找不到文件"，
+# 看起来像门坏了，不像"路径过期了"。**写死的路径有寿命，算出来的没有。**
+exec "$PY" "{all}" --tier 1
 '''
 
 
@@ -231,7 +235,15 @@ def install_hook():
     if not os.path.isdir(d):
         print('  找不到 .git/hooks/ —— 这不是一个 git 仓库？')
         return 1
-    by1io.write_text(HOOK, HOOK_BODY.replace('{py}', sys.executable))
+    def rel(p):
+        # 相对仓库根，**正斜杠** —— 钩子是 sh 脚本，反斜杠在那里是转义符。
+        return os.path.relpath(p, ROOT).replace(os.sep, '/')
+
+    body = (HOOK_BODY
+            .replace('{py}', sys.executable)
+            .replace('{self}', rel(os.path.abspath(__file__)))
+            .replace('{all}', rel(os.path.join(HERE, 'by1all.py'))))
+    by1io.write_text(HOOK, body)
     print('  装了 %s' % os.path.relpath(HOOK, ROOT))
     print('  解释器记的是：%s' % sys.executable)
     print('  之后每次 `git push`（含手动）都会先跑档 %d。' % LADDER[0])
