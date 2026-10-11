@@ -245,7 +245,7 @@
 | 文件 | 用途 |
 |---|---|
 | `README.md` | 门面。是什么、怎么跑、数据从哪来 |
-| `ir.md` | Block 0 · 中间表示（IR）规格 |
+| `ir.md` | 只要 IR 里出现任何一个 PyTorch 概念（`nn.Module`、张量形状、in-place），这个判据就不成立 |
 | `plan.md` | by1 · 接下来的计划 |
 
 ## `models/` —— 36 个
