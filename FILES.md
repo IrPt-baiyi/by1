@@ -1,6 +1,6 @@
 # 这个仓库里每个文件是干什么的
 
-> 264 个跟踪文件。按"你会想找什么"分组，不按字母表。
+> 265 个跟踪文件。按"你会想找什么"分组，不按字母表。
 >
 > **这份文档是生成的**：`python src/by1files.py --write`。
 > 文件清单、每组的个数、每个文件的一句话都从目录树和 docstring 来 ——
@@ -237,7 +237,7 @@
 | `ir.md` | > **同一份 IR，两个后端（PyTorch / 自建执行器）跑出同一个前向 |
 | `plan.md` | by1 · 接下来的计划 |
 
-## `models/` —— 51 个
+## `models/` —— 52 个
 
 命名规矩：**文件名 = 长名 = HF 的模型名（去掉 owner）**，
 `model` 声明 = 短名（手写的）。两列的对照见 `models.tsv`。
@@ -246,6 +246,7 @@
 |---|---|
 | `DeepSeek-R1-Distill-Qwen-1.5B.by1` | 真实模型 · HF id `deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B` |
 | `DeepSeek-R1-Distill-Qwen-7B.by1` | 真实模型 · HF id `deepseek-ai/DeepSeek-R1-Distill-Qwen-7B` |
+| `GLM-4.7-Flash.by1` | 真实模型 · HF id `zai-org/GLM-4.7-Flash` |
 | `GLM-5.3-Flash.by1` | 真实模型 · HF id `zai-org/GLM-5.3-Flash` |
 | `Instella-3B.by1` | 真实模型 · HF id `amd/Instella-3B` |
 | `Laguna-XS-2_1.by1` | 真实模型 · HF id `poolside/Laguna-XS-2_1` |

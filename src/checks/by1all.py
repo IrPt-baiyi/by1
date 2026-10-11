@@ -223,6 +223,19 @@ REAL = [
     #          （`layer_rows_by_stack` 是 `layer:<栈名>` **或** 不带栈名
     #          那一份，是 `or` 不是相加，两块都得写全）。
     ('gemma-4-26B-A4B.by1', None, 'torch.module', ['--sub', 'text_config']),
+    # **GLM-4.7-Flash —— 这个仓库里第一个 `glm4_moe_lite`。**
+    #
+    #   它是 GLM-5.3-Flash **把三样新东西全去掉之后的样子**：没有 KDA
+    #   （47 层全是 MLA）、没有稀疏索引器、没有 mHC、没有视觉塔、没有 FP8。
+    #   剩下的骨架很干净：**MLA + MoE**，前 1 层稠密、后 46 层 64 选 4，
+    #   尾巴接 1 层 MTP。**零个新原语。**
+    #
+    #   和 5.3 的实质差别之一：4.7 的 `qk_rope_head_dim` 是 **64**（有 RoPE），
+    #   而 5.3 是 0 且 `mla_use_nope = true`（完全没有位置编码）。
+    #
+    #   它也是**扁平 config**（34 个架构字段，没有 `text_config` 那一层），
+    #   所以不用 `--sub`。
+    ('GLM-4.7-Flash.by1', None, 'torch.module', []),
 ]
 
 # 六个合成模型：三后端

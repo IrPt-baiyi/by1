@@ -1,0 +1,234 @@
+# ── GLM-4.7-Flash.by1 ────────────────────────────────────────────────
+# zai-org/GLM-4.7-Flash —— GLM-5.3-Flash 的**上一代**，也是这个仓库里
+# 第一个 `glm4_moe_lite`。和 5.3 比，它是**把三样新东西全去掉之后的样子**：
+#
+#                     5.3-Flash            4.7-Flash
+#   线性注意力        KDA（3+1 混合）        **没有**（47 层全是 MLA）
+#   稀疏索引器        有（32 头）            **没有**
+#   mHC 残差          有（hc_mult 4）        **没有**
+#   专家              288 选 8              64 选 4
+#   稠密层            前 3 层                **前 1 层**
+#   视觉塔            24 层                  **没有**
+#   FP8 块量化        有                     **没有**（纯 bf16）
+#   MTP               1 层                   1 层（同一套）
+#
+# 所以它剩下的骨架很干净：**MLA + MoE**，一层 MLA 配一层 FFN，
+# 前 1 层稠密、后 46 层 MoE，尾巴接 1 层 MTP。**零个新原语。**
+#
+# ## MLA 的四个尺寸（都从 config 来，实测逐个对上）
+#
+#   q_lora 768 · kv_lora 512 · qk_nope 192 · qk_rope 64 · v_head_dim 256
+#   q = kv = 20 头
+#
+#   q_b_proj    [5120, 768]  = q x (qk_nope + qk_rope) = 20 x 256
+#   kv_b_proj   [8960, 512]  = q x (qk_nope + v_head_dim) = 20 x 448
+#   kv_a_proj_with_mqa [576, 2048] = kv_lora + qk_rope = 512 + 64
+#   o_proj      [2048, 5120] = (d_model, q x v_head_dim)
+#
+# **这一号和 5.3 有一处不一样的地方值得记下来**：4.7 的 `qk_rope_head_dim`
+# 是 **64**（不是 0），所以它有 RoPE；而 5.3 那一支 `qk_rope_head_dim = 0`
+# 且 `mla_use_nope = true` —— 完全没有位置编码。
+#
+# ## MoE：逐专家拆开存
+#
+#   mlp.gate.weight                [64, 2048]
+#   mlp.gate.e_score_correction_bias [64]
+#   mlp.experts.{0..63}.gate_proj.weight [1536, 2048]
+#   mlp.experts.{0..63}.up_proj.weight   [1536, 2048]
+#   mlp.experts.{0..63}.down_proj.weight [2048, 1536]
+#   mlp.shared_experts.{gate,up,down}_proj.weight
+#
+# 路由是 `noaux_tc`（`sigmoid` 打分 + 分组），而 `n_group = topk_group = 1` ——
+# 也就是**分了组但只有一组**，分组那一步退化成恒等。属性照实写，
+# 不因为"反正只有一组"就省掉（省掉的话前向会走成 softmax 打分）。
+#
+# 事实来源：
+#   refs/zai-org__GLM-4.7-Flash.config.json（扁平 config，34 个架构字段）
+#   refs/zai-org__GLM-4.7-Flash.tensors.json（9703 个张量，48 个分片）
+# by1-model: GLM-4.7-Flash
+# by1-repo:  zai-org/GLM-4.7-Flash
+# by1-short: GLM-4.7-Flash
+
+model GLM-4.7-Flash {
+  arch  glm4_moe_lite
+  ctx   202752
+
+  hparams {
+    d_model = 2048
+    n_layer = 47
+    vocab   = 154880
+    rms_eps = 1e-05
+  }
+
+  # ── MLA ───────────────────────────────────────────────────────────
+  # `qk_rope` 是 64（**不是 0**）—— 这一层有 RoPE 那一半。
+  mech MLA1 : MLA {
+    q          = 20
+    v_dim      = 256
+    qk_nope    = 192
+    qk_rope    = 64
+    q_lora     = 768
+    kv_lora    = 512
+    structural = [ q, v_dim, qk_nope, qk_rope, q_lora, kv_lora ]
+  }
+
+  # ── MoE：64 选 4，noaux_tc ────────────────────────────────────────
+  # `score_bias = true` 是**会改前向**的那一条（官方实现里
+  # `scores_for_choice = scores + e_score_correction_bias`，
+  # 而**选出来之后权重用的是没加偏置的 scores**）。
+  # 所以它必须写出来 —— 不写的话前向走的是"没有偏置的选择"，
+  # 而契约、config 全都照样对得上。
+  mech MoE : MoE {
+    experts       = 64
+    hidden        = 1536          # moe_intermediate_size
+    top_k         = 4
+    shared        = 1
+    shared_hidden = 1536
+    n_group       = 1
+    topk_group    = 1
+    routed_scale  = 1.8
+    score_bias    = true
+    routing       = sigmoid_group_topk
+    layer_kind    = sparse
+    structural    = [ experts, hidden, shared, n_group, topk_group ]
+  }
+
+  # 第 0 层那一支稠密 FFN（`first_k_dense_replace = 1`）。
+  mech Dense : FFN { hidden = 10240 }
+
+  stack model {
+    pattern      = 47 * MLA1
+    model[0..0]  >> Dense
+    model[1..46] >> MoE
+  }
+
+  # ── MTP（1 层）────────────────────────────────────────────────────
+  # `num_nextn_predict_layers = 1`。官方那层在 `model.layers.47.` 下面 ——
+  # 和主干**同一个前缀、层号接着数**，所以是 `index = global`。
+  # 它是 MLA + MoE，另外多 6 个 MTP 专属张量（见 `layer mtp`）。
+  stack mtp {
+    aux     = true
+    index   = global
+    pattern = 1 * MLA1
+    mtp[:]  >> MoE
+  }
+
+  position {
+    # config: rope_theta = 1000000 · rope_scaling = null · partial 1.0
+    default = rope(base = 1000000, type = default)
+  }
+
+  tensors {
+    MLA1 {
+      q_a_proj.weight           : (q_lora, d_model)
+      q_a_layernorm.weight      : (q_lora,)
+      q_b_proj.weight           : (q * (qk_nope + qk_rope), q_lora)
+      kv_a_proj_with_mqa.weight : (kv_lora + qk_rope, d_model)
+      kv_a_layernorm.weight     : (kv_lora,)
+      kv_b_proj.weight          : (q * (qk_nope + v_dim), kv_lora)
+      o_proj.weight             : (d_model, q * v_dim)
+    }
+    # **逐专家拆开存**（`mlp.experts.{e}.gate_proj.weight`）——
+    # 契约里写**打包形状**（第一维 = 专家数）+ `per_expert`，
+    # 检查器看到 `per_expert` 会自己去掉第一维再逐个比。
+    # 名字侧由 `emit` 的 `expert_name` 把 `{expert}` 插进去，
+    # 所以逻辑名里**不写** `experts.`。
+    MoE {
+      gate.weight                     : (experts, d_model)
+      gate.e_score_correction_bias    : (experts,)
+      gate_proj.weight                : (experts, hidden, d_model) per_expert
+      up_proj.weight                  : (experts, hidden, d_model) per_expert
+      down_proj.weight                : (experts, d_model, hidden) per_expert
+      shared_experts.gate_proj.weight : (shared_hidden, d_model)
+      shared_experts.up_proj.weight   : (shared_hidden, d_model)
+      shared_experts.down_proj.weight : (d_model, shared_hidden)
+    }
+    Dense {
+      gate_proj.weight : (hidden, d_model)
+      up_proj.weight   : (hidden, d_model)
+      down_proj.weight : (d_model, hidden)
+    }
+    layer {
+      input_layernorm.weight          : (d_model,)
+      post_attention_layernorm.weight : (d_model,)
+    }
+    # ── MTP 那一层（第 47 层）的层内张量 ─────────────────────────────
+    # `layer <栈名>` 是**整块替换**、不是追加，所以主干那两个 norm
+    # 得在这里再写一遍。多出来的 6 个是 MTP 专属的 ——
+    # 注意其中两个是**层内**的（`embed_tokens` 与 `shared_head.head`
+    # 都带 `.layers.47.` 前缀），不是全局张量。
+    layer mtp {
+      input_layernorm.weight          : (d_model,)
+      post_attention_layernorm.weight : (d_model,)
+      enorm.weight            : (d_model,)
+      hnorm.weight            : (d_model,)
+      eh_proj.weight          : (d_model, 2 * d_model)
+      embed_tokens.weight     : (vocab, d_model)
+      shared_head.norm.weight : (d_model,)
+      shared_head.head.weight : (vocab, d_model)
+    }
+    global {
+      embed.weight      : (vocab, d_model)
+      final_norm.weight : (d_model,)
+      # tie = false —— 这一号**有** lm_head。
+      lm_head.weight    : (vocab, d_model)
+    }
+  }
+
+  emit {
+    # config 是**扁平的**（没有 `text_config` 那一层），所以不用 `--sub`。
+    train -> transformers.config {
+      field {
+        model_type               = "glm4_moe_lite"
+        vocab_size               = vocab
+        hidden_size              = d_model
+        num_hidden_layers        = n_layer
+        intermediate_size        = Dense.hidden
+        moe_intermediate_size    = MoE.hidden
+        num_attention_heads      = MLA1.q
+        num_key_value_heads      = 20
+        q_lora_rank              = MLA1.q_lora
+        kv_lora_rank             = MLA1.kv_lora
+        qk_nope_head_dim         = MLA1.qk_nope
+        qk_rope_head_dim         = MLA1.qk_rope
+        v_head_dim               = MLA1.v_dim
+        max_position_embeddings  = ctx
+        rms_norm_eps             = rms_eps
+        hidden_act               = "silu"
+        attention_bias           = false
+        attention_dropout        = 0.0
+        tie_word_embeddings      = false
+        n_routed_experts         = MoE.experts
+        n_shared_experts         = MoE.shared
+        num_experts_per_tok      = MoE.top_k
+        n_group                  = MoE.n_group
+        topk_group               = MoE.topk_group
+        topk_method              = "noaux_tc"
+        norm_topk_prob           = true
+        routed_scaling_factor    = MoE.routed_scale
+        first_k_dense_replace    = 1
+        num_nextn_predict_layers = 1
+        partial_rotary_factor    = 1.0
+        rope_scaling             = null
+        rope_theta               = 1000000
+        eos_token_id             = [154820, 154827, 154829]
+        pad_token_id             = 154820
+      }
+    }
+
+    train -> torch.module {
+      name        = "model.layers.{i}.{scope}{physical}"
+      global_name = "{physical}"
+      # ⚠ **`scope` 那一行不能折行** —— 折行之后整张映射表空着，
+      #   渲染出来的名字静默丢掉前缀（表现是"NNNN 个张量实际不存在"）。
+      scope { MLA1 = self_attn., MoE = mlp., Dense = mlp., layer = "", global = "" }
+      # 逐专家那一支的名字模板 —— 官方是 `mlp.experts.{e}.{...}`。
+      expert_name = "model.layers.{i}.mlp.experts.{expert}.{physical}"
+      rename {
+        # 官方这两个不叫 `embed.weight` / `final_norm.weight`。
+        embed.weight      = model.embed_tokens.weight,
+        final_norm.weight = model.norm.weight
+      }
+    }
+  }
+}
