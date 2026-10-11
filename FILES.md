@@ -1,6 +1,6 @@
 # 这个仓库里每个文件是干什么的
 
-> 254 个跟踪文件。按"你会想找什么"分组，不按字母表。
+> 248 个跟踪文件。按"你会想找什么"分组，不按字母表。
 >
 > **这份文档是生成的**：`python src/by1files.py --write`。
 > 文件清单、每组的个数、每个文件的一句话都从目录树和 docstring 来 ——
@@ -200,22 +200,6 @@
 | `pattern-design-review.md` | 对上面那份草案的审查 —— **照做之前先读它** |
 | `pattern-design.md` | 设计草案 v0，**状态：待审**。它挡着 4 个模型 |
 | `which-gpu.md` | > 从 `README.md` 挪出来的。它是一次**具体的调查** —— 这台开发机上 |
-
-## `docs/delete-test-1/` —— 4 个
-
-| 文件 | 用途 |
-|---|---|
-| `README.md` | 门面。是什么、怎么跑、数据从哪来 |
-| `agent-report.md` | 搞定了。结果在 build：9 个路径全部就位，字节数和 MANIFEST.txt 逐条对上，合计 1234405 |
-| `rebuild-record.md` | 重建记录：MANIFEST.txt 的 9 个路径 |
-| `rebuild_manifest.py` | 复现脚本 |
-
-## `docs/delete-test-1/test-definition/` —— 2 个
-
-| 文件 | 用途 |
-|---|---|
-| `MANIFEST.txt` | 被拿走的东西 —— 按原来的相对路径列在这里 |
-| `README.md` | 门面。是什么、怎么跑、数据从哪来 |
 
 ## `drafts/` —— 3 个
 
