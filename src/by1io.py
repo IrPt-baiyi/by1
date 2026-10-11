@@ -25,7 +25,8 @@
 ## 意图，不是函数
 
     read_text(p)          整个读进来
-    head_text(p)          只读头部标签区
+    head_text(p)          只读前 n 个**字符**
+    head_tags(p)          只读**头部标签区**（开头那一段注释行）
     iter_lines(p)         逐行（大文件不进内存）
     read_json(p) / write_json(p, obj)
     read_bytes(p) / write_bytes(p, data)
@@ -141,6 +142,44 @@ def head_text(path, n=2000, encoding=ENCODING):
     """
     with io.open(path, encoding=_read_enc(encoding)) as f:
         return f.read(n)
+
+
+#: 头部标签区最多读这么多行。头再长也不会把整个文件读进来。
+HEAD_TAG_LINES = 200
+
+
+def head_tags(path, encoding=ENCODING, max_lines=HEAD_TAG_LINES):
+    """读**头部标签区**：文件开头那一段连续的注释行。句柄一定关。
+
+    ## 和 `head_text` 的区别 —— 一个是数出来的，一个是看出来的
+
+    `head_text(p, 2000)` 按**字符数**截。标签行落在第几个字符上，
+    取决于上面那段说明文字写了多长 —— 于是**"把说明写详细一点"
+    就会让标签掉出窗口**，而症状是"这个文件没有 `by1-repo` 头"。
+
+    实测（2026-10-12）：
+
+        Qwen3-Omni-30B-A3B-Thinking.by1   `by1-repo` 在第 2056 字符
+        gemma-4-26B-A4B.by1               `by1-repo` 在第 2572 字符
+                                          （窗口 2000 —— 两个都掉出去了）
+
+    后果不是"这两个模型没被描述"，而是 `by1refs.repo_of()` 对它们返回
+    None，于是 `by1all` 把"有 by1-repo 却推不出 config"当成
+    "合成模型没有 config，正常"**静默跳过** —— 最后仍然报全绿。
+    **32 个真实模型里只验了 30 个，而输出里看不出来。**
+
+    这里按**结构**截：读到第一个既不是 `#` 也不是空行的行为止。
+    空行算头部的一部分（`.by1` 的头部块和 `model {}` 之间正好隔一个空行）。
+    """
+    out = []
+    for i, line in enumerate(iter_lines(path, encoding=encoding)):
+        if i >= max_lines:
+            break
+        if line.startswith('#') or not line.strip():
+            out.append(line)
+        else:
+            break
+    return ''.join(out)
 
 
 def iter_lines(path, encoding=ENCODING):

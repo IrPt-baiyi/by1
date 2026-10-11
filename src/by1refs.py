@@ -43,13 +43,20 @@ _REPO = re.compile(r'^#\s*by1-repo:\s*(\S+)', re.M)
 
 
 def repo_of(by1file):
-    """从 .by1 头部读出 `owner/Repo`。读不到返回 None。"""
+    """从 .by1 头部读出 `owner/Repo`。读不到返回 None。
+
+    **读的是 `head_tags`，不是 `head_text`。** 后者按字符数截 2000，
+    而标签行落在第几个字符上取决于上面那段说明写多长 ——
+    `Qwen3-Omni-30B-A3B-Thinking.by1`（2056）和 `gemma-4-26B-A4B.by1`
+    （2572）就是这样被截掉的：这里返回 None，`by1all` 于是把它们
+    当成合成模型**静默跳过**，而报表照样全绿。见 `by1io.head_tags`。
+    """
     # **裸名 -> models/<名>。** 模型不在仓库根了。
     p = by1paths.model(by1file)
     if not os.path.exists(p):
         return None
     try:
-        head = by1io.head_text(p)
+        head = by1io.head_tags(p)
     except Exception:
         return None
     m = _REPO.search(head)
@@ -231,6 +238,27 @@ def corpus_audit():
     # **合成模型没有 `by1-repo`，那不算缺** —— 只看"缺 config / 缺张量清单"。
     miss = [(f, m) for f, m in audit() if any('缺' in x for x in m)]
 
+    # **尺子本身要被验证过。**
+    # `repo_of` 读的是**头部标签区**；这里换一种方法再数一遍
+    # （整篇找 `# by1-repo:` 子串）。两种数法不一致 = "读标签这条路坏了"。
+    #
+    # 历史：`head_text(2000)` 按字符数截，把两个模型的长说明截掉了，
+    # 于是 `repo_of` 对它们返回 None —— 而 `by1all` 把
+    # "有 by1-repo 却推不出 config"当成"合成模型，正常"**静默跳过**。
+    # **32 个真实模型只验了 30 个，报表仍然全绿。**
+    # 这一个计数是那件事的判卷人。
+    n_repo = sum(1 for f in by1paths.names() if repo_of(f))
+    n_head, unreadable = 0, []
+    for _p in by1paths.models():
+        try:
+            if '# by1-repo:' in by1io.read_text(_p):
+                n_head += 1
+        except OSError as _e:
+            # **不写 `pass`。** 读不了就是读不了 —— 吞掉之后
+            # 这个文件会被算成"没有标签"，而症状和"标签被截掉"一样。
+            unreadable.append((os.path.basename(_p), str(_e)[:50]))
+    tag_ok = (n_head == n_repo) and not unreadable
+
     lines = []
     # **先滤再排。** 原来写的是 `sorted(kinds.items()) if k` —— sorted
     # 先跑，撞上 None 键就 TypeError。只有存在 kind 为 None 的文件时
@@ -246,6 +274,13 @@ def corpus_audit():
                     sum(1 for v in known.values() if v.startswith('by1:')),
                     len(tsv_seeds()), len(sources())))
     lines.append('  真实模型缺 refs   %d 个' % len(miss))
+    # **两种数法不一致 = 标签被截掉了**，不是"少几个模型"。
+    # 不写这一行的话，这件事只能靠"另一个脚本报了个不一样的数"发现 ——
+    # 而那个脚本（`by1debt`）当时把它读成了"30 个真实模型"。
+    lines.append('  头部标签读得出     %d / %d（另一种数法）%s'
+                 % (n_repo, n_head,
+                    '' if tag_ok else
+                    '  !! 不一致 —— 有标签被截在窗口外，见 by1io.head_tags'))
     # **不算失败，但必须看得见。** `by1fetch` 只产 config / tensors 两种；
     # `.gguf-tensors.json` 要从 GGUF 仓库另外抽头，而它们的出处只记下来一个
     # （见 refs/SOURCES.tsv 的头注）。藏起来的话，读者会以为 refs/ 全能重建。
@@ -254,11 +289,14 @@ def corpus_audit():
                  % kinds.get('.gguf-tensors.json', 0))
     for n, why in bad:
         lines.append('    !! 解析不了 %s —— %s' % (n, why))
+    for n, why in unreadable:
+        lines.append('    !! 读不了 .by1 %s —— %s（这个文件没进上面那个计数）'
+                     % (n, why))
     for n, why in orphan:
         lines.append('    !! 没有出处 %s -> %s' % (n, why))
     for f, m in miss:
         lines.append('    !! %s 缺 %s' % (f, ', '.join(m)))
-    ok = not (bad or orphan or miss)
+    ok = not (bad or orphan or miss) and tag_ok
     lines.append('  [%s] refs 语料 %s'
                  % ('PASS' if ok else 'FAIL',
                     '每个文件都能解析、都有出处' if ok else '见上面的 !! 行'))

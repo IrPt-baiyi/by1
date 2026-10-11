@@ -95,8 +95,11 @@
   llama 39/39 · mixtral 35/35 · gpt-oss 31/31 · qwen3-next 62/62  —— 全在阈值内
 
 【E】refs 语料（每次全量都会查）
-  72 个文件：能解析 72/72 · 有出处 72/72（by1 30 · models.tsv 32 · SOURCES 21）
+  72 个文件：能解析 72/72 · 有出处 72/72（by1 32 · models.tsv 32 · SOURCES 21）
   出处规则见 refs/SOURCES.tsv；重建例外：3 个 .gguf-tensors.json（by1fetch 不产这种）
+  另有一把自查的尺子：**头部标签读得出 32/32** —— 用两种方法数
+  `by1-repo`（`by1refs.repo_of` 读头部标签区 vs 整篇找子串），
+  不一致就报 FAIL。见【F】最后一条。
 
 【E2】文档、数字、以及"不出声的写法"（每次全量都会查）
   src/by1docs.py    路径 / markdown 链接 / `python xxx.py` 调用
@@ -113,7 +116,12 @@
   · **30 个真实模型的前向**：要显存（`by1gpu.py --plan 80` 会列出来谁能装下）
       32 个真实模型里**只有两个**验过前向 —— Instella-3B 与 GPT-2（见【B】最后两行）。
       其余 30 个的 config 与张量名都对着官方产物验过了，**前向没跑过**。
-  · **KDA / SSM 的计算**：codegen 还不支持（Ling / GLM-5.3 / Nemotron）
+  · **KDA / SSM 的"真尺寸数值"**：codegen 已经支持这两种机制（`by1codegen`
+      的 `SUPPORTED_KINDS` 里都有），两份**机械缩小版**（`ling-tiny.by1` ·
+      `glm-text-tiny.by1`）结构跑得起来、三后端对得上。**没验的是
+      "和真模型数值一致"** —— Ling / GLM 真尺寸跑不动。
+      （*这里原来写的是"codegen 还不支持（Ling / GLM-5.3 / Nemotron）"，
+      而 KDA 是最后一个补齐的，见 `history/ir.md` §122。*）
   · **llama.cpp 本身**：图核对过，但没生成过一行 ggml 并跑起来
   · **多模态的"值"没验过**：Qwen3-VL（2B/30B/235B）的视觉塔、Qwen3-Omni 的音频塔、
       **Gemma 4 的视觉塔**（31B 的 27 层 ViT、26B-A4B 同一套；12B 那一支**没有塔**，
@@ -131,3 +139,13 @@
       **`by1e2e` 的 C 那一段现在也是真跑的**：它会对 NumPy 比值
       （C↔NumPy 相对差 1.222e-07），判定行里的"N 个后端"由**真跑过的后端**数出来
       —— 以前它只印"编译成功"，而判定行恒定写"三个后端"。
+  · **一个已经修掉的"静默跳过"**（2026-10-12，见 `history/ir.md` §133）：
+      `by1io.head_text` 按**字符数**截 2000，而
+      `Qwen3-Omni-30B-A3B-Thinking.by1` 的 `by1-repo` 在第 2056 字符、
+      `gemma-4-26B-A4B.by1` 在第 2572 字符（都写在长说明之后）——
+      于是 `by1refs.repo_of()` 对它们返回 None，而 `by1all` 把
+      "有 by1-repo 却推不出 config"当成"合成模型没有 config，正常"，
+      **静默跳过**：**32 个真实模型只验了 30 个，报表照样全绿。**
+      现在读的是 `by1io.head_tags`（按结构截：读到第一个非注释行），
+      且 `by1refs` 用**两种方法**交叉数 `by1-repo`，不一致就 FAIL。
+      —— 所以【A】那一行"32 个，32 个都在护栏里"，**从这次修复起才是真的**。

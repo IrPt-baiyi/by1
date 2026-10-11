@@ -35,6 +35,7 @@ import subprocess
 import sys
 import by1io
 import by1paths
+import by1refs
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 os.chdir(HERE)
@@ -69,16 +70,19 @@ def by1files():
 
 
 def real_models():
-    """有 by1-repo 的 = 从真仓库来的。其余是合成的。"""
+    """有 `by1-repo` 的 = 从真仓库来的。其余是合成的。
+
+    **判据在 `by1refs.repo_of`，这里不再抄一份正则。**
+    原来这里自己抄了一遍 `^#\\s*by1-repo:`，和 `by1refs` 里那份
+    用同一个 `head_text(2000)` —— 于是**一起坏**：`by1debt` 报
+    "30 个真实模型"，`by1refs` 报"by1 30"，而实际是 32。
+    同一个意思两处实现，错起来也是两处（见 `by1io.head_tags`）。
+    """
     out = []
     for f in by1files():
-        try:
-            head = by1io.head_text(by1paths.model(f))
-        except Exception:
-            continue
-        m = re.search(r'^#\s*by1-repo:\s*(\S+)', head, re.M)
-        if m:
-            out.append((f, m.group(1)))
+        r = by1refs.repo_of(f)
+        if r:
+            out.append((f, r))
     return out
 
 
@@ -107,10 +111,17 @@ def main():
     # ── ② boot_ir 的展开率 ───────────────────────────────────────
     print()
     print('  ② boot_ir 能展开多少（不需要人写 .by1 的那部分）')
+    # **路径和 cwd 都要给对。** 这一段原来跑的是 `by1triage.py`（裸名），
+    # 而 `by1debt` 开头 `os.chdir(HERE)` 到了 `src/checks` ——
+    # 于是 Python 找不到那个文件，**退出码 2**，整段印"下面的数不作数"。
+    # 它住在 `src/data/`，而它要扫 `refs/` 所以 cwd 必须是仓库根。
+    # 症状是"这一段永远是空的"，不是"by1triage 坏了"。
+    triage = by1paths.root('src', 'data', 'by1triage.py')
     try:
-        r = subprocess.run([sys.executable, 'by1triage.py'],
+        r = subprocess.run([sys.executable, triage],
                            capture_output=True, text=True,
                            encoding='utf-8', errors='replace',
+                           cwd=by1paths.ROOT,
                            timeout=1800)
         out = r.stdout
         # 同上：正则从 stdout 里抠数字，那就得先确认这次跑成功了。
@@ -118,12 +129,21 @@ def main():
             print('     （by1triage 退出码 %d —— 下面的数不作数）'
                   % r.returncode)
         m = re.search(r'① (\d+) 种模式\s*·\s*② (\d+) 种模式', out)
-        n_ok = len(re.findall(r'\n  ✓ ', out))
-        n_all = len(re.findall(r'\n  [✓!] ', out))
+        # **行首是 `  ` + 一个三字符的标记**（`' ✓ '` / `' ✗ '` / `' ! '`），
+        # 所以真正的形状是 `\n   ✓ `。原来这里写的是 `\n  ✓ ` ——
+        # 少一个空格，于是**一条都匹配不到**，而输出印的是
+        # "出得了完整 IR 的：0 / 0"。**那是解析没匹配上，不是"一个都没有"。**
+        n_ok = len(re.findall(r'^\s+✓\s', out, re.M))
+        n_all = len(re.findall(r'^\s+[✓✗!]\s', out, re.M))
         if m:
             print('     ① classify 认出来、boot 不会展开：%s 种' % m.group(1))
             print('     ② classify 也认不出：%s 种' % m.group(2))
-        print('     出得了完整 IR 的：%d / %d' % (n_ok, n_all or n_ok))
+        if n_all:
+            print('     出得了完整 IR 的：%d / %d' % (n_ok, n_all))
+        else:
+            # **不印 `0 / 0`。** 那看起来像"一个都没有"，其实是"没解析到"。
+            print('     （没解析到模型行 —— by1triage 的输出格式变了，'
+                  '这一段要跟着改）')
     except Exception as e:
         print('     （跑 triage 失败：%s）' % str(e)[:60])
 

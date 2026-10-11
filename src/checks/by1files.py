@@ -251,18 +251,27 @@ def describe(path):
         return s
     # md / by1 / 脚本：试头部注释
     full = os.path.join(ROOT, path)
+    # `.by1` 先看头部那两个标签 —— 那才是它的身份，
+    # 而不是文件开头那行装饰。
+    #
+    # **读的是 `head_tags`，不是 `head_text`。** 后者的 2000 字符窗口
+    # 会把写在长说明之后的标签截掉（见 `by1io.head_tags`）——
+    # 那样一个有 `by1-repo` 的真实模型会被这一行写成
+    # "合成 / 形状测试"，而症状只是"这份文档写错了"。
+    if path.endswith('.by1'):
+        try:
+            tags = by1io.head_tags(full)
+        except OSError:
+            tags = ''
+        m = re.search(r'^#\s*by1-repo:\s*(\S+)', tags, re.M)
+        mo = re.search(r'^#\s*by1-model:\s*(\S+)', tags, re.M)
+        if m or mo:
+            return ('真实模型 · HF id `%s`' % m.group(1)) if m else \
+                   ('短名 `%s`（合成 / 形状测试，没有 HF 对照）' % mo.group(1))
     try:
         head = by1io.head_text(full, 2000)
     except OSError:
         return None
-    # `.by1` 先看头部那两个标签 —— 那才是它的身份，
-    # 而不是文件开头那行装饰。
-    if path.endswith('.by1'):
-        m = re.search(r'^#\s*by1-repo:\s*(\S+)', head, re.M)
-        mo = re.search(r'^#\s*by1-model:\s*(\S+)', head, re.M)
-        if m or mo:
-            return ('真实模型 · HF id `%s`' % m.group(1)) if m else \
-                   ('短名 `%s`（合成 / 形状测试，没有 HF 对照）' % mo.group(1))
     for ln in head.split('\n')[:12]:
         t = ln.strip().lstrip('#').strip().strip('/*').strip()
         # **跳过带自己文件名的行。**

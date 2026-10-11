@@ -77,9 +77,9 @@ python src/checks/by1verify.py models/clef.by1 refs/Cloudflare__clef.config.json
     --config --tensors refs/Cloudflare__clef.tensors.json --backend torch.module
 ```
 
-**15 个真实模型**：config 逐字段 + 张量逐名字逐形状对上了。
+**32 个真实模型**：config 逐字段 + 张量逐名字逐形状对上了。
 其中 6 个还比过前向数值（最好 0.000e+00，最差 1.058e-06）。
-**这 15 个是人工选定的，不是随机抽样。**
+**这 32 个是人工选定的，不是随机抽样。**
 
 **② 从产物反推一份草稿**
 

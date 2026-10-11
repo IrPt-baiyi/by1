@@ -253,7 +253,7 @@
 | `Ling-3.0-tiny.by1` | 真实模型 · HF id `inclusionAI/Ling-3.0-tiny` |
 | `NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16.by1` | 真实模型 · HF id `nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16` |
 | `Qwen3-Coder-Next.by1` | 真实模型 · HF id `Qwen/Qwen3-Coder-Next` |
-| `Qwen3-Omni-30B-A3B-Thinking.by1` | 它是这批里唯一**真的要做新东西**的一份。三段加起来 19743 个张量： |
+| `Qwen3-Omni-30B-A3B-Thinking.by1` | 真实模型 · HF id `Qwen/Qwen3-Omni-30B-A3B-Thinking` |
 | `Qwen3-VL-235B-A22B-Thinking.by1` | 真实模型 · HF id `Qwen/Qwen3-VL-235B-A22B-Thinking` |
 | `Qwen3-VL-2B-Thinking.by1` | 真实模型 · HF id `Qwen/Qwen3-VL-2B-Thinking` |
 | `Qwen3-VL-30B-A3B-Thinking.by1` | 真实模型 · HF id `Qwen/Qwen3-VL-30B-A3B-Thinking` |
@@ -271,7 +271,7 @@
 | `embeddinggemma-2.by1` | 真实模型 · HF id `google/embeddinggemma-2` |
 | `gate-probe.by1` | 取值门的**反例**：故意写一个 codegen 没实现的取值 |
 | `gemma-4-12B.by1` | 真实模型 · HF id `google/gemma-4-12B` |
-| `gemma-4-26B-A4B.by1` | 骨架和 gemma-4-31B 是同一支 `gemma4`（滑窗 5 + 全量 1 的 6 层一块、 |
+| `gemma-4-26B-A4B.by1` | 真实模型 · HF id `google/gemma-4-26B-A4B` |
 | `gemma-4-31B.by1` | 真实模型 · HF id `google/gemma-4-31B` |
 | `gemma-4-E4B.by1` | 真实模型 · HF id `google/gemma-4-E4B` |
 | `glm-text-tiny.by1` | GLM-5.3-Flash 文本主干的机械缩小版。** 结构一个字没改： |

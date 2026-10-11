@@ -282,17 +282,9 @@ def _check():
     print()
     print('  models/ 下 %d 个 .by1，其中 %d 个带 by1-repo 头'
           % (len(models()), len([f for f in models()
-                                 if '# by1-repo:' in _head(f)])))
+                                 if '# by1-repo:' in by1io.head_tags(f)])))
     print('  refs/   下 %d 个产物' % len(_glob.glob(os.path.join(REFS, '*.json'))))
     print()
-
-
-def _head(p):
-    try:
-        with open(p, encoding='utf-8', errors='replace') as f:
-            return f.read(2000)
-    except OSError:
-        return ''
 
 
 if __name__ == '__main__':

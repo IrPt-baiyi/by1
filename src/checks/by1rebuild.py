@@ -146,7 +146,10 @@ def main():
     print('  ── 抓的那部分，URL 能不能从 .by1 推出来')
     n_ok, n_bad = 0, []
     for f in sorted(by1paths.models()):
-        head = by1io.head_text(f)
+        # **`head_tags`，不是 `head_text`** —— 后者的 2000 字符窗口会把
+        # 写在长说明之后的 `by1-repo` 截掉，于是这里少报两个
+        # （见 `by1io.head_tags`）。
+        head = by1io.head_tags(f)
         if 'by1-repo' not in head:
             continue
         m = re.search(r'^#\s*by1-repo:\s*(\S+)', head, re.M)
@@ -156,7 +159,7 @@ def main():
             n_bad.append(f)
     print('     能推的：%d 个（`.by1` 的 `by1-repo`）' % n_ok)
     # **另外那 41 个 refs 文件也推得出来 —— 从第二个种子推。**
-    # 不写这一行的话，这个报表会让人以为"能推的只有 .by1 那 31 个"。
+    # 不写这一行的话，这个报表会让人以为"能推的只有 .by1 那 32 个"。
     print('     另外 %d 个探索源：从 refs/SOURCES.tsv 推（没有 .by1）'
           % len(by1refs.sources()))
     if n_bad:
