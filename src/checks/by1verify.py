@@ -586,7 +586,24 @@ def main(argv=None):
 
     ok2 = None
     real = load_reference(tensors_path, gguf_path)
-    if real is not None:
+    if real is not None and not real:
+        # **参考产物读进来是空的 —— 这是"没验"，不是"契约写错了"。**
+        #
+        # 成因：文件是 `{名: null}`（只有名字、没有形状），或者它根本不是
+        # 张量表。`by1fetch` 的 **index 路**产出的正是前一种 —— 而那条路
+        # 曾经是默认路（见 `by1fetch` 头注那段"错话"）。
+        #
+        # 不分开的话，表现是"契约里每个张量都缺失"（Qwen3-VL-2B 会报 625 个），
+        # 读起来像契约的问题，真因却在参考产物那边 —— 这个仓库专门在猎
+        # 这一族：**看起来验了，其实什么都没验。**
+        out.append("")
+        out.append("  %s 参考产物读进来是空的（%s）—— 这一项没验"
+                   % (by1skip.MARK,
+                      os.path.basename(tensors_path or gguf_path or '')))
+        out.append("      只有名字、没有形状的表（`{名: null}`）读进来就是空的"
+                   " —— 那不是契约全错，是没得比")
+        skipped.append('张量名与形状（参考产物为空）')
+    elif real is not None:
         out.append("")
         out.append(f"[3] tensor names + shapes   (backend = {backend})")
         rules = info.get("emit", {})

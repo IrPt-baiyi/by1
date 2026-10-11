@@ -36,8 +36,28 @@
 ## 抓法
 
     config.json       ModelScope 优先（国内快），HF 兜底
-    张量名             model.safetensors.index.json（几十 KB，只有名字）
-                      没有 index 就抓 safetensors 的**头 2 MB**（有名字和形状）
+    张量表             index 拿**分片清单**，再逐个读分片的头 -> dtype + shape
+
+## ⚠ 这里原来有一句错话（**就是这一版的修复**）
+
+    张量名   model.safetensors.index.json（几十 KB，只有名字）
+             —— 比抓 safetensors 头便宜得多，而且**信息一样**
+
+**"信息一样"是错的。** index 里只有名字，**没有形状，也没有 dtype**。
+于是按它写出来的 refs 是 `{名: null}`，而 `by1verify.load_reference` 读进去
+是**空表** —— 表现是"契约里每个张量都缺失"（Qwen3-VL-2B 的 625 个全报缺失），
+看起来像契约写错了，真因是参考产物根本没读进来。
+
+**后果比"慢"严重**：`refs/` 删掉之后重建出来的产物**验不了** ——
+而"删掉 95% 也能重建"这句话，本来就该包含"重建出来的能验"。
+
+现在的顺序（① 仍然便宜，② 才是贵的）：
+
+    ① `model.safetensors.index.json` —— 一次拿到**全部张量名 + 分片清单**
+    ② 逐个分片读 safetensors 的**头**（Range 请求，先 1 MB）-> dtype + shape
+
+代价：分片模型要读**全部**分片的头（235B 是 96 个）——
+比只读一个 index 贵得多，但那是拿到形状的**唯一**办法。
 
 用法:
     python by1fetch.py              抓所有缺的
@@ -74,9 +94,12 @@ HF = 'https://hf-mirror.com/%s/resolve/main/%s'
 def get(url, nbytes=None, timeout=30):
     req = urllib.request.Request(url, headers={'User-Agent': 'by1'})
     if nbytes:
-        req.add_header('Range', 'bytes=0-%d' % nbytes)
+        req.add_header('Range', 'bytes=0-%d' % (nbytes - 1))
     with urllib.request.urlopen(req, timeout=timeout) as r:
-        return r.read()
+        # **给了 `nbytes` 就最多只读那么多。** 服务器**不认 Range** 时会
+        # 把整个文件发过来 —— 而分片是 GB 级，`read()` 会当场吃光内存。
+        # 多留 1 个字节，用来判断"要的那段是不是被截断了"。
+        return r.read(nbytes + 1) if nbytes else r.read()
 
 
 def seed():
@@ -124,9 +147,12 @@ def fetch_config(hfid):
     return None
 
 
-def fetch_tensors(hfid):
-    """张量清单。index 优先（小），没有就抓 safetensors 头。"""
-    # ① index：只有名字，但名字就够 classify() 认机制
+#: safetensors 头先抓这么多。绝大多数分片的头远小于它；不够再按精确长度重抓。
+HEAD_BYTES = 1 << 20
+
+
+def shards_from_index(hfid):
+    """index -> `(weight_map, 分片清单)`。**这是唯一一次就能拿到分片清单的地方。**"""
     for fn in ('model.safetensors.index.json',
                'pytorch_model.bin.index.json'):
         for url in (MS % (hfid, fn), HF % (hfid, fn)):
@@ -134,22 +160,66 @@ def fetch_tensors(hfid):
                 j = json.loads(get(url, timeout=30).decode('utf-8', 'replace'))
                 wm = j.get('weight_map') or {}
                 if wm:
-                    return {k: None for k in wm}, 'index'
+                    return wm, sorted(set(wm.values()))
             except Exception:
                 continue
-    # ② safetensors 头：**有名字也有形状**，2 MB 够
-    for url in (MS % (hfid, 'model.safetensors'),
-                HF % (hfid, 'model.safetensors')):
+    return None, None
+
+
+def shard_header(hfid, shard):
+    """一个分片的 safetensors 头 -> `{名: {'dtype', 'shape'}}`。抓不到返回 None。
+
+    头格式：前 8 字节 = 头长度 n（小端 u64），随后 n 字节 JSON。
+    """
+    # **HF 在前。** 它认 Range（实测过）；ModelScope 的 `?FilePath=` 那边
+    # 没验过认不认 —— 万一不认会把整个分片发过来。`get` 里已经加了上限，
+    # 但顺序上还是先走验过的那条。
+    for url in (HF % (hfid, shard), MS % (hfid, shard)):
         try:
-            b = get(url, nbytes=2_000_000, timeout=40)
+            b = get(url, nbytes=HEAD_BYTES, timeout=60)
             if len(b) < 9:
                 continue
             n = struct.unpack('<Q', b[:8])[0]
+            if 8 + n > len(b):              # 1 MB 不够，按精确长度重抓
+                b = get(url, nbytes=8 + n, timeout=90)
+                if 8 + n > len(b):
+                    continue
             hdr = json.loads(b[8:8 + n].decode('utf-8', 'replace'))
-            return ({k: list(v['shape']) for k, v in hdr.items()
-                     if k != '__metadata__'}, 'header')
+            return {k: {'dtype': v.get('dtype'),
+                        'shape': list(v.get('shape') or [])}
+                    for k, v in hdr.items() if k != '__metadata__'}
         except Exception:
             continue
+    return None
+
+
+def fetch_tensors(hfid):
+    """张量清单。**要形状，不要只有名字**（见文件头那段"错话"）。
+
+    ① index -> 分片清单（顺带拿到全部名字）
+    ② 逐个分片读头 -> dtype + shape
+    没有 index（单文件模型）就直接读 `model.safetensors` 的头。
+
+    **任何一片读不到就整个放弃**（返回 `None`）—— 残缺的表写下去就是拿它
+    **覆盖**掉好的那份，是净损失。
+    """
+    wm, shards = shards_from_index(hfid)
+    if shards:
+        out = {}
+        for s in shards:
+            h = shard_header(hfid, s)
+            if h is None:
+                return None, None
+            out.update(h)
+        # index 说有的名字，头里必须也有 —— 对不上说明抓漏了分片。
+        if wm and (set(wm) - set(out)):
+            return None, None
+        return out, 'header×%d' % len(shards)
+    # 单文件模型：没有 index，直接读那一个文件。
+    for shard in ('model.safetensors', 'pytorch_model.bin'):
+        h = shard_header(hfid, shard)
+        if h:
+            return h, 'header'
     return None, None
 
 
