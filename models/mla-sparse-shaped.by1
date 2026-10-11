@@ -54,8 +54,35 @@ model MLA-sparse-shaped {
 
   mech MLP_ : FFN { hidden = 512 }
 
+  # ── 第二种：**k-pool 压缩**（GLM-5.3 独有）─────────────────────
+  # 同一个索引器，但打分的对象是**池**：每 `index_kpool` 个连续 key 压成
+  # 一个池、给池打分、选中的池摊回原始 token。
+  # **不是同一个算法的两种写法，是两种算法。**
+  # 判卷人是 transformers 5.19.0 的 `Glm5NextTextIndexer`
+  # （refs/glm5-next-indexer.reference.txt）。
+  # 两个张量的职责**不一样**：`_gate [hd, d]` 管池内加权、`_ape [P, hd]` 管池内位置。
+  mech MLAK_ : MLA {
+    heads     = { q = 4, head_dim = 48 }
+    q_lora    = 96
+    kv_lora   = 128
+    qk_nope   = 40
+    qk_rope   = 8
+    v_dim     = 32
+    head_gate = per_head
+    gate_act  = sigmoid
+    index_heads = 4
+    index_dim   = 32
+    index_topk  = 4
+    index_kpool      = 4
+    index_kpool_tail = true
+    structural = [ q, q_lora, kv_lora, qk_nope, qk_rope, v_dim, head_gate,
+                   index_heads, index_dim, index_topk, index_kpool ]
+  }
+
   stack main {
-    pattern = 4 * MLA_
+    # 前两层逐 key、后两层 k-pool —— **两条路都留在门里**。
+    # 只留一条的话另一条就会烂（本系列反复踩的同一类）。
+    pattern = 2 * MLA_ + 2 * MLAK_
     main[:] >> MLP_
   }
 
@@ -84,6 +111,26 @@ model MLA-sparse-shaped {
       indexer.k_norm.weight       : (32,)
       indexer.k_norm.bias         : (32,)
       indexer.weights_proj.weight : (4, d_model)
+    }
+    # k-pool 那一路多两个张量。**职责不一样**：
+    #   `_gate [hd, d]`  逐 token 的门，池内加权用它
+    #   `_ape  [P, hd]`  池内**位置**的可学嵌入
+    MLAK_ {
+      q_a_proj.weight           : (q_lora, d_model)
+      q_a_layernorm.weight      : (q_lora,)
+      q_b_proj.weight           : (q * head_dim, q_lora)
+      kv_a_proj_with_mqa.weight : (kv_lora + qk_rope, d_model)
+      kv_a_layernorm.weight     : (kv_lora,)
+      kv_b_proj.weight          : (q * (qk_nope + v_dim), kv_lora)
+      dense.weight              : (d_model, q * v_dim)
+      g_proj.weight             : (q, d_model)
+      indexer.wq_b.weight         : (128, 96)
+      indexer.wk.weight           : (32, d_model)
+      indexer.k_norm.weight       : (32,)
+      indexer.k_norm.bias         : (32,)
+      indexer.weights_proj.weight : (4, d_model)
+      indexer.index_kpool_compress_gate : (32, d_model)
+      indexer.index_kpool_compress_ape  : (4, 32)
     }
     MLP_ {
       gate_proj.weight : (hidden, d_model)

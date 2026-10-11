@@ -890,7 +890,9 @@ static void dsa_index(unsigned char *keep, const float *x, const float *qres,
                       int n, int d, int ql, int nh, int hd, int nr, int topk,
                       const float *wqb, const float *wk, const float *knw,
                       const float *knb, const float *wp,
-                      float base, int interleaved);
+                      float base, int interleaved,
+                      int ix_kpool, int ix_tail,
+                      const float *ix_kgate, const float *ix_kape);
 
 /* 把 [rows, len] 的每一行做 RoPE。MLA 的 rope 只作用在解耦出来的那一段。 */
 static void rope_rows(float *x, int rows, int per, int len, float base,
@@ -931,7 +933,9 @@ static void mla(float *o, const float *x, int n, int d,
                 int sigmoid_gate,
                 int ix_nh, int ix_hd, int ix_topk,
                 const float *ix_wqb, const float *ix_wk, const float *ix_knw,
-                const float *ix_knb, const float *ix_wp) {
+                const float *ix_knb, const float *ix_wp,
+                int ix_kpool, int ix_tail,
+                const float *ix_kgate, const float *ix_kape) {
     int qk = nope + nr;
     float *qa  = (float *)malloc(sizeof(float) * n * ql);
     float *qb  = (float *)malloc(sizeof(float) * n * nh * qk);
@@ -986,7 +990,8 @@ static void mla(float *o, const float *x, int n, int d,
     if (ix_nh > 0) {
         keep = (unsigned char *)malloc((size_t)n * n);
         dsa_index(keep, x, qa, n, d, ql, ix_nh, ix_hd, nr, ix_topk,
-                  ix_wqb, ix_wk, ix_knw, ix_knb, ix_wp, base, interleaved);
+                  ix_wqb, ix_wk, ix_knw, ix_knb, ix_wp, base, interleaved,
+                  ix_kpool, ix_tail, ix_kgate, ix_kape);
     }
     attention(o, qq, kk, vv, n, nh, nh, qk, vd, 0, NULL, keep);
     free(keep);
@@ -1085,7 +1090,9 @@ static void dsa_index(unsigned char *keep, const float *x, const float *qres,
                       int n, int d, int ql, int nh, int hd, int nr, int topk,
                       const float *wqb, const float *wk, const float *knw,
                       const float *knb, const float *wp,
-                      float base, int interleaved) {
+                      float base, int interleaved,
+                      int ix_kpool, int ix_tail,
+                      const float *ix_kgate, const float *ix_kape) {
     float *q = (float *)malloc(sizeof(float) * (size_t)n * nh * hd);
     float *k0 = (float *)malloc(sizeof(float) * (size_t)n * hd);
     float *w = (float *)malloc(sizeof(float) * (size_t)n * nh);
@@ -1132,6 +1139,98 @@ static void dsa_index(unsigned char *keep, const float *x, const float *qres,
         linear(tmp, x, wp, n, d, nh);
         for (int i = 0; i < n * nh; i++) w[i] = tmp[i] * powf((float)nh, -0.5f);
         free(tmp);
+    }
+    if (ix_kpool > 1) {
+        /* ── k-pool：**池**打分，选中的池摊回原始 token ──────────────
+           逐行对着 Glm5NextTextIndexer（refs/glm5-next-indexer.reference.txt）。
+           两处容易漏：
+             ① 池从**第一个有效 token** 起算（这里 n 个全有效，所以是 0）；
+             ② 池可选当且仅当**它最后一个 token 对 query 可见**，
+                且**整个池都有效**。
+           `ix_kgate` [hd, d] 管池内加权、`ix_kape` [P, hd] 管池内位置。 */
+        int P = ix_kpool;
+        float *gate = (float *)malloc(sizeof(float) * (size_t)n * hd);
+        linear(gate, x, ix_kgate, n, d, hd);
+        int np_ = (n + P - 1) / P;
+        float *pk = (float *)malloc(sizeof(float) * (size_t)np_ * hd);
+        float *lg = (float *)malloc(sizeof(float) * P * hd);
+        float *pb = (float *)malloc(sizeof(float) * P * hd);
+        for (int p = 0; p < np_; p++) {
+            int lo = p * P;
+            for (int j = 0; j < P; j++) {
+                int id = lo + j;
+                for (int c = 0; c < hd; c++)
+                    lg[j * hd + c] = (id < n)
+                        ? gate[(size_t)id * hd + c] + ix_kape[j * hd + c]
+                        : -INFINITY;
+            }
+            /* softmax 沿池内那一维（每个通道各一次） */
+            for (int c = 0; c < hd; c++) {
+                float mx = -INFINITY;
+                for (int j = 0; j < P; j++) if (lg[j * hd + c] > mx) mx = lg[j * hd + c];
+                if (mx == -INFINITY) { for (int j = 0; j < P; j++) pb[j * hd + c] = 0.f; continue; }
+                float s = 0.f;
+                for (int j = 0; j < P; j++) { float e = expf(lg[j * hd + c] - mx); pb[j * hd + c] = e; s += e; }
+                for (int j = 0; j < P; j++) pb[j * hd + c] = pb[j * hd + c] / s;
+            }
+            for (int c = 0; c < hd; c++) {
+                float acc = 0.f;
+                for (int j = 0; j < P; j++) {
+                    int id = lo + j;
+                    if (id < n) acc += pb[j * hd + c] * k0[(size_t)id * hd + c];
+                }
+                pk[(size_t)p * hd + c] = acc;
+            }
+        }
+        /* 每个 query：给池打分 -> 并列取较小下标 -> 摊回 token */
+        float *psc = (float *)malloc(sizeof(float) * np_);
+        int *pord = (int *)malloc(sizeof(int) * np_);
+        for (int t = 0; t < n; t++) {
+            for (int p = 0; p < np_; p++) {
+                float acc = 0.f;
+                for (int h = 0; h < nh; h++) {
+                    const float *qi = q + ((size_t)t * nh + h) * hd;
+                    const float *ks = pk + (size_t)p * hd;
+                    float dot = 0.f;
+                    for (int c = 0; c < hd; c++) dot += qi[c] * ks[c];
+                    dot *= powf((float)hd, -0.5f);
+                    if (dot < 0.f) dot = 0.f;
+                    acc += w[(size_t)t * nh + h] * dot;
+                }
+                /* 池可选：**整池有效**（所有槽都在范围内）且**末槽对 t 可见**。
+                   末槽 = p*P + P-1，clamp 到 n-1。 */
+                int full = ((p + 1) * P) <= n;
+                int pend = p * P + P - 1; if (pend > n - 1) pend = n - 1;
+                psc[p] = (full && pend <= t) ? acc : -INFINITY;
+            }
+            for (int p = 0; p < np_; p++) pord[p] = p;
+            for (int a = 1; a < np_; a++) {
+                int v = pord[a], b = a - 1;
+                while (b >= 0 && psc[pord[b]] < psc[v]) { pord[b + 1] = pord[b]; b--; }
+                pord[b + 1] = v;
+            }
+            int sk = topk / P; if (sk > np_) sk = np_; if (sk < 0) sk = 0;
+            for (int s = 0; s < n; s++) keep[(size_t)t * n + s] = 0;
+            for (int z = 0; z < sk; z++) {
+                int p = pord[z];
+                for (int j = 0; j < P; j++) {
+                    int id = p * P + j;
+                    if (id < n && id <= t) keep[(size_t)t * n + id] = 1;
+                }
+            }
+            if (ix_tail && P > 1) {
+                int vis = t + 1;                 /* 可见 key 数（因果、无 padding） */
+                int tc = vis % P;
+                int start = vis - tc;
+                for (int j = 0; j < P - 1; j++) {
+                    int id = start + j;
+                    if (j < tc && id < n && id <= t) keep[(size_t)t * n + id] = 1;
+                }
+            }
+        }
+        free(gate); free(pk); free(lg); free(pb); free(psc); free(pord);
+        free(q); free(k0); free(w); free(sc); free(ord);
+        return;
     }
     for (int t = 0; t < n; t++) {
         for (int s = 0; s < n; s++) sc[s] = -INFINITY;
@@ -1401,6 +1500,13 @@ def _emit_c_body(ir, params):
                                "indexer.k_norm.weight", "indexer.k_norm.bias",
                                "indexer.weights_proj.weight"):
                         order.append((key(i, j, nm), pre + nm))
+                    # k-pool 的两个张量。**职责不一样，别混**：
+                    #   _gate [hd, d]   逐 token 的门，池内加权用它
+                    #   _ape  [P, hd]   池内位置的可学嵌入
+                    if int(a.get("index_kpool") or 1) > 1:
+                        for nm in ("indexer.index_kpool_compress_gate",
+                                   "indexer.index_kpool_compress_ape"):
+                            order.append((key(i, j, nm), pre + nm))
                 body.append((i, j, "MLA", a))
             elif k == "MoE":
                 for nm in ("router", "w1", "w3", "w2"):
@@ -1690,7 +1796,11 @@ def _emit_c_body(ir, params):
                     f" {int(a.get('index_topk') or 0)},"
                     f" {_p('indexer.wq_b.weight')}, {_p('indexer.wk.weight')},"
                     f" {_p('indexer.k_norm.weight')}, {_p('indexer.k_norm.bias')},"
-                    f" {_p('indexer.weights_proj.weight')});")
+                    f" {_p('indexer.weights_proj.weight')},"
+                    f" {int(a.get('index_kpool') or 1)},"
+                    f" {1 if a.get('index_kpool_tail') else 0},"
+                    f" {_p('indexer.index_kpool_compress_gate') if int(a.get('index_kpool') or 1) > 1 else 'NULL'},"
+                    f" {_p('indexer.index_kpool_compress_ape') if int(a.get('index_kpool') or 1) > 1 else 'NULL'});")
             elif k == "MoE":
                 E, K, hid = a["experts"], a["top_k"], a["hidden"]
                 sh = a["shared"]

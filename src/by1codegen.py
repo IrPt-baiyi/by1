@@ -1436,7 +1436,12 @@ class MLAttention(nn.Module):
             # 参考是 `index_mask | (key_pos > query_pos)`，两件事是"或"。
             top = self.indexer(x, q_resid, cos, sin)          # [b, n, k]
             keep = torch.zeros(b, n, n, dtype=torch.bool, device=x.device)
-            keep.scatter_(-1, top, True)
+            # **`-1` 是"这一格没有"**（k-pool 的输出契约里用它填空位）。
+            # 直接 scatter 会 IndexError。替换成安全槽位之后，
+            # **key 0 会被误设** —— 所以按"0 真的被选中了吗"重算那一格。
+            _safe = torch.where(top >= 0, top, torch.zeros_like(top))
+            keep.scatter_(-1, _safe, True)
+            keep[:, :, 0] = (top == 0).any(-1)
             keep = keep & (idx[None, :] <= idx[:, None])
             att = att.masked_fill(~keep.unsqueeze(1), float("-inf"))
         att = att.softmax(-1)
