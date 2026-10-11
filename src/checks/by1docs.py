@@ -72,10 +72,15 @@ def md_files():
         # 里有 5 处指向**它们自己仓库**的相对链接，在这里当然是坏的，
         # 而报出来像"我们的文档坏了"。**扫进来比不扫更糟**，和 `history/`
         # 那条是同一个理由。
+        #
+        # **`llamacpp/` 同理，而且更彻底**：那是从 llama.cpp 拉的参照源码
+        # （可重新下载，不进 git）。接 ggml 那一轮整个 checkout 进来之后，
+        # 它自带的几百份 `.md` 全指向**它们自己**的脚本 —— 这里当场多出
+        # 28 处路径 + 17 个脚本的假警报，全是别人的文档。
         dirs[:] = [d for d in dirs
                    if d not in ('.git', '__pycache__', 'history',
                                 'node_modules', '.mimocode', 'cgen',
-                                '.venv', '.dsh')]
+                                '.venv', '.dsh', 'llamacpp')]
         for f in files:
             if f.endswith('.md'):
                 out.append(os.path.join(base, f))

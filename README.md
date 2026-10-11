@@ -32,7 +32,7 @@ That should not need a thousand lines of code.
 | **53** `.by1` files in `models/` | declarative architecture descriptions |
 | **15** real models verified | config field-by-field, tensor name-by-name and shape-by-shape, against the publisher's own artifacts |
 | **6** mechanisms computable | `Attention` · `FFN` · `KDA` · `MLA` · `MoE` · `SSM` |
-| **3** independent backends | NumPy · PyTorch · generated C, cross-checked |
+| **4** independent backends | NumPy · PyTorch · generated C · **generated ggml**, cross-checked |
 | **6** models, forward numerics | compared bitwise against official implementations |
 
 **Run it.** Tier 1 needs no dependencies at all; the core is pure standard library.
@@ -45,8 +45,11 @@ pip install -e .                         # optional: the `by1` CLI
 **What does not work.**
 
 - **No external users. Zero.** No evidence anyone wants this.
-- **llama.cpp is not connected.** Graph and tensor names were cross-checked
-  against `qwen3next.cpp`, but not one line of ggml has been generated.
+- **llama.cpp is half-wired.** `by1ggml.py` now generates ggml code from IR:
+  three models match the NumPy backend to **~1e-7**, and the real
+  gemma-4-31B IR compiles. But **not one line has been generated *into
+  llama.cpp itself*** (arch table / `build_graph`), and MoE / sink / YaRN
+  have no ggml mapping yet. Plan: [`docs/llamacpp-plan.md`](docs/llamacpp-plan.md).
 - **The criteria themselves are unaudited.** The `1e-4` threshold, the
   definition of "covered", the 15 chosen models — all written here.
   See [`docs/criteria-review.md`](docs/criteria-review.md).
@@ -92,7 +95,7 @@ Qwen3-Next 的 48 层是一句话：
 | `models/` 里 **53** 份 `.by1` | 声明式的架构描述 |
 | **15** 个真实模型验过 | config 逐字段 · 张量逐名字逐形状，判卷人是发布方的官方产物 |
 | **6** 种机制算得了 | `Attention` · `FFN` · `KDA` · `MLA` · `MoE` · `SSM` |
-| **3** 个独立后端 | NumPy · PyTorch · 生成的 C，互相交叉验证 |
+| **4** 个独立后端 | NumPy · PyTorch · 生成的 C · **生成的 ggml**，互相交叉验证 |
 | **6** 个模型比过前向数值 | 对着官方实现逐位对拍 |
 
 **跑一下。** 第一档一个依赖都不用装，核心是纯标准库。
@@ -105,8 +108,11 @@ pip install -e .                         # 可选：装 `by1` 命令行
 **还没做到的。**
 
 - **没有外部用户。零。** 没有任何证据表明别人想要它。
-- **llama.cpp 没接。** 图和张量名与 `qwen3next.cpp` 逐行核对过，
-  但一行 ggml 代码都没生成过。
+- **llama.cpp 只接了一半。** `by1ggml.py` 已经能从 IR 生成 ggml 代码：
+  三个模型与 NumPy 后端对拍到 **1e-7 量级**，真实 gemma-4-31B 的 IR
+  编译通过。但**还没有一行生成进 llama.cpp 本体**（arch 表 /
+  `build_graph`），MoE / sink / YaRN 也还没有 ggml 映射。
+  计划见 [`docs/llamacpp-plan.md`](docs/llamacpp-plan.md)。
 - **判据本身没人复核。** `1e-4` 那个阈值、"覆盖"的定义、选定的这 15 个模型
   —— 全是这里写的。见 [`docs/criteria-review.md`](docs/criteria-review.md)。
 - 视觉塔**描述得住、算不了** —— 决定不做，因为本地找不到可比的官方实现。

@@ -1142,15 +1142,24 @@ def shapes_of(ir):
                     out[pre + "g_proj"] = (_vd, d)
                 out[pre + "o_norm.w"] = (_dv,)
                 out[pre + "o_proj"] = (d, _vd)
-    out["embed.weight"] = (ir["vocab"], d)
+    # **全局张量用模型级 `d_model`，不是循环里泄漏出来的 `d`。**
+    # 这里原来写的是 `d` —— 那是上面层循环的循环变量，值是**最后一层**
+    # 的 `in_dim`。多宽度的模型（gemma-4-31B：60 层文本 5376 + 27 层
+    # 视觉塔 1152）于是全局张量全按 1152 推：`embed.weight` 推成
+    # (262144, 1152)，而 GGUF 判卷人说 `output_norm.weight` 是 [5376]。
+    # **单宽度的模型碰不到这一条** —— 循环变量恰好等于 d_model，
+    # 所以它一直活在"看起来对"里。判卷人：`refs/google__gemma-4-31B.
+    # gguf-tensors.json` 的 output_norm / token_embd 形状。
+    dg = ir["d_model"]
+    out["embed.weight"] = (ir["vocab"], dg)
     # **学习式位置表。** pos_kind=learned 的模型有一张 (n_pos, d) 的查表 ——
     # 它不在任何一层里，也不是 embed，所以以前这个后端**完全不知道它存在**。
     if ir.get("pos_kind") == "learned":
-        out["pos.weight"] = (int(ir.get("n_pos") or ir.get("ctx") or 1024), d)
-    out["final_norm.w"] = (d,)
+        out["pos.weight"] = (int(ir.get("n_pos") or ir.get("ctx") or 1024), dg)
+    out["final_norm.w"] = (dg,)
     if ir.get("norm_kind") == "layer":
-        out["final_norm.b"] = (d,)
-    out["head.weight"] = (ir["vocab"], d)
+        out["final_norm.b"] = (dg,)
+    out["head.weight"] = (ir["vocab"], dg)
     return out
 
 

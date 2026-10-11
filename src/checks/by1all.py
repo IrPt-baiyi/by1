@@ -913,6 +913,9 @@ def main():
         rows.append(('C 后端', 'skip',
                          '档 5 才有（%d 段，这次跑档 %d）'
                          % (SECTION_TIER['6'], TIER)))
+        rows.append(('ggml 后端', 'skip',
+                         '档 5 才有（%d 段，这次跑档 %d）'
+                         % (SECTION_TIER['6'], TIER)))
     else:
         t0 = time.time()
         gcc = find_gcc()
@@ -955,6 +958,27 @@ def main():
                              note_of(st, out, line, empty='').replace('   ', ' ')))
                 if st == 'fail':
                     fails.append('C ' + f)
+
+        # ---- 6b. ggml 后端（**第四个后端**：IR -> ggml C）----
+        # 一条命令跑完它的验收面：数值对拍（llama-shaped / gpt2-tiny /
+        # gemma 孪生，判卷人是 NumPy）+ 真实 gemma-4-31B IR 编译 +
+        # 拒绝纪律，见 `docs/llamacpp-plan.md` M2。
+        # **ggml 静态库不在就整段跳过** —— 那是"这台机器上没验"（30），
+        # 不是失败。五态的规矩对这一段照样成立。
+        if quick:
+            rows.append(('ggml 后端', 'skip', '--quick 跳过（要 gcc，慢）'))
+        elif not gcc:
+            rows.append(('ggml 后端', 'skip',
+                         '找不到 gcc —— ggml 后端这一整段没验'))
+        else:
+            g_st, g_out = run(['by1ggml.py', '--selftest'], 'ggml selftest')
+            g_line = [l.strip() for l in g_out.splitlines()
+                      if '[PASS]' in l or '[FAIL]' in l or '[跳过]' in l]
+            g_st = confirmed(g_st, g_out, g_line)
+            rows.append(('ggml 后端', g_st,
+                         note_of(g_st, g_out, g_line, empty='（没有判定行）')))
+            if g_st == 'fail':
+                fails.append('ggml selftest')
 
         t0 = _tick('6. C 后端', t0)
 

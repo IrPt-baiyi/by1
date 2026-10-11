@@ -42,11 +42,11 @@
 
 ---
 
-## `src/` —— 68 个模块 + 1 个非 .py
+## `src/` —— 69 个模块 + 1 个非 .py
 
 ### 底座（留在 src/ 顶层）
 
-**被别的模块 import 的那 12 个。**
+**被别的模块 import 的那 12 个，加 `by1ggml`。**
 
 它们必须在 `src/` 顶层，因为 `by1paths.py` 自己也在这里 ——
 它是引导，搬它就得先有引导，而引导又得先找得到它。
@@ -56,6 +56,10 @@
 | `by1io` 39 个模块 · `by1paths` 33 个 · `by1codegen` 17 个 · `by1skip` 11 个 |
 | `by1ir` 8 个 · `by1ver` 6 个 · `by1exec` 5 个 · `by1c` 4 个 |
 | `by1refs` 3 个 · `by1check` 2 个 · `by1boot` 2 个 · `by1ext` 2 个 |
+
+**`by1ggml` 是第四个后端**（IR -> ggml C），不在这张表里：它是叶子，
+被 `load()` 装载，和 `by1c` 同级 —— **w.bin 布局就是从 `by1c.emit_c`
+拿的**，同一份权重喂两个后端，那是判据不是方便。
 
 **其余 44 个是叶子**（没人 import 它们），所以能进子目录。
 
@@ -73,6 +77,7 @@
 | `by1ver.py` | 版本号的唯一真相源 |
 | `by1exec.py` | 第二个后端：纯 NumPy 执行器 |
 | `by1c.py` | 第三个后端：从 IR 生成 **C 代码**，编译，跑起来，和 NumPy 后端对拍 |
+| `by1ggml.py` | 第四个后端：从 IR 生成 **调 ggml 原语的 C 代码**，编译， |
 | `by1refs.py` | refs/ 的路径规则，只此一处 |
 | `by1check.py` | 不变式检查器 v0.1 |
 | `by1boot.py` | 从一个已发布的 checkpoint **反推**一份 .by1 草稿 |

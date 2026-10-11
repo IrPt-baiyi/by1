@@ -1462,10 +1462,12 @@ def _emit_c_body(ir, params):
                 if str(a.get("kind", "rms")).lower() == "layer":
                     order.append((key(i, j, "b"), pre + "b"))
             elif k == "Attention":
-                if a["kv_tie"] or a["head_gate"] != "off":
+                # **kv_tie 已实现**（K=V）：v 就是 k 的投影，没有单独的 wv。
+                # 见下面 `memcpy(vv, kk, ...)` 那两行 —— **必须在 qk_norm /
+                # rope 就地改写 kk 之前**分叉出去。
+                if a["head_gate"] != "off":
                     raise SystemExit(
-                        f"  [不支持] 第 {i} 层的注意力用了 kv_tie/"
-                        f"head_gate —— C 后端还没实现")
+                        f"  [不支持] 第 {i} 层的注意力用了 head_gate —— C 后端还没实现")
                 if a.get("qkv_fused"):
                     # **融合 q/k/v**（视觉塔）：注册 `qkv` / `proj`，不注册
                     # wq/wk/wv/wo —— 和 `by1exec.shapes_of` **同一份形状表**。
@@ -1476,9 +1478,15 @@ def _emit_c_body(ir, params):
                             order.append((key(i, j, nm), pre + nm))
                 else:
                     for nm in ("wq", "wk", "wv", "wo"):
+                        # **kv_tie 没有 wv**（v 复用 k 的投影）——
+                        # shapes_of 里就是这么推的，这里不跳过就会 KeyError。
+                        if nm == "wv" and a["kv_tie"]:
+                            continue
                         order.append((key(i, j, nm), pre + nm))
                     if a["bias"]:
                         for nm in ("wq.bias", "wk.bias", "wv.bias", "wo.bias"):
+                            if nm == "wv.bias" and a["kv_tie"]:
+                                continue
                             order.append((key(i, j, nm), pre + nm))
                 if a["sink"]:
                     order.append((key(i, j, "sink"), pre + "sink"))
@@ -1707,7 +1715,13 @@ def _emit_c_body(ir, params):
                 _bn = (lambda off: (f", P({key(i,j,'qkv.bias')}) + {off}"
                                     if a["bias"] else ""))
                 lb.append(f" {B}(kk, {src[0]}, {_kn}{_bn(qw) if _fz else BA('wk')}, n, D, {nkv*hd});")
-                lb.append(f" {B}(vv, {src[0]}, {_vn}{_bn(qw + nkv*hd) if _fz else BA('wv')}, n, D, {nkv*hd});")
+                if a["kv_tie"] and not _fz:
+                    # **K=V：v 就是 k 的原始投影。** 分叉要在 qk_norm / rope
+                    # 就地改写 kk **之前**（判卷人 by1exec：`v = kraw`，
+                    # 而 kraw 是 norm/rope 之前的那一份）。
+                    lb.append(f" memcpy(vv, kk, sizeof(float) * (size_t)n * {nkv*hd});")
+                else:
+                    lb.append(f" {B}(vv, {src[0]}, {_vn}{_bn(qw + nkv*hd) if _fz else BA('wv')}, n, D, {nkv*hd});")
                 if _qk_on(a.get("qk_norm")):
                     # **eps 传 IR 里的那个**（宏也是按它生成的）——
                     # 这一行以前没有，于是 qk_norm 里那个写死的 1e-5f

@@ -56,7 +56,7 @@ OUT = os.path.join(ROOT, 'FILES.md')
 # 组 —— 顺序就是文档里的顺序。**没列进来的文件会被报成"未归类"。**
 # ════════════════════════════════════════════════════════════════════
 GROUPS = [
-    ('底座（留在 src/ 顶层）', 'src', '''**被别的模块 import 的那 12 个。**
+    ('底座（留在 src/ 顶层）', 'src', '''**被别的模块 import 的那 12 个，加 `by1ggml`。**
 
 它们必须在 `src/` 顶层，因为 `by1paths.py` 自己也在这里 ——
 它是引导，搬它就得先有引导，而引导又得先找得到它。
@@ -67,13 +67,18 @@ GROUPS = [
 | `by1ir` 8 个 · `by1ver` 6 个 · `by1exec` 5 个 · `by1c` 4 个 |
 | `by1refs` 3 个 · `by1check` 2 个 · `by1boot` 2 个 · `by1ext` 2 个 |
 
+**`by1ggml` 是第四个后端**（IR -> ggml C），不在这张表里：它是叶子，
+被 `load()` 装载，和 `by1c` 同级 —— **w.bin 布局就是从 `by1c.emit_c`
+拿的**，同一份权重喂两个后端，那是判据不是方便。
+
 **其余 44 个是叶子**（没人 import 它们），所以能进子目录。
 
 每个入口脚本开头那几行引导是**生成的**（判据在 `by1paths.check_boot`）——
 重复的东西必须能被检查，否则新加一个脚本忘了加，症状是
 `No module named 'by1paths'`，看起来像"文件丢了"。''', [
         'by1paths', 'by1io', 'by1codegen', 'by1skip', 'by1ir', 'by1ver',
-        'by1exec', 'by1c', 'by1refs', 'by1check', 'by1boot', 'by1ext']),
+        'by1exec', 'by1c', 'by1ggml', 'by1refs', 'by1check', 'by1boot',
+        'by1ext']),
 
     ('`lang/` —— 语言本身', 'lang', '''把 `.by1` 变成一份能算的东西。
 
@@ -135,6 +140,8 @@ DIR_INTRO = {
 # ════════════════════════════════════════════════════════════════════
 OVERRIDE = {
     'ext-demo.c': '逃生舱第二层的示例：两个语言里没有的机制。`by1extdemo` 编它',
+    'ggml-smoke.c': '**M0 的判卷人**：ggml 的 mul_mat / rms_norm / silu 对手算。'
+                    '接 llama.cpp 那一轮的构建自检（编译命令在文件头注）',
     '1.md': '立项宣言：这门语言要解决什么、不解决什么',
     'FILES.md': '**这份文档本身**，由 `src/by1files.py` 生成',
     'LICENSE': 'GPL-3.0 全文（逐字，未改）。**它只覆盖本项目自己写的东西**',
