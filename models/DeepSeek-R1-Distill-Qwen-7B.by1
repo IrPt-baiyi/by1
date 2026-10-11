@@ -1,0 +1,119 @@
+# ── DeepSeek-R1-Distill-Qwen-7B.by1 ──────────────────────────────────
+# deepseek-ai/DeepSeek-R1-Distill-Qwen-7B —— 和 1.5B **逐张量同名**，
+# 只差尺寸。所以它压着的东西和 1.5B 一模一样：
+#
+#   **q/k/v 三个投影都带 bias，而 o_proj 没有。**
+#
+# 这是 Qwen2 的标志（Qwen3 那一族全去掉了）。`by1contract._attn` 的模板里
+# `bias = true` 会写"所有投影各加一条 bias" —— 而这里**不是所有**：
+# 实测只有 q/k/v 有（`q_proj.bias (3584,)`、`k_proj.bias (512,)`、
+# `v_proj.bias (512,)`），`o_proj` **没有**。所以契约照实写，不走那个模板。
+#
+# 另外两件（都在 config 里、都不产生张量）：
+#   · `sliding_window = 4096` 而 `use_sliding_window = false` —— 窗口开着但没用，
+#     所以 28 层全是 full attention，**不写 `window` 属性**。
+#   · `max_window_layers = 28` 同上（1.5B 是 21），纯记录。
+#
+# 尺寸：d_model 3584 · 28 层 · FFN 18944 · 28 头 x 128 = 3584 ✓、
+# kv 4 头 x 128 = 512 ✓ · vocab 152064（1.5B 是 151936）。
+#
+# 事实来源：
+#   refs/deepseek-ai__DeepSeek-R1-Distill-Qwen-7B.config.json
+#   refs/deepseek-ai__DeepSeek-R1-Distill-Qwen-7B.tensors.json（339 个张量）
+# by1-model: DeepSeek-R1-Distill-Qwen-7B
+# by1-repo:  deepseek-ai/DeepSeek-R1-Distill-Qwen-7B
+# by1-short: DeepSeek-R1-Distill-Qwen-7B
+
+model DeepSeek-R1-Distill-Qwen-7B {
+  arch  qwen2
+  ctx   131072
+
+  hparams {
+    d_model = 3584
+    n_layer = 28
+    vocab   = 152064
+    rms_eps = 1e-06
+  }
+
+  # 28 头 x 128 = 3584 ✓、kv 4 头 x 128 = 512 ✓。
+  # **没有 qk_norm**（Qwen2 没有）；`bias = true` 见下面的契约。
+  mech GQA : Attention {
+    heads      = { q = 28, kv = 4, head_dim = 128 }
+    bias       = true
+    structural = [ head_dim, bias ]
+  }
+
+  mech FFN_ : FFN { hidden = 18944 }
+
+  stack main {
+    pattern = 28 * GQA
+    main[:] >> FFN_
+  }
+
+  position {
+    default = rope(base = 10000, pairing = half)
+  }
+
+  tensors {
+    # ⚠ **bias 只在 q/k/v 上，o_proj 没有** —— 这一份唯一"推不出来"的地方。
+    GQA {
+      q_proj.weight : (q * head_dim, d_model)
+      q_proj.bias   : (q * head_dim,)
+      k_proj.weight : (kv * head_dim, d_model)
+      k_proj.bias   : (kv * head_dim,)
+      v_proj.weight : (kv * head_dim, d_model)
+      v_proj.bias   : (kv * head_dim,)
+      o_proj.weight : (d_model, q * head_dim)
+    }
+    FFN_ {
+      gate_proj.weight : (hidden, d_model)
+      up_proj.weight   : (hidden, d_model)
+      down_proj.weight : (d_model, hidden)
+    }
+    layer {
+      input_layernorm.weight          : (d_model,)
+      post_attention_layernorm.weight : (d_model,)
+    }
+    global {
+      model.embed_tokens.weight : (vocab, d_model)
+      model.norm.weight         : (d_model,)
+      # 不 tie —— 所以 lm_head 在。
+      lm_head.weight            : (vocab, d_model)
+    }
+  }
+
+  emit {
+    train -> transformers.config {
+      field {
+        model_type              = "qwen2"
+        vocab_size              = vocab
+        hidden_size             = d_model
+        num_hidden_layers       = n_layer
+        intermediate_size       = FFN_.hidden
+        num_attention_heads     = GQA.q
+        num_key_value_heads     = GQA.kv
+        max_position_embeddings = ctx
+        rms_norm_eps            = rms_eps
+        hidden_act              = "silu"
+        attention_dropout       = 0.0
+        initializer_range       = 0.02
+        rope_theta              = 10000
+        use_cache               = true
+        # ⚠ 窗口开着但 `use_sliding_window = false` —— 所以**没用**。
+        sliding_window          = 4096
+        use_sliding_window      = false
+        max_window_layers       = 28
+        use_mrope               = false
+        tie_word_embeddings     = false
+        bos_token_id            = 151643
+        eos_token_id            = 151643
+      }
+    }
+
+    train -> torch.module {
+      name        = "model.layers.{i}.{scope}{physical}"
+      global_name = "{physical}"
+      scope { GQA = self_attn., FFN_ = mlp., layer = "", global = "" }
+    }
+  }
+}

@@ -196,6 +196,18 @@ REAL = [
     ('Qwen3.5-9B.by1', None, 'torch.module', ['--sub', 'text_config']),
     ('Qwen3.5-397B-A17B.by1', None, 'torch.module', ['--sub', 'text_config']),
     ('Qwen3-Coder-Next.by1', None, 'torch.module', []),
+    # **两个收尾的。**
+    #
+    #   7B —— Qwen2，和 1.5B 逐张量同名，只差尺寸。一次通过。
+    #   3.8-Flash-Next —— 这个仓库里**结构最杂的一个**：
+    #       mHC 超连接（`layer {}` / `global {}` 字面量行）+ 稀疏索引器
+    #       （写在 GQA 契约里的字面量行）+ PLE 的 128 个 ngram 分片
+    #       （`global` 字面量行，层号写死）+ MTP 改名。
+    #       两个坑都是"照族推"推错的：**这一层没有 `input_layernorm` /
+    #       `post_attention_layernorm`**（归一化在 `hc_norm` 里），
+    #       **也没有 `model.language_model.norm`**（最终归一化也在 `hc_norm` 里）。
+    ('DeepSeek-R1-Distill-Qwen-7B.by1', None, 'torch.module', []),
+    ('Qwen3.8-Flash-Next.by1', None, 'torch.module', ['--sub', 'text_config']),
 ]
 
 # 六个合成模型：三后端

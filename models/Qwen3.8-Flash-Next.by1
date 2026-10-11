@@ -1,0 +1,447 @@
+# ── Qwen3.8-Flash-Next.by1 ───────────────────────────────────────────
+# Qwen/Qwen3.8-Flash-Next —— `qwen4_exp` 支，这个仓库里**结构最杂的一个**。
+#
+# 它在 Qwen3.5 那套骨架（线性注意力 GDN 3+1 + 输出门控 + 按头 QK-norm
+# + MTP + 视觉塔）上又叠了**四层新东西**：
+#
+#   ① **mHC 超连接**（`hc_count = 4`）—— 残差流是 4 宽的。
+#      每层两套（注意力前后各一套）：`attn_hyper_connection.*` /
+#      `mlp_hyper_connection.*`；整个模型还有一套 `hyper_connection_mixer.*`。
+#      宽度都是 `hc_count x d_model = 4 x 2560 = 10240`，低秩 320。
+#      **这不是机制** —— 语言里没有"超连接"这种东西，所以照 GLM-5.3 的做法
+#      写成 `layer {}` / `global {}` 的**字面量行**（张量描述得到，
+#      计算没建模 —— 和 `deepstack_merger_list` 是同一个位置）。
+#
+#   ② **稀疏索引器**（`self_attn.indexer.*`，12 个全量层都有）。
+#      它是个 DSA 式的 top-k 选择器：`index_qk_proj (640, 2560)`
+#      = q(4x128) + k(1x128)。同样**不是机制**，写在 GQA 的契约里当字面量行。
+#      （GLM-5.3 那边是 `MLA` 带 `index_heads` 属性；这里底层是普通 GQA，
+#        config 的 `layer_types` 也写 `full_attention`，所以不给它自定义层类型。）
+#
+#   ③ **PLE 逐层嵌入**（`ple.*`，**只有第 1 层**，`ple_layer_ids = [2]` 是 1 起数）。
+#      里面最大的是 **128 个 ngram 分片**，每片 `(2500012, 160)` ——
+#      一共 512 亿参数，占了整个模型的一大半。名字里带序号，所以照字面量逐个写。
+#
+#   ④ **MTP 换了名**：不是 `mtp.fc` 而是 `mtp.fc_embedding` / `mtp.fc_hidden`，
+#      而且 `pre_fc_norm_hidden` 宽 **10240**（= 4 x d_model，跟着 mHC 走）。
+#
+# 尺寸：d_model 2560 · 48 层（3 线性 + 1 全量）· 全量层 24 头 x 256 = 6144
+# （**d_model 的 2.4 倍** → 显式 `out_dim`）· Lin 16 k 头 / 48 v 头 ·
+# 专家 512 选 10（**融合存储** `experts.gate_up_proj (512, 1280, 2560)`）·
+# 共享专家 1 个（640）+ `shared_expert_gate` · 视觉塔 27 层 / 1152。
+#
+# 事实来源：
+#   refs/Qwen__Qwen3.8-Flash-Next.config.json
+#   refs/Qwen__Qwen3.8-Flash-Next.tensors.json（1658 个张量）
+# by1-model: Qwen3.8-Flash-Next
+# by1-repo:  Qwen/Qwen3.8-Flash-Next
+# by1-short: Qwen3.8-Flash-Next
+
+model Qwen3.8-Flash-Next {
+  arch  qwen4_exp
+  ctx   262144
+
+  hparams {
+    d_model = 2560
+    n_layer = 48
+    vocab   = 248320
+    rms_eps = 1e-06
+    # mHC：残差流 4 宽，低秩 320。
+    hc_count   = 4
+    hc_lowrank = 320
+  }
+
+  # GDN 线性注意力：16 头 k、**48 头 v**，都是 128 维，卷积核 4。
+  mech Lin : Linear {
+    k_heads     = 16
+    k_dim       = 128
+    v_heads     = 48
+    v_dim       = 128
+    conv_kernel = 4
+    act         = silu
+    structural  = [ k_heads, k_dim, v_heads, v_dim, conv_kernel, out_dim ]
+  }
+
+  # 全量注意力：24 头 x 256 = 6144（d_model 2560 的 2.4 倍），输出门控（sigmoid）。
+  # `indexer.*` 那三行是**稀疏索引器** —— 见头注 ②。
+  mech GQA : Attention {
+    heads      = { q = 24, kv = 2, head_dim = 256 }
+    out_dim    = 6144
+    q_gate     = true
+    qk_norm    = per_head
+    structural = [ head_dim, out_dim, q_gate, qk_norm ]
+  }
+
+  # ── MoE：**融合存储** + 共享专家 + 共享专家门控 ───────────────────
+  mech MoE : MoE {
+    experts       = 512
+    top_k         = 10
+    hidden        = 640
+    shared        = 1
+    shared_hidden = 640
+    shared_gate   = true
+    routing       = softmax_topk
+    layer_kind    = sparse
+    structural    = [ experts, hidden, shared_hidden, shared_gate ]
+  }
+
+  # ── 视觉塔（27 层，宽 1152）──────────────────────────────────────
+  mech Vis : Attention {
+    qkv_fused  = true
+    heads      = { q = 16, kv = 16, head_dim = 72 }
+    bias       = true
+    structural = [ head_dim ]
+  }
+  mech VisMlp : FFN { hidden = 4304, gate = none, bias = true }
+
+  schedule {
+    lin   = 3 * Lin
+    full  = 1 * GQA
+    block = lin + full
+  }
+
+  stack model {
+    pattern = 12 * block           # 48 层 = 12 x 4
+    model[:] >> MoE
+  }
+
+  stack mtp {
+    aux     = true
+    pattern = 1 * GQA
+    mtp[:] >> MoE
+  }
+
+  stack visual {
+    d_model = 1152
+    aux     = true
+    pattern = 27 * Vis
+    visual[:] >> VisMlp
+  }
+
+  position {
+    default = partial(rope(base = 10000000, pairing = half), ratio = 0.25)
+  }
+
+  tensors {
+    Lin {
+      in_proj_qkv.weight : (k_heads * k_dim * 2 + v_heads * v_dim, d_model)
+      in_proj_z.weight   : (v_heads * v_dim, d_model)
+      in_proj_a.weight   : (v_heads, d_model)
+      in_proj_b.weight   : (v_heads, d_model)
+      conv1d.weight      : (k_heads * k_dim * 2 + v_heads * v_dim, 1, conv_kernel)
+      A_log              : (v_heads,)
+      dt_bias            : (v_heads,)
+      norm.weight        : (v_dim,)
+      out_proj.weight    : (d_model, v_heads * v_dim)
+    }
+    GQA {
+      q_proj.weight : (q * head_dim * 2, d_model)
+      k_proj.weight : (kv * head_dim, d_model)
+      v_proj.weight : (kv * head_dim, d_model)
+      o_proj.weight : (d_model, q * head_dim)
+      q_norm.weight : (head_dim,)
+      k_norm.weight : (head_dim,)
+      # ── 稀疏索引器（不是机制，是字面量）──
+      # `index_qk_proj` 640 = 4 个索引头 x 128 + 1 个 kv 头 x 128。
+      indexer.index_qk_proj.weight : (640, d_model)
+      indexer.q_layernorm.weight   : (128,)
+      indexer.k_layernorm.weight   : (128,)
+    }
+    MoE {
+      gate.weight                    : (experts, d_model)
+      experts.gate_up_proj           : (experts, 2 * hidden, d_model)
+      experts.down_proj              : (experts, d_model, hidden)
+      shared_expert.gate_proj.weight : (shared_hidden, d_model)
+      shared_expert.up_proj.weight   : (shared_hidden, d_model)
+      shared_expert.down_proj.weight : (d_model, shared_hidden)
+      shared_expert_gate.weight      : (1, d_model)
+    }
+    layer {
+      # ⚠ **这一层没有 `input_layernorm` / `post_attention_layernorm`** ——
+      # 归一化被 mHC 收进 `hc_norm` 了（第一版照 Qwen3.5 的骨架写了那两行，
+      # 48 x 2 = 96 个张量全报"实际不存在"）。
+      # ── mHC：每层两套（注意力前后各一套）──
+      # `hc_norm` 宽 `hc_count x d_model`；`block_inject_weight` 是
+      # `(hc_count, hc_count x d_model)`；低秩那一对是 320 <-> 10240。
+      attn_hyper_connection.hc_norm.weight               : (hc_count * d_model,)
+      attn_hyper_connection.input_mix_weight_down.weight : (hc_lowrank, hc_count * d_model)
+      attn_hyper_connection.input_mix_weight_up.weight   : (hc_count * d_model, hc_lowrank)
+      attn_hyper_connection.block_inject_weight.weight   : (hc_count, hc_count * d_model)
+      mlp_hyper_connection.hc_norm.weight                : (hc_count * d_model,)
+      mlp_hyper_connection.input_mix_weight_down.weight  : (hc_lowrank, hc_count * d_model)
+      mlp_hyper_connection.input_mix_weight_up.weight    : (hc_count * d_model, hc_lowrank)
+      mlp_hyper_connection.block_inject_weight.weight    : (hc_count, hc_count * d_model)
+    }
+    layer visual {
+      norm1.weight : (d_model,)
+      norm1.bias   : (d_model,)
+      norm2.weight : (d_model,)
+      norm2.bias   : (d_model,)
+    }
+    Vis {
+      qkv.weight  : (3 * q * head_dim, d_model)
+      qkv.bias    : (3 * q * head_dim,)
+      proj.weight : (d_model, q * head_dim)
+      proj.bias   : (d_model,)
+    }
+    VisMlp {
+      linear_fc1.weight : (hidden, d_model)
+      linear_fc1.bias   : (hidden,)
+      linear_fc2.weight : (d_model, hidden)
+      linear_fc2.bias   : (d_model,)
+    }
+    global {
+      embed.weight      : (vocab, d_model)
+      lm_head.weight    : (vocab, d_model)
+      # ⚠ **没有 `model.language_model.norm`** —— 最终归一化也在
+      # `hyper_connection_mixer.hc_norm` 里（第一版照 Qwen3.5 写了
+      # `final_norm.weight`，报"实际不存在"）。
+      # ── MTP 的两个投影（**换了名**：不是 `mtp.fc`）──
+      mtp_fc_embedding.weight   : (d_model, d_model)
+      mtp_fc_hidden.weight      : (d_model, d_model)
+      mtp_norm_embedding.weight : (d_model,)
+      # ⚠ **10240，不是 d_model** —— 它接的是 mHC 那条 4 宽的残差流。
+      mtp_norm_hidden.weight    : (hc_count * d_model,)
+      # ── 模型级那一套 mHC ──
+      model.language_model.hyper_connection_mixer.hc_norm.weight               : (hc_count * d_model,)
+      model.language_model.hyper_connection_mixer.input_mix_weight_down.weight : (hc_lowrank, hc_count * d_model)
+      model.language_model.hyper_connection_mixer.input_mix_weight_up.weight   : (hc_count * d_model, hc_lowrank)
+      # ── MTP 那一套 mHC ──
+      mtp.hyper_connection_mixer.hc_norm.weight               : (hc_count * d_model,)
+      mtp.hyper_connection_mixer.input_mix_weight_down.weight : (hc_lowrank, hc_count * d_model)
+      mtp.hyper_connection_mixer.input_mix_weight_up.weight   : (hc_count * d_model, hc_lowrank)
+      # ── 视觉塔层外（9 个）—— 没有 deepstack；merger 输出宽度是**文本的 d_model** ──
+      model.visual.patch_embed.proj.weight  : (1152, 3, 2, 16, 16)
+      model.visual.patch_embed.proj.bias    : (1152,)
+      model.visual.pos_embed.weight         : (2304, 1152)
+      model.visual.merger.norm.weight       : (1152,)
+      model.visual.merger.norm.bias         : (1152,)
+      model.visual.merger.linear_fc1.weight : (4608, 4608)
+      model.visual.merger.linear_fc1.bias   : (4608,)
+      model.visual.merger.linear_fc2.weight : (d_model, 4608)
+      model.visual.merger.linear_fc2.bias   : (d_model,)
+      # ── PLE（**只有第 1 层**）：因为 `layer {}` 是"所有层"，它写不进去，
+      #    所以整块走 `global` 的字面量行（层号写死在名字里）。
+      #    下面 128 行是 ngram 的 128 个分片，每片 (2500012, 160)。──
+      model.language_model.layers.1.ple.conv1d.weight     : (hc_count * d_model, 1, 4)
+      model.language_model.layers.1.ple.key_proj.weight   : (hc_count * d_model, d_model)
+      model.language_model.layers.1.ple.value_proj.weight : (d_model, d_model)
+      model.language_model.layers.1.ple.norm_conv.weight  : (hc_count * d_model,)
+      model.language_model.layers.1.ple.norm_key.weight   : (hc_count * d_model,)
+      model.language_model.layers.1.ple.norm_query.weight : (hc_count * d_model,)
+      model.language_model.layers.1.ple.ple_embedding.layer_multipliers       : (3,)
+      model.language_model.layers.1.ple.ple_embedding.ngram_heads_offsets     : (16,)
+      model.language_model.layers.1.ple.ple_embedding.ngram_heads_vocab_sizes : (16,)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_0.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_1.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_2.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_3.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_4.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_5.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_6.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_7.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_8.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_9.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_10.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_11.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_12.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_13.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_14.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_15.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_16.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_17.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_18.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_19.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_20.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_21.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_22.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_23.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_24.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_25.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_26.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_27.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_28.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_29.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_30.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_31.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_32.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_33.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_34.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_35.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_36.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_37.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_38.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_39.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_40.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_41.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_42.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_43.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_44.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_45.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_46.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_47.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_48.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_49.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_50.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_51.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_52.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_53.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_54.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_55.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_56.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_57.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_58.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_59.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_60.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_61.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_62.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_63.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_64.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_65.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_66.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_67.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_68.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_69.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_70.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_71.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_72.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_73.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_74.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_75.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_76.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_77.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_78.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_79.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_80.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_81.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_82.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_83.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_84.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_85.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_86.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_87.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_88.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_89.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_90.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_91.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_92.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_93.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_94.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_95.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_96.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_97.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_98.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_99.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_100.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_101.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_102.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_103.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_104.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_105.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_106.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_107.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_108.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_109.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_110.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_111.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_112.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_113.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_114.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_115.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_116.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_117.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_118.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_119.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_120.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_121.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_122.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_123.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_124.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_125.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_126.weight : (2500012, 160)
+      model.language_model.layers.1.ple.ple_embedding.ngram_embedding.shard_127.weight : (2500012, 160)
+    }
+  }
+
+  emit {
+    train -> transformers.config {
+      field {
+        model_type                  = "qwen4_exp_text"
+        vocab_size                  = vocab
+        hidden_size                 = d_model
+        num_hidden_layers           = n_layer
+        # MoE 号 —— 没有 `intermediate_size`。
+        num_attention_heads         = GQA.q
+        num_key_value_heads         = GQA.kv
+        head_dim                    = GQA.head_dim
+        max_position_embeddings     = ctx
+        rms_norm_eps                = rms_eps
+        hidden_act                  = "silu"
+        attention_bias              = false
+        attention_dropout           = 0.0
+        initializer_range           = 0.02
+        rope_parameters             = {"mrope_interleaved": true, "mrope_section": [11, 11, 10], "partial_rotary_factor": 0.25, "rope_theta": 10000000, "rope_type": "default"}
+        partial_rotary_factor       = 0.25
+        use_cache                   = true
+        layer_types                 = layer_types
+        full_attention_interval     = 4
+        output_gate_type            = "sigmoid"
+        linear_conv_kernel_dim      = 4
+        linear_key_head_dim         = 128
+        linear_num_key_heads        = 16
+        linear_num_value_heads      = 48
+        linear_value_head_dim       = 128
+        mamba_ssm_dtype             = "float32"
+        # ── MoE ──
+        moe_intermediate_size       = MoE.hidden
+        num_experts                 = MoE.experts
+        num_experts_per_tok         = MoE.top_k
+        shared_expert_intermediate_size = MoE.shared_hidden
+        router_aux_loss_coef        = 0.001
+        output_router_logits        = false
+        # ── mHC ──
+        hc_count                    = hc_count
+        hc_lowrank                  = hc_lowrank
+        # ── 稀疏索引器 ──
+        indexer_budget              = 2048
+        indexer_compress_ratio      = 4
+        indexer_head_dim            = 128
+        indexer_kv_heads            = 1
+        indexer_n_heads             = 4
+        # ── PLE / ngram ──
+        ple_conv_kernel_size        = 4
+        ple_embed_dim               = d_model
+        ple_layer_ids               = [2]
+        ngram_size                  = 3
+        heads_per_ngram             = 8
+        ngram_vocab_size_base       = 20000000
+        split_ngram_parts           = 128
+        make_ngram_vocab_size_divisible_by = 128
+        # ── MTP ──
+        mtp                         = {"hybrid": true, "layer_types": ["full_attention"], "mtp_use_hidden_state_from_layer": null, "num_hidden_layers": 1, "rope_theta": 10000000}
+        mtp_num_hidden_layers       = 1
+        mtp_use_dedicated_embeddings = false
+        tie_word_embeddings         = false
+        bos_token_id                = 248044
+        eos_token_id                = 248044
+        pad_token_id                = null
+      }
+    }
+
+    train -> torch.module {
+      name_model  = "model.language_model.layers.{i}.{scope}{physical}"
+      name_mtp    = "mtp.layers.{i}.{scope}{physical}"
+      name_visual = "model.visual.blocks.{i}.{scope}{physical}"
+      name        = "{stack}.layers.{i}.{scope}{physical}"
+      global_name = "{physical}"
+      scope { Lin = linear_attn., GQA = self_attn., MoE = mlp., Vis = attn., VisMlp = mlp., layer = "", global = "" }
+      rename {
+        embed.weight      = model.language_model.embed_tokens.weight,
+        mtp_fc_embedding.weight   = mtp.fc_embedding.weight,
+        mtp_fc_hidden.weight      = mtp.fc_hidden.weight,
+        mtp_norm_embedding.weight = mtp.pre_fc_norm_embedding.weight,
+        mtp_norm_hidden.weight    = mtp.pre_fc_norm_hidden.weight
+      }
+    }
+  }
+}

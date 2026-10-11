@@ -73,3 +73,5 @@ mamba-130m-hf	mamba-130m-hf	state-spaces/mamba-130m-hf	Mamba1 参数化（≠ �
 Qwen3.5-9B	Qwen3.5-9B	Qwen/Qwen3.5-9B	Qwen3.5 中间号：与 0.8B 逐张量同名，只差尺寸；Lin v 头 16→32、tie 转 false
 Qwen3.5-397B-A17B	Qwen3.5-397B-A17B	Qwen/Qwen3.5-397B-A17B	Qwen3.5 家族唯一 MoE 号：主干专家**融合**、MTP 专家**逐专家**（两个机制声明）
 Qwen3-Coder-Next	Qwen3-Coder-Next	Qwen/Qwen3-Coder-Next	`qwen3_next` 扁平 config：**逐专家 MoE** + `in_proj_qkvz`/`in_proj_ba` 两块融合，无 MTP / 无视觉塔
+DeepSeek-R1-Distill-Qwen-7B	DeepSeek-R1-Distill-Qwen-7B	deepseek-ai/DeepSeek-R1-Distill-Qwen-7B	Qwen2 架构（同 1.5B）：**q/k/v 带 bias 而 o_proj 不带**
+Qwen3.8-Flash-Next	Qwen3.8-Flash-Next	Qwen/Qwen3.8-Flash-Next	`qwen4_exp`：**mHC 超连接 + 稀疏索引器 + PLE（128 个 ngram 分片）** + MTP 改名
