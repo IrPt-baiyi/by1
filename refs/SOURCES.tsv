@@ -70,7 +70,7 @@ google/gemma-4-12B	gemma-4 家族中间号：还没写 .by1
 google/gemma-4-26B-A4B	gemma-4 家族 MoE 号：还没写 .by1
 google/gemma-4-E4B	gemma-4 家族小号：还没写 .by1
 inclusionAI/LLaDA2.2-flash	扩散语言模型候选：还没写 .by1
-openai/gpt-oss-20b	gpt-oss-120b 的小号（同一个架构族）：还没写 .by1
+openai/gpt-oss-20b	gpt-oss-120b 的小号（同一个架构族）：**已毕业** 2026-10-11（models/gpt-oss-20b.by1）
 poolside/Laguna-XS_2	Laguna-XS-2_1 的**上一代**：只留了 config 做对比
 state-spaces/mamba-130m-hf	Mamba 参考实现（Nemotron 的 SSM 对照）：还没写 .by1
 zai-org/GLM-4.7-Flash	GLM-5.3 的**上一代**：还没写 .by1

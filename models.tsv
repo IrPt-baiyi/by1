@@ -61,3 +61,4 @@ Qwen3.6-35B-A3B	Qwen3.6-35B-A3B	Qwen/Qwen3.6-35B-A3B	同一个形状换成 MoE�
 gpt2	gpt2	openai-community/gpt2	**上一代**：LayerNorm / 查表位置 / 无门控
 NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16	Nemotron-3.5-Lightning	nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16	attention 间隔 7,7,7,7,**9**
 GLM-5.3-Flash	GLM-5.3-Flash	zai-org/GLM-5.3-Flash	mHC + 分组路由 + FP8
+gpt-oss-20b	gpt-oss-20b	openai/gpt-oss-20b	gpt-oss-120b 的小号：同族，只差 n_layer 24 / experts 32

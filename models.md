@@ -27,22 +27,36 @@
 | `gpt2` | `gpt2` | [openai-community/gpt2](https://hf-mirror.com/openai-community/gpt2) |
 | `Nemotron-3.5-Lightning` | `NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16` | [nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16](https://hf-mirror.com/nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16) |
 | `GLM-5.3-Flash` | `GLM-5.3-Flash` | [zai-org/GLM-5.3-Flash](https://hf-mirror.com/zai-org/GLM-5.3-Flash) |
+| `gpt-oss-20b` | `gpt-oss-20b` | [openai/gpt-oss-20b](https://hf-mirror.com/openai/gpt-oss-20b) |
 
 ## 一、谁是谁
 
 | 模型 | 参数 | 层 | d_model | 词表 | 机制 |
 |---|---|---|---|---|---|
+| `AttnFusedShaped` | 361856 | 2 | 128 | 256 | Attn×2+FFN×2 |
+| `MoERoutingShaped` | 363152 | 2 | 128 | 256 | Attn×2+MoE×2 |
+| `KDA-lowrank-shaped` | 686800 | 4 | 128 | 512 | FFN×4+KDA×4 |
+| `KDA-GVA-shaped` | 693712 | 4 | 128 | 512 | FFN×4+KDA×4 |
+| `SSM-shaped` | 695472 | 4 | 128 | 512 | FFN×4+SSM×4 |
+| `KDA-shaped` | 727504 | 4 | 128 | 512 | FFN×4+KDA×4 |
+| `GLM-text-tiny` | 1M | 4 | 256 | 512 | FFN×3+KDA×3+MLA×1+MoE×1 |
+| `Ling-tiny` | 1M | 4 | 256 | 512 | FFN×1+KDA×3+MLA×1+MoE×3 |
+| `MLA-sparse-shaped` | 3M | 4 | 256 | 512 | FFN×4+MLA×4 |
 | `minimind-3` | 69M | 8 | 768 | 6400 | Attn×8+FFN×8 |
 | `gpt2` | 163M | 12 | 768 | 50257 | Attn×12+FFN×12 |
 | `Instella-3B` | 3.1B | 36 | 2560 | 50304 | Attn×36+FFN×36 |
-| `clef` | 26.9B | 64 | 5120 | 248320 | Attn×16+FFN×64+Lin×48 |
-| `Qwen3.8-27B` | 27.3B | 65 | 5120 | 248320 | Attn×17+FFN×65+Lin×48 |
-| `gemma-4-31B` | 32.1B | 60 | 5376 | 262144 | Attn×60+FFN×60 |
+| `Ling-3.0-tiny` | 7.9B | 24 | 1536 | 157184 | FFN×1+KDA×18+MLA×6+MoE×23 |
+| `gpt-oss-20b` | 20.9B | 24 | 2880 | 201088 | Attn×24+MoE×24 |
+| `clef` | 25.3B | 91 | 5120 | 248320 | Attn×43+FFN×91+Lin×48 |
+| `Qwen3.8-27B` | 25.7B | 92 | 5120 | 248320 | Attn×44+FFN×92+Lin×48 |
+| `gemma-4-31B` | 30.4B | 87 | 5376 | 262144 | Attn×87+FFN×87 |
 | `Laguna-XS-2_1` | 33.4B | 40 | 2048 | 100352 | Attn×40+FFN×1+MoE×39 |
-| `Qwen3.6-35B-A3B` | 35.5B | 41 | 2048 | 248320 | Attn×11+Lin×30+MoE×41 |
+| `Qwen3.6-35B-A3B` | 35.5B | 68 | 2048 | 248320 | Attn×38+FFN×27+Lin×30+MoE×41 |
+| `Nemotron-3.5-Lightning` | 48.5B | 54 | 2688 | 131072 | Attn×7+MoE×24+SSM×23 |
 | `gpt-oss-120b` | 116.8B | 36 | 2880 | 201088 | Attn×36+MoE×36 |
 | `nerkyor/Step-3_7-Flash` | 180.8B | 45 | 4096 | 128896 | Attn×45+FFN×3+MoE×42 |
-| `Step-3.7-Flash` | 197.0B | 45 | 4096 | 128896 | Attn×45+FFN×3+MoE×42 |
+| `Step-3.7-Flash` | 198.8B | 95 | 4096 | 128896 | Attn×95+FFN×53+MoE×42 |
+| `GLM-5.3-Flash` | 320.1B | 70 | 4096 | 154880 | Attn×24+FFN×27+KDA×34+MLA×12+MoE×43 |
 
 ## 二、**独苗** —— 只有它这样的
 
@@ -53,25 +67,64 @@
 | `Attention.qk_norm` | `'full'` | **Instella-3B** |
 | `Attention.rope` | `False` | **gpt2** |
 | `Attention.rope_scale` | `1.3465735902799727` | **Laguna-XS-2_1** |
-| `Attention.sink` | `True` | **gpt-oss-120b** |
 | `Attention.window` | `1024` | **gemma-4-31B** |
-| `Attention.window` | `128` | **gpt-oss-120b** |
-| `Attention.yarn` | `{'type': 'yarn', 'factor': 32.0, 'original': 4096, 'beta_fast': 32.0, 'beta_slow': 1.0, 'high_freq': 4.0, 'low_freq': 1.0, 'truncate': False}` | **gpt-oss-120b** |
 | `Attention.yarn` | `{'type': 'yarn', 'factor': 32.0, 'original': 8192, 'beta_fast': 64.0, 'beta_slow': 1.0, 'high_freq': 4.0, 'low_freq': 1.0, 'truncate': True}` | **Laguna-XS-2_1** |
 | `FFN.act` | `'gelu_new'` | **gpt2** |
-| `FFN.bias` | `True` | **gpt2** |
-| `FFN.gate` | `False` | **gpt2** |
-| `MoE.act` | `'gptoss'` | **gpt-oss-120b** |
-| `MoE.expert_bias` | `True` | **gpt-oss-120b** |
-| `MoE.limit` | `7.0` | **gpt-oss-120b** |
-| `MoE.routing` | `'topk_softmax'` | **gpt-oss-120b** |
-| `MoE.score_bias` | `True` | **Laguna-XS-2_1** |
-| `MoE.shared` | `0` | **gpt-oss-120b** |
+| `KDA.gate_rank` | `8` | **GLM-text-tiny** |
+| `KDA.k_heads` | `16` | **Ling-3.0-tiny** |
+| `KDA.k_heads` | `2` | **KDA-GVA-shaped** |
+| `KDA.k_heads` | `64` | **GLM-5.3-Flash** |
+| `KDA.v_heads` | `16` | **Ling-3.0-tiny** |
+| `KDA.v_heads` | `64` | **GLM-5.3-Flash** |
+| `MLA.head_dim` | `192` | **Ling-3.0-tiny** |
+| `MLA.head_dim` | `256` | **GLM-5.3-Flash** |
+| `MLA.head_dim` | `32` | **GLM-text-tiny** |
+| `MLA.index_dim` | `128` | **GLM-5.3-Flash** |
+| `MLA.index_dim` | `16` | **GLM-text-tiny** |
+| `MLA.index_dim` | `32` | **MLA-sparse-shaped** |
+| `MLA.index_heads` | `32` | **GLM-5.3-Flash** |
+| `MLA.index_topk` | `2048` | **GLM-5.3-Flash** |
+| `MLA.kv_lora` | `128` | **MLA-sparse-shaped** |
+| `MLA.kv_lora` | `16` | **GLM-text-tiny** |
+| `MLA.kv_lora` | `32` | **Ling-tiny** |
+| `MLA.out_dim` | `16384` | **GLM-5.3-Flash** |
+| `MLA.out_dim` | `2048` | **Ling-3.0-tiny** |
+| `MLA.out_dim` | `64` | **Ling-tiny** |
+| `MLA.q` | `16` | **Ling-3.0-tiny** |
+| `MLA.q` | `64` | **GLM-5.3-Flash** |
+| `MLA.q_lora` | `1536` | **GLM-5.3-Flash** |
+| `MLA.q_lora` | `256` | **Ling-3.0-tiny** |
+| `MLA.q_lora` | `48` | **GLM-text-tiny** |
+| `MLA.q_lora` | `64` | **Ling-tiny** |
+| `MLA.q_lora` | `96` | **MLA-sparse-shaped** |
+| `MLA.qk_nope` | `128` | **Ling-3.0-tiny** |
+| `MLA.qk_nope` | `256` | **GLM-5.3-Flash** |
+| `MLA.qk_nope` | `40` | **MLA-sparse-shaped** |
+| `MLA.qk_rope` | `16` | **Ling-tiny** |
+| `MLA.qk_rope` | `64` | **Ling-3.0-tiny** |
+| `MLA.qk_rope` | `8` | **MLA-sparse-shaped** |
+| `MLA.v_dim` | `128` | **Ling-3.0-tiny** |
+| `MLA.v_dim` | `16` | **Ling-tiny** |
+| `MLA.v_dim` | `256` | **GLM-5.3-Flash** |
+| `MoE.act` | `'relu2'` | **Nemotron-3.5-Lightning** |
+| `MoE.n_group` | `4` | **Ling-tiny** |
 | `MoE.shared_gate` | `True` | **Qwen3.6-35B-A3B** |
+| `MoE.topk_group` | `2` | **Ling-tiny** |
+| `MoE.topk_group` | `4` | **Ling-3.0-tiny** |
+| `SSM.chunk_size` | `128` | **Nemotron-3.5-Lightning** |
+| `SSM.chunk_size` | `8` | **SSM-shaped** |
+| `SSM.head_dim` | `16` | **SSM-shaped** |
+| `SSM.head_dim` | `64` | **Nemotron-3.5-Lightning** |
+| `SSM.heads` | `4` | **SSM-shaped** |
+| `SSM.heads` | `64` | **Nemotron-3.5-Lightning** |
+| `SSM.n_groups` | `2` | **SSM-shaped** |
+| `SSM.n_groups` | `8` | **Nemotron-3.5-Lightning** |
+| `SSM.ssm_state` | `128` | **Nemotron-3.5-Lightning** |
+| `SSM.ssm_state` | `32` | **SSM-shaped** |
 | `norm_kind` | `'layer'` | **gpt2** |
 | `pos_kind` | `'learned'` | **gpt2** |
 
-**11 个模型里，5 个一个独苗都没有**：minimind-3, clef, Qwen3.8-27B, Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL, Step-3.7-Flash
+**24 个模型里，17 个一个独苗都没有**：attn-fused-shaped, moe-routing-shaped, kda-lowrank-shaped, kda-gva-shaped, ssm-shaped, kda-shaped, glm-text-tiny, ling-tiny, mla-sparse-shaped, minimind-3, gpt-oss-20b, clef, Qwen3.8-27B, NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16, gpt-oss-120b, Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL, Step-3.7-Flash
 
 > 这就是"原语集合收敛"这句话的可数形式 ——
 > 说"收敛了"是感觉，说"这几个模型贡献 0 个新原语"是账。
@@ -84,382 +137,760 @@
 
 ### `Attention.bias`
 
-- `False` — minimind-3, Instella-3B, clef, Qwen3.8-27B, gemma-4-31B, Laguna-XS-2_1, Qwen3.6-35B-A3B, nerkyor/Step-3_7-Flash, Step-3.7-Flash
-- `True` — gpt2, gpt-oss-120b
+- `False` — MoERoutingShaped, minimind-3, Instella-3B, clef, Qwen3.8-27B, gemma-4-31B, Laguna-XS-2_1, Qwen3.6-35B-A3B, Nemotron-3.5-Lightning, nerkyor/Step-3_7-Flash, Step-3.7-Flash
+- `'—'` — KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, GLM-text-tiny, Ling-tiny, MLA-sparse-shaped, Ling-3.0-tiny
+- `True` — AttnFusedShaped, gpt2, gpt-oss-20b, gpt-oss-120b, GLM-5.3-Flash
+
+### `Attention.gate_act`
+
+- `'softplus'` — AttnFusedShaped, MoERoutingShaped, minimind-3, gpt2, Instella-3B, gpt-oss-20b, clef, Qwen3.8-27B, gemma-4-31B, Laguna-XS-2_1, Qwen3.6-35B-A3B, Nemotron-3.5-Lightning, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash, GLM-5.3-Flash
+- `'—'` — KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, GLM-text-tiny, Ling-tiny, MLA-sparse-shaped, Ling-3.0-tiny
 
 ### `Attention.head_dim`
 
+- `'—'` — KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, GLM-text-tiny, Ling-tiny, MLA-sparse-shaped, Ling-3.0-tiny
+- `64` — gpt2, gpt-oss-20b, gpt-oss-120b, GLM-5.3-Flash
 - `256` — clef, Qwen3.8-27B, gemma-4-31B, Qwen3.6-35B-A3B
-- `128` — Laguna-XS-2_1, nerkyor/Step-3_7-Flash, Step-3.7-Flash
-- `64` — gpt2, gpt-oss-120b
+- `128` — Laguna-XS-2_1, Nemotron-3.5-Lightning, nerkyor/Step-3_7-Flash, Step-3.7-Flash
+- `32` — AttnFusedShaped, MoERoutingShaped
 - `96` — minimind-3 ← **独苗**
 - `80` — Instella-3B ← **独苗**
 
 ### `Attention.head_gate`
 
-- `'off'` — minimind-3, gpt2, Instella-3B, clef, Qwen3.8-27B, gemma-4-31B, Qwen3.6-35B-A3B, gpt-oss-120b
+- `'off'` — AttnFusedShaped, MoERoutingShaped, minimind-3, gpt2, Instella-3B, gpt-oss-20b, clef, Qwen3.8-27B, gemma-4-31B, Qwen3.6-35B-A3B, Nemotron-3.5-Lightning, gpt-oss-120b, GLM-5.3-Flash
+- `'—'` — KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, GLM-text-tiny, Ling-tiny, MLA-sparse-shaped, Ling-3.0-tiny
 - `'per_head'` — Laguna-XS-2_1, nerkyor/Step-3_7-Flash, Step-3.7-Flash
 
 ### `Attention.kv`
 
-- `8` — Laguna-XS-2_1, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash
+- `'—'` — KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, GLM-text-tiny, Ling-tiny, MLA-sparse-shaped, Ling-3.0-tiny
+- `8` — gpt-oss-20b, Laguna-XS-2_1, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash
+- `2` — AttnFusedShaped, MoERoutingShaped, Qwen3.6-35B-A3B, Nemotron-3.5-Lightning
 - `4` — minimind-3, clef, Qwen3.8-27B
+- `16` — gemma-4-31B, GLM-5.3-Flash
 - `12` — gpt2 ← **独苗**
 - `32` — Instella-3B ← **独苗**
-- `16` — gemma-4-31B ← **独苗**
-- `2` — Qwen3.6-35B-A3B ← **独苗**
+
+### `Attention.kv_tie`
+
+- `False` — AttnFusedShaped, MoERoutingShaped, minimind-3, gpt2, Instella-3B, gpt-oss-20b, clef, Qwen3.8-27B, gemma-4-31B, Laguna-XS-2_1, Qwen3.6-35B-A3B, Nemotron-3.5-Lightning, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash, GLM-5.3-Flash
+- `'—'` — KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, GLM-text-tiny, Ling-tiny, MLA-sparse-shaped, Ling-3.0-tiny
 
 ### `Attention.norm_eps`
 
+- `1e-05` — AttnFusedShaped, MoERoutingShaped, gpt2, Instella-3B, gpt-oss-20b, Nemotron-3.5-Lightning, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash, GLM-5.3-Flash
+- `'—'` — KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, GLM-text-tiny, Ling-tiny, MLA-sparse-shaped, Ling-3.0-tiny
 - `1e-06` — minimind-3, clef, Qwen3.8-27B, gemma-4-31B, Laguna-XS-2_1, Qwen3.6-35B-A3B
-- `1e-05` — gpt2, Instella-3B, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash
+
+### `Attention.norm_one_plus`
+
+- `False` — AttnFusedShaped, MoERoutingShaped, minimind-3, gpt2, Instella-3B, gpt-oss-20b, clef, Qwen3.8-27B, gemma-4-31B, Laguna-XS-2_1, Qwen3.6-35B-A3B, Nemotron-3.5-Lightning, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash, GLM-5.3-Flash
+- `'—'` — KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, GLM-text-tiny, Ling-tiny, MLA-sparse-shaped, Ling-3.0-tiny
 
 ### `Attention.out_dim`
 
+- `'—'` — KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, GLM-text-tiny, Ling-tiny, MLA-sparse-shaped, Ling-3.0-tiny
+- `4096` — gpt-oss-20b, Qwen3.6-35B-A3B, Nemotron-3.5-Lightning, gpt-oss-120b
 - `6144` — clef, Qwen3.8-27B, Laguna-XS-2_1
 - `8192` — gemma-4-31B, nerkyor/Step-3_7-Flash, Step-3.7-Flash
+- `128` — AttnFusedShaped, MoERoutingShaped
 - `768` — minimind-3, gpt2
-- `4096` — Qwen3.6-35B-A3B, gpt-oss-120b
 - `2560` — Instella-3B ← **独苗**
+- `1024` — GLM-5.3-Flash ← **独苗**
 
 ### `Attention.q`
 
-- `64` — gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash
-- `32` — Instella-3B, gemma-4-31B
+- `'—'` — KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, GLM-text-tiny, Ling-tiny, MLA-sparse-shaped, Ling-3.0-tiny
+- `64` — gpt-oss-20b, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash
+- `32` — Instella-3B, gemma-4-31B, Nemotron-3.5-Lightning
+- `4` — AttnFusedShaped, MoERoutingShaped
 - `24` — clef, Qwen3.8-27B
+- `16` — Qwen3.6-35B-A3B, GLM-5.3-Flash
 - `8` — minimind-3 ← **独苗**
 - `12` — gpt2 ← **独苗**
 - `48` — Laguna-XS-2_1 ← **独苗**
-- `16` — Qwen3.6-35B-A3B ← **独苗**
 
 ### `Attention.q_gate`
 
-- `False` — minimind-3, gpt2, Instella-3B, gemma-4-31B, Laguna-XS-2_1, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash
+- `False` — AttnFusedShaped, MoERoutingShaped, minimind-3, gpt2, Instella-3B, gpt-oss-20b, gemma-4-31B, Laguna-XS-2_1, Nemotron-3.5-Lightning, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash, GLM-5.3-Flash
+- `'—'` — KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, GLM-text-tiny, Ling-tiny, MLA-sparse-shaped, Ling-3.0-tiny
 - `True` — clef, Qwen3.8-27B, Qwen3.6-35B-A3B
 
 ### `Attention.qk_norm`
 
+- `'—'` — KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, GLM-text-tiny, Ling-tiny, MLA-sparse-shaped, Ling-3.0-tiny
 - `'per_head'` — minimind-3, clef, Qwen3.8-27B, gemma-4-31B, Laguna-XS-2_1, Qwen3.6-35B-A3B, nerkyor/Step-3_7-Flash, Step-3.7-Flash
-- `'off'` — gpt2, gpt-oss-120b
+- `'off'` — AttnFusedShaped, MoERoutingShaped, gpt2, gpt-oss-20b, Nemotron-3.5-Lightning, gpt-oss-120b, GLM-5.3-Flash
 - `'full'` — Instella-3B ← **独苗**
+
+### `Attention.qkv_fused`
+
+- `False` — MoERoutingShaped, minimind-3, gpt2, Instella-3B, gpt-oss-20b, clef, Qwen3.8-27B, gemma-4-31B, Laguna-XS-2_1, Qwen3.6-35B-A3B, Nemotron-3.5-Lightning, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash
+- `'—'` — KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, GLM-text-tiny, Ling-tiny, MLA-sparse-shaped, Ling-3.0-tiny
+- `True` — AttnFusedShaped, GLM-5.3-Flash
 
 ### `Attention.rope`
 
-- `True` — minimind-3, Instella-3B, clef, Qwen3.8-27B, gemma-4-31B, Laguna-XS-2_1, Qwen3.6-35B-A3B, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash
+- `True` — AttnFusedShaped, MoERoutingShaped, minimind-3, Instella-3B, gpt-oss-20b, clef, Qwen3.8-27B, gemma-4-31B, Laguna-XS-2_1, Qwen3.6-35B-A3B, Nemotron-3.5-Lightning, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash, GLM-5.3-Flash
+- `'—'` — KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, GLM-text-tiny, Ling-tiny, MLA-sparse-shaped, Ling-3.0-tiny
 - `False` — gpt2 ← **独苗**
 
 ### `Attention.rope_base`
 
-- `10000` — gpt2, Instella-3B, gemma-4-31B
+- `'—'` — KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, GLM-text-tiny, Ling-tiny, MLA-sparse-shaped, Ling-3.0-tiny
+- `10000` — AttnFusedShaped, MoERoutingShaped, gpt2, Instella-3B, gemma-4-31B, Nemotron-3.5-Lightning, GLM-5.3-Flash
 - `10000000` — clef, Qwen3.8-27B, Qwen3.6-35B-A3B
+- `150000` — gpt-oss-20b, gpt-oss-120b
 - `5000000` — nerkyor/Step-3_7-Flash, Step-3.7-Flash
 - `1000000` — minimind-3 ← **独苗**
 - `500000` — Laguna-XS-2_1 ← **独苗**
-- `150000` — gpt-oss-120b ← **独苗**
 
 ### `Attention.rope_pairing`
 
-- `'half'` — minimind-3, Instella-3B, clef, Qwen3.8-27B, Laguna-XS-2_1, Qwen3.6-35B-A3B, nerkyor/Step-3_7-Flash, Step-3.7-Flash
-- `'interleaved'` — gpt2, gemma-4-31B, gpt-oss-120b
+- `'half'` — AttnFusedShaped, MoERoutingShaped, minimind-3, Instella-3B, clef, Qwen3.8-27B, Laguna-XS-2_1, Qwen3.6-35B-A3B, Nemotron-3.5-Lightning, nerkyor/Step-3_7-Flash, Step-3.7-Flash, GLM-5.3-Flash
+- `'—'` — KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, GLM-text-tiny, Ling-tiny, MLA-sparse-shaped, Ling-3.0-tiny
+- `'interleaved'` — gpt2, gpt-oss-20b, gemma-4-31B, gpt-oss-120b
 
 ### `Attention.rope_partial`
 
-- `1.0` — minimind-3, gpt2, Instella-3B, clef, Qwen3.8-27B, gemma-4-31B, Qwen3.6-35B-A3B, gpt-oss-120b
+- `1.0` — AttnFusedShaped, MoERoutingShaped, minimind-3, gpt2, Instella-3B, gpt-oss-20b, clef, Qwen3.8-27B, gemma-4-31B, Qwen3.6-35B-A3B, Nemotron-3.5-Lightning, gpt-oss-120b, GLM-5.3-Flash
+- `'—'` — KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, GLM-text-tiny, Ling-tiny, MLA-sparse-shaped, Ling-3.0-tiny
 - `0.5` — Laguna-XS-2_1, nerkyor/Step-3_7-Flash, Step-3.7-Flash
 
 ### `Attention.rope_scale`
 
-- `1.0` — minimind-3, gpt2, Instella-3B, clef, Qwen3.8-27B, gemma-4-31B, Qwen3.6-35B-A3B, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash
+- `1.0` — AttnFusedShaped, MoERoutingShaped, minimind-3, gpt2, Instella-3B, gpt-oss-20b, clef, Qwen3.8-27B, gemma-4-31B, Qwen3.6-35B-A3B, Nemotron-3.5-Lightning, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash, GLM-5.3-Flash
+- `'—'` — KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, GLM-text-tiny, Ling-tiny, MLA-sparse-shaped, Ling-3.0-tiny
 - `1.3465735902799727` — Laguna-XS-2_1 ← **独苗**
 
 ### `Attention.sink`
 
-- `False` — minimind-3, gpt2, Instella-3B, clef, Qwen3.8-27B, gemma-4-31B, Laguna-XS-2_1, Qwen3.6-35B-A3B, nerkyor/Step-3_7-Flash, Step-3.7-Flash
-- `True` — gpt-oss-120b ← **独苗**
+- `False` — AttnFusedShaped, MoERoutingShaped, minimind-3, gpt2, Instella-3B, clef, Qwen3.8-27B, gemma-4-31B, Laguna-XS-2_1, Qwen3.6-35B-A3B, Nemotron-3.5-Lightning, nerkyor/Step-3_7-Flash, Step-3.7-Flash, GLM-5.3-Flash
+- `'—'` — KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, GLM-text-tiny, Ling-tiny, MLA-sparse-shaped, Ling-3.0-tiny
+- `True` — gpt-oss-20b, gpt-oss-120b
 
 ### `Attention.window`
 
-- `None` — minimind-3, gpt2, Instella-3B, clef, Qwen3.8-27B, Laguna-XS-2_1, Qwen3.6-35B-A3B, nerkyor/Step-3_7-Flash, Step-3.7-Flash
+- `None` — AttnFusedShaped, MoERoutingShaped, minimind-3, gpt2, Instella-3B, clef, Qwen3.8-27B, Laguna-XS-2_1, Qwen3.6-35B-A3B, Nemotron-3.5-Lightning, nerkyor/Step-3_7-Flash, Step-3.7-Flash, GLM-5.3-Flash
+- `'—'` — KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, GLM-text-tiny, Ling-tiny, MLA-sparse-shaped, Ling-3.0-tiny
+- `128` — gpt-oss-20b, gpt-oss-120b
 - `1024` — gemma-4-31B ← **独苗**
-- `128` — gpt-oss-120b ← **独苗**
 
 ### `Attention.yarn`
 
-- `None` — minimind-3, gpt2, Instella-3B, clef, Qwen3.8-27B, gemma-4-31B, Qwen3.6-35B-A3B
+- `None` — AttnFusedShaped, MoERoutingShaped, minimind-3, gpt2, Instella-3B, clef, Qwen3.8-27B, gemma-4-31B, Qwen3.6-35B-A3B, Nemotron-3.5-Lightning, GLM-5.3-Flash
+- `'—'` — KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, GLM-text-tiny, Ling-tiny, MLA-sparse-shaped, Ling-3.0-tiny
+- `{'type': 'yarn', 'factor': 32.0, 'original': 4096, 'beta_fast': 32.0, 'beta_slow': 1.0, 'high_freq': 4.0, 'low_freq': 1.0, 'truncate': False}` — gpt-oss-20b, gpt-oss-120b
 - `{'type': 'llama3', 'factor': 2.0, 'original': 131072, 'beta_fast': 32.0, 'beta_slow': 1.0, 'high_freq': 32.0, 'low_freq': 1.0, 'truncate': True}` — nerkyor/Step-3_7-Flash, Step-3.7-Flash
 - `{'type': 'yarn', 'factor': 32.0, 'original': 8192, 'beta_fast': 64.0, 'beta_slow': 1.0, 'high_freq': 4.0, 'low_freq': 1.0, 'truncate': True}` — Laguna-XS-2_1 ← **独苗**
-- `{'type': 'yarn', 'factor': 32.0, 'original': 4096, 'beta_fast': 32.0, 'beta_slow': 1.0, 'high_freq': 4.0, 'low_freq': 1.0, 'truncate': False}` — gpt-oss-120b ← **独苗**
 
 ### `FFN.act`
 
-- `'silu'` — minimind-3, Instella-3B, clef, Qwen3.8-27B, gemma-4-31B, Laguna-XS-2_1, nerkyor/Step-3_7-Flash, Step-3.7-Flash
-- `'—'` — Qwen3.6-35B-A3B, gpt-oss-120b
+- `'silu'` — AttnFusedShaped, KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, GLM-text-tiny, Ling-tiny, MLA-sparse-shaped, minimind-3, Instella-3B, Ling-3.0-tiny, clef, Qwen3.8-27B, gemma-4-31B, Laguna-XS-2_1, Qwen3.6-35B-A3B, nerkyor/Step-3_7-Flash, Step-3.7-Flash, GLM-5.3-Flash
+- `'—'` — MoERoutingShaped, gpt-oss-20b, Nemotron-3.5-Lightning, gpt-oss-120b
 - `'gelu_new'` — gpt2 ← **独苗**
 
 ### `FFN.alpha`
 
-- `1.702` — minimind-3, gpt2, Instella-3B, clef, Qwen3.8-27B, gemma-4-31B, Laguna-XS-2_1, nerkyor/Step-3_7-Flash, Step-3.7-Flash
-- `'—'` — Qwen3.6-35B-A3B, gpt-oss-120b
+- `1.702` — AttnFusedShaped, KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, GLM-text-tiny, Ling-tiny, MLA-sparse-shaped, minimind-3, gpt2, Instella-3B, Ling-3.0-tiny, clef, Qwen3.8-27B, gemma-4-31B, Laguna-XS-2_1, Qwen3.6-35B-A3B, nerkyor/Step-3_7-Flash, Step-3.7-Flash, GLM-5.3-Flash
+- `'—'` — MoERoutingShaped, gpt-oss-20b, Nemotron-3.5-Lightning, gpt-oss-120b
 
 ### `FFN.bias`
 
-- `False` — minimind-3, Instella-3B, clef, Qwen3.8-27B, gemma-4-31B, Laguna-XS-2_1, nerkyor/Step-3_7-Flash, Step-3.7-Flash
-- `'—'` — Qwen3.6-35B-A3B, gpt-oss-120b
-- `True` — gpt2 ← **独苗**
+- `False` — AttnFusedShaped, KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, GLM-text-tiny, Ling-tiny, MLA-sparse-shaped, minimind-3, Instella-3B, Ling-3.0-tiny, clef, Qwen3.8-27B, gemma-4-31B, Laguna-XS-2_1, nerkyor/Step-3_7-Flash, Step-3.7-Flash, GLM-5.3-Flash
+- `'—'` — MoERoutingShaped, gpt-oss-20b, Nemotron-3.5-Lightning, gpt-oss-120b
+- `True` — gpt2, Qwen3.6-35B-A3B
 
 ### `FFN.gate`
 
-- `True` — minimind-3, Instella-3B, clef, Qwen3.8-27B, gemma-4-31B, Laguna-XS-2_1, nerkyor/Step-3_7-Flash, Step-3.7-Flash
-- `'—'` — Qwen3.6-35B-A3B, gpt-oss-120b
-- `False` — gpt2 ← **独苗**
+- `True` — AttnFusedShaped, KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, GLM-text-tiny, Ling-tiny, MLA-sparse-shaped, minimind-3, Instella-3B, Ling-3.0-tiny, clef, Qwen3.8-27B, gemma-4-31B, Laguna-XS-2_1, nerkyor/Step-3_7-Flash, Step-3.7-Flash, GLM-5.3-Flash
+- `'—'` — MoERoutingShaped, gpt-oss-20b, Nemotron-3.5-Lightning, gpt-oss-120b
+- `False` — gpt2, Qwen3.6-35B-A3B
 
 ### `FFN.hidden`
 
+- `256` — AttnFusedShaped, KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped
+- `'—'` — MoERoutingShaped, gpt-oss-20b, Nemotron-3.5-Lightning, gpt-oss-120b
+- `128` — GLM-text-tiny, Ling-tiny
 - `17408` — clef, Qwen3.8-27B
-- `'—'` — Qwen3.6-35B-A3B, gpt-oss-120b
 - `11264` — nerkyor/Step-3_7-Flash, Step-3.7-Flash
+- `512` — MLA-sparse-shaped ← **独苗**
 - `2432` — minimind-3 ← **独苗**
 - `3072` — gpt2 ← **独苗**
 - `6912` — Instella-3B ← **独苗**
+- `4608` — Ling-3.0-tiny ← **独苗**
 - `21504` — gemma-4-31B ← **独苗**
 - `8192` — Laguna-XS-2_1 ← **独苗**
+- `4304` — Qwen3.6-35B-A3B ← **独苗**
+- `12288` — GLM-5.3-Flash ← **独苗**
 
 ### `FFN.limit`
 
-- `None` — minimind-3, gpt2, Instella-3B, clef, Qwen3.8-27B, gemma-4-31B, Laguna-XS-2_1, nerkyor/Step-3_7-Flash, Step-3.7-Flash
-- `'—'` — Qwen3.6-35B-A3B, gpt-oss-120b
+- `None` — AttnFusedShaped, KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, GLM-text-tiny, Ling-tiny, MLA-sparse-shaped, minimind-3, gpt2, Instella-3B, Ling-3.0-tiny, clef, Qwen3.8-27B, gemma-4-31B, Laguna-XS-2_1, Qwen3.6-35B-A3B, nerkyor/Step-3_7-Flash, Step-3.7-Flash, GLM-5.3-Flash
+- `'—'` — MoERoutingShaped, gpt-oss-20b, Nemotron-3.5-Lightning, gpt-oss-120b
+
+### `KDA.act`
+
+- `'—'` — AttnFusedShaped, MoERoutingShaped, SSM-shaped, MLA-sparse-shaped, minimind-3, gpt2, Instella-3B, gpt-oss-20b, clef, Qwen3.8-27B, gemma-4-31B, Laguna-XS-2_1, Qwen3.6-35B-A3B, Nemotron-3.5-Lightning, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash
+- `'silu'` — KDA-lowrank-shaped, KDA-GVA-shaped, KDA-shaped, GLM-text-tiny, Ling-tiny, Ling-3.0-tiny, GLM-5.3-Flash
+
+### `KDA.conv_bias`
+
+- `'—'` — AttnFusedShaped, MoERoutingShaped, SSM-shaped, MLA-sparse-shaped, minimind-3, gpt2, Instella-3B, gpt-oss-20b, clef, Qwen3.8-27B, gemma-4-31B, Laguna-XS-2_1, Qwen3.6-35B-A3B, Nemotron-3.5-Lightning, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash
+- `False` — KDA-lowrank-shaped, KDA-GVA-shaped, KDA-shaped, GLM-text-tiny, Ling-tiny, Ling-3.0-tiny, GLM-5.3-Flash
+
+### `KDA.conv_kernel`
+
+- `'—'` — AttnFusedShaped, MoERoutingShaped, SSM-shaped, MLA-sparse-shaped, minimind-3, gpt2, Instella-3B, gpt-oss-20b, clef, Qwen3.8-27B, gemma-4-31B, Laguna-XS-2_1, Qwen3.6-35B-A3B, Nemotron-3.5-Lightning, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash
+- `4` — KDA-lowrank-shaped, KDA-GVA-shaped, KDA-shaped, GLM-text-tiny, Ling-tiny, Ling-3.0-tiny, GLM-5.3-Flash
+
+### `KDA.gate_lower`
+
+- `'—'` — AttnFusedShaped, MoERoutingShaped, KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, MLA-sparse-shaped, minimind-3, gpt2, Instella-3B, gpt-oss-20b, clef, Qwen3.8-27B, gemma-4-31B, Laguna-XS-2_1, Qwen3.6-35B-A3B, Nemotron-3.5-Lightning, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash
+- `-5.0` — KDA-shaped, GLM-text-tiny, Ling-tiny, Ling-3.0-tiny, GLM-5.3-Flash
+
+### `KDA.gate_lowrank`
+
+- `'—'` — AttnFusedShaped, MoERoutingShaped, SSM-shaped, MLA-sparse-shaped, minimind-3, gpt2, Instella-3B, gpt-oss-20b, clef, Qwen3.8-27B, gemma-4-31B, Laguna-XS-2_1, Qwen3.6-35B-A3B, Nemotron-3.5-Lightning, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash
+- `False` — KDA-GVA-shaped, KDA-shaped, Ling-tiny, Ling-3.0-tiny
+- `True` — KDA-lowrank-shaped, GLM-text-tiny, GLM-5.3-Flash
+
+### `KDA.gate_out_bias`
+
+- `'—'` — AttnFusedShaped, MoERoutingShaped, SSM-shaped, MLA-sparse-shaped, minimind-3, gpt2, Instella-3B, gpt-oss-20b, clef, Qwen3.8-27B, gemma-4-31B, Laguna-XS-2_1, Qwen3.6-35B-A3B, Nemotron-3.5-Lightning, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash
+- `True` — KDA-lowrank-shaped, KDA-GVA-shaped, KDA-shaped, Ling-tiny, Ling-3.0-tiny
+- `False` — GLM-text-tiny, GLM-5.3-Flash
+
+### `KDA.gate_rank`
+
+- `'—'` — AttnFusedShaped, MoERoutingShaped, SSM-shaped, MLA-sparse-shaped, minimind-3, gpt2, Instella-3B, gpt-oss-20b, clef, Qwen3.8-27B, gemma-4-31B, Laguna-XS-2_1, Qwen3.6-35B-A3B, Nemotron-3.5-Lightning, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash
+- `16` — KDA-lowrank-shaped, KDA-GVA-shaped, KDA-shaped, Ling-tiny
+- `128` — Ling-3.0-tiny, GLM-5.3-Flash
+- `8` — GLM-text-tiny ← **独苗**
+
+### `KDA.k_dim`
+
+- `'—'` — AttnFusedShaped, MoERoutingShaped, SSM-shaped, MLA-sparse-shaped, minimind-3, gpt2, Instella-3B, gpt-oss-20b, clef, Qwen3.8-27B, gemma-4-31B, Laguna-XS-2_1, Qwen3.6-35B-A3B, Nemotron-3.5-Lightning, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash
+- `16` — KDA-lowrank-shaped, KDA-GVA-shaped, KDA-shaped, GLM-text-tiny, Ling-tiny
+- `128` — Ling-3.0-tiny, GLM-5.3-Flash
+
+### `KDA.k_heads`
+
+- `'—'` — AttnFusedShaped, MoERoutingShaped, SSM-shaped, MLA-sparse-shaped, minimind-3, gpt2, Instella-3B, gpt-oss-20b, clef, Qwen3.8-27B, gemma-4-31B, Laguna-XS-2_1, Qwen3.6-35B-A3B, Nemotron-3.5-Lightning, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash
+- `4` — KDA-lowrank-shaped, KDA-shaped, GLM-text-tiny, Ling-tiny
+- `2` — KDA-GVA-shaped ← **独苗**
+- `16` — Ling-3.0-tiny ← **独苗**
+- `64` — GLM-5.3-Flash ← **独苗**
+
+### `KDA.l2_eps`
+
+- `'—'` — AttnFusedShaped, MoERoutingShaped, SSM-shaped, MLA-sparse-shaped, minimind-3, gpt2, Instella-3B, gpt-oss-20b, clef, Qwen3.8-27B, gemma-4-31B, Laguna-XS-2_1, Qwen3.6-35B-A3B, Nemotron-3.5-Lightning, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash
+- `1e-06` — KDA-lowrank-shaped, KDA-GVA-shaped, KDA-shaped, GLM-text-tiny, Ling-tiny, Ling-3.0-tiny, GLM-5.3-Flash
+
+### `KDA.norm_eps`
+
+- `'—'` — AttnFusedShaped, MoERoutingShaped, SSM-shaped, MLA-sparse-shaped, minimind-3, gpt2, Instella-3B, gpt-oss-20b, clef, Qwen3.8-27B, gemma-4-31B, Laguna-XS-2_1, Qwen3.6-35B-A3B, Nemotron-3.5-Lightning, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash
+- `1e-05` — KDA-lowrank-shaped, KDA-GVA-shaped, KDA-shaped, GLM-text-tiny, GLM-5.3-Flash
+- `1e-06` — Ling-tiny, Ling-3.0-tiny
+
+### `KDA.v_dim`
+
+- `'—'` — AttnFusedShaped, MoERoutingShaped, SSM-shaped, MLA-sparse-shaped, minimind-3, gpt2, Instella-3B, gpt-oss-20b, clef, Qwen3.8-27B, gemma-4-31B, Laguna-XS-2_1, Qwen3.6-35B-A3B, Nemotron-3.5-Lightning, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash
+- `16` — KDA-lowrank-shaped, KDA-GVA-shaped, KDA-shaped, GLM-text-tiny, Ling-tiny
+- `128` — Ling-3.0-tiny, GLM-5.3-Flash
+
+### `KDA.v_heads`
+
+- `'—'` — AttnFusedShaped, MoERoutingShaped, SSM-shaped, MLA-sparse-shaped, minimind-3, gpt2, Instella-3B, gpt-oss-20b, clef, Qwen3.8-27B, gemma-4-31B, Laguna-XS-2_1, Qwen3.6-35B-A3B, Nemotron-3.5-Lightning, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash
+- `4` — KDA-lowrank-shaped, KDA-GVA-shaped, KDA-shaped, GLM-text-tiny, Ling-tiny
+- `16` — Ling-3.0-tiny ← **独苗**
+- `64` — GLM-5.3-Flash ← **独苗**
 
 ### `Linear.act`
 
-- `'—'` — minimind-3, gpt2, Instella-3B, gemma-4-31B, Laguna-XS-2_1, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash
+- `'—'` — AttnFusedShaped, MoERoutingShaped, KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, GLM-text-tiny, Ling-tiny, MLA-sparse-shaped, minimind-3, gpt2, Instella-3B, Ling-3.0-tiny, gpt-oss-20b, gemma-4-31B, Laguna-XS-2_1, Nemotron-3.5-Lightning, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash, GLM-5.3-Flash
 - `'silu'` — clef, Qwen3.8-27B, Qwen3.6-35B-A3B
 
 ### `Linear.conv_kernel`
 
-- `'—'` — minimind-3, gpt2, Instella-3B, gemma-4-31B, Laguna-XS-2_1, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash
+- `'—'` — AttnFusedShaped, MoERoutingShaped, KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, GLM-text-tiny, Ling-tiny, MLA-sparse-shaped, minimind-3, gpt2, Instella-3B, Ling-3.0-tiny, gpt-oss-20b, gemma-4-31B, Laguna-XS-2_1, Nemotron-3.5-Lightning, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash, GLM-5.3-Flash
 - `4` — clef, Qwen3.8-27B, Qwen3.6-35B-A3B
 
 ### `Linear.k_dim`
 
-- `'—'` — minimind-3, gpt2, Instella-3B, gemma-4-31B, Laguna-XS-2_1, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash
+- `'—'` — AttnFusedShaped, MoERoutingShaped, KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, GLM-text-tiny, Ling-tiny, MLA-sparse-shaped, minimind-3, gpt2, Instella-3B, Ling-3.0-tiny, gpt-oss-20b, gemma-4-31B, Laguna-XS-2_1, Nemotron-3.5-Lightning, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash, GLM-5.3-Flash
 - `128` — clef, Qwen3.8-27B, Qwen3.6-35B-A3B
 
 ### `Linear.k_heads`
 
-- `'—'` — minimind-3, gpt2, Instella-3B, gemma-4-31B, Laguna-XS-2_1, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash
+- `'—'` — AttnFusedShaped, MoERoutingShaped, KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, GLM-text-tiny, Ling-tiny, MLA-sparse-shaped, minimind-3, gpt2, Instella-3B, Ling-3.0-tiny, gpt-oss-20b, gemma-4-31B, Laguna-XS-2_1, Nemotron-3.5-Lightning, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash, GLM-5.3-Flash
 - `16` — clef, Qwen3.8-27B, Qwen3.6-35B-A3B
 
 ### `Linear.l2_eps`
 
-- `'—'` — minimind-3, gpt2, Instella-3B, gemma-4-31B, Laguna-XS-2_1, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash
+- `'—'` — AttnFusedShaped, MoERoutingShaped, KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, GLM-text-tiny, Ling-tiny, MLA-sparse-shaped, minimind-3, gpt2, Instella-3B, Ling-3.0-tiny, gpt-oss-20b, gemma-4-31B, Laguna-XS-2_1, Nemotron-3.5-Lightning, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash, GLM-5.3-Flash
 - `1e-06` — clef, Qwen3.8-27B, Qwen3.6-35B-A3B
 
 ### `Linear.norm_eps`
 
-- `'—'` — minimind-3, gpt2, Instella-3B, gemma-4-31B, Laguna-XS-2_1, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash
+- `'—'` — AttnFusedShaped, MoERoutingShaped, KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, GLM-text-tiny, Ling-tiny, MLA-sparse-shaped, minimind-3, gpt2, Instella-3B, Ling-3.0-tiny, gpt-oss-20b, gemma-4-31B, Laguna-XS-2_1, Nemotron-3.5-Lightning, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash, GLM-5.3-Flash
 - `1e-06` — clef, Qwen3.8-27B, Qwen3.6-35B-A3B
 
 ### `Linear.out_dim`
 
-- `'—'` — minimind-3, gpt2, Instella-3B, gemma-4-31B, Laguna-XS-2_1, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash
+- `'—'` — AttnFusedShaped, MoERoutingShaped, KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, GLM-text-tiny, Ling-tiny, MLA-sparse-shaped, minimind-3, gpt2, Instella-3B, Ling-3.0-tiny, gpt-oss-20b, gemma-4-31B, Laguna-XS-2_1, Nemotron-3.5-Lightning, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash, GLM-5.3-Flash
 - `6144` — clef, Qwen3.8-27B
 - `4096` — Qwen3.6-35B-A3B ← **独苗**
 
 ### `Linear.v_dim`
 
-- `'—'` — minimind-3, gpt2, Instella-3B, gemma-4-31B, Laguna-XS-2_1, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash
+- `'—'` — AttnFusedShaped, MoERoutingShaped, KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, GLM-text-tiny, Ling-tiny, MLA-sparse-shaped, minimind-3, gpt2, Instella-3B, Ling-3.0-tiny, gpt-oss-20b, gemma-4-31B, Laguna-XS-2_1, Nemotron-3.5-Lightning, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash, GLM-5.3-Flash
 - `128` — clef, Qwen3.8-27B, Qwen3.6-35B-A3B
 
 ### `Linear.v_heads`
 
-- `'—'` — minimind-3, gpt2, Instella-3B, gemma-4-31B, Laguna-XS-2_1, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash
+- `'—'` — AttnFusedShaped, MoERoutingShaped, KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, GLM-text-tiny, Ling-tiny, MLA-sparse-shaped, minimind-3, gpt2, Instella-3B, Ling-3.0-tiny, gpt-oss-20b, gemma-4-31B, Laguna-XS-2_1, Nemotron-3.5-Lightning, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash, GLM-5.3-Flash
 - `48` — clef, Qwen3.8-27B
 - `32` — Qwen3.6-35B-A3B ← **独苗**
 
+### `MLA.bias`
+
+- `'—'` — AttnFusedShaped, MoERoutingShaped, KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, minimind-3, gpt2, Instella-3B, gpt-oss-20b, clef, Qwen3.8-27B, gemma-4-31B, Laguna-XS-2_1, Qwen3.6-35B-A3B, Nemotron-3.5-Lightning, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash
+- `False` — GLM-text-tiny, Ling-tiny, MLA-sparse-shaped, Ling-3.0-tiny, GLM-5.3-Flash
+
+### `MLA.gate_act`
+
+- `'—'` — AttnFusedShaped, MoERoutingShaped, KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, minimind-3, gpt2, Instella-3B, gpt-oss-20b, clef, Qwen3.8-27B, gemma-4-31B, Laguna-XS-2_1, Qwen3.6-35B-A3B, Nemotron-3.5-Lightning, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash
+- `'sigmoid'` — GLM-text-tiny, Ling-tiny, MLA-sparse-shaped, Ling-3.0-tiny, GLM-5.3-Flash
+
+### `MLA.head_dim`
+
+- `'—'` — AttnFusedShaped, MoERoutingShaped, KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, minimind-3, gpt2, Instella-3B, gpt-oss-20b, clef, Qwen3.8-27B, gemma-4-31B, Laguna-XS-2_1, Qwen3.6-35B-A3B, Nemotron-3.5-Lightning, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash
+- `48` — Ling-tiny, MLA-sparse-shaped
+- `32` — GLM-text-tiny ← **独苗**
+- `192` — Ling-3.0-tiny ← **独苗**
+- `256` — GLM-5.3-Flash ← **独苗**
+
+### `MLA.head_gate`
+
+- `'—'` — AttnFusedShaped, MoERoutingShaped, KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, minimind-3, gpt2, Instella-3B, gpt-oss-20b, clef, Qwen3.8-27B, gemma-4-31B, Laguna-XS-2_1, Qwen3.6-35B-A3B, Nemotron-3.5-Lightning, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash
+- `'per_head'` — Ling-tiny, MLA-sparse-shaped, Ling-3.0-tiny
+- `'off'` — GLM-text-tiny, GLM-5.3-Flash
+
+### `MLA.index_dim`
+
+- `'—'` — AttnFusedShaped, MoERoutingShaped, KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, Ling-tiny, minimind-3, gpt2, Instella-3B, Ling-3.0-tiny, gpt-oss-20b, clef, Qwen3.8-27B, gemma-4-31B, Laguna-XS-2_1, Qwen3.6-35B-A3B, Nemotron-3.5-Lightning, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash
+- `16` — GLM-text-tiny ← **独苗**
+- `32` — MLA-sparse-shaped ← **独苗**
+- `128` — GLM-5.3-Flash ← **独苗**
+
+### `MLA.index_heads`
+
+- `'—'` — AttnFusedShaped, MoERoutingShaped, KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, Ling-tiny, minimind-3, gpt2, Instella-3B, Ling-3.0-tiny, gpt-oss-20b, clef, Qwen3.8-27B, gemma-4-31B, Laguna-XS-2_1, Qwen3.6-35B-A3B, Nemotron-3.5-Lightning, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash
+- `4` — GLM-text-tiny, MLA-sparse-shaped
+- `32` — GLM-5.3-Flash ← **独苗**
+
+### `MLA.index_kpool`
+
+- `'—'` — AttnFusedShaped, MoERoutingShaped, KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, minimind-3, gpt2, Instella-3B, gpt-oss-20b, clef, Qwen3.8-27B, gemma-4-31B, Laguna-XS-2_1, Qwen3.6-35B-A3B, Nemotron-3.5-Lightning, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash
+- `1` — GLM-text-tiny, Ling-tiny, MLA-sparse-shaped, Ling-3.0-tiny, GLM-5.3-Flash
+
+### `MLA.index_kpool_tail`
+
+- `'—'` — AttnFusedShaped, MoERoutingShaped, KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, minimind-3, gpt2, Instella-3B, gpt-oss-20b, clef, Qwen3.8-27B, gemma-4-31B, Laguna-XS-2_1, Qwen3.6-35B-A3B, Nemotron-3.5-Lightning, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash
+- `False` — GLM-text-tiny, Ling-tiny, MLA-sparse-shaped, Ling-3.0-tiny, GLM-5.3-Flash
+
+### `MLA.index_topk`
+
+- `'—'` — AttnFusedShaped, MoERoutingShaped, KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, Ling-tiny, minimind-3, gpt2, Instella-3B, Ling-3.0-tiny, gpt-oss-20b, clef, Qwen3.8-27B, gemma-4-31B, Laguna-XS-2_1, Qwen3.6-35B-A3B, Nemotron-3.5-Lightning, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash
+- `4` — GLM-text-tiny, MLA-sparse-shaped
+- `2048` — GLM-5.3-Flash ← **独苗**
+
+### `MLA.kv_lora`
+
+- `'—'` — AttnFusedShaped, MoERoutingShaped, KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, minimind-3, gpt2, Instella-3B, gpt-oss-20b, clef, Qwen3.8-27B, gemma-4-31B, Laguna-XS-2_1, Qwen3.6-35B-A3B, Nemotron-3.5-Lightning, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash
+- `512` — Ling-3.0-tiny, GLM-5.3-Flash
+- `16` — GLM-text-tiny ← **独苗**
+- `32` — Ling-tiny ← **独苗**
+- `128` — MLA-sparse-shaped ← **独苗**
+
+### `MLA.norm_eps`
+
+- `'—'` — AttnFusedShaped, MoERoutingShaped, KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, minimind-3, gpt2, Instella-3B, gpt-oss-20b, clef, Qwen3.8-27B, gemma-4-31B, Laguna-XS-2_1, Qwen3.6-35B-A3B, Nemotron-3.5-Lightning, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash
+- `1e-06` — Ling-tiny, MLA-sparse-shaped, Ling-3.0-tiny
+- `1e-05` — GLM-text-tiny, GLM-5.3-Flash
+
+### `MLA.norm_one_plus`
+
+- `'—'` — AttnFusedShaped, MoERoutingShaped, KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, minimind-3, gpt2, Instella-3B, gpt-oss-20b, clef, Qwen3.8-27B, gemma-4-31B, Laguna-XS-2_1, Qwen3.6-35B-A3B, Nemotron-3.5-Lightning, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash
+- `False` — GLM-text-tiny, Ling-tiny, MLA-sparse-shaped, Ling-3.0-tiny, GLM-5.3-Flash
+
+### `MLA.out_dim`
+
+- `'—'` — AttnFusedShaped, MoERoutingShaped, KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, minimind-3, gpt2, Instella-3B, gpt-oss-20b, clef, Qwen3.8-27B, gemma-4-31B, Laguna-XS-2_1, Qwen3.6-35B-A3B, Nemotron-3.5-Lightning, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash
+- `128` — GLM-text-tiny, MLA-sparse-shaped
+- `64` — Ling-tiny ← **独苗**
+- `2048` — Ling-3.0-tiny ← **独苗**
+- `16384` — GLM-5.3-Flash ← **独苗**
+
+### `MLA.pairing`
+
+- `'—'` — AttnFusedShaped, MoERoutingShaped, KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, minimind-3, gpt2, Instella-3B, gpt-oss-20b, clef, Qwen3.8-27B, gemma-4-31B, Laguna-XS-2_1, Qwen3.6-35B-A3B, Nemotron-3.5-Lightning, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash
+- `'interleaved'` — Ling-tiny, MLA-sparse-shaped, Ling-3.0-tiny
+- `'half'` — GLM-text-tiny, GLM-5.3-Flash
+
+### `MLA.q`
+
+- `'—'` — AttnFusedShaped, MoERoutingShaped, KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, minimind-3, gpt2, Instella-3B, gpt-oss-20b, clef, Qwen3.8-27B, gemma-4-31B, Laguna-XS-2_1, Qwen3.6-35B-A3B, Nemotron-3.5-Lightning, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash
+- `4` — GLM-text-tiny, Ling-tiny, MLA-sparse-shaped
+- `16` — Ling-3.0-tiny ← **独苗**
+- `64` — GLM-5.3-Flash ← **独苗**
+
+### `MLA.q_lora`
+
+- `'—'` — AttnFusedShaped, MoERoutingShaped, KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, minimind-3, gpt2, Instella-3B, gpt-oss-20b, clef, Qwen3.8-27B, gemma-4-31B, Laguna-XS-2_1, Qwen3.6-35B-A3B, Nemotron-3.5-Lightning, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash
+- `48` — GLM-text-tiny ← **独苗**
+- `64` — Ling-tiny ← **独苗**
+- `96` — MLA-sparse-shaped ← **独苗**
+- `256` — Ling-3.0-tiny ← **独苗**
+- `1536` — GLM-5.3-Flash ← **独苗**
+
+### `MLA.qk_nope`
+
+- `'—'` — AttnFusedShaped, MoERoutingShaped, KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, minimind-3, gpt2, Instella-3B, gpt-oss-20b, clef, Qwen3.8-27B, gemma-4-31B, Laguna-XS-2_1, Qwen3.6-35B-A3B, Nemotron-3.5-Lightning, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash
+- `32` — GLM-text-tiny, Ling-tiny
+- `40` — MLA-sparse-shaped ← **独苗**
+- `128` — Ling-3.0-tiny ← **独苗**
+- `256` — GLM-5.3-Flash ← **独苗**
+
+### `MLA.qk_rope`
+
+- `'—'` — AttnFusedShaped, MoERoutingShaped, KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, minimind-3, gpt2, Instella-3B, gpt-oss-20b, clef, Qwen3.8-27B, gemma-4-31B, Laguna-XS-2_1, Qwen3.6-35B-A3B, Nemotron-3.5-Lightning, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash
+- `0` — GLM-text-tiny, GLM-5.3-Flash
+- `16` — Ling-tiny ← **独苗**
+- `8` — MLA-sparse-shaped ← **独苗**
+- `64` — Ling-3.0-tiny ← **独苗**
+
+### `MLA.rope_base`
+
+- `'—'` — AttnFusedShaped, MoERoutingShaped, KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, minimind-3, gpt2, Instella-3B, gpt-oss-20b, clef, Qwen3.8-27B, gemma-4-31B, Laguna-XS-2_1, Qwen3.6-35B-A3B, Nemotron-3.5-Lightning, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash
+- `10000` — GLM-text-tiny, MLA-sparse-shaped, GLM-5.3-Flash
+- `6000000` — Ling-tiny, Ling-3.0-tiny
+
+### `MLA.v_dim`
+
+- `'—'` — AttnFusedShaped, MoERoutingShaped, KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, minimind-3, gpt2, Instella-3B, gpt-oss-20b, clef, Qwen3.8-27B, gemma-4-31B, Laguna-XS-2_1, Qwen3.6-35B-A3B, Nemotron-3.5-Lightning, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash
+- `32` — GLM-text-tiny, MLA-sparse-shaped
+- `16` — Ling-tiny ← **独苗**
+- `128` — Ling-3.0-tiny ← **独苗**
+- `256` — GLM-5.3-Flash ← **独苗**
+
 ### `MoE.act`
 
-- `'—'` — minimind-3, gpt2, Instella-3B, clef, Qwen3.8-27B, gemma-4-31B
-- `'silu'` — Laguna-XS-2_1, Qwen3.6-35B-A3B, nerkyor/Step-3_7-Flash, Step-3.7-Flash
-- `'gptoss'` — gpt-oss-120b ← **独苗**
+- `'—'` — AttnFusedShaped, KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, MLA-sparse-shaped, minimind-3, gpt2, Instella-3B, clef, Qwen3.8-27B, gemma-4-31B
+- `'silu'` — MoERoutingShaped, GLM-text-tiny, Ling-tiny, Ling-3.0-tiny, Laguna-XS-2_1, Qwen3.6-35B-A3B, nerkyor/Step-3_7-Flash, Step-3.7-Flash, GLM-5.3-Flash
+- `'gptoss'` — gpt-oss-20b, gpt-oss-120b
+- `'relu2'` — Nemotron-3.5-Lightning ← **独苗**
 
 ### `MoE.alpha`
 
-- `'—'` — minimind-3, gpt2, Instella-3B, clef, Qwen3.8-27B, gemma-4-31B
-- `1.702` — Laguna-XS-2_1, Qwen3.6-35B-A3B, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash
+- `'—'` — AttnFusedShaped, KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, MLA-sparse-shaped, minimind-3, gpt2, Instella-3B, clef, Qwen3.8-27B, gemma-4-31B
+- `1.702` — MoERoutingShaped, GLM-text-tiny, Ling-tiny, Ling-3.0-tiny, gpt-oss-20b, Laguna-XS-2_1, Qwen3.6-35B-A3B, Nemotron-3.5-Lightning, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash, GLM-5.3-Flash
 
 ### `MoE.expert_bias`
 
-- `'—'` — minimind-3, gpt2, Instella-3B, clef, Qwen3.8-27B, gemma-4-31B
-- `False` — Laguna-XS-2_1, Qwen3.6-35B-A3B, nerkyor/Step-3_7-Flash, Step-3.7-Flash
-- `True` — gpt-oss-120b ← **独苗**
+- `'—'` — AttnFusedShaped, KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, MLA-sparse-shaped, minimind-3, gpt2, Instella-3B, clef, Qwen3.8-27B, gemma-4-31B
+- `False` — MoERoutingShaped, GLM-text-tiny, Ling-tiny, Ling-3.0-tiny, Laguna-XS-2_1, Qwen3.6-35B-A3B, Nemotron-3.5-Lightning, nerkyor/Step-3_7-Flash, Step-3.7-Flash, GLM-5.3-Flash
+- `True` — gpt-oss-20b, gpt-oss-120b
 
 ### `MoE.experts`
 
-- `'—'` — minimind-3, gpt2, Instella-3B, clef, Qwen3.8-27B, gemma-4-31B
+- `'—'` — AttnFusedShaped, KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, MLA-sparse-shaped, minimind-3, gpt2, Instella-3B, clef, Qwen3.8-27B, gemma-4-31B
+- `8` — MoERoutingShaped, GLM-text-tiny, Ling-tiny
+- `128` — Ling-3.0-tiny, Nemotron-3.5-Lightning, gpt-oss-120b
 - `256` — Laguna-XS-2_1, Qwen3.6-35B-A3B
-- `128` — gpt-oss-120b ← **独苗**
+- `288` — Step-3.7-Flash, GLM-5.3-Flash
+- `32` — gpt-oss-20b ← **独苗**
 - `255` — nerkyor/Step-3_7-Flash ← **独苗**
-- `288` — Step-3.7-Flash ← **独苗**
 
 ### `MoE.hidden`
 
-- `'—'` — minimind-3, gpt2, Instella-3B, clef, Qwen3.8-27B, gemma-4-31B
-- `512` — Laguna-XS-2_1, Qwen3.6-35B-A3B
+- `'—'` — AttnFusedShaped, KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, MLA-sparse-shaped, minimind-3, gpt2, Instella-3B, clef, Qwen3.8-27B, gemma-4-31B
+- `32` — MoERoutingShaped, GLM-text-tiny, Ling-tiny
+- `512` — Ling-3.0-tiny, Laguna-XS-2_1, Qwen3.6-35B-A3B
+- `2880` — gpt-oss-20b, gpt-oss-120b
 - `1280` — nerkyor/Step-3_7-Flash, Step-3.7-Flash
-- `2880` — gpt-oss-120b ← **独苗**
+- `1856` — Nemotron-3.5-Lightning ← **独苗**
+- `2048` — GLM-5.3-Flash ← **独苗**
 
 ### `MoE.limit`
 
-- `'—'` — minimind-3, gpt2, Instella-3B, clef, Qwen3.8-27B, gemma-4-31B
-- `None` — Laguna-XS-2_1, Qwen3.6-35B-A3B, nerkyor/Step-3_7-Flash, Step-3.7-Flash
-- `7.0` — gpt-oss-120b ← **独苗**
+- `'—'` — AttnFusedShaped, KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, MLA-sparse-shaped, minimind-3, gpt2, Instella-3B, clef, Qwen3.8-27B, gemma-4-31B
+- `None` — MoERoutingShaped, Ling-tiny, Ling-3.0-tiny, Laguna-XS-2_1, Qwen3.6-35B-A3B, Nemotron-3.5-Lightning, nerkyor/Step-3_7-Flash, Step-3.7-Flash
+- `10.0` — GLM-text-tiny, GLM-5.3-Flash
+- `7.0` — gpt-oss-20b, gpt-oss-120b
 
 ### `MoE.limit_shared`
 
-- `'—'` — minimind-3, gpt2, Instella-3B, clef, Qwen3.8-27B, gemma-4-31B
-- `None` — Laguna-XS-2_1, Qwen3.6-35B-A3B, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash
+- `'—'` — AttnFusedShaped, KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, MLA-sparse-shaped, minimind-3, gpt2, Instella-3B, clef, Qwen3.8-27B, gemma-4-31B
+- `None` — MoERoutingShaped, GLM-text-tiny, Ling-tiny, Ling-3.0-tiny, gpt-oss-20b, Laguna-XS-2_1, Qwen3.6-35B-A3B, Nemotron-3.5-Lightning, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash, GLM-5.3-Flash
 
 ### `MoE.n_group`
 
-- `'—'` — minimind-3, gpt2, Instella-3B, clef, Qwen3.8-27B, gemma-4-31B
-- `0` — Laguna-XS-2_1, Qwen3.6-35B-A3B, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash
+- `'—'` — AttnFusedShaped, KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, MLA-sparse-shaped, minimind-3, gpt2, Instella-3B, clef, Qwen3.8-27B, gemma-4-31B
+- `0` — MoERoutingShaped, gpt-oss-20b, Laguna-XS-2_1, Qwen3.6-35B-A3B, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash
+- `1` — GLM-text-tiny, GLM-5.3-Flash
+- `8` — Ling-3.0-tiny, Nemotron-3.5-Lightning
+- `4` — Ling-tiny ← **独苗**
 
 ### `MoE.routed_scale`
 
-- `'—'` — minimind-3, gpt2, Instella-3B, clef, Qwen3.8-27B, gemma-4-31B
-- `1.0` — Qwen3.6-35B-A3B, gpt-oss-120b
+- `'—'` — AttnFusedShaped, KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, MLA-sparse-shaped, minimind-3, gpt2, Instella-3B, clef, Qwen3.8-27B, gemma-4-31B
+- `2.5` — MoERoutingShaped, GLM-text-tiny, Ling-tiny, Ling-3.0-tiny, Laguna-XS-2_1, GLM-5.3-Flash
+- `1.0` — gpt-oss-20b, Qwen3.6-35B-A3B, Nemotron-3.5-Lightning, gpt-oss-120b
 - `3.0` — nerkyor/Step-3_7-Flash, Step-3.7-Flash
-- `2.5` — Laguna-XS-2_1 ← **独苗**
 
 ### `MoE.router_bias`
 
-- `'—'` — minimind-3, gpt2, Instella-3B, clef, Qwen3.8-27B, gemma-4-31B
-- `True` — gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash
-- `False` — Laguna-XS-2_1, Qwen3.6-35B-A3B
+- `'—'` — AttnFusedShaped, KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, MLA-sparse-shaped, minimind-3, gpt2, Instella-3B, clef, Qwen3.8-27B, gemma-4-31B
+- `False` — MoERoutingShaped, GLM-text-tiny, Ling-tiny, Ling-3.0-tiny, Laguna-XS-2_1, Qwen3.6-35B-A3B, Nemotron-3.5-Lightning, GLM-5.3-Flash
+- `True` — gpt-oss-20b, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash
 
 ### `MoE.routing`
 
-- `'—'` — minimind-3, gpt2, Instella-3B, clef, Qwen3.8-27B, gemma-4-31B
+- `'—'` — AttnFusedShaped, KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, MLA-sparse-shaped, minimind-3, gpt2, Instella-3B, clef, Qwen3.8-27B, gemma-4-31B
+- `'sigmoid_group_topk'` — GLM-text-tiny, Ling-tiny, Ling-3.0-tiny, Nemotron-3.5-Lightning, GLM-5.3-Flash
+- `'sigmoid_topk'` — MoERoutingShaped, nerkyor/Step-3_7-Flash, Step-3.7-Flash
+- `'topk_softmax'` — gpt-oss-20b, gpt-oss-120b
 - `'softmax_topk'` — Laguna-XS-2_1, Qwen3.6-35B-A3B
-- `'sigmoid_topk'` — nerkyor/Step-3_7-Flash, Step-3.7-Flash
-- `'topk_softmax'` — gpt-oss-120b ← **独苗**
 
 ### `MoE.score_bias`
 
-- `'—'` — minimind-3, gpt2, Instella-3B, clef, Qwen3.8-27B, gemma-4-31B
-- `False` — Qwen3.6-35B-A3B, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash
-- `True` — Laguna-XS-2_1 ← **独苗**
+- `'—'` — AttnFusedShaped, KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, MLA-sparse-shaped, minimind-3, gpt2, Instella-3B, clef, Qwen3.8-27B, gemma-4-31B
+- `False` — GLM-text-tiny, gpt-oss-20b, Qwen3.6-35B-A3B, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash, GLM-5.3-Flash
+- `True` — MoERoutingShaped, Ling-tiny, Ling-3.0-tiny, Laguna-XS-2_1, Nemotron-3.5-Lightning
 
 ### `MoE.shared`
 
-- `'—'` — minimind-3, gpt2, Instella-3B, clef, Qwen3.8-27B, gemma-4-31B
-- `1` — Laguna-XS-2_1, Qwen3.6-35B-A3B, nerkyor/Step-3_7-Flash, Step-3.7-Flash
-- `0` — gpt-oss-120b ← **独苗**
+- `'—'` — AttnFusedShaped, KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, MLA-sparse-shaped, minimind-3, gpt2, Instella-3B, clef, Qwen3.8-27B, gemma-4-31B
+- `1` — GLM-text-tiny, Ling-tiny, Ling-3.0-tiny, Laguna-XS-2_1, Qwen3.6-35B-A3B, Nemotron-3.5-Lightning, nerkyor/Step-3_7-Flash, Step-3.7-Flash, GLM-5.3-Flash
+- `0` — MoERoutingShaped, gpt-oss-20b, gpt-oss-120b
 
 ### `MoE.shared_gate`
 
-- `'—'` — minimind-3, gpt2, Instella-3B, clef, Qwen3.8-27B, gemma-4-31B
-- `False` — Laguna-XS-2_1, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash
+- `'—'` — AttnFusedShaped, KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, MLA-sparse-shaped, minimind-3, gpt2, Instella-3B, clef, Qwen3.8-27B, gemma-4-31B
+- `False` — MoERoutingShaped, GLM-text-tiny, Ling-tiny, Ling-3.0-tiny, gpt-oss-20b, Laguna-XS-2_1, Nemotron-3.5-Lightning, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash, GLM-5.3-Flash
 - `True` — Qwen3.6-35B-A3B ← **独苗**
 
 ### `MoE.shared_hidden`
 
-- `'—'` — minimind-3, gpt2, Instella-3B, clef, Qwen3.8-27B, gemma-4-31B
-- `512` — Laguna-XS-2_1, Qwen3.6-35B-A3B
+- `'—'` — AttnFusedShaped, KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, MLA-sparse-shaped, minimind-3, gpt2, Instella-3B, clef, Qwen3.8-27B, gemma-4-31B
+- `0` — MoERoutingShaped, gpt-oss-20b, gpt-oss-120b
+- `512` — Ling-3.0-tiny, Laguna-XS-2_1, Qwen3.6-35B-A3B
+- `32` — GLM-text-tiny, Ling-tiny
 - `1280` — nerkyor/Step-3_7-Flash, Step-3.7-Flash
-- `0` — gpt-oss-120b ← **独苗**
+- `3712` — Nemotron-3.5-Lightning ← **独苗**
+- `2048` — GLM-5.3-Flash ← **独苗**
 
 ### `MoE.top_k`
 
-- `'—'` — minimind-3, gpt2, Instella-3B, clef, Qwen3.8-27B, gemma-4-31B
-- `8` — Laguna-XS-2_1, Qwen3.6-35B-A3B, nerkyor/Step-3_7-Flash, Step-3.7-Flash
-- `4` — gpt-oss-120b ← **独苗**
+- `'—'` — AttnFusedShaped, KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, MLA-sparse-shaped, minimind-3, gpt2, Instella-3B, clef, Qwen3.8-27B, gemma-4-31B
+- `8` — Ling-3.0-tiny, Laguna-XS-2_1, Qwen3.6-35B-A3B, nerkyor/Step-3_7-Flash, Step-3.7-Flash, GLM-5.3-Flash
+- `2` — MoERoutingShaped, GLM-text-tiny, Ling-tiny
+- `4` — gpt-oss-20b, gpt-oss-120b
+- `6` — Nemotron-3.5-Lightning ← **独苗**
 
 ### `MoE.topk_group`
 
-- `'—'` — minimind-3, gpt2, Instella-3B, clef, Qwen3.8-27B, gemma-4-31B
-- `0` — Laguna-XS-2_1, Qwen3.6-35B-A3B, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash
+- `'—'` — AttnFusedShaped, KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, MLA-sparse-shaped, minimind-3, gpt2, Instella-3B, clef, Qwen3.8-27B, gemma-4-31B
+- `0` — MoERoutingShaped, gpt-oss-20b, Laguna-XS-2_1, Qwen3.6-35B-A3B, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash
+- `1` — GLM-text-tiny, Nemotron-3.5-Lightning, GLM-5.3-Flash
+- `2` — Ling-tiny ← **独苗**
+- `4` — Ling-3.0-tiny ← **独苗**
+
+### `SSM.act`
+
+- `'—'` — AttnFusedShaped, MoERoutingShaped, KDA-lowrank-shaped, KDA-GVA-shaped, KDA-shaped, GLM-text-tiny, Ling-tiny, MLA-sparse-shaped, minimind-3, gpt2, Instella-3B, Ling-3.0-tiny, gpt-oss-20b, clef, Qwen3.8-27B, gemma-4-31B, Laguna-XS-2_1, Qwen3.6-35B-A3B, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash, GLM-5.3-Flash
+- `'silu'` — SSM-shaped, Nemotron-3.5-Lightning
+
+### `SSM.chunk_size`
+
+- `'—'` — AttnFusedShaped, MoERoutingShaped, KDA-lowrank-shaped, KDA-GVA-shaped, KDA-shaped, GLM-text-tiny, Ling-tiny, MLA-sparse-shaped, minimind-3, gpt2, Instella-3B, Ling-3.0-tiny, gpt-oss-20b, clef, Qwen3.8-27B, gemma-4-31B, Laguna-XS-2_1, Qwen3.6-35B-A3B, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash, GLM-5.3-Flash
+- `8` — SSM-shaped ← **独苗**
+- `128` — Nemotron-3.5-Lightning ← **独苗**
+
+### `SSM.conv_bias`
+
+- `'—'` — AttnFusedShaped, MoERoutingShaped, KDA-lowrank-shaped, KDA-GVA-shaped, KDA-shaped, GLM-text-tiny, Ling-tiny, MLA-sparse-shaped, minimind-3, gpt2, Instella-3B, Ling-3.0-tiny, gpt-oss-20b, clef, Qwen3.8-27B, gemma-4-31B, Laguna-XS-2_1, Qwen3.6-35B-A3B, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash, GLM-5.3-Flash
+- `True` — SSM-shaped, Nemotron-3.5-Lightning
+
+### `SSM.conv_kernel`
+
+- `'—'` — AttnFusedShaped, MoERoutingShaped, KDA-lowrank-shaped, KDA-GVA-shaped, KDA-shaped, GLM-text-tiny, Ling-tiny, MLA-sparse-shaped, minimind-3, gpt2, Instella-3B, Ling-3.0-tiny, gpt-oss-20b, clef, Qwen3.8-27B, gemma-4-31B, Laguna-XS-2_1, Qwen3.6-35B-A3B, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash, GLM-5.3-Flash
+- `4` — SSM-shaped, Nemotron-3.5-Lightning
+
+### `SSM.expand`
+
+- `'—'` — AttnFusedShaped, MoERoutingShaped, KDA-lowrank-shaped, KDA-GVA-shaped, KDA-shaped, GLM-text-tiny, Ling-tiny, MLA-sparse-shaped, minimind-3, gpt2, Instella-3B, Ling-3.0-tiny, gpt-oss-20b, clef, Qwen3.8-27B, gemma-4-31B, Laguna-XS-2_1, Qwen3.6-35B-A3B, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash, GLM-5.3-Flash
+- `2` — SSM-shaped, Nemotron-3.5-Lightning
+
+### `SSM.head_dim`
+
+- `'—'` — AttnFusedShaped, MoERoutingShaped, KDA-lowrank-shaped, KDA-GVA-shaped, KDA-shaped, GLM-text-tiny, Ling-tiny, MLA-sparse-shaped, minimind-3, gpt2, Instella-3B, Ling-3.0-tiny, gpt-oss-20b, clef, Qwen3.8-27B, gemma-4-31B, Laguna-XS-2_1, Qwen3.6-35B-A3B, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash, GLM-5.3-Flash
+- `16` — SSM-shaped ← **独苗**
+- `64` — Nemotron-3.5-Lightning ← **独苗**
+
+### `SSM.heads`
+
+- `'—'` — AttnFusedShaped, MoERoutingShaped, KDA-lowrank-shaped, KDA-GVA-shaped, KDA-shaped, GLM-text-tiny, Ling-tiny, MLA-sparse-shaped, minimind-3, gpt2, Instella-3B, Ling-3.0-tiny, gpt-oss-20b, clef, Qwen3.8-27B, gemma-4-31B, Laguna-XS-2_1, Qwen3.6-35B-A3B, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash, GLM-5.3-Flash
+- `4` — SSM-shaped ← **独苗**
+- `64` — Nemotron-3.5-Lightning ← **独苗**
+
+### `SSM.n_groups`
+
+- `'—'` — AttnFusedShaped, MoERoutingShaped, KDA-lowrank-shaped, KDA-GVA-shaped, KDA-shaped, GLM-text-tiny, Ling-tiny, MLA-sparse-shaped, minimind-3, gpt2, Instella-3B, Ling-3.0-tiny, gpt-oss-20b, clef, Qwen3.8-27B, gemma-4-31B, Laguna-XS-2_1, Qwen3.6-35B-A3B, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash, GLM-5.3-Flash
+- `2` — SSM-shaped ← **独苗**
+- `8` — Nemotron-3.5-Lightning ← **独苗**
+
+### `SSM.norm_eps`
+
+- `'—'` — AttnFusedShaped, MoERoutingShaped, KDA-lowrank-shaped, KDA-GVA-shaped, KDA-shaped, GLM-text-tiny, Ling-tiny, MLA-sparse-shaped, minimind-3, gpt2, Instella-3B, Ling-3.0-tiny, gpt-oss-20b, clef, Qwen3.8-27B, gemma-4-31B, Laguna-XS-2_1, Qwen3.6-35B-A3B, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash, GLM-5.3-Flash
+- `1e-05` — SSM-shaped, Nemotron-3.5-Lightning
+
+### `SSM.proj_bias`
+
+- `'—'` — AttnFusedShaped, MoERoutingShaped, KDA-lowrank-shaped, KDA-GVA-shaped, KDA-shaped, GLM-text-tiny, Ling-tiny, MLA-sparse-shaped, minimind-3, gpt2, Instella-3B, Ling-3.0-tiny, gpt-oss-20b, clef, Qwen3.8-27B, gemma-4-31B, Laguna-XS-2_1, Qwen3.6-35B-A3B, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash, GLM-5.3-Flash
+- `False` — SSM-shaped, Nemotron-3.5-Lightning
+
+### `SSM.ssm_state`
+
+- `'—'` — AttnFusedShaped, MoERoutingShaped, KDA-lowrank-shaped, KDA-GVA-shaped, KDA-shaped, GLM-text-tiny, Ling-tiny, MLA-sparse-shaped, minimind-3, gpt2, Instella-3B, Ling-3.0-tiny, gpt-oss-20b, clef, Qwen3.8-27B, gemma-4-31B, Laguna-XS-2_1, Qwen3.6-35B-A3B, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash, GLM-5.3-Flash
+- `32` — SSM-shaped ← **独苗**
+- `128` — Nemotron-3.5-Lightning ← **独苗**
 
 ### `ctx`
 
-- `262144` — clef, Qwen3.8-27B, gemma-4-31B, Laguna-XS-2_1, Qwen3.6-35B-A3B, nerkyor/Step-3_7-Flash, Step-3.7-Flash
+- `262144` — Ling-tiny, clef, Qwen3.8-27B, gemma-4-31B, Laguna-XS-2_1, Qwen3.6-35B-A3B, Nemotron-3.5-Lightning, nerkyor/Step-3_7-Flash, Step-3.7-Flash
+- `1024` — KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, MLA-sparse-shaped, gpt2
+- `131072` — Ling-3.0-tiny, gpt-oss-20b, gpt-oss-120b
+- `512` — AttnFusedShaped, MoERoutingShaped
+- `1048576` — GLM-text-tiny, GLM-5.3-Flash
 - `32768` — minimind-3 ← **独苗**
-- `1024` — gpt2 ← **独苗**
 - `4096` — Instella-3B ← **独苗**
-- `131072` — gpt-oss-120b ← **独苗**
 
 ### `d_model`
 
+- `128` — AttnFusedShaped, MoERoutingShaped, KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped
+- `256` — GLM-text-tiny, Ling-tiny, MLA-sparse-shaped
+- `4096` — nerkyor/Step-3_7-Flash, Step-3.7-Flash, GLM-5.3-Flash
 - `768` — minimind-3, gpt2
+- `2880` — gpt-oss-20b, gpt-oss-120b
 - `5120` — clef, Qwen3.8-27B
 - `2048` — Laguna-XS-2_1, Qwen3.6-35B-A3B
-- `4096` — nerkyor/Step-3_7-Flash, Step-3.7-Flash
 - `2560` — Instella-3B ← **独苗**
+- `1536` — Ling-3.0-tiny ← **独苗**
 - `5376` — gemma-4-31B ← **独苗**
-- `2880` — gpt-oss-120b ← **独苗**
+- `2688` — Nemotron-3.5-Lightning ← **独苗**
 
 ### `n_layer`
 
+- `4` — KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, GLM-text-tiny, Ling-tiny, MLA-sparse-shaped
+- `2` — AttnFusedShaped, MoERoutingShaped
 - `36` — Instella-3B, gpt-oss-120b
-- `45` — nerkyor/Step-3_7-Flash, Step-3.7-Flash
+- `24` — Ling-3.0-tiny, gpt-oss-20b
 - `8` — minimind-3 ← **独苗**
 - `12` — gpt2 ← **独苗**
-- `64` — clef ← **独苗**
-- `65` — Qwen3.8-27B ← **独苗**
-- `60` — gemma-4-31B ← **独苗**
+- `91` — clef ← **独苗**
+- `92` — Qwen3.8-27B ← **独苗**
+- `87` — gemma-4-31B ← **独苗**
 - `40` — Laguna-XS-2_1 ← **独苗**
-- `41` — Qwen3.6-35B-A3B ← **独苗**
+- `68` — Qwen3.6-35B-A3B ← **独苗**
+- `54` — Nemotron-3.5-Lightning ← **独苗**
+- `45` — nerkyor/Step-3_7-Flash ← **独苗**
+- `95` — Step-3.7-Flash ← **独苗**
+- `70` — GLM-5.3-Flash ← **独苗**
 
 ### `norm_eps`
 
-- `1e-06` — minimind-3, clef, Qwen3.8-27B, gemma-4-31B, Laguna-XS-2_1, Qwen3.6-35B-A3B
-- `1e-05` — gpt2, Instella-3B, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash
+- `1e-05` — AttnFusedShaped, MoERoutingShaped, KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, GLM-text-tiny, gpt2, Instella-3B, gpt-oss-20b, Nemotron-3.5-Lightning, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash, GLM-5.3-Flash
+- `1e-06` — Ling-tiny, MLA-sparse-shaped, minimind-3, Ling-3.0-tiny, clef, Qwen3.8-27B, gemma-4-31B, Laguna-XS-2_1, Qwen3.6-35B-A3B
 
 ### `norm_kind`
 
-- `'rms'` — minimind-3, Instella-3B, clef, Qwen3.8-27B, gemma-4-31B, Laguna-XS-2_1, Qwen3.6-35B-A3B, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash
+- `'rms'` — AttnFusedShaped, MoERoutingShaped, KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, GLM-text-tiny, Ling-tiny, MLA-sparse-shaped, minimind-3, Instella-3B, Ling-3.0-tiny, gpt-oss-20b, clef, Qwen3.8-27B, gemma-4-31B, Laguna-XS-2_1, Qwen3.6-35B-A3B, Nemotron-3.5-Lightning, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash, GLM-5.3-Flash
 - `'layer'` — gpt2 ← **独苗**
 
 ### `pos_kind`
 
-- `'rope'` — minimind-3, Instella-3B, clef, Qwen3.8-27B, gemma-4-31B, Laguna-XS-2_1, Qwen3.6-35B-A3B, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash
+- `'rope'` — AttnFusedShaped, MoERoutingShaped, KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, GLM-text-tiny, Ling-tiny, MLA-sparse-shaped, minimind-3, Instella-3B, Ling-3.0-tiny, gpt-oss-20b, clef, Qwen3.8-27B, gemma-4-31B, Laguna-XS-2_1, Qwen3.6-35B-A3B, Nemotron-3.5-Lightning, gpt-oss-120b, nerkyor/Step-3_7-Flash, Step-3.7-Flash, GLM-5.3-Flash
 - `'learned'` — gpt2 ← **独苗**
 
 ### `vocab`
 
+- `512` — KDA-lowrank-shaped, KDA-GVA-shaped, SSM-shaped, KDA-shaped, GLM-text-tiny, Ling-tiny, MLA-sparse-shaped
 - `248320` — clef, Qwen3.8-27B, Qwen3.6-35B-A3B
+- `256` — AttnFusedShaped, MoERoutingShaped
+- `201088` — gpt-oss-20b, gpt-oss-120b
 - `128896` — nerkyor/Step-3_7-Flash, Step-3.7-Flash
 - `6400` — minimind-3 ← **独苗**
 - `50257` — gpt2 ← **独苗**
 - `50304` — Instella-3B ← **独苗**
+- `157184` — Ling-3.0-tiny ← **独苗**
 - `262144` — gemma-4-31B ← **独苗**
 - `100352` — Laguna-XS-2_1 ← **独苗**
-- `201088` — gpt-oss-120b ← **独苗**
+- `131072` — Nemotron-3.5-Lightning ← **独苗**
+- `154880` — GLM-5.3-Flash ← **独苗**
 
 ### `参数`
 
+- `361856` — AttnFusedShaped ← **独苗**
+- `363152` — MoERoutingShaped ← **独苗**
+- `686800` — KDA-lowrank-shaped ← **独苗**
+- `693712` — KDA-GVA-shaped ← **独苗**
+- `695472` — SSM-shaped ← **独苗**
+- `727504` — KDA-shaped ← **独苗**
+- `1067868` — GLM-text-tiny ← **独苗**
+- `1397620` — Ling-tiny ← **独苗**
+- `2535040` — MLA-sparse-shaped ← **独苗**
 - `68827392` — minimind-3 ← **独苗**
 - `163037184` — gpt2 ← **独苗**
 - `3112497280` — Instella-3B ← **独苗**
-- `26895998464` — clef ← **独苗**
-- `27268253696` — Qwen3.8-27B ← **独苗**
-- `32105986304` — gemma-4-31B ← **独苗**
+- `7893392800` — Ling-3.0-tiny ← **独苗**
+- `20914757184` — gpt-oss-20b ← **独苗**
+- `25336731376` — clef ← **独苗**
+- `25708986608` — Qwen3.8-27B ← **独苗**
+- `30436397744` — gemma-4-31B ← **独苗**
 - `33442617088` — Laguna-XS-2_1 ← **独苗**
-- `35496856704` — Qwen3.6-35B-A3B ← **独苗**
+- `35463270768` — Qwen3.6-35B-A3B ← **独苗**
+- `48464262848` — Nemotron-3.5-Lightning ← **独苗**
 - `116829156672` — gpt-oss-120b ← **独苗**
 - `180845807680` — nerkyor/Step-3_7-Flash ← **独苗**
-- `196956130368` — Step-3.7-Flash ← **独苗**
+- `198777931840` — Step-3.7-Flash ← **独苗**
+- `320135571840` — GLM-5.3-Flash ← **独苗**
 
 ### `机制`
 
-- `'Attention×45+FFN×3+MoE×42'` — nerkyor/Step-3_7-Flash, Step-3.7-Flash
+- `'FFN×4+KDA×4'` — KDA-lowrank-shaped, KDA-GVA-shaped, KDA-shaped
+- `'Attention×2+FFN×2'` — AttnFusedShaped ← **独苗**
+- `'Attention×2+MoE×2'` — MoERoutingShaped ← **独苗**
+- `'FFN×4+SSM×4'` — SSM-shaped ← **独苗**
+- `'FFN×3+KDA×3+MLA×1+MoE×1'` — GLM-text-tiny ← **独苗**
+- `'FFN×1+KDA×3+MLA×1+MoE×3'` — Ling-tiny ← **独苗**
+- `'FFN×4+MLA×4'` — MLA-sparse-shaped ← **独苗**
 - `'Attention×8+FFN×8'` — minimind-3 ← **独苗**
 - `'Attention×12+FFN×12'` — gpt2 ← **独苗**
 - `'Attention×36+FFN×36'` — Instella-3B ← **独苗**
-- `'Attention×16+FFN×64+Linear×48'` — clef ← **独苗**
-- `'Attention×17+FFN×65+Linear×48'` — Qwen3.8-27B ← **独苗**
-- `'Attention×60+FFN×60'` — gemma-4-31B ← **独苗**
+- `'FFN×1+KDA×18+MLA×6+MoE×23'` — Ling-3.0-tiny ← **独苗**
+- `'Attention×24+MoE×24'` — gpt-oss-20b ← **独苗**
+- `'Attention×43+FFN×91+Linear×48'` — clef ← **独苗**
+- `'Attention×44+FFN×92+Linear×48'` — Qwen3.8-27B ← **独苗**
+- `'Attention×87+FFN×87'` — gemma-4-31B ← **独苗**
 - `'Attention×40+FFN×1+MoE×39'` — Laguna-XS-2_1 ← **独苗**
-- `'Attention×11+Linear×30+MoE×41'` — Qwen3.6-35B-A3B ← **独苗**
+- `'Attention×38+FFN×27+Linear×30+MoE×41'` — Qwen3.6-35B-A3B ← **独苗**
+- `'Attention×7+MoE×24+SSM×23'` — Nemotron-3.5-Lightning ← **独苗**
 - `'Attention×36+MoE×36'` — gpt-oss-120b ← **独苗**
+- `'Attention×45+FFN×3+MoE×42'` — nerkyor/Step-3_7-Flash ← **独苗**
+- `'Attention×95+FFN×53+MoE×42'` — Step-3.7-Flash ← **独苗**
+- `'Attention×24+FFN×27+KDA×34+MLA×12+MoE×43'` — GLM-5.3-Flash ← **独苗**
 
