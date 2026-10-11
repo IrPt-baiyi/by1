@@ -53,7 +53,7 @@ from transformers.models.glm_moe_dsa.configuration_glm_moe_dsa import (
 # 那条路也走到** —— 只测 0 的话，RoPE 写错了也看不出来。
 #
 # **`topk` 必须远小于 seq**，否则"挑中了哪些"退化成"全都要"，
-# 判据就瞎了（踩过一次：topk=8 / seq=12，改坏 k_norm 居然照样一致）。
+# 判据就失效了（已出现过：topk=8 / seq=12，改坏 k_norm 仍一致）。
 CASES = [
     ("GLM-5.3 形状·全取", 1536, 1536, 32, 128, 0, 2048, 12),
     ("GLM-5.3 形状·topk=3", 1536, 1536, 32, 128, 0, 3, 32),

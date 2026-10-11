@@ -172,7 +172,7 @@ def gpt2_weight_map(ir, real, d):
                 wq = a_['q'] * a_['head_dim']
                 # **Conv1D 是 [in, out] —— 先转置再切。**
                 # 第一版在轴 0 上切，于是 k/v 拿到 0 列。
-                # 这个坑 gpt2.by1 那一轮踩过一次，这里又踩了一次。
+                # 同一类问题此前出现过两次（gpt2.by1 与此处）。
                 q_, k_, v_ = (cw[:, :wq], cw[:, wq:2 * wq], cw[:, 2 * wq:])
                 bq, bk, bv = cb[:wq], cb[wq:2 * wq], cb[2 * wq:]
                 out[ip + 'wq.weight'] = T(q_)
@@ -358,7 +358,7 @@ def main():
         # 只试一个的话，注意力那 12 个权重**整个没进去** ——
         # 而输出形状完全正常，相对差只有 1e-02，
         # 看着像"算法有小误差"，其实是权重是零。
-        # 这个坑在这一轮里出现过三次了（by1exec 的 --compare、
+        # 同一类问题已出现三次（by1exec 的 --compare、
         # by1opdiff 的配对、这里）。
         arr = wmap.get(k) if k in wmap else wmap.get(k + '.weight')
         if arr is not None and arr.size == int(np.prod(s)):

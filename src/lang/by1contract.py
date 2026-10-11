@@ -90,7 +90,7 @@ def _int(v, default=0):
     """属性 -> 整数。**取不到就 default，不抛异常。**
 
     `.by1` 里"关掉"的写法不止一种：`shared = none`、`= off`、`= 0`。
-    这里原来是 `int(float(a.get("shared", 0) or 0))` —— 碰上 `none`
+    不许写 `int(float(a.get("shared", 0) or 0))` —— 碰上 `none`
     直接 `ValueError: could not convert string to float: 'none'`，
     而**同一个模型 `by1check` 报 0 错、`by1ir --emit` 也编译得出来**
     （codegen 那边走的是 `_num(...) or 0`，它认这个写法）。

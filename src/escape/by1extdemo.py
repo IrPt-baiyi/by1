@@ -137,7 +137,7 @@ def main():
         gcc = sys.argv[sys.argv.index('--gcc') + 1]
     if not gcc:
         # **找 gcc 的规则只有一个地方**（`by1paths.find_gcc`）。
-        # 这里原来是第二份手写实现；第三份在 by1e2e 里、而它抄漏了。
+        # 只能有一份实现；第二份在 by1e2e 里、且它抄漏过。
         # 同一件事三份实现，坏的那份没人发现 —— 所以合成一处。
         gcc = by1paths.find_gcc()
 

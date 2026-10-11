@@ -85,7 +85,7 @@ static void rmsnorm(float *o, const float *x, const float *w, int n, int d,
  *
  * 这里原来只有 rmsnorm —— 而 C 后端对每个 Norm 都发 rmsnorm()，
  * 也就是**把 LayerNorm 当 RMSNorm 算**（少了减均值和 bias）。
- * 那会生成一个看起来对但算错的模型，所以上一轮先让它**拒绝**。
+ * 那会生成一个看起来对但算错的模型，所以这里必须**拒绝**。
  * 现在补上。
  *
  * 三个东西顶着相近的名字，算的不是一回事：
@@ -854,7 +854,7 @@ static void apply_qg(float *o, const float *gt, int n, int nq) {
 
 /* qk_norm：按头做 RMSNorm，在 RoPE 之前。
  *
- * **eps 由调用方传进来。** 这里原来是写死的 `1e-5f` —— 而
+ * **eps 由调用方传进来**，不许写死 —— 否则与
  * `RMS_EPS` 这个宏上面已经按 `ir["norm_eps"]` 生成好了，
  * 也就是说**同一个文件里有两套 eps**：一处读 IR、一处写死。
  * clef-tiny 的 qk_norm 是 per_head、norm_eps 是 1e-6，
@@ -1154,7 +1154,7 @@ static void dsa_index(unsigned char *keep, const float *x, const float *qres,
         int np_ = (n + P - 1) / P;
         float *pk = (float *)malloc(sizeof(float) * (size_t)np_ * hd);
         /* ⚠ **`_ape` 只影响"挑中哪些池"，而输出只看挑选结果。**
-           实测踩过一跤：把 `+ ix_kape[...]` **整个去掉**，`logits.bin`
+           实测：把 `+ ix_kape[...]` **整个去掉**，`logits.bin`
            **逐字节不变**（差 0.0）；而乘 1000 就变（差 1.7e-01）。
            量了挑选掩码才看清：丢掉 `_ape` -> **0 格不同**、×1000 -> **32 格不同**。
            所以**判 `_ape` 不能看输出，要看挑选集合**（`by1sparse` 就是这么判的）。
@@ -1367,7 +1367,7 @@ def emit_c(ir, info, params):
 def _emit_c_body(ir, params):
     """把 IR 展开成 C。**不支持就报错，绝不悄悄生成错的。**"""
     d = ir["d_model"]
-    # **LayerNorm 和学习式位置表现在实现了**，所以上一轮那两条
+    # **LayerNorm 和学习式位置表已实现**，所以下面那两条
     # 「要么实现，要么拒绝」的拒绝没有存在的理由了。
     # 但那段注释留着 —— 它记的是"不实现就该拒绝"这个规矩，
     # 而不是"永远不实现"。
@@ -1378,7 +1378,7 @@ def _emit_c_body(ir, params):
                     if o["kind"] == "MLA"), None)
     if att is None and mla_att is None:
         # **没有注意力的模型也是模型。**
-        # 这里原来是硬拒绝 —— 于是"纯 Linear / 纯外部算子"的模型
+        # 若硬拒绝 —— 则"纯 Linear / 纯外部算子"的模型
         # 根本建不了。而 Mamba 那一类**正是没有注意力的**：
         # 覆盖率缺口里最该能跑的那些，被这一行挡在门外。
         #
@@ -1446,7 +1446,7 @@ def _emit_c_body(ir, params):
                 body.append((i, j, "Attention", a))
             elif k == "FFN":
                 # **无门控的 FFN 也是 FFN。**
-                # 这里原来是 `if not gate: raise` —— 和 by1codegen 那边当初
+                # 若写成 `if not gate: raise` —— 和 by1codegen 那边
                 # 一模一样的毛病：一条分支只为"有门"那一种情况写过。
                 # **而 GPT-2 正是没有门的那种**，于是 C 后端建不了它。
                 gated = a.get("gate", True)

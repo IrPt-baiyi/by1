@@ -129,7 +129,7 @@ def probe(bad):
     try:
         for src, old, new, needle, why in PROBE:
             # 裸名走 `by1paths.find_model` —— 和 bc.check 同一个解析，
-            # 否则 cwd 一换就 FileNotFoundError（这一处就踩过一次）。
+            # 否则 cwd 一换就 FileNotFoundError。
             text = by1io.read_text(by1paths.find_model(src), encoding='utf-8')
             if old not in text:
                 print('  !! %-22s **反例的原句找不到** —— %r' % (src, old.strip()))

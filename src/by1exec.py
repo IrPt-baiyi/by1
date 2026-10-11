@@ -235,7 +235,7 @@ def op_attention(P, a, ins, d):
     _rope_on = bool(a.get("rope", True))
     npr = int(hd * part)
     # **开关要真的管住两个分支。**
-    # 第一版我写的是 `if not _rope_on: part = 0.0` —— 于是 `npr = 0`
+    # 若写成 `if not _rope_on: part = 0.0`，则 `npr = 0`
     # 让 `0 < npr < hd` 变假，**直接掉进 else 分支照转不误**。
     # 一个"看起来加了开关"的改动比没加更坏：它让人以为查过了。
     if _rope_on and 0 < npr < hd:
@@ -1140,7 +1140,7 @@ class Exec:
         # **最终归一化也要按 norm_kind 分派** —— 以前无条件走 rms，
         # 于是 LayerNorm 模型的最后一步也是错的。
         # **eps 要从 IR 里读，不能用函数的默认值。**
-        # 这里原来是 `rms_norm(x, w, one_plus=…)` —— **没传 eps**，
+        # `rms_norm` 的 eps **必须显式传入**，否则吃默认值 —— 
         # 于是用了默认的 1e-5。而 clef-tiny / mla-shaped 的
         # `norm_eps` 是 **1e-6**，差一个量级，最后差出 2.7e-04。
         #
@@ -1318,7 +1318,7 @@ def main(argv=None):
         print(f"    最大绝对差 {dd:.3e}   相对 {dd/amp:.3e}   "
               + ("[PASS] 两个后端一致" if _ok2 else "[FAIL] 不一致"))
         # **打印了 FAIL 就得返回非零。**
-        # 这里原来是 `return 0` —— 于是 by1all 看退出码，把
+        # 若这里 `return 0`，by1all 看退出码会把
         # `[FAIL] 不一致` 标成 **ok**。护栏瞎了多久没人知道：
         # mla-shaped 差 3.1e-04、clef-tiny 差 4.2e-04，
         # 一直在跑、一直在打印 FAIL、一直被当成通过。

@@ -164,7 +164,7 @@ def main():
     # **必须显式给因果 mask。**
     # HF 的 eager 实现在 attention_mask=None 时**不做因果** ——
     # 它不再自带那个 [1,1,ctx,ctx] 的 buffer（transformers 5.x 删了）。
-    # 这次是第二次撞上：MLA 那次也是同一个坑，当时差了 1.134。
+    # 同一处第二次出错：MLA 那次也是这个原因，差值 1.134。
     # 不传 mask 的话，比的是"我的因果注意力"和"HF 的全注意力"。
     cm = torch.tril(torch.ones(SEQ, SEQ)).view(1, 1, SEQ, SEQ)
     cm = (1.0 - cm) * torch.finfo(torch.float32).min

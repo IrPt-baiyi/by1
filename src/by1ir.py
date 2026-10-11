@@ -36,7 +36,7 @@ import by1paths
 import by1skip
 
 # **从 by1ver 来，不在这里写死。**
-# 这里原来是 `VERSION = "1.0"`，而 by1codegen / by1boot / by1extdemo
+# 版本号**只在此处定义** —— by1codegen / by1boot / by1extdemo
 # 各自**又写了一遍** —— 三份写着同一个字符串，谁也不认识谁。
 # 改一份忘一份不会崩，只会造出"声称不同版本"的 IR。
 try:
@@ -73,7 +73,7 @@ TOP = [
     ("ctx", "int", True, "上下文长度（位置能达到的最大值）"),
     ("d_model", "int", True, "残差流宽度"),
     # **闭集要写在类型里，不能只写 `enum`。**
-    # 这里原来是裸的 `"enum"`，而 `_ty` 只认 `enum:...`（带冒号）——
+    # 类型必须写成 `enum:...`（带冒号），`_ty` 只认这一种 —— 裸 `"enum"`
     # 于是这两个字段**从来没有被校验过**：`pos_kind = BANANA` 一路通到
     # 后端，而后端判的是 `== "learned"`，非法值静默落回 rope。
     # 同一个形状的漏洞还有 STATE.kind / STATE.reuse / STATE.dtype。
@@ -85,7 +85,7 @@ TOP = [
      "归一化的种类。`rms`=只除均方根；`layer`=减均值+除标准差+有 bias。"
      "**名字像，算的不是一回事。**"),
     ("norm_eps", "float", True, "归一化的 eps。**必须来自这里，不许各后端写死**"
-                                "（这个 bug 犯过三次）"),
+                                "（曾因此出错三次）"),
     ("norm_one_plus", "bool", True, "归一化权重是乘 `w` 还是乘 `(1+w)`"),
     ("globals", "list[Op]", True, "不属于任何层的算子（embed / final_norm / head）"),
     ("layers", "list[Layer]", True, "逐层"),

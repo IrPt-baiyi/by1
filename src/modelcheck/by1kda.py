@@ -122,7 +122,7 @@ REDS = [
     # **一条指向反方向的判据，比没有判据更坏** ✓：它会挡住修复 ✓。
     ('低秩输出门中间多一个 silu', _LOWRANK, dict(tkw=dict(out_act='silu'))),
     ('低秩衰减门中间多一个 silu', _LOWRANK, dict(fkw=dict(gate_act='silu'))),
-    # **这一条是这一轮真正的收获** ✓ —— 见 `gate_act` 的 docstring：
+    # 见 `gate_act` 的 docstring：
     # by1 和参照物原来**都**把输出门的激活写成 silu ✗，
     # 于是判卷人一直绿 ✓。抓出它的是**读源码** ✓，不是跑测试 ✓。
     ('输出门用 silu 而不是 sigmoid', _PLAIN, dict(tkw=dict(act='silu'))),
@@ -140,7 +140,7 @@ def _torch():
 def _site_file(*parts):
     """在 site-packages 里找 fla 的某个文件。找不到返回 None。
 
-    **这里原来是个 `except Exception: pass`** —— 而被 `by1lint` 第一类
+    **不许 `except Exception: pass`** —— 会被 `by1lint` 第一类
     抓住了（"except 之后只有 pass"）。它说得对：静默吞掉之后，
     **环境坏掉和没装 fla 长得一模一样** —— 都变成"跳过"，
     而跳过是"没验"，不是"验过"。所以让它出声。

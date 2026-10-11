@@ -113,7 +113,7 @@ TIER_SECS = {1: 10.7, 2: 16.7, 3: 18.6, 4: 50.0, 5: 68.3, 6: 69.6}
 
 
 def read_state():
-    """还差几步走完这一轮。0 = 下一次是 LADDER[0]。"""
+    """还差几步走完当前一轮。0 = 下一次是 LADDER[0]。"""
     try:
         return max(0, min(len(LADDER) - 1,
                           int(by1io.read_text(STATE).strip())))

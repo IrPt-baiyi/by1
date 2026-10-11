@@ -17,9 +17,9 @@
 
     同一个意思不要两处实现。
 
-而且它顺手解决了一个真问题：57 处里每一处都可能忘了
+它同时解决了一个实际问题：57 处里每一处都可能忘了
 `encoding='utf-8'` —— 在 Windows 上就是 gbk 乱码。
-这一轮已经吃过：`by1debt` 里 `subprocess` 没给 encoding，
+已出现过：`by1debt` 里 `subprocess` 没给 encoding，
 中文一进来就 `UnicodeDecodeError`。
 
 ## 意图，不是函数

@@ -219,7 +219,7 @@ def o02_rope_zero():
 def o03_softmax_sum():
     """softmax 每行和 = 1。真相：**定义**。
 
-    顺手验第二条：最大值处概率最大，且**平移不变**（softmax(x+c)=softmax(x)）。
+    同时验第二条：最大值处概率最大，且**平移不变**（softmax(x+c)=softmax(x)）。
     后者也是定义级的 —— 而且它能抓到"忘了减最大值"之外的实现偏差。
     """
     import numpy as _np

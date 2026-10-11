@@ -77,7 +77,7 @@ SSH_COMMON = ['-o', 'BatchMode=yes',
 #
 # 真正的约束在 transformers：判卷人要 GptOssConfig / Qwen3NextConfig，
 # 而**5.x 改过因果掩码的行为** —— HF 在 `attention_mask=None` 时
-# 不再自动做因果，这个坑在 MLA 和 GPT-2 上各踩过一次。
+# 不再自动做因果；该问题在 MLA 和 GPT-2 上各出现过一次。
 #
 # 所以：**判卷人换了就不是同一个判卷人。**
 # 版本不一致的话，改的可能是参考，不是 by1。

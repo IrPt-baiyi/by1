@@ -226,7 +226,7 @@ def rel(path):
 
 # ── 找 gcc ──────────────────────────────────────────────────────────
 #: 候选项。**裸名字要用 `shutil.which` 搜 PATH** —— `glob.glob('gcc')`
-#: 只找当前目录，by1all 那边已经为这个踩过一次坑（"看起来改了，其实没生效"）。
+#: 只找当前目录 —— by1all 已因此出错过一次（"看起来改了，其实没生效"）。
 GCC_CANDIDATES = (
     'gcc', 'cc',                                   # PATH 上先找，两个平台都对
     '/usr/bin/gcc', '/usr/local/bin/gcc',          # Linux

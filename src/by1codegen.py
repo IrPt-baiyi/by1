@@ -534,7 +534,7 @@ def compile_ir(info: Dict[str, Any]) -> Dict[str, Any]:
                             in ("true", "on", "yes", "1") else
                             (str(attrs.get("qk_norm", "")).strip().lower()
                              if attrs.get("qk_norm") is not None else "off")),
-                # 归一化的 eps 跟着模型的 rms_norm_eps 走（这个 bug 犯过三次）
+                # 归一化的 eps 跟着模型的 rms_norm_eps 走（曾因此出错三次）
                 "norm_eps": float(_num(attrs.get("norm_eps"),
                                        _num(hp.get("rms_eps"), _DEFAULT_EPS))),
                 "bias": _flag(attrs.get("bias", attrs.get("attn_bias"))),
@@ -999,7 +999,7 @@ def compile_ir(info: Dict[str, Any]) -> Dict[str, Any]:
                           "dtype": "fp32", "reuse": "none"})
         elif mixer["kind"] == "Raw":
             # **逃生舱的状态由实现方声明，codegen 推不出来。**
-            # 这里原来是 `mixer["attrs"]["window"]` —— 无条件假设每个混合器
+            # 不许读 `mixer["attrs"]["window"]` —— 那会无条件假设每个混合器
             # 都有 window，于是 Raw 直接 KeyError，而报错长得像"这层缺属性"。
             # 说"不知道"比崩掉诚实。
             state.append({"kind": "declared_by_impl", "bounded_by": None,

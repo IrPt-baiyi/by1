@@ -110,7 +110,7 @@ def check_config(info, tc, out):
 # ── 1. layer_types 对拍 ──────────────────────────────────────────────
 
 def by1_layer_types(info):
-    # **不要再算一遍。** 这里原来是一份 _ltype_of_attrs 的副本，
+    # **不要再算一遍** —— 一份 _ltype_of_attrs 的副本，
     # 同样只看 window —— 于是 GDN/KDA 这类线性注意力层被算成 full_attention。
     # 修了 by1check 里那个、忘了修这个，结果是同一个模型
     # "字段对拍通过、层类型检查失败"。

@@ -175,7 +175,7 @@ def main():
     print()
     print('  ③ 建模型（PyTorch 后端，**bf16**）')
     # **`None` 要在这里处理掉。** `_cgroup_gb()` 的契约是
-    # "读不到返回 None"，而这里原来是 `'%.0f' % _cgroup_gb()` ——
+    # "读不到返回 None"；若写 `'%.0f' % _cgroup_gb()` ——
     # 于是"读不到"的那条路不是打印"不知道"，是 `TypeError` 崩掉。
     # 一个返回值有第二种可能，调用方就得写出第二种分支。
     _cg = _cgroup_gb()

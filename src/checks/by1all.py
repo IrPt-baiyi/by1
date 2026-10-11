@@ -87,7 +87,7 @@ REAL = [
     # **从来没进过护栏** ✗：视觉塔的 `name_vision`、`layer` 块、
     # 全局张量，全都是在"没人跑"的状态下改的 ✓。
     # （实测：`torch.module` 1188/1188、未覆盖 0 ✓ —— 而这一行是
-    #   这一轮才加上来的 ✓，在那之前没有东西看它 ✓。）
+    #   在此之前没有任何东西检查它 ✓。）
     ('gemma-4-31B.by1', None, 'torch.module', []),
     ('Laguna-XS-2_1.by1', None, 'torch.module', []),
     ('Instella-3B.by1', None, 'torch.module', []),
@@ -284,7 +284,7 @@ def run(args, tag=None):
     # **子进程的 cwd 固定成仓库根。** 生成物（`cgen-<模型>/`）落在这里，
     # 和搬家前一致；`.gitignore` 的 `cgen-*/` 指的也正是这里。
     #
-    # **顺手把子进程的输出也钉成 UTF-8。** 判据是在**这里**解出来的
+    # **同时把子进程的输出也钉成 UTF-8。** 判据是在**这里**解出来的
     # （`'逐字段' in out`），所以"子进程用什么编码"不能听凭系统代码页 ——
     # 中文 Windows 的管道默认是 cp936，于是子进程写的中文判定行到了这边
     # 变成 U+FFFD：一个退出码 0、判定正确的脚本被记成"没有判定行"。
@@ -365,7 +365,7 @@ def tensor_list(f, override):
 
     ## 为什么这不只是"少写几个字符串"
 
-    这里原来是 `want = root(_t) if _t else ''` 然后
+    若写成 `want = root(_t) if _t else ''` 然后
     `ten = want if os.path.exists(want) else _refs.paths(f, 'tensors')`
     —— 一份手写的路径，配一个静默兜底。于是：
 
@@ -508,7 +508,7 @@ def main():
         # 而报的是变量没定义，不像"档位把初始化也跳过了"。
         # **数出来的，不是减出来的。** 这里原来写 `len(specs) - 1`
         # （只减了 selftest），而循环里**跳过了两个**（selftest 和 gate-probe）
-        # —— 于是报告印"检查器 25 个"，实际查了 24 个。
+        # —— 报告会印"检查器 25 个"，实际查 24 个。
         # 一个"少算一个"的计数不会让谁崩，它只是**让这一行不能信**。
         n_checked = 0
         for f in specs:

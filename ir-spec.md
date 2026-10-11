@@ -35,7 +35,7 @@ python src/by1irentry.py                    # 三个后端只从 IR 跑
 | `pos_kind` | `enum:rope,learned` | 是 | 位置信息的种类。`rope`=在注意力里旋转；`learned`=在输入上加一张查表。**这两件事不一样**，所以是一个字段而不是一个布尔。 |
 | `n_pos` | `int` | 否 | pos_kind=learned 时必填：查表有多少行 |
 | `norm_kind` | `enum:rms,layer` | 是 | 归一化的种类。`rms`=只除均方根；`layer`=减均值+除标准差+有 bias。**名字像，算的不是一回事。** |
-| `norm_eps` | `float` | 是 | 归一化的 eps。**必须来自这里，不许各后端写死**（这个 bug 犯过三次） |
+| `norm_eps` | `float` | 是 | 归一化的 eps。**必须来自这里，不许各后端写死**（曾因此出错三次） |
 | `norm_one_plus` | `bool` | 是 | 归一化权重是乘 `w` 还是乘 `(1+w)` |
 | `globals` | `list[Op]` | 是 | 不属于任何层的算子（embed / final_norm / head） |
 | `layers` | `list[Layer]` | 是 | 逐层 |
