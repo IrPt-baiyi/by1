@@ -1,0 +1,146 @@
+# ── mamba-130m-hf.by1 ────────────────────────────────────────────────
+# state-spaces/mamba-130m-hf —— 纯 Mamba，**Mamba1 那一代的参数化**。
+#
+# 它和仓库里已有的两个 SSM **都不是同一套参数**：
+#
+#   `ssm-shaped.by1` / Nemotron 的 `Mamba` 是 **Mamba2** 式：
+#       `in_proj = d_inner + conv_dim + heads`、`A_log (heads,)`、`n_groups`、`chunk_size`
+#
+#   这一份是 **Mamba1** 式（`d_inner = expand x d_model = 2 x 768 = 1536`）：
+#       `in_proj.weight (3072, 768)` = (2 x d_inner, d_model)   ← x 和 z 两半，各 d_inner 宽
+#       `x_proj.weight  (80, 1536)`  = (dt_rank(48) + 2 x ssm_state(16), d_inner)
+#       `dt_proj.weight (1536, 48)` + `dt_proj.bias (1536,)`    ← dt 是**单独**投出来的
+#       `A_log          (1536, 16)`  = (d_inner, ssm_state)     ← 逐通道，不是逐头
+#       `D              (1536,)`                                ← 同上
+#       `conv1d.weight  (1536, 1, 4)` = (d_inner, 1, conv_kernel)  ← 只有 d_inner 宽
+#
+#   ⚠ **`in_proj` 的 2 是"x/z 两半"，不是 `2 x d_model`。** 第一版写成了
+#   `(2 * d_model, d_model)` = (1536, 768) —— 少了整整一倍，而检查器
+#   把 24 层全报成"形状不符"。所以 `d_inner` 必须单独成为 hparam
+#   （它本来就是 config 的字段），不能拿 `d_model` 顶上。
+#
+# 所以**属性集套不上** —— Mamba2 的 `heads`/`head_dim`/`n_groups` 在这里没有对应物。
+# 契约照产物写**字面量**（这是"照实说"，不是"没表达出来"）：机制种类是 `SSM`，
+# 而形状里那些数是这一代的打包习惯。
+#
+# `ssm_cfg = {}`（空）、`use_bias = false`、`use_conv_bias = true` ——
+# 所以 conv1d 有 bias 而 in_proj / out_proj / dt_proj 的 bias **只有 dt_proj 有**。
+#
+# 事实来源：
+#   refs/state-spaces__mamba-130m-hf.config.json
+#   refs/state-spaces__mamba-130m-hf.tensors.json（242 个张量）
+# by1-model: mamba-130m-hf
+# by1-repo:  state-spaces/mamba-130m-hf
+# by1-short: mamba-130m-hf
+
+model mamba-130m-hf {
+  arch  mamba
+  ctx   2048
+
+  hparams {
+    d_model = 768
+    n_layer = 24
+    vocab   = 50280
+    # `d_inner = expand x d_model = 2 x 768 = 1536` —— config 里有这个字段
+    # （同时叫 `intermediate_size`），所以照实声明成 hparam。
+    # **不能省**：`in_proj` / `conv1d` / `A_log` / `D` 的宽度都是它，不是 d_model。
+    d_inner = 1536
+    # `dt_rank = ceil(d_model / 16) = 48` —— config 里叫 `time_step_rank`。
+    dt_rank = 48
+    # config 里叫 `layer_norm_epsilon`（1e-05），不是 rms_norm_eps。
+    rms_eps = 1e-05
+  }
+
+  # 选择性状态空间：**没有 q/k/v**。属性只留这一代说得清的三个。
+  mech Mixer : SSM {
+    expand      = 2
+    conv_kernel = 4
+    ssm_state   = 16
+    conv_bias   = true
+    proj_bias   = false
+    act         = silu
+    structural  = [ expand, conv_kernel, ssm_state ]
+  }
+
+  stack main {
+    pattern = 24 * Mixer
+    # 每一层**只有 mixer，没有 MLP**（`intermediate_size = d_inner`，
+    # 不是"另有一个 FFN"）。所以这里没有 `>>`。
+  }
+
+  position {
+    # SSM 不转位置 —— 状态随 token 递推。
+    default = none
+  }
+
+  tensors {
+    # 形状照产物写：`d_inner = 1536`、`dt_rank = 48`、`ssm_state = 16`。
+    # 自检：2*1536 = 3072 ✓ 48 + 2*16 = 80 ✓
+    Mixer {
+      in_proj.weight  : (2 * d_inner, d_model)
+      conv1d.weight   : (d_inner, 1, conv_kernel)
+      conv1d.bias     : (d_inner,)
+      x_proj.weight   : (dt_rank + 2 * ssm_state, d_inner)
+      dt_proj.weight  : (d_inner, dt_rank)
+      dt_proj.bias    : (d_inner,)
+      A_log           : (d_inner, ssm_state)
+      D               : (d_inner,)
+      out_proj.weight : (d_model, d_inner)
+    }
+    layer {
+      norm.weight : (d_model,)
+    }
+    global {
+      backbone.embeddings.weight : (vocab, d_model)
+      backbone.norm_f.weight     : (d_model,)
+      # 权重共享 —— checkpoint 里没有 lm_head。
+      lm_head.weight             : --
+    }
+  }
+
+  emit {
+    train -> transformers.config {
+      field {
+        model_type              = "mamba"
+        vocab_size              = vocab
+        hidden_size             = d_model
+        num_hidden_layers       = n_layer
+        intermediate_size       = d_inner
+        hidden_act              = "silu"
+        initializer_range       = 0.1
+        layer_norm_epsilon      = rms_eps
+        use_cache               = true
+        # ── 这一代自己的字段（Mamba2 那两版没有）──
+        d_model                 = d_model
+        d_inner                 = d_inner
+        n_layer                 = n_layer
+        state_size              = Mixer.ssm_state
+        conv_kernel             = Mixer.conv_kernel
+        expand                  = Mixer.expand
+        time_step_rank          = dt_rank
+        time_step_scale         = 1.0
+        time_step_min           = 0.001
+        time_step_max           = 0.1
+        time_step_init_scheme   = "random"
+        time_step_floor         = 0.0001
+        rms_norm                = true
+        residual_in_fp32        = true
+        fused_add_norm          = true
+        rescale_prenorm_residual = false
+        use_bias                = false
+        use_conv_bias           = Mixer.conv_bias
+        pad_vocab_size_multiple = 8
+        ssm_cfg                 = {}
+        bos_token_id            = 0
+        eos_token_id            = 0
+        pad_token_id            = 0
+      }
+    }
+
+    train -> torch.module {
+      name        = "backbone.layers.{i}.{scope}{physical}"
+      global_name = "{physical}"
+      scope { Mixer = mixer., layer = "", global = "" }
+    }
+  }
+}

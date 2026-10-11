@@ -102,9 +102,13 @@ GROUPS = [
         'by1ssm', 'by1kda', 'by1sparse', 'by1real', 'by1load', 'by1mem',
         'by1train', 'by1dev']),
 
-    ('`data/` —— 抓数据 / 推模型', 'data', '''从一个已发布的 checkpoint 反推描述，以及把 `refs/` 抓回来。''', [
+    ('`data/` —— 抓数据 / 推模型', 'data', '''从一个已发布的 checkpoint 反推描述，以及把 `refs/` 抓回来。
+
+`by1shapes` 补的是 `refs/` 的**第三种写法**：`by1fetch` / `by1index` 走
+`model.safetensors.index.json` 那条路时**只有名字、没有形状**（F3，读进来是空表），
+而形状只在 safetensors 头里 —— 所以它专门去读头，把 F3 补成 F1。''', [
         'by1fetch', 'by1index', 'by1boot', 'by1triage', 'by1cmp',
-        'by1cloud']),
+        'by1shapes', 'by1cloud']),
 
     ('`escape/` —— 逃生舱', 'escape', '''语言表达不了的东西有两个出口，**两个都不是"绕过检查"**：
 张量契约、三后端对拍、取值门照旧生效。''', [

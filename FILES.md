@@ -41,7 +41,7 @@
 
 ---
 
-## `src/` —— 67 个模块 + 1 个非 .py
+## `src/` —— 68 个模块 + 1 个非 .py
 
 ### 底座（留在 src/ 顶层）
 
@@ -159,6 +159,10 @@
 
 从一个已发布的 checkpoint 反推描述，以及把 `refs/` 抓回来。
 
+`by1shapes` 补的是 `refs/` 的**第三种写法**：`by1fetch` / `by1index` 走
+`model.safetensors.index.json` 那条路时**只有名字、没有形状**（F3，读进来是空表），
+而形状只在 safetensors 头里 —— 所以它专门去读头，把 F3 补成 F1。
+
 | 文件 | 用途 |
 |---|---|
 | `by1fetch.py` | 一条命令，把 refs/ 全部重抓回来 |
@@ -166,6 +170,7 @@
 | `by1boot.py` | 从一个已发布的 checkpoint **反推**一份 .by1 草稿 |
 | `by1triage.py` | 把一批新 config 过一遍 by1，看谁需要新原语 |
 | `by1cmp.py` | 把所有模型的架构摆成一张表 |
+| `by1shapes.py` | 把 `{名: null}` 的 refs 补成 F1（带 dtype + shape） |
 | `by1cloud.py` | 驱动一台租来的显卡机器**（AutoDL 或任何 SSH 可达的） |
 
 ### `escape/` —— 逃生舱

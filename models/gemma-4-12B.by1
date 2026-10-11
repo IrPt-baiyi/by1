@@ -1,0 +1,184 @@
+# ── gemma-4-12B.by1 ──────────────────────────────────────────────────
+# google/gemma-4-12B —— gemma-4 家族的**中间号**，而且是 `gemma4_unified` 那一支。
+#
+# 和 gemma-4-31B 的关系：**文本塔是同一套式子**（滑窗 5 + 全量 1 的 6 层一块、
+# 全量层 K=V 所以没有 `v_proj`、`layer_scalar`、四个 norm 的三明治），
+# 只换了尺寸：
+#
+#                    31B              12B
+#   d_model          5376             3840
+#   n_layer            60               48        （10 块 / 8 块）
+#   d_ff            21504            15360
+#   滑窗层          q32 kv16 hd256    q16 kv8  hd256
+#   全量层          q32 kv4  hd512    q16 kv1  hd512
+#
+# ## 视觉：**没有 transformer 塔**（这是和 31B 最本质的区别）
+#
+# 31B 是 `vision_tower.encoder.layers.{0..26}`（27 层，356 个张量）；
+# 12B 是 `vision_embedder.*` —— **一个 patch 投影加一个位置嵌入，就这些**：
+#
+#     patch_dense (3840, 6912)   6912 = 48 x 48 x 3（`model_patch_size = 48`）
+#     patch_ln1 (6912,) / patch_ln2 (3840,)
+#     pos_embedding (1120, 2, 3840) / pos_norm (3840,)
+#     embed_vision.embedding_projection (3840, 3840)
+#
+# 所以**没有 `stack vision`** —— 9 个视觉张量全是全局的。
+#
+# ## 音频：只有一个投影
+#
+# `embed_audio.embedding_projection (3840, 640)` —— 640 是 `audio_embed_dim`。
+# **没有音频塔**（那是 E4B 那种才有的）。
+#
+# 事实来源：
+#   refs/google__gemma-4-12B.config.json
+#   refs/google__gemma-4-12B.tensors.json（677 个张量）
+# by1-model: gemma-4-12B
+# by1-repo:  google/gemma-4-12B
+# by1-short: gemma-4-12B
+
+model gemma-4-12B {
+  arch    gemma4_unified
+  license apache-2.0
+  ctx     262144
+
+  hparams {
+    d_model = 3840
+    n_layer = 48
+    vocab   = 262144
+    d_ff    = 15360
+    act     = gelu_pytorch_tanh
+    rms_eps = 1e-06
+  }
+
+  # 局部层与全量层是同一个 mech 的两个**结构属性等价类**（同 31B）。
+  mech GQA : Attention {
+    heads      = { q = 16, kv = 8, head_dim = 256 }
+    out_dim    = 4096                 # = q * head_dim（局部那类）
+    qk_norm    = true
+    kv_tie     = false
+    attn_bias  = false
+    structural = [ kv, head_dim, out_dim, kv_tie ]
+  }
+
+  mech Dense : FFN { hidden = 15360 }
+
+  schedule {
+    local  = 5 * GQA(window = 1024, kv = 8, head_dim = 256, out_dim = 4096,
+                      kv_tie = false)
+    # 全量层：**kv = 1**（`num_global_key_value_heads`）、head_dim 512、
+    # 而且 **K = V**（`attention_k_eq_v = true`）—— 所以没有 `v_proj`。
+    global = 1 * GQA(window = none, kv = 1, head_dim = 512, out_dim = 8192,
+                     kv_tie = true)
+    block  = local + global
+  }
+
+  stack main {
+    pattern = 8 * block           # 48 层 = 40 局部 + 8 全量
+    main[:] >> Dense
+  }
+
+  # 位置按**层类型**分区（和 31B 一样）。
+  position {
+    local  = rope(base = 10000, type = default)
+    global = partial(rope(base = 1000000, type = proportional), ratio = 0.25)
+  }
+
+  tensors {
+    GQA {
+      q_proj.weight : (q * head_dim, d_model)
+      k_proj.weight : (kv * head_dim, d_model)
+      # K = V 的那些层**没有** v_proj。
+      v_proj.weight : (kv * head_dim, d_model) unless kv_tie
+      o_proj.weight : (d_model, q * head_dim)
+      q_norm.weight : (head_dim,)
+      k_norm.weight : (head_dim,)
+    }
+    Dense {
+      gate_proj.weight : (hidden, d_model)
+      up_proj.weight   : (hidden, d_model)
+      down_proj.weight : (d_model, hidden)
+    }
+    layer {
+      input_layernorm.weight            : (d_model,)
+      post_attention_layernorm.weight   : (d_model,)
+      pre_feedforward_layernorm.weight  : (d_model,)
+      post_feedforward_layernorm.weight : (d_model,)
+      # 没有 `.weight` 后缀的那个（逻辑名自带 `.weight` 才加后缀）。
+      layer_scalar                      : (1,) unless Dense
+    }
+    global {
+      model.language_model.embed_tokens.weight : (vocab, d_model)
+      model.language_model.norm.weight         : (d_model,)
+      # tie = true —— checkpoint 里**没有** lm_head。
+      lm_head.weight                           : --
+      # ── 视觉：patch 投影 + 位置嵌入（**没有 transformer 塔**）──
+      # 6912 = 48 x 48 x 3（`model_patch_size = 48`、in_channels 3）。
+      model.vision_embedder.patch_dense.weight : (d_model, 6912)
+      model.vision_embedder.patch_dense.bias   : (d_model,)
+      model.vision_embedder.patch_ln1.weight   : (6912,)
+      model.vision_embedder.patch_ln1.bias     : (6912,)
+      model.vision_embedder.patch_ln2.weight   : (d_model,)
+      model.vision_embedder.patch_ln2.bias     : (d_model,)
+      # 1120 = `mm_posemb_size`，第二维 2（行/列）。
+      model.vision_embedder.pos_embedding      : (1120, 2, d_model)
+      model.vision_embedder.pos_norm.weight    : (d_model,)
+      model.vision_embedder.pos_norm.bias      : (d_model,)
+      # 视觉 -> 文本（这一支两边同宽，都是 3840）。
+      model.embed_vision.embedding_projection.weight : (d_model, d_model)
+      # 音频 -> 文本：640 是 `audio_embed_dim`。
+      model.embed_audio.embedding_projection.weight  : (d_model, 640)
+    }
+  }
+
+  head LmHead { tie_embedding = true, logit_softcap = 30.0 }
+
+  emit {
+    train -> transformers.config {
+      field {
+        model_type                  = "gemma4_unified_text"
+        hidden_size                 = d_model
+        num_hidden_layers           = n_layer
+        vocab_size                  = vocab
+        intermediate_size           = d_ff
+        hidden_activation           = act
+        rms_norm_eps                = rms_eps
+        max_position_embeddings     = ctx
+        num_attention_heads         = GQA.q
+        head_dim                    = GQA[window != none].head_dim
+        global_head_dim             = GQA[window = none].head_dim
+        num_key_value_heads         = GQA[window != none].kv
+        num_global_key_value_heads  = GQA[window = none].kv
+        attention_k_eq_v            = GQA[window = none].kv_tie
+        sliding_window              = GQA[window != none].window
+        attention_bias              = GQA.attn_bias
+        attention_dropout           = 0.0
+        layer_types                 = schedule
+        rope_parameters             = position
+        tie_word_embeddings         = LmHead.tie_embedding
+        final_logit_softcapping     = LmHead.logit_softcap
+        vocab_size_per_layer_input  = vocab
+        num_kv_shared_layers        = 0
+        hidden_size_per_layer_input = 0
+        enable_moe_block            = false
+        use_double_wide_mlp         = false
+        use_bidirectional_attention = "vision"
+        use_cache                   = true
+        # 这一支**没有** `expert_intermediate_size`（31B 有，值为 null）——
+        # 它只有这三个 MoE 键，且全是 null。
+        num_experts                 = null
+        moe_intermediate_size       = null
+        top_k_experts               = null
+        initializer_range           = 0.02
+        bos_token_id                = 2
+        eos_token_id                = 1
+        pad_token_id                = 0
+      }
+    }
+
+    train -> torch.module {
+      name        = "model.language_model.layers.{i}.{scope}{physical}"
+      global_name = "{physical}"
+      scope { GQA = self_attn., Dense = mlp., layer = "", global = "" }
+    }
+  }
+}

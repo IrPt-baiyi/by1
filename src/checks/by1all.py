@@ -165,6 +165,22 @@ REAL = [
     ('Qwen3-VL-235B-A22B-Thinking.by1', None, 'torch.module', []),
     ('Qwen3-Omni-30B-A3B-Thinking.by1', None, 'torch.module',
      ['--sub', 'thinker_config.text_config']),
+    # **再四个 —— 每一个都在压一条"推不出来"的路。**
+    #
+    #   1.5B —— Qwen2 架构，**q/k/v 都带 bias 而 o_proj 不带**。
+    #            `_attn` 那个模板的 `bias = true` 会把四个全加上，
+    #            所以这份**不走模板**，契约照产物写。这是"照实说"的样本。
+    #   0.8B —— Qwen3.6 同族最小号：稠密 FFN（不是 MoE）、视觉塔**无 deepstack**、
+    #            `tie_word_embeddings = true`（所以 `lm_head.weight : --` 要抑制）。
+    #   12B  —— `gemma4_unified` 中间号，和 31B 同族但**没有视觉 transformer 塔** ——
+    #            只有 9 个 `vision_embedder.*` 全局张量 + 1 个 `embed_audio.*` 投影。
+    #   130m —— **Mamba1** 参数化（和仓库里 Nemotron/`ssm-shaped` 的 Mamba2 不是一套）：
+    #            `d_inner` 逐通道、`dt_proj` 单独投。`in_proj` 是 `(2*d_inner, d_model)` ——
+    #            第一版写成 `(2*d_model, d_model)` 少了整整一倍，24 层全报"形状不符"。
+    ('DeepSeek-R1-Distill-Qwen-1.5B.by1', None, 'torch.module', []),
+    ('Qwen3.5-0.8B.by1', None, 'torch.module', []),
+    ('gemma-4-12B.by1', None, 'torch.module', []),
+    ('mamba-130m-hf.by1', None, 'torch.module', []),
 ]
 
 # 六个合成模型：三后端
