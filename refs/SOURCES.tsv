@@ -74,3 +74,19 @@ openai/gpt-oss-20b	gpt-oss-120b 的小号（同一个架构族）：**已毕业*
 poolside/Laguna-XS_2	Laguna-XS-2_1 的**上一代**。**已评估：卡在"核对"** —— 仓库是**门控的**（`curl` 取 `/api/models/poolside/Laguna-XS_2` 与 `resolve/main/model.safetensors.index.json` 都是 HTTP 401 "Invalid username or password"），拿不到张量清单，所以第 ② 条判据（对着官方产物核对）无从做起。refs 里只有 config，那是上一轮做 `Laguna-XS-2_1` 时留下的对照物。**不是原语表达不了，是验不了** —— 有 token 之后随时可以补。
 state-spaces/mamba-130m-hf	Mamba 参考实现（Nemotron 的 SSM 对照）：**已毕业** 2026-10-11（models/mamba-130m-hf.by1，Mamba1 参数化）
 zai-org/GLM-4.7-Flash	`glm4_moe_lite`（GLM-5.3 的**上一代**）：**已毕业** 2026-10-11（models/GLM-4.7-Flash.by1）
+#
+# ## RCO 分配清单（`.alloc.txt`）
+#
+# 这些是从已发布 GGUF 文件头提取的逐张量量化类型清单，不是权重。
+# 每个文件首部记录了源 GGUF 的完整 HF URL、Tensor count 和格式。
+# 由于 by1refs 的 corpus audit 只审计 JSON，这些清单目前由本表登记、人工核对。
+#
+#   ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF
+#       refs/ISTA-DASLab__Qwen3.8-27B-GSQ-RCO-GGUF.*.alloc.txt
+#       IQ2_S / IQ2_XS / IQ3_S / IQ3_XXS；对应主模型与 MTP 文件
+#       主干 GGUF 的 851 个张量用于 Qwen3.8-27B.by1 命名对拍。
+#   ISTA-DASLab/Qwen3.8-Flash-Next-GSQ-RCO-GGUF
+#       refs/ISTA-DASLab__Qwen3.8-Flash-Next-GSQ-RCO-GGUF.*.alloc.txt
+#       IQ2_XS / IQ3_S / IQ3_XXS / Q2_0（分片 00001-of-00002）
+#
+# 对拍结论及量化分配语法仍待后续实现；这些清单本身不是 by1 的验证记录。

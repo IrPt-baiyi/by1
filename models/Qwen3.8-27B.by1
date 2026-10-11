@@ -257,5 +257,55 @@ model Qwen3.8-27B {
         mtp_norm.weight           = mtp.norm.weight
       }
     }
+
+    # ── ggml 侧（llama.cpp / GGUF）──────────────────────────────────
+    # **判卷人**：ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF 发布的
+    # `tensor-allocation/*.rco-allocation.txt` —— 逐张量的
+    # `blk.N.xxx: <ggml 类型>`，851 行。那是**发布方的公开产物**，
+    # 不是这里生成的（见 refs/SOURCES.tsv）。
+    #
+    # **一个机制、两套前缀。** Lin 的 9 个张量在 llama.cpp 里一半叫
+    # `attn_*`（qkv / gate）、一半叫 `ssm_*` —— 而 `scope` 是
+    # **一个机制一个前缀**，装不下。所以 Lin 的 scope 留空、全名写进
+    # `rename`。这是语言的已知缺口（和 Laguna 那个 `exp_bias`
+    # 前缀不对称同一类），不是取巧。
+    #
+    # **这份只覆盖主干。** MTP 与视觉塔在发布里是**另外两个 gguf**
+    # （`-mtp.gguf` / `mmproj-*.gguf`），它们各自的清单不在 refs/ 里，
+    # 所以那两个栈的 ggml 命名**没有判卷人**，这里不编。
+    infer -> ggml {
+      name_main   = "blk.{i}.{scope}{physical}"
+      name        = "blk.{i}.{scope}{physical}"
+      global_name = "{physical}"
+      scope { Lin = "", GQA = attn_, FFN_ = ffn_, layer = "", global = "" }
+      rename {
+        # 线性注意力：ggml 侧分 attn_ / ssm_ 两套前缀
+        in_proj_qkv.weight = attn_qkv.weight,
+        in_proj_z.weight   = attn_gate.weight,
+        in_proj_a.weight   = ssm_alpha.weight,
+        in_proj_b.weight   = ssm_beta.weight,
+        conv1d.weight      = ssm_conv1d.weight,
+        A_log              = ssm_a,
+        dt_bias            = ssm_dt.bias,
+        norm.weight        = ssm_norm.weight,
+        out_proj.weight    = ssm_out.weight,
+        # 全量注意力（scope = attn_）
+        q_proj.weight = q.weight,
+        k_proj.weight = k.weight,
+        v_proj.weight = v.weight,
+        o_proj.weight = output.weight,
+        # FFN（scope = ffn_）
+        gate_proj.weight = gate.weight,
+        up_proj.weight   = up.weight,
+        down_proj.weight = down.weight,
+        # 层内 norm
+        input_layernorm.weight          = attn_norm.weight,
+        post_attention_layernorm.weight = post_attention_norm.weight,
+        # 全局（global_name）
+        embed.weight      = token_embd.weight,
+        final_norm.weight = output_norm.weight,
+        lm_head.weight    = output.weight
+      }
+    }
   }
 }
