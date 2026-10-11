@@ -252,6 +252,22 @@ REAL = [
     #   ⚠ 视觉塔**没有**这些标量（`use_clipped_linears = false`），所以两个
     #     塔的层内张量数不一样 —— 这是"照命名习惯猜"一定会猜错的地方。
     ('embeddinggemma-2.by1', None, 'torch.module', ['--sub', 'text_config']),
+    # **gemma-4-E4B —— 这一族里唯一三个塔都在的。**
+    #
+    #   骨架（滑窗 5 + 全量 1、`layer_scalar`、四个 norm 三明治、视觉塔的
+    #   `.linear` 那一层）和 12B / 31B / 26B-A4B 同一套，但：
+    #   ① **没有 MoE**（`enable_moe_block = false`，三个 MoE 键全是 null）；
+    #   ② 全量层是 **kv = 2**（不是 12B 的 1），`attention_k_eq_v = false`
+    #      —— 两类层都有 `v_proj`；
+    #   ③ **PLE 是"查表 + 投影"两件都有**（embeddinggemma-2 只有投影）：
+    #      `embed_tokens_per_layer (262144, 10752)` + `per_layer_model_projection
+    #      (10752, 2560)`，10752 = 42 x 256；而且逐层那三件**不带
+    #      `ple_block.` 前缀**（embeddinggemma-2 带）—— 照族推会推错；
+    #   ④ **视觉塔也有激活范围标量**（embeddinggemma-2 的视觉塔没有）：
+    #      视觉层 41 个/层而不是 13 个。两个塔都用 `()` 写零维标量。
+    #   ⑤ `num_global_key_value_heads` 是 **null**（用 `num_key_value_heads`
+    #      兜底），而张量那边全量层确实是 kv = 2 —— 两处不矛盾。
+    ('gemma-4-E4B.by1', None, 'torch.module', ['--sub', 'text_config']),
 ]
 
 # 六个合成模型：三后端

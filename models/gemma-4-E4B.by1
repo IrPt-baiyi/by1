@@ -1,0 +1,374 @@
+# ── gemma-4-E4B.by1 ──────────────────────────────────────────────────
+# google/gemma-4-E4B —— gemma-4 家族的小号，也是这一族里**唯一三个塔都在的**：
+#
+#   model.language_model.*   2560 宽 · 42 层 · PLE
+#   model.vision_tower.*      768 宽 · 16 层
+#   model.audio_tower.*      1024 宽 · 12 层 · conformer
+#
+# ## 和同族其它号的关系
+#
+#   · 骨架（滑窗 5 + 全量 1 的 6 层一块、`layer_scalar`、四个 norm 三明治、
+#     视觉塔的 `.linear` 那一层）和 12B / 31B / 26B-A4B **是同一套**。
+#   · **它没有 MoE**（`enable_moe_block = false`，三个 MoE 键全是 null）——
+#     所以 FFN 是普通稠密那一支，`layer` 块里也不会有第二套 norm。
+#   · 全量层是 **kv = 2**（不是 12B 的 1），`attention_k_eq_v = false`
+#     —— 两类层**都有** `v_proj`。
+#
+# ## 三处这一号独有的
+#
+# ① **PLE 是"查表 + 投影"两件都有**（embeddinggemma-2 那边只有投影）：
+#
+#      model.language_model.embed_tokens_per_layer   (262144, 10752)  查表
+#      model.language_model.per_layer_model_projection (10752, 2560)  投影
+#      model.language_model.per_layer_projection_norm    (256,)
+#
+#    10752 = 42 层 x 256（`hidden_size_per_layer_input`）。
+#    **逐层那一套三件在层内**，而且这一号**不带 `ple_block.` 前缀**
+#    （embeddinggemma-2 是 `ple_block.per_layer_input_gate`）——
+#    照族推会推错，照产物量才对：
+#
+#      per_layer_input_gate.weight       (256, 2560)
+#      per_layer_projection.weight       (2560, 256)
+#      post_per_layer_input_norm.weight  (2560,)
+#
+# ② **视觉塔也有激活范围标量。** embeddinggemma-2 的视觉塔没有
+#    （`use_clipped_linears = false`），这一号**有**（true）——
+#    所以视觉层是 **41** 个而不是 13 个：每个 Linear 多 4 个零维标量。
+#    音频塔同样是 true（62 个/层）。两个塔都是 `()`（官方形状 `[]`）。
+#
+# ③ **`num_global_key_value_heads` 是 `null`，但全量层确实用 kv = 2。**
+#    实测：全量层 `k_proj [1024, 2560]` = 2 x 512 = `num_key_value_heads` x
+#    `global_head_dim`。所以 config 里那个 null 是"用 `num_key_value_heads`
+#    兜底"的意思，照实写 null，张量那边照实写 kv = 2 —— 两处不矛盾。
+#
+# 事实来源：
+#   refs/google__gemma-4-E4B.config.json（text_config 35 个架构字段）
+#   refs/google__gemma-4-E4B.tensors.json（2130 个张量）
+# by1-model: gemma-4-E4B
+# by1-repo:  google/gemma-4-E4B
+# by1-short: gemma-4-E4B
+
+model gemma-4-E4B {
+  arch  gemma4
+  ctx   131072
+
+  hparams {
+    d_model     = 2560
+    n_layer     = 42
+    vocab       = 262144
+    d_ff        = 10240
+    act         = gelu_pytorch_tanh
+    rms_eps     = 1e-06
+    # `hidden_size_per_layer_input` —— PLE 那一套的瓶颈宽度。
+    # 10752 = 42 x 256 就是这么来的。
+    ple_dim     = 256
+    # 音频塔 depthwise 卷积的核宽（`audio_config.conv_kernel_size = 5`）。
+    conv_kernel = 5
+  }
+
+  # ── 文本塔 ────────────────────────────────────────────────────────
+  # 实测逐层量过（42 层全部）：
+  #   局部层（35 个）  q_proj [2048, 2560] = 8 x 256、k/v_proj [512, 2560] = 2 x 256
+  #   全量层（ 7 个）  q_proj [4096, 2560] = 8 x 512、k/v_proj [1024, 2560] = 2 x 512
+  #   全量层在第 5 / 11 / 17 / 23 / 29 / 35 / 41 层 —— 就是 7 x (5 + 1)。
+  mech GQA : Attention {
+    heads      = { q = 8, kv = 2, head_dim = 256 }
+    out_dim    = 2048                 # = q * head_dim（局部那类）
+    qk_norm    = true
+    kv_tie     = false
+    attn_bias  = false
+    structural = [ kv, head_dim, out_dim, kv_tie ]
+  }
+
+  mech Dense : FFN { hidden = 10240 }
+
+  # ── 视觉塔（16 层，宽 768）────────────────────────────────────────
+  # 12 头 x 64 = 768 ✓。每个 Linear 后面多一层 `.linear`，
+  # 而且每个 Linear **带 4 个零维标量**（`use_clipped_linears = true`）。
+  mech ViT : Attention {
+    heads      = { q = 12, kv = 12, head_dim = 64 }
+    out_dim    = 768                  # = q * head_dim
+    qk_norm    = true
+    attn_bias  = false
+    structural = [ head_dim, out_dim ]
+  }
+
+  mech ViTMlp : FFN { hidden = 3072 }
+
+  # ── 音频塔（12 层，宽 1024）—— conformer ──────────────────────────
+  # 8 头 x 128 = 1024 ✓（`per_dim_scale` 实测 [128]）。
+  mech AudioAttn : Attention {
+    heads      = { q = 8, kv = 8, head_dim = 128 }
+    out_dim    = 1024
+    bias       = false
+    structural = [ head_dim ]
+  }
+
+  # 两块 FFN —— 逻辑名自带 `feed_forward1.` / `feed_forward2.` 前缀，
+  # 所以这个机制的 scope 是空串（见 `emit`）。
+  mech AudioFFN : FFN { hidden = 4096 }
+
+  schedule {
+    local  = 5 * GQA(window = 512, kv = 2, head_dim = 256, out_dim = 2048,
+                     kv_tie = false)
+    global = 1 * GQA(window = none, kv = 2, head_dim = 512, out_dim = 4096,
+                     kv_tie = false)
+    block  = local + global
+  }
+
+  stack text {
+    pattern = 7 * block           # 42 层 = 7 x (5 + 1)
+    text[:] >> Dense
+  }
+
+  stack vision {
+    d_model = 768
+    aux     = true
+    pattern = 16 * ViT
+    vision[:] >> ViTMlp
+  }
+
+  stack audio {
+    d_model = 1024
+    aux     = true
+    pattern = 12 * AudioAttn
+    audio[:] >> AudioFFN
+  }
+
+  position {
+    local  = rope(base = 10000, type = default)
+    global = partial(rope(base = 1000000, type = proportional), ratio = 0.25)
+  }
+
+  tensors {
+    GQA {
+      q_proj.weight : (q * head_dim, d_model)
+      k_proj.weight : (kv * head_dim, d_model)
+      v_proj.weight : (kv * head_dim, d_model)
+      o_proj.weight : (d_model, q * head_dim)
+      q_norm.weight : (head_dim,)
+      k_norm.weight : (head_dim,)
+    }
+    Dense {
+      gate_proj.weight : (hidden, d_model)
+      up_proj.weight   : (hidden, d_model)
+      down_proj.weight : (d_model, hidden)
+    }
+
+    # 视觉的每个 Linear **5 行**：`linear.weight` 加 4 个零维标量。
+    # `()` 是零维标量（官方形状 `[]`），`parse_shape` 把它解成空表。
+    ViT {
+      q_proj.linear.weight : (q * head_dim, d_model)
+      q_proj.input_max     : ()
+      q_proj.input_min     : ()
+      q_proj.output_max    : ()
+      q_proj.output_min    : ()
+      k_proj.linear.weight : (kv * head_dim, d_model)
+      k_proj.input_max     : ()
+      k_proj.input_min     : ()
+      k_proj.output_max    : ()
+      k_proj.output_min    : ()
+      v_proj.linear.weight : (kv * head_dim, d_model)
+      v_proj.input_max     : ()
+      v_proj.input_min     : ()
+      v_proj.output_max    : ()
+      v_proj.output_min    : ()
+      o_proj.linear.weight : (d_model, q * head_dim)
+      o_proj.input_max     : ()
+      o_proj.input_min     : ()
+      o_proj.output_max    : ()
+      o_proj.output_min    : ()
+      q_norm.weight        : (head_dim,)
+      k_norm.weight        : (head_dim,)
+    }
+    ViTMlp {
+      gate_proj.linear.weight : (hidden, d_model)
+      gate_proj.input_max     : ()
+      gate_proj.input_min     : ()
+      gate_proj.output_max    : ()
+      gate_proj.output_min    : ()
+      up_proj.linear.weight   : (hidden, d_model)
+      up_proj.input_max       : ()
+      up_proj.input_min       : ()
+      up_proj.output_max      : ()
+      up_proj.output_min      : ()
+      down_proj.linear.weight : (d_model, hidden)
+      down_proj.input_max     : ()
+      down_proj.input_min     : ()
+      down_proj.output_max    : ()
+      down_proj.output_min    : ()
+    }
+
+    AudioAttn {
+      q_proj.linear.weight   : (d_model, d_model)
+      q_proj.input_max       : ()
+      q_proj.input_min       : ()
+      q_proj.output_max      : ()
+      q_proj.output_min      : ()
+      k_proj.linear.weight   : (d_model, d_model)
+      k_proj.input_max       : ()
+      k_proj.input_min       : ()
+      k_proj.output_max      : ()
+      k_proj.output_min      : ()
+      v_proj.linear.weight   : (d_model, d_model)
+      v_proj.input_max       : ()
+      v_proj.input_min       : ()
+      v_proj.output_max      : ()
+      v_proj.output_min      : ()
+      post.linear.weight     : (d_model, d_model)
+      post.input_max         : ()
+      post.input_min         : ()
+      post.output_max        : ()
+      post.output_min        : ()
+      relative_k_proj.weight : (d_model, d_model)
+      per_dim_scale          : (head_dim,)
+    }
+    AudioFFN {
+      feed_forward1.ffw_layer_1.linear.weight : (hidden, d_model)
+      feed_forward1.ffw_layer_1.input_max     : ()
+      feed_forward1.ffw_layer_1.input_min     : ()
+      feed_forward1.ffw_layer_1.output_max    : ()
+      feed_forward1.ffw_layer_1.output_min    : ()
+      feed_forward1.ffw_layer_2.linear.weight : (d_model, hidden)
+      feed_forward1.ffw_layer_2.input_max     : ()
+      feed_forward1.ffw_layer_2.input_min     : ()
+      feed_forward1.ffw_layer_2.output_max    : ()
+      feed_forward1.ffw_layer_2.output_min    : ()
+      feed_forward1.pre_layer_norm.weight     : (d_model,)
+      feed_forward1.post_layer_norm.weight    : (d_model,)
+      feed_forward2.ffw_layer_1.linear.weight : (hidden, d_model)
+      feed_forward2.ffw_layer_1.input_max     : ()
+      feed_forward2.ffw_layer_1.input_min     : ()
+      feed_forward2.ffw_layer_1.output_max    : ()
+      feed_forward2.ffw_layer_1.output_min    : ()
+      feed_forward2.ffw_layer_2.linear.weight : (d_model, hidden)
+      feed_forward2.ffw_layer_2.input_max     : ()
+      feed_forward2.ffw_layer_2.input_min     : ()
+      feed_forward2.ffw_layer_2.output_max    : ()
+      feed_forward2.ffw_layer_2.output_min    : ()
+      feed_forward2.pre_layer_norm.weight     : (d_model,)
+      feed_forward2.post_layer_norm.weight    : (d_model,)
+    }
+
+    # ── 层内张量：**按栈分成三块**（三塔各不相同，`layer_rows_by_stack`
+    #    是 `or` 不是相加，所以三块都要写全）────────────────────────
+    layer text {
+      input_layernorm.weight            : (d_model,)
+      post_attention_layernorm.weight   : (d_model,)
+      pre_feedforward_layernorm.weight  : (d_model,)
+      post_feedforward_layernorm.weight : (d_model,)
+      layer_scalar                      : (1,)
+      # **这一号不带 `ple_block.` 前缀**（embeddinggemma-2 才带）。
+      per_layer_input_gate.weight       : (ple_dim, d_model)
+      per_layer_projection.weight       : (d_model, ple_dim)
+      post_per_layer_input_norm.weight  : (d_model,)
+    }
+    layer vision {
+      input_layernorm.weight            : (d_model,)
+      post_attention_layernorm.weight   : (d_model,)
+      pre_feedforward_layernorm.weight  : (d_model,)
+      post_feedforward_layernorm.weight : (d_model,)
+    }
+    layer audio {
+      lconv1d.conv_norm.weight            : (d_model,)
+      lconv1d.depthwise_conv1d.weight     : (d_model, 1, conv_kernel)
+      lconv1d.linear_start.linear.weight  : (2 * d_model, d_model)
+      lconv1d.linear_start.input_max      : ()
+      lconv1d.linear_start.input_min      : ()
+      lconv1d.linear_start.output_max     : ()
+      lconv1d.linear_start.output_min     : ()
+      lconv1d.linear_end.linear.weight    : (d_model, d_model)
+      lconv1d.linear_end.input_max        : ()
+      lconv1d.linear_end.input_min        : ()
+      lconv1d.linear_end.output_max       : ()
+      lconv1d.linear_end.output_min       : ()
+      lconv1d.pre_layer_norm.weight       : (d_model,)
+      norm_pre_attn.weight                : (d_model,)
+      norm_post_attn.weight               : (d_model,)
+      norm_out.weight                     : (d_model,)
+    }
+
+    # ── 不属于任何层的 16 个（另 1 个是抑制）────────────────────────
+    global {
+      model.language_model.embed_tokens.weight              : (vocab, d_model)
+      # PLE 的查表那一半：10752 = 42 x 256。
+      model.language_model.embed_tokens_per_layer.weight    : (vocab, n_layer * ple_dim)
+      model.language_model.norm.weight                      : (d_model,)
+      model.language_model.per_layer_model_projection.weight : (n_layer * ple_dim, d_model)
+      model.language_model.per_layer_projection_norm.weight : (ple_dim,)
+      # tie = true（顶层与 text_config 两处都是）—— checkpoint 里没有 lm_head。
+      lm_head.weight                                        : --
+      # 视觉 -> 文本 / 音频 -> 文本（宽度是**两边**的）。
+      model.embed_vision.embedding_projection.weight        : (d_model, 768)
+      model.embed_audio.embedding_projection.weight         : (d_model, 1536)
+      # 视觉塔里不属于层的那两个。
+      model.vision_tower.patch_embedder.input_proj.weight   : (768, 768)
+      model.vision_tower.patch_embedder.position_embedding_table : (2, 10240, 768)
+      # 音频塔里不属于层的那七个。
+      model.audio_tower.subsample_conv_projection.layer0.conv.weight : (128, 1, 3, 3)
+      model.audio_tower.subsample_conv_projection.layer0.norm.weight : (128,)
+      model.audio_tower.subsample_conv_projection.layer1.conv.weight : (32, 128, 3, 3)
+      model.audio_tower.subsample_conv_projection.layer1.norm.weight : (32,)
+      model.audio_tower.subsample_conv_projection.input_proj_linear.weight : (1024, 1024)
+      model.audio_tower.output_proj.weight                  : (1536, 1024)
+      model.audio_tower.output_proj.bias                    : (1536,)
+    }
+  }
+
+  head LmHead { tie_embedding = true, logit_softcap = 30.0 }
+
+  emit {
+    train -> transformers.config {
+      field {
+        model_type                  = "gemma4_text"
+        hidden_size                 = d_model
+        num_hidden_layers           = n_layer
+        vocab_size                  = vocab
+        intermediate_size           = d_ff
+        hidden_activation           = act
+        rms_norm_eps                = rms_eps
+        max_position_embeddings     = ctx
+        num_attention_heads         = GQA.q
+        head_dim                    = GQA[window != none].head_dim
+        global_head_dim             = GQA[window = none].head_dim
+        num_key_value_heads         = GQA[window != none].kv
+        # config 里这一项是 **null** —— 意思是"全量层用 `num_key_value_heads`
+        # 兜底"。而张量那边全量层确实是 kv = 2（= `num_key_value_heads`），
+        # 两处不矛盾，所以照实写 null。
+        num_global_key_value_heads  = null
+        attention_k_eq_v            = GQA[window = none].kv_tie
+        sliding_window              = GQA[window != none].window
+        attention_bias              = GQA.attn_bias
+        attention_dropout           = 0.0
+        layer_types                 = schedule
+        rope_parameters             = position
+        tie_word_embeddings         = true
+        final_logit_softcapping     = 30.0
+        vocab_size_per_layer_input  = vocab
+        num_kv_shared_layers        = 18
+        hidden_size_per_layer_input = ple_dim
+        # **这一号没有 MoE**（三个键都是 null，和 12B 一样）。
+        enable_moe_block            = false
+        num_experts                 = null
+        expert_intermediate_size    = null
+        top_k_experts               = null
+        use_double_wide_mlp         = false
+        use_bidirectional_attention = null
+        use_cache                   = true
+        initializer_range           = 0.02
+        bos_token_id                = 2
+        eos_token_id                = 1
+        pad_token_id                = 0
+      }
+    }
+
+    train -> torch.module {
+      name        = "model.language_model.layers.{i}.{scope}{physical}"
+      global_name = "{physical}"
+      name_vision = "model.vision_tower.encoder.layers.{i}.{scope}{physical}"
+      name_audio  = "model.audio_tower.layers.{i}.{scope}{physical}"
+      # ⚠ **`scope` 那一行不能折行**（折了整张表会空着，名字静默丢前缀）。
+      scope { GQA = self_attn., Dense = mlp., ViT = self_attn., ViTMlp = mlp., AudioAttn = self_attn., AudioFFN = "", layer = "", global = "" }
+    }
+  }
+}

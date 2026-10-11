@@ -68,7 +68,7 @@ deepseek-ai/DeepSeek-V4.1-Flash	分 encoder/decoder 两半的那个：草稿在 
 google/embeddinggemma-2	嵌入模型候选：**已毕业** 2026-10-11（models/embeddinggemma-2.by1）—— 这一批里唯一一个不是生成模型的：没有 `lm_head`，出 768 维嵌入；三塔都在（文本 512 宽 + 视觉 768 宽 + conformer 音频塔，音频每个 Linear 带 4 个零维激活范围标量）
 google/gemma-4-12B	gemma-4 家族中间号：**已毕业** 2026-10-11（models/gemma-4-12B.by1）
 google/gemma-4-26B-A4B	gemma-4 家族 MoE 号：**已毕业** 2026-10-11（models/gemma-4-26B-A4B.by1）
-google/gemma-4-E4B	gemma-4 家族小号：还没写 .by1
+google/gemma-4-E4B	gemma-4 家族小号：**已毕业** 2026-10-11（models/gemma-4-E4B.by1）—— 这一族里唯一三塔都在的：文本 2560 宽 42 层（PLE 查表 + 投影两件都有，而且**不带 `ple_block.` 前缀**）+ 视觉 768 宽 16 层 + conformer 音频塔；没有 MoE
 inclusionAI/LLaDA2.2-flash	扩散语言模型（dLLM）。**已评估：卡在"注意力掩码"** —— 它是**块扩散**（config `block_size = 32`，一次并行去噪一个块里的多个位置），块内必须**双向**注意力；而 by1 的 `Attention` 属性表（`by1codegen.ATTRS`）里**没有任何掩码属性**，`by1exec` 把 `causal = idx[None,:] <= idx[:,None]` 写死 —— 只能表达因果（可选滑窗 / sink）。⚠ 注意**不是**"表达不出来"：config 52 个键与 24161 个张量（20 组：融合 QKV `query_key_value [5120, 4096]` + 按头 qk_norm + 256 选 8 逐专家 + 第 0 层稠密）其实都写得出来。但那样得到的是一份"契约全对、前向算的是另一个模型"的描述 —— 那正是本仓库专门在猎的那一类，所以**拒绝**。
 openai/gpt-oss-20b	gpt-oss-120b 的小号（同一个架构族）：**已毕业** 2026-10-11（models/gpt-oss-20b.by1）
 poolside/Laguna-XS_2	Laguna-XS-2_1 的**上一代**。**已评估：卡在"核对"** —— 仓库是**门控的**（`curl` 取 `/api/models/poolside/Laguna-XS_2` 与 `resolve/main/model.safetensors.index.json` 都是 HTTP 401 "Invalid username or password"），拿不到张量清单，所以第 ② 条判据（对着官方产物核对）无从做起。refs 里只有 config，那是上一轮做 `Laguna-XS-2_1` 时留下的对照物。**不是原语表达不了，是验不了** —— 有 token 之后随时可以补。

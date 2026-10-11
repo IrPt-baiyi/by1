@@ -1,6 +1,6 @@
 # 这个仓库里每个文件是干什么的
 
-> 266 个跟踪文件。按"你会想找什么"分组，不按字母表。
+> 267 个跟踪文件。按"你会想找什么"分组，不按字母表。
 >
 > **这份文档是生成的**：`python src/by1files.py --write`。
 > 文件清单、每组的个数、每个文件的一句话都从目录树和 docstring 来 ——
@@ -237,7 +237,7 @@
 | `ir.md` | > **同一份 IR，两个后端（PyTorch / 自建执行器）跑出同一个前向 |
 | `plan.md` | by1 · 接下来的计划 |
 
-## `models/` —— 53 个
+## `models/` —— 54 个
 
 命名规矩：**文件名 = 长名 = HF 的模型名（去掉 owner）**，
 `model` 声明 = 短名（手写的）。两列的对照见 `models.tsv`。
@@ -273,6 +273,7 @@
 | `gemma-4-12B.by1` | 真实模型 · HF id `google/gemma-4-12B` |
 | `gemma-4-26B-A4B.by1` | 骨架和 gemma-4-31B 是同一支 `gemma4`（滑窗 5 + 全量 1 的 6 层一块、 |
 | `gemma-4-31B.by1` | 真实模型 · HF id `google/gemma-4-31B` |
+| `gemma-4-E4B.by1` | 真实模型 · HF id `google/gemma-4-E4B` |
 | `glm-text-tiny.by1` | GLM-5.3-Flash 文本主干的机械缩小版。** 结构一个字没改： |
 | `gpt-oss-120b.by1` | 真实模型 · HF id `openai/gpt-oss-120b` |
 | `gpt-oss-20b.by1` | 真实模型 · HF id `openai/gpt-oss-20b` |
