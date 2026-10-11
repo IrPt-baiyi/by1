@@ -236,7 +236,27 @@ def read_gguf_header(path):
 
 
 def load_reference(tensors_path, gguf_path):
-    """参考产物：safetensors 的 JSON 表，或 GGUF（原始 .gguf 头，或已抽出的 JSON）。"""
+    """参考产物：safetensors 的 JSON 表，或 GGUF（原始 .gguf 头，或已抽出的 JSON）。
+
+    **张量表有两种写法，`refs/` 里两种都有**（34 份里 15 份前者、6 份后者）：
+
+        {"名": {"dtype": "BF16", "shape": [a, b]}}     —— 带 dtype
+        {"名": [a, b]}                                  —— 只有形状
+
+    两种都要认。第一版只认前者，于是后者读成**空表** —— 而表现是
+    "契约里每个张量都缺失"（Qwen3-VL-2B 的 625 个全报缺失），看起来像
+    契约写错了，真因是参考产物根本没读进来。`by1index` / `by1fetch`
+    产出的正是后者（`tensors_from_header` 返回 `{k: list(v['shape'])}`）。
+
+    `{"名": null}`（只有名字、没有形状）**仍然跳过** —— 那一种真的没有
+    形状可用，硬凑一个只会把"没验"变成假绿。
+
+    ⚠ **`[]` 是形状，不是"没有形状"。** 它是**零维标量** —— 实测
+    `embeddinggemma-2` / `gemma-4-E4B` 各有 480 / 928 个
+    `...ffw_layer_1.input_max` 这种（激活范围缓冲）。第一版写成
+    `isinstance(v, list) and v`，把空表一起丢了 —— 于是那两份各少读
+    480 / 928 条，而表现是"契约里这些张量缺失"。
+    """
     path = tensors_path or gguf_path
     if not path:
         return None
@@ -245,8 +265,13 @@ def load_reference(tensors_path, gguf_path):
     if magic == b"GGUF":
         return read_gguf_header(path)
     raw = by1io.read_json(path, encoding="utf-8")
-    return {k: {"shape": [int(x) for x in v["shape"]]}
-            for k, v in raw.items() if isinstance(v, dict) and "shape" in v}
+    out = {}
+    for k, v in raw.items():
+        if isinstance(v, dict) and "shape" in v:
+            out[k] = {"shape": [int(x) for x in v["shape"]]}
+        elif isinstance(v, list):
+            out[k] = {"shape": [int(x) for x in v]}
+    return out
 
 
 # ── 3. 张量对拍 ──────────────────────────────────────────────────────
