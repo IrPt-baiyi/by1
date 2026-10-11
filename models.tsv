@@ -62,3 +62,4 @@ gpt2	gpt2	openai-community/gpt2	**上一代**：LayerNorm / 查表位置 / 无�
 NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16	Nemotron-3.5-Lightning	nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16	attention 间隔 7,7,7,7,**9**
 GLM-5.3-Flash	GLM-5.3-Flash	zai-org/GLM-5.3-Flash	mHC + 分组路由 + FP8
 gpt-oss-20b	gpt-oss-20b	openai/gpt-oss-20b	gpt-oss-120b 的小号：同族，只差 n_layer 24 / experts 32
+Qwen3-VL-2B-Thinking	Qwen3-VL-2B-Thinking	Qwen/Qwen3-VL-2B-Thinking	**第一个 VL**：视觉塔（24 层）+ deepstack_merger_list（18 个）

@@ -1,0 +1,249 @@
+# ── Qwen3-VL-2B-Thinking.by1 ─────────────────────────────────────────
+# Qwen/Qwen3-VL-2B-Thinking —— **第一个完整的 VL 模型**（视觉塔 + 稠密文本塔）。
+#
+# 它为什么放在第一个：VL 这一族里它最小，而且**文本侧是稠密的**（不是 MoE），
+# 所以它把「视觉塔 + 多模态命名 + 嵌套 config」这几件事一次说完，
+# 而把 MoE 留给 30B-A3B（阶段 2）、把音频塔留给 Omni（阶段 4）。
+#
+# ## 视觉塔：**零个新原语**（量出来的，不是推的）
+#
+# `models/clef.by1` 的视觉塔实测 1184/1184 全过，而它的形状和 Qwen3-VL
+# 的视觉塔**逐个相同**（对照表见 `_vl-vision-diff.txt`）：
+#
+#     只在 clef: 0 个          只在 Qwen3-VL: 18 个（全是 deepstack）
+#     共有 333 个，形状不同**只有 2 个**（`merger.linear_fc2` 的输出宽度）
+#
+# 所以 `qkv_fused` / LayerNorm 带 bias / conv3d patch_embed / pos_embed /
+# merger —— 全是现成的属性。**唯一的新结构是 `deepstack_merger_list`**。
+#
+# ## 文本塔：**零个新原语**
+#
+# 普通 Qwen3 稠密：q16 / kv8 / head_dim 128 · qk_norm · FFN 6144 ·
+# `tie_word_embeddings`（**没有 lm_head**）· mrope（`[24,20,20]`, theta 5e6）。
+#
+# 事实来源：
+#   refs/Qwen__Qwen3-VL-2B-Thinking.config.json
+#   refs/Qwen__Qwen3-VL-2B-Thinking.tensors.json（625 个张量，1 个分片）
+# by1-model: Qwen3-VL-2B-Thinking
+# by1-repo:  Qwen/Qwen3-VL-2B-Thinking
+# by1-short: Qwen3-VL-2B-Thinking
+
+model Qwen3-VL-2B-Thinking {
+  arch  qwen3_vl
+  ctx   262144
+
+  hparams {
+    d_model = 2048
+    n_layer = 28
+    vocab   = 151936
+    rms_eps = 1e-06
+  }
+
+  # ── 文本塔：普通 Qwen3 稠密 ────────────────────────────────────────
+  # 实测 q_proj [2048, 2048] = 16 x 128、k/v [1024, 2048] = 8 x 128、
+  # o_proj [2048, 2048]。qk_norm 是**按头**的（q_norm/k_norm 各 [128]）。
+  # 注意**没有 q_gate** —— 门控是 Qwen3.5/Next 那一支的事，Qwen3-VL 没有。
+  mech GQA : Attention {
+    heads      = { q = 16, kv = 8, head_dim = 128 }
+    qk_norm    = per_head
+    structural = [ head_dim, qk_norm ]
+  }
+
+  mech FFN_ : FFN { hidden = 6144 }
+
+  # ── 视觉塔（24 层）────────────────────────────────────────────────
+  # 和 clef 的视觉塔**同一个式子**，只换了宽度：1024（clef 是 1152）。
+  #   · 注意力是**融合 qkv**、**带 bias**（文本那边 q/k/v 分开且无 bias）
+  #   · 每层两个 LayerNorm（`norm1` / `norm2`，**带 bias**）
+  #   · MLP 是**两层**（`linear_fc1` / `linear_fc2`，没有门控）
+  # 16 头 x 64 = 1024 ✓（`qkv.weight` 是 3 x 1024 = 3072 ✓，`qkv.bias` 同宽）。
+  mech Vis : Attention {
+    qkv_fused = true
+    heads      = { q = 16, kv = 16, head_dim = 64 }
+    bias       = true
+    structural = [ head_dim ]
+  }
+
+  mech VisMlp : FFN {
+    hidden = 4096
+    # **两层，没有门控。** 不写 `gate` 是"有门"（见 `by1contract._ffn`），
+    # 所以这里必须显式关掉。
+    gate   = none
+    bias   = true
+  }
+
+  # ── 两个栈 ────────────────────────────────────────────────────────
+  # 文本主干 28 层，每层 1 个注意力 + 1 个 FFN（稠密，全层同构）。
+  stack main {
+    pattern = 28 * GQA
+    main[:] >> FFN_
+  }
+
+  # **辅助栈，不进 `n_layer` 的合计。** 视觉塔不是解码层，理由和 MTP 栈一样。
+  # 它有自己的宽度 1024 —— 而张量形状里的 `d_model` 因此是**这一栈的**。
+  stack visual {
+    d_model = 1024
+    aux     = true
+    pattern = 24 * Vis
+    visual[:] >> VisMlp
+  }
+
+  position {
+    # Qwen3-VL 的文本侧是全旋转（config 里没有 partial_rotary_factor），
+    # theta 5e6。`mrope_section` 是给视觉塔的分段，标准文本推理用不到，
+    # 但它写在 config 里，所以要照抄（见 emit 里的 `rope_scaling`）。
+    default = rope(base = 5000000, pairing = half)
+  }
+
+  tensors {
+    GQA {
+      q_proj.weight : (q * head_dim, d_model)
+      k_proj.weight : (kv * head_dim, d_model)
+      v_proj.weight : (kv * head_dim, d_model)
+      o_proj.weight : (d_model, q * head_dim)
+      q_norm.weight : (head_dim,)
+      k_norm.weight : (head_dim,)
+    }
+    FFN_ {
+      gate_proj.weight : (hidden, d_model)
+      up_proj.weight   : (hidden, d_model)
+      down_proj.weight : (d_model, hidden)
+    }
+    # 视觉块。`d_model` 在这个栈里是 1024（见 `stack visual`）。
+    Vis {
+      qkv.weight  : (3 * q * head_dim, d_model)
+      qkv.bias    : (3 * q * head_dim,)
+      proj.weight : (d_model, q * head_dim)
+      proj.bias   : (d_model,)
+    }
+    VisMlp {
+      linear_fc1.weight : (hidden, d_model)
+      linear_fc1.bias   : (hidden,)
+      linear_fc2.weight : (d_model, hidden)
+      linear_fc2.bias   : (d_model,)
+    }
+    layer {
+      input_layernorm.weight          : (d_model,)
+      post_attention_layernorm.weight : (d_model,)
+    }
+    # **这一栈的层内张量，和主干不是一套** —— 所以是 `layer <栈名>`。
+    # 写进上面那个 `layer` 会**给 28 个文本层也发一份**，而它们没有这两个。
+    layer visual {
+      norm1.weight : (d_model,)
+      norm1.bias   : (d_model,)
+      norm2.weight : (d_model,)
+      norm2.bias   : (d_model,)
+    }
+    global {
+      model.language_model.embed_tokens.weight : (vocab, d_model)
+      model.language_model.norm.weight         : (d_model,)
+      # 权重共享，checkpoint 里**没有** lm_head ✓ ——
+      # `--` 是"声明为不该存在"，by1verify 会查它确实不存在 ✓。
+      lm_head.weight                           : --
+      # ── 视觉塔里不属于任何层的那 9 个 ──
+      # 逻辑名直接写官方全名；`global_name = "{physical}"` 于是原样渲染。
+      #
+      # ⚠ **`merger` 那两条的输出宽度是文本侧的 `d_model`（2048），
+      #   不是视觉塔的 1024。** 量出来才知道 —— `linear_fc1` 是
+      #   `4h x 4h`（空间合并 2x2 → 4096），而 `linear_fc2` 把它压回
+      #   **文本宽度**。所以这里写 `d_model`（= 2048 ✓）而不是字面量 1024。
+      #   （clef 的同一个位置写的就是它的 `d_model` 5120 ✓。）
+      model.visual.patch_embed.proj.weight  : (1024, 3, 2, 16, 16)
+      model.visual.patch_embed.proj.bias    : (1024,)
+      model.visual.pos_embed.weight         : (2304, 1024)
+      model.visual.merger.norm.weight       : (1024,)
+      model.visual.merger.norm.bias         : (1024,)
+      model.visual.merger.linear_fc1.weight : (4096, 4096)
+      model.visual.merger.linear_fc1.bias   : (4096,)
+      model.visual.merger.linear_fc2.weight : (d_model, 4096)
+      model.visual.merger.linear_fc2.bias   : (d_model,)
+      # ── **唯一的新结构**：deepstack_merger_list（18 个）────────────
+      #
+      # 个数 3 的出处是 `vision_config.deepstack_visual_indexes` 的长度
+      # （2B 是 `[5,11,17]`）。它是"把第 5/11/17 层的特征也送进文本侧"
+      # 的三个额外 merger —— 结构和主 merger **完全一样**，只有一处不同：
+      #
+      #    主 merger.norm       = h    （在空间合并**之前** norm，1024）
+      #    deepstack .norm      = 4h   （在空间合并**之后** norm，4096）
+      #
+      # `linear_fc1` / `linear_fc2` 两者**一模一样**（4h → 4h → 文本宽度）。
+      # 这一处是这一份里最容易写错的地方 —— 写错的表现是"18 个形状不符"。
+      #
+      # 写法：**18 行字面量**，和上面那 9 个视觉全局张量同一套。
+      # `global` 行没有"哪个栈"这个上下文，取不到视觉塔的 1024，
+      # 所以宽度写死；而输出那一维用 `d_model`（= 文本的 2048 ✓）。
+      model.visual.deepstack_merger_list.0.norm.weight       : (4096,)
+      model.visual.deepstack_merger_list.0.norm.bias         : (4096,)
+      model.visual.deepstack_merger_list.0.linear_fc1.weight : (4096, 4096)
+      model.visual.deepstack_merger_list.0.linear_fc1.bias   : (4096,)
+      model.visual.deepstack_merger_list.0.linear_fc2.weight : (d_model, 4096)
+      model.visual.deepstack_merger_list.0.linear_fc2.bias   : (d_model,)
+      model.visual.deepstack_merger_list.1.norm.weight       : (4096,)
+      model.visual.deepstack_merger_list.1.norm.bias         : (4096,)
+      model.visual.deepstack_merger_list.1.linear_fc1.weight : (4096, 4096)
+      model.visual.deepstack_merger_list.1.linear_fc1.bias   : (4096,)
+      model.visual.deepstack_merger_list.1.linear_fc2.weight : (d_model, 4096)
+      model.visual.deepstack_merger_list.1.linear_fc2.bias   : (d_model,)
+      model.visual.deepstack_merger_list.2.norm.weight       : (4096,)
+      model.visual.deepstack_merger_list.2.norm.bias         : (4096,)
+      model.visual.deepstack_merger_list.2.linear_fc1.weight : (4096, 4096)
+      model.visual.deepstack_merger_list.2.linear_fc1.bias   : (4096,)
+      model.visual.deepstack_merger_list.2.linear_fc2.weight : (d_model, 4096)
+      model.visual.deepstack_merger_list.2.linear_fc2.bias   : (d_model,)
+    }
+  }
+
+  emit {
+    # 产物一：transformers 的 config.json —— 由 .by1 生成，不继承任何字段。
+    # **注意这一份比纯文本模型少**：Qwen3-VL 把文本架构收在 `text_config`
+    # 里，所以这一块要对的是**嵌套的那一层**（`--sub text_config`）。
+    # 顶层那几个（`architectures` / `vision_config` / token id）不属于
+    # 文本架构，不在这里发。
+    train -> transformers.config {
+      field {
+        model_type              = "qwen3_vl_text"
+        vocab_size              = vocab
+        hidden_size             = d_model
+        num_hidden_layers       = n_layer
+        intermediate_size       = FFN_.hidden
+        num_attention_heads     = GQA.q
+        num_key_value_heads     = GQA.kv
+        head_dim                = GQA.head_dim
+        max_position_embeddings = ctx
+        rms_norm_eps            = rms_eps
+        hidden_act              = "silu"
+        attention_bias          = false
+        attention_dropout       = 0.0
+        initializer_range       = 0.02
+        # mrope 照抄 —— 三个数字是「时间 / 高 / 宽」的分段长度，加起来 64，
+        # 正好是 head_dim 的一半（128 里转 64 维）。
+        rope_scaling            = {"mrope_interleaved": true, "mrope_section": [24, 20, 20], "rope_type": "default"}
+        rope_theta              = 5000000
+        # 和 `global` 里那条 `lm_head.weight : --` 是同一件事的两面。
+        tie_word_embeddings     = true
+        use_cache               = true
+        dtype                   = "bfloat16"
+        bos_token_id            = 151643
+        eos_token_id            = 151645
+      }
+    }
+
+    # 产物二：HuggingFace safetensors 的物理命名。
+    train -> torch.module {
+      name        = "model.language_model.layers.{i}.{scope}{physical}"
+      # **辅助栈的物理前缀和主干不同** —— 视觉塔在 `model.visual.blocks.`
+      # 下面，而主干在 `model.language_model.layers.` 下面。
+      # 优先级是 `expert_name > name_<栈名> > name`（见 `by1check.render_name`）。
+      name_visual = "model.visual.blocks.{i}.{scope}{physical}"
+      # **全局张量必须有自己的模板** —— 没有它，`by1verify.check_tensors`
+      # 里那句 `if render_g is None: break` 会让整段全局张量**一个都不查**
+      # （嵌入表、最终 norm、以及视觉塔那 27 个，全都不在检查范围里）。
+      global_name = "{physical}"
+      # ⚠ **`scope` 那一行不能折行** —— 花括号不参与续行判定。
+      #   `layer` / `global` 两个空串也必须在表里，否则按 owner 查不到，
+      #   它们会被记成"未映射"直接跳过。
+      scope { GQA = self_attn., FFN_ = mlp., Vis = attn., VisMlp = mlp., layer = "", global = "" }
+      # 逻辑名直接写官方全名（见 `global` 块），所以**不需要 rename**。
+    }
+  }
+}

@@ -128,6 +128,19 @@ REAL = [
     # 修好模板之后：37534/37534 全中、0 缺失。
     # 教训进 KNOWN 那条路是错的 —— 那是**描述写错了**，不是产物缺东西。
     ('GLM-5.3-Flash.by1', None, 'torch.module', []),
+    # **第 16 个真实模型 —— 第一个 VL。**
+    #
+    # 前 15 个里**没有一个把视觉塔算进模型**：clef / Qwen3.8-27B /
+    # Qwen3.6-35B-A3B 都有 `stack visual`（333 个张量），但那是
+    # "文本主干旁边挂着的一块"，`config` 对拍只比文本那一层。
+    # 这一份不一样：视觉塔的 315 个张量**是模型的一部分**，
+    # 而它多出来的 18 个 `deepstack_merger_list` 是 Qwen3-VL 的
+    # **唯一新结构**（逐张量对照表见 `_vl-vision-diff.txt`）。
+    #
+    # 顺带把"嵌套 config"这条路径也纳进来 —— Qwen3-VL 的文本架构
+    # 收在 `text_config` 里，`by1verify` 的默认 `--sub text_config`
+    # 正好对上（非嵌套的模型会退化成整份 config，所以一条路管两种）。
+    ('Qwen3-VL-2B-Thinking.by1', None, 'torch.module', []),
 ]
 
 # 六个合成模型：三后端
