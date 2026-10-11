@@ -1,6 +1,6 @@
 # 这个仓库里每个文件是干什么的
 
-> 261 个跟踪文件。按"你会想找什么"分组，不按字母表。
+> 263 个跟踪文件。按"你会想找什么"分组，不按字母表。
 >
 > **这份文档是生成的**：`python src/by1files.py --write`。
 > 文件清单、每组的个数、每个文件的一句话都从目录树和 docstring 来 ——
@@ -237,7 +237,7 @@
 | `ir.md` | > **同一份 IR，两个后端（PyTorch / 自建执行器）跑出同一个前向 |
 | `plan.md` | by1 · 接下来的计划 |
 
-## `models/` —— 48 个
+## `models/` —— 50 个
 
 命名规矩：**文件名 = 长名 = HF 的模型名（去掉 owner）**，
 `model` 声明 = 短名（手写的）。两列的对照见 `models.tsv`。
@@ -245,6 +245,7 @@
 | 文件 | 用途 |
 |---|---|
 | `DeepSeek-R1-Distill-Qwen-1.5B.by1` | 真实模型 · HF id `deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B` |
+| `DeepSeek-R1-Distill-Qwen-7B.by1` | 真实模型 · HF id `deepseek-ai/DeepSeek-R1-Distill-Qwen-7B` |
 | `GLM-5.3-Flash.by1` | 真实模型 · HF id `zai-org/GLM-5.3-Flash` |
 | `Instella-3B.by1` | 真实模型 · HF id `amd/Instella-3B` |
 | `Laguna-XS-2_1.by1` | 真实模型 · HF id `poolside/Laguna-XS-2_1` |
@@ -260,6 +261,7 @@
 | `Qwen3.5-9B.by1` | 真实模型 · HF id `Qwen/Qwen3.5-9B` |
 | `Qwen3.6-35B-A3B.by1` | 真实模型 · HF id `Qwen/Qwen3.6-35B-A3B` |
 | `Qwen3.8-27B.by1` | 真实模型 · HF id `Qwen/Qwen3.8-27B` |
+| `Qwen3.8-Flash-Next.by1` | 真实模型 · HF id `Qwen/Qwen3.8-Flash-Next` |
 | `Step-3.7-Flash.by1` | 真实模型 · HF id `stepfun-ai/Step-3.7-Flash` |
 | `Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL.by1` | 真实模型 · HF id `nerkyor/Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL` |
 | `attn-fused-shaped.by1` | 融合 q/k/v 的注意力**（视觉塔那种布局） |
