@@ -1,0 +1,370 @@
+# ── Qwen3-Omni-30B-A3B-Thinking.by1 ───────────────────────────────────
+# Qwen/Qwen3-Omni-30B-A3B-Thinking —— VL 工程**阶段 4**：音频塔。
+#
+# 它是这批里唯一**真的要做新东西**的一份。三段加起来 19743 个张量：
+#
+#   文本 MoE   18864（96%）  48 层 x 128 专家 —— 和阶段 2 同形，但**逐专家存储**
+#   视觉塔       351          与阶段 2 **同形**，但**层外那 27 个改了名**
+#   音频塔       525（29 类）  ← **全新**
+#   thinker 全局   3
+#
+# ## ① 文本塔：专家是**一个专家一个张量**（阶段 2 是融合的）
+#
+# 实测 `thinker.model.layers.0.mlp.experts.0.gate_proj.weight (768, 2048)` ——
+# 128 个专家各存各的，不是 `(E, d_model, 2h)` 一整块。
+# 契约写打包形状 + `per_expert` 标记（Nemotron / Ling 用过的写法），
+# 名字由 `expert_name` 模板逐专家渲染。
+#
+# ## ② 视觉塔：层内**逐字相同**，层外**换了名**
+#
+#     阶段 2（Qwen3-VL）                   阶段 4（Omni）
+#     visual.merger.norm.{weight,bias}     visual.merger.ln_q.{weight,bias}
+#     visual.merger.linear_fc1.weight      visual.merger.mlp.0.weight
+#     visual.merger.linear_fc2.weight      visual.merger.mlp.2.weight   ← 注意是 **2** 不是 1
+#     visual.deepstack_merger_list.{i}.*   visual.merger_list.{i}.*
+#
+# **`mlp.0` / `mlp.2` 中间跳了 1** —— 那是 `nn.Sequential(Linear, GELU, Linear)`
+# 的序号，GELU 不占张量但占下标。按"0/1"写会**少 2 个张量、错 2 个名字**。
+#
+# ## ③ 音频塔：Whisper 式 encoder（32 层）
+#
+#     conv2d1 (480, 1, 3, 3)       mel 128 通道 -> 480
+#     conv2d2 (480, 480, 3, 3)     stride 2
+#     conv2d3 (480, 480, 3, 3)     stride 2
+#     conv_out (1280, 7680)        7680 = 480 x 16（三次下采样后 16 个频段）
+#     layers.N.self_attn.{q,k,v,out}_proj   **分开的 q/k/v**、**带 bias**
+#     layers.N.fc1 / fc2           **带 bias**，中间 5120
+#     layers.N.self_attn_layer_norm / final_layer_norm   **带 bias**
+#     ln_post / proj1 / proj2
+#
+# 注意它和文本塔的**三处不同**（都写进契约了）：
+#   · `out_proj` 不是 `o_proj`（HF 的 Whisper 命名）
+#   · 名字叫 `fc1`/`fc2` 而不是 `gate_proj`/`up_proj`/`down_proj`（**没有门控**）
+#   · 每个投影**都有 bias**（文本塔一个都没有）
+#
+# **没有 codec**：config 的 `enable_audio_output: false`，所以 code2wav 的
+# 张量根本不在产物里 ✓ —— 省掉了一整块最难的东西。
+#
+# 事实来源：
+#   refs/Qwen__Qwen3-Omni-30B-A3B-Thinking.config.json（thinker_config.text_config）
+#   refs/Qwen__Qwen3-Omni-30B-A3B-Thinking.tensors.json（19743 个张量，16 个分片）
+# by1-model: Qwen3-Omni-30B-A3B-Thinking
+# by1-repo:  Qwen/Qwen3-Omni-30B-A3B-Thinking
+# by1-short: Qwen3-Omni-30B-A3B-Thinking
+
+model Qwen3-Omni-30B-A3B-Thinking {
+  arch  qwen3_omni_moe
+  ctx   65536
+
+  hparams {
+    d_model = 2048
+    n_layer = 48
+    # ⚠ **152064，不是 151936** —— 和 Qwen3-VL 那一族不一样（差 128）。
+    vocab   = 152064
+    rms_eps = 1e-06
+  }
+
+  # ── 文本塔（与阶段 2 同形）────────────────────────────────────────
+  mech GQA : Attention {
+    heads      = { q = 32, kv = 4, head_dim = 128 }
+    # q x head_dim = 4096 != d_model（2048）—— **这是有意的**，显式声明，
+    # 否则检查器按"宽度变化没声明"报 W（GQA 本来就是这样）。
+    out_dim    = 4096
+    qk_norm    = per_head
+    structural = [ head_dim, out_dim, qk_norm ]
+  }
+
+  # 逐专家存储 —— 形状里第一维是 `experts`，而**名字里也有专家号**。
+  # 契约照打包形状写（`per_expert` 会在名字侧展开、在形状侧去掉第一维）。
+  mech MoE : MoE {
+    experts    = 128
+    top_k      = 8
+    hidden     = 768
+    routing    = softmax_topk
+    layer_kind = sparse
+    structural = [ experts, hidden ]
+  }
+
+  # ── 视觉塔（与阶段 2 同形）────────────────────────────────────────
+  mech Vis : Attention {
+    qkv_fused = true
+    heads      = { q = 16, kv = 16, head_dim = 72 }
+    bias       = true
+    structural = [ head_dim ]
+  }
+
+  mech VisMlp : FFN {
+    hidden = 4304
+    gate   = none
+    bias   = true
+  }
+
+  # ── 音频塔（新）──────────────────────────────────────────────────
+  # Whisper 式：20 头 x 64 = 1280 ✓。**q/k/v 分开**（不是融合），**带 bias**。
+  mech AudioAttn : Attention {
+    heads      = { q = 20, kv = 20, head_dim = 64 }
+    bias       = true
+    structural = [ head_dim ]
+  }
+
+  # 两层 MLP，**没有门控**，**带 bias**。名字是 fc1/fc2（见 tensors 块）。
+  mech AudioFfn : FFN {
+    hidden = 5120
+    gate   = none
+    bias   = true
+  }
+
+  # ── 三个栈 ────────────────────────────────────────────────────────
+  stack main {
+    pattern = 48 * GQA
+    main[:] >> MoE
+  }
+
+  stack visual {
+    d_model = 1152
+    aux     = true
+    pattern = 27 * Vis
+    visual[:] >> VisMlp
+  }
+
+  # 音频塔：32 层，自己的宽度 1280（主干 2048），`aux = true`。
+  stack audio {
+    d_model = 1280
+    aux     = true
+    pattern = 32 * AudioAttn
+    audio[:] >> AudioFfn
+  }
+
+  position {
+    default = rope(base = 1000000, pairing = half)
+  }
+
+  tensors {
+    GQA {
+      q_proj.weight : (q * head_dim, d_model)
+      k_proj.weight : (kv * head_dim, d_model)
+      v_proj.weight : (kv * head_dim, d_model)
+      o_proj.weight : (d_model, q * head_dim)
+      q_norm.weight : (head_dim,)
+      k_norm.weight : (head_dim,)
+    }
+    # ⚠ **逐专家存储**：契约写打包形状（第一维 experts），加 `per_expert`；
+    #   名字由 `expert_name` 模板展开成 `...mlp.experts.{e}.gate_proj.weight`。
+    #   逐专家时形状会**去掉第一维** —— 所以实测是 (768, 2048) ✓。
+    MoE {
+      gate.weight          : (experts, d_model)
+      gate_proj.weight     : (experts, hidden, d_model) per_expert
+      up_proj.weight       : (experts, hidden, d_model) per_expert
+      down_proj.weight     : (experts, d_model, hidden) per_expert
+    }
+    Vis {
+      qkv.weight  : (3 * q * head_dim, d_model)
+      qkv.bias    : (3 * q * head_dim,)
+      proj.weight : (d_model, q * head_dim)
+      proj.bias   : (d_model,)
+    }
+    VisMlp {
+      linear_fc1.weight : (hidden, d_model)
+      linear_fc1.bias   : (hidden,)
+      linear_fc2.weight : (d_model, hidden)
+      linear_fc2.bias   : (d_model,)
+    }
+    # 音频注意力：**名字是 `out_proj` 不是 `o_proj`**，而且四个投影都带 bias。
+    AudioAttn {
+      q_proj.weight   : (q * head_dim, d_model)
+      q_proj.bias     : (q * head_dim,)
+      k_proj.weight   : (kv * head_dim, d_model)
+      k_proj.bias     : (kv * head_dim,)
+      v_proj.weight   : (kv * head_dim, d_model)
+      v_proj.bias     : (kv * head_dim,)
+      out_proj.weight : (d_model, q * head_dim)
+      out_proj.bias   : (d_model,)
+    }
+    # 音频 FFN：名字是 fc1/fc2，没有门控，带 bias。
+    AudioFfn {
+      fc1.weight : (hidden, d_model)
+      fc1.bias   : (hidden,)
+      fc2.weight : (d_model, hidden)
+      fc2.bias   : (d_model,)
+    }
+    layer {
+      input_layernorm.weight          : (d_model,)
+      post_attention_layernorm.weight : (d_model,)
+    }
+    layer visual {
+      norm1.weight : (d_model,)
+      norm1.bias   : (d_model,)
+      norm2.weight : (d_model,)
+      norm2.bias   : (d_model,)
+    }
+    # 音频层的两个 LayerNorm —— **带 bias**（视觉塔那两个也带，文本的不带）。
+    layer audio {
+      self_attn_layer_norm.weight : (d_model,)
+      self_attn_layer_norm.bias   : (d_model,)
+      final_layer_norm.weight     : (d_model,)
+      final_layer_norm.bias       : (d_model,)
+    }
+    global {
+      # ── thinker 自己的 3 个 ──
+      thinker.model.embed_tokens.weight : (vocab, d_model)
+      thinker.model.norm.weight         : (d_model,)
+      thinker.lm_head.weight            : (vocab, d_model)
+      # ── 视觉塔层外（9 个）—— 注意和 Qwen3-VL 的**名字不同** ──
+      thinker.visual.patch_embed.proj.weight   : (1152, 3, 2, 16, 16)
+      thinker.visual.patch_embed.proj.bias     : (1152,)
+      thinker.visual.pos_embed.weight          : (2304, 1152)
+      # `norm` -> `ln_q`；`linear_fc1` -> `mlp.0`；`linear_fc2` -> `mlp.2`（跳 1）
+      thinker.visual.merger.ln_q.weight        : (1152,)
+      thinker.visual.merger.ln_q.bias          : (1152,)
+      thinker.visual.merger.mlp.0.weight       : (4608, 4608)
+      thinker.visual.merger.mlp.0.bias         : (4608,)
+      thinker.visual.merger.mlp.2.weight       : (d_model, 4608)
+      thinker.visual.merger.mlp.2.bias         : (d_model,)
+      # ── merger_list（18 个）：deepstack 的 Omni 名字 ──
+      # 结构同主 merger，只有 `ln_q` 的宽不同：4h（4608）而不是 h（1152）。
+      thinker.visual.merger_list.0.ln_q.weight   : (4608,)
+      thinker.visual.merger_list.0.ln_q.bias     : (4608,)
+      thinker.visual.merger_list.0.mlp.0.weight  : (4608, 4608)
+      thinker.visual.merger_list.0.mlp.0.bias    : (4608,)
+      thinker.visual.merger_list.0.mlp.2.weight  : (d_model, 4608)
+      thinker.visual.merger_list.0.mlp.2.bias    : (d_model,)
+      thinker.visual.merger_list.1.ln_q.weight   : (4608,)
+      thinker.visual.merger_list.1.ln_q.bias     : (4608,)
+      thinker.visual.merger_list.1.mlp.0.weight  : (4608, 4608)
+      thinker.visual.merger_list.1.mlp.0.bias    : (4608,)
+      thinker.visual.merger_list.1.mlp.2.weight  : (d_model, 4608)
+      thinker.visual.merger_list.1.mlp.2.bias    : (d_model,)
+      thinker.visual.merger_list.2.ln_q.weight   : (4608,)
+      thinker.visual.merger_list.2.ln_q.bias     : (4608,)
+      thinker.visual.merger_list.2.mlp.0.weight  : (4608, 4608)
+      thinker.visual.merger_list.2.mlp.0.bias    : (4608,)
+      thinker.visual.merger_list.2.mlp.2.weight  : (d_model, 4608)
+      thinker.visual.merger_list.2.mlp.2.bias    : (d_model,)
+      # ── 音频塔层外（13 个）──
+      # 三次卷积：128 mel -> 480 -> 480 -> 480，每步 stride 2（所以频段 128->64->32->16）。
+      thinker.audio_tower.conv2d1.weight : (480, 1, 3, 3)
+      thinker.audio_tower.conv2d1.bias   : (480,)
+      thinker.audio_tower.conv2d2.weight : (480, 480, 3, 3)
+      thinker.audio_tower.conv2d2.bias   : (480,)
+      thinker.audio_tower.conv2d3.weight : (480, 480, 3, 3)
+      thinker.audio_tower.conv2d3.bias   : (480,)
+      # 7680 = 480 x 16（下采样后的频段数）；**这一条没有 bias**。
+      thinker.audio_tower.conv_out.weight : (1280, 7680)
+      thinker.audio_tower.ln_post.weight  : (1280,)
+      thinker.audio_tower.ln_post.bias    : (1280,)
+      thinker.audio_tower.proj1.weight    : (1280, 1280)
+      thinker.audio_tower.proj1.bias      : (1280,)
+      thinker.audio_tower.proj2.weight    : (d_model, 1280)
+      thinker.audio_tower.proj2.bias      : (d_model,)
+    }
+  }
+
+  emit {
+    # ⚠ **对的是 `thinker_config.text_config`** —— 比 VL 那两份又深了一层。
+    # （`by1verify --sub` 现在认点分路径。）
+    train -> transformers.config {
+      field {
+        model_type              = "qwen3_omni_moe_text"
+        vocab_size              = vocab
+        hidden_size             = d_model
+        num_hidden_layers       = n_layer
+        # ⚠ 这一族里 `intermediate_size` **等于** moe_intermediate_size（768）——
+        #   不是像 Qwen3-VL 那样留一个稠密 FFN 的宽（6144）。
+        intermediate_size       = MoE.hidden
+        num_attention_heads     = GQA.q
+        num_key_value_heads     = GQA.kv
+        head_dim                = GQA.head_dim
+        max_position_embeddings = ctx
+        rms_norm_eps            = rms_eps
+        hidden_act              = "silu"
+        attention_bias          = false
+        attention_dropout       = 0.0
+        initializer_range       = 0.02
+        # ⚠ 比 VL 多两个键（`interleaved` / `type`），theta 是 1e6 不是 5e6。
+        rope_scaling            = {"interleaved": true, "mrope_interleaved": true, "mrope_section": [24, 20, 20], "rope_type": "default", "type": "default"}
+        rope_theta              = 1000000
+        use_cache               = true
+        use_qk_norm             = true
+        decoder_sparse_step     = 1
+        mlp_only_layers         = []
+        moe_intermediate_size   = MoE.hidden
+        norm_topk_prob          = true
+        num_experts             = MoE.experts
+        num_experts_per_tok     = MoE.top_k
+        router_aux_loss_coef    = 0.001
+        output_router_logits    = false
+        shared_expert_intermediate_size = 0
+        tie_word_embeddings     = false
+        use_sliding_window      = false
+        sliding_window          = null
+        # ── 下面这些是 HF 的 PretrainedConfig 序列化出来的样板字段 ──
+        # 这一份 `text_config` 和 Qwen3-VL 的不一样：**它是一份完整 dump**，
+        # 把生成器的默认值也写进去了。按"零继承"的规矩，**照实全发** ——
+        # 不发的话 `check_config` 会逐个报"官方多出"（Ling 那份 75 键同理）。
+        _name_or_path                      = ""
+        add_cross_attention                = false
+        bad_words_ids                      = null
+        begin_suppress_tokens              = null
+        bos_token_id                       = null
+        chunk_size_feed_forward            = 0
+        cross_attention_hidden_size        = null
+        decoder_start_token_id             = null
+        diversity_penalty                  = 0.0
+        do_sample                          = false
+        early_stopping                     = false
+        encoder_no_repeat_ngram_size       = 0
+        eos_token_id                       = null
+        exponential_decay_length_penalty   = null
+        finetuning_task                    = null
+        forced_bos_token_id                = null
+        forced_eos_token_id                = null
+        id2label                           = {"0": "LABEL_0", "1": "LABEL_1"}
+        is_decoder                         = false
+        is_encoder_decoder                 = false
+        # ⚠ 是 `id2label` 的**逆映射**：键是标签名（`LABEL_0`），不是数字。
+        label2id                           = {"LABEL_0": 0, "LABEL_1": 1}
+        length_penalty                     = 1.0
+        max_length                         = 20
+        min_length                         = 0
+        no_repeat_ngram_size               = 0
+        num_beam_groups                    = 1
+        num_beams                          = 1
+        num_return_sequences               = 1
+        output_attentions                  = false
+        output_hidden_states               = false
+        output_scores                      = false
+        pad_token_id                       = null
+        prefix                             = null
+        problem_type                       = null
+        pruned_heads                       = {}
+        remove_invalid_values              = false
+        repetition_penalty                 = 1.0
+        return_dict                        = true
+        return_dict_in_generate            = false
+        sep_token_id                       = null
+        suppress_tokens                    = null
+        task_specific_params               = null
+        temperature                        = 1.0
+        tf_legacy_loss                     = false
+        tie_encoder_decoder                = false
+        tokenizer_class                    = null
+        top_k                              = 50
+        top_p                              = 1.0
+        torchscript                        = false
+        typical_p                          = 1.0
+        use_bfloat16                       = false
+      }
+    }
+
+    train -> torch.module {
+      # 三个栈，三套前缀 —— 都在 `thinker.` 下面。
+      name        = "thinker.model.layers.{i}.{scope}{physical}"
+      name_visual = "thinker.visual.blocks.{i}.{scope}{physical}"
+      name_audio  = "thinker.audio_tower.layers.{i}.{scope}{physical}"
+      # 逐专家：专家号插在 `{scope}` 之后、张量名之前。
+      expert_name = "thinker.model.layers.{i}.{scope}experts.{expert}.{physical}"
+      global_name = "{physical}"
+      scope { GQA = self_attn., MoE = mlp., Vis = attn., VisMlp = mlp., AudioAttn = self_attn., AudioFfn = "", layer = "", global = "" }
+    }
+  }
+}

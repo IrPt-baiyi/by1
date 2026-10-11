@@ -1,0 +1,200 @@
+# ── Qwen3-VL-235B-A22B-Thinking.by1 ───────────────────────────────────
+# Qwen/Qwen3-VL-235B-A22B-Thinking —— VL 工程**阶段 3**：同族放大。
+#
+# 和阶段 2（30B-A3B）的差别**只有文本塔的尺寸**，而且**视觉塔一个字没改**：
+#
+#                 阶段 2（30B）      阶段 3（235B）
+#   d_model          2048              4096
+#   n_layer            48                94
+#   q 头数             32                64      （kv 都是 4，head_dim 都是 128）
+#   moe_inter         768              1536
+#   intermediate     6144             12288      （只在 config 里，无对应张量）
+#   视觉塔           1152 / 27 层      1152 / 27 层   ← **完全相同**
+#   deepstack        [8,16,24]         [8,16,24]      ← **完全相同**
+#
+# 一处**跟着文本宽度走的**：merger / deepstack 的 `linear_fc2` 输出是
+# `out_hidden_size`，而它恰好等于文本的 `d_model`（4096）。
+# 所以这里写 `d_model` 就自动跟着变 ✓ —— 30B 那份是 2048，这份是 4096。
+#
+# 事实来源：
+#   refs/Qwen__Qwen3-VL-235B-A22B-Thinking.config.json
+#   refs/Qwen__Qwen3-VL-235B-A22B-Thinking.tensors.json（1388 个张量，96 个分片）
+# by1-model: Qwen3-VL-235B-A22B-Thinking
+# by1-repo:  Qwen/Qwen3-VL-235B-A22B-Thinking
+# by1-short: Qwen3-VL-235B-A22B-Thinking
+
+model Qwen3-VL-235B-A22B-Thinking {
+  arch  qwen3_vl_moe
+  ctx   262144
+
+  hparams {
+    d_model = 4096
+    n_layer = 94
+    vocab   = 151936
+    rms_eps = 1e-06
+  }
+
+  # ── 文本塔：MoE ───────────────────────────────────────────────────
+  # 64 头 x 128 = 8192 ✓（q_proj [8192, 4096]）、kv 4 头 x 128 = 512 ✓。
+  mech GQA : Attention {
+    heads      = { q = 64, kv = 4, head_dim = 128 }
+    # q x head_dim = 8192 != d_model（4096）—— 有意的，见 30B 那份的注释。
+    out_dim    = 8192
+    qk_norm    = per_head
+    structural = [ head_dim, out_dim, qk_norm ]
+  }
+
+  # 128 专家 / top-8 / 中间 1536。**没有共享专家。**
+  # 专家布局照产物：`(E, d_model, 2h)` —— 实测 gate_up_proj (128, 4096, 3072)。
+  mech MoE : MoE {
+    experts    = 128
+    top_k      = 8
+    hidden     = 1536
+    routing    = softmax_topk
+    layer_kind = sparse
+    structural = [ experts, hidden ]
+  }
+
+  # ── 视觉塔（27 层）—— 与阶段 2 逐字相同 ──────────────────────────
+  mech Vis : Attention {
+    qkv_fused = true
+    heads      = { q = 16, kv = 16, head_dim = 72 }
+    bias       = true
+    structural = [ head_dim ]
+  }
+
+  mech VisMlp : FFN {
+    hidden = 4304
+    gate   = none
+    bias   = true
+  }
+
+  # ── 两个栈 ────────────────────────────────────────────────────────
+  stack main {
+    pattern = 94 * GQA
+    main[:] >> MoE
+  }
+
+  stack visual {
+    d_model = 1152
+    aux     = true
+    pattern = 27 * Vis
+    visual[:] >> VisMlp
+  }
+
+  position {
+    default = rope(base = 5000000, pairing = half)
+  }
+
+  tensors {
+    GQA {
+      q_proj.weight : (q * head_dim, d_model)
+      k_proj.weight : (kv * head_dim, d_model)
+      v_proj.weight : (kv * head_dim, d_model)
+      o_proj.weight : (d_model, q * head_dim)
+      q_norm.weight : (head_dim,)
+      k_norm.weight : (head_dim,)
+    }
+    MoE {
+      gate.weight          : (experts, d_model)
+      experts.gate_up_proj : (experts, d_model, 2 * hidden)
+      experts.down_proj    : (experts, hidden, d_model)
+    }
+    Vis {
+      qkv.weight  : (3 * q * head_dim, d_model)
+      qkv.bias    : (3 * q * head_dim,)
+      proj.weight : (d_model, q * head_dim)
+      proj.bias   : (d_model,)
+    }
+    VisMlp {
+      linear_fc1.weight : (hidden, d_model)
+      linear_fc1.bias   : (hidden,)
+      linear_fc2.weight : (d_model, hidden)
+      linear_fc2.bias   : (d_model,)
+    }
+    layer {
+      input_layernorm.weight          : (d_model,)
+      post_attention_layernorm.weight : (d_model,)
+    }
+    layer visual {
+      norm1.weight : (d_model,)
+      norm1.bias   : (d_model,)
+      norm2.weight : (d_model,)
+      norm2.bias   : (d_model,)
+    }
+    global {
+      model.language_model.embed_tokens.weight : (vocab, d_model)
+      model.language_model.norm.weight         : (d_model,)
+      lm_head.weight                           : (vocab, d_model)
+      # merger / deepstack 的输出宽度 = `out_hidden_size` = 文本的 d_model。
+      # 所以这两行**两份文件一模一样**，而算出来的数不一样（2048 vs 4096）✓。
+      model.visual.patch_embed.proj.weight  : (1152, 3, 2, 16, 16)
+      model.visual.patch_embed.proj.bias    : (1152,)
+      model.visual.pos_embed.weight         : (2304, 1152)
+      model.visual.merger.norm.weight       : (1152,)
+      model.visual.merger.norm.bias         : (1152,)
+      model.visual.merger.linear_fc1.weight : (4608, 4608)
+      model.visual.merger.linear_fc1.bias   : (4608,)
+      model.visual.merger.linear_fc2.weight : (d_model, 4608)
+      model.visual.merger.linear_fc2.bias   : (d_model,)
+      model.visual.deepstack_merger_list.0.norm.weight       : (4608,)
+      model.visual.deepstack_merger_list.0.norm.bias         : (4608,)
+      model.visual.deepstack_merger_list.0.linear_fc1.weight : (4608, 4608)
+      model.visual.deepstack_merger_list.0.linear_fc1.bias   : (4608,)
+      model.visual.deepstack_merger_list.0.linear_fc2.weight : (d_model, 4608)
+      model.visual.deepstack_merger_list.0.linear_fc2.bias   : (d_model,)
+      model.visual.deepstack_merger_list.1.norm.weight       : (4608,)
+      model.visual.deepstack_merger_list.1.norm.bias         : (4608,)
+      model.visual.deepstack_merger_list.1.linear_fc1.weight : (4608, 4608)
+      model.visual.deepstack_merger_list.1.linear_fc1.bias   : (4608,)
+      model.visual.deepstack_merger_list.1.linear_fc2.weight : (d_model, 4608)
+      model.visual.deepstack_merger_list.1.linear_fc2.bias   : (d_model,)
+      model.visual.deepstack_merger_list.2.norm.weight       : (4608,)
+      model.visual.deepstack_merger_list.2.norm.bias         : (4608,)
+      model.visual.deepstack_merger_list.2.linear_fc1.weight : (4608, 4608)
+      model.visual.deepstack_merger_list.2.linear_fc1.bias   : (4608,)
+      model.visual.deepstack_merger_list.2.linear_fc2.weight : (d_model, 4608)
+      model.visual.deepstack_merger_list.2.linear_fc2.bias   : (d_model,)
+    }
+  }
+
+  emit {
+    train -> transformers.config {
+      field {
+        model_type              = "qwen3_vl_moe_text"
+        vocab_size              = vocab
+        hidden_size             = d_model
+        num_hidden_layers       = n_layer
+        intermediate_size       = 12288
+        num_attention_heads     = GQA.q
+        num_key_value_heads     = GQA.kv
+        head_dim                = GQA.head_dim
+        max_position_embeddings = ctx
+        rms_norm_eps            = rms_eps
+        hidden_act              = "silu"
+        attention_bias          = false
+        attention_dropout       = 0.0
+        initializer_range       = 0.02
+        rope_scaling            = {"mrope_interleaved": true, "mrope_section": [24, 20, 20], "rope_type": "default"}
+        rope_theta              = 5000000
+        use_cache               = true
+        dtype                   = "bfloat16"
+        bos_token_id            = 151643
+        eos_token_id            = 151645
+        decoder_sparse_step     = 1
+        mlp_only_layers         = []
+        moe_intermediate_size   = MoE.hidden
+        norm_topk_prob          = true
+        num_experts             = MoE.experts
+        num_experts_per_tok     = MoE.top_k
+      }
+    }
+
+    train -> torch.module {
+      name        = "model.language_model.layers.{i}.{scope}{physical}"
+      name_visual = "model.visual.blocks.{i}.{scope}{physical}"
+      global_name = "{physical}"
+      scope { GQA = self_attn., MoE = mlp., Vis = attn., VisMlp = mlp., layer = "", global = "" }
+    }
+  }
+}

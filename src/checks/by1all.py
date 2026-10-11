@@ -79,6 +79,12 @@ REAL = [
     ('gpt-oss-120b.by1', None, 'torch.module', []),
     ('gpt-oss-120b.by1', 'refs/openai__gpt-oss-120b.gguf-tensors.json',
      'ggml', []),
+    # **gpt-oss-20b 原来不在这个清单里** —— 而它 `models/` 里有、`models.tsv`
+    # 里有、`docs/INVENTORY.txt` 的【A】表里也列着（还写着"16 个都在护栏里"）。
+    # **和 GLM-5.3-Flash 当初那个坑一模一样**：一份描述写在仓库里、
+    # 被三处文档当成"验过了"，而 `by1all` 从来没跑过它。
+    # 这正是这个仓库专门在猎的一族 —— **"看起来验了，其实没验"**。
+    ('gpt-oss-20b.by1', None, 'torch.module', []),
     ('gemma-4-31B.by1', 'refs/google__gemma-4-31B.gguf-tensors.json',
      'ggml', []),
     # **同一个 `.by1`，两套发布命名，两份清单。**
@@ -141,6 +147,24 @@ REAL = [
     # 收在 `text_config` 里，`by1verify` 的默认 `--sub text_config`
     # 正好对上（非嵌套的模型会退化成整份 config，所以一条路管两种）。
     ('Qwen3-VL-2B-Thinking.by1', None, 'torch.module', []),
+    # **VL 阶段 2 / 3 / 4 —— 三份一起进来。**
+    #
+    # 阶段 2/3 和 2B 同族：文本架构收在顶层 `text_config` 里，
+    # `by1verify` 的默认 `--sub text_config` 正好对上。
+    # 而阶段 4（Omni）**深了一层** —— 文本架构在 `thinker_config.text_config`，
+    # 所以它的第四列给了 `--sub thinker_config.text_config`（`--sub` 现在认点分路径）。
+    #
+    # 三份各自压着不同的东西：
+    #   30B  —— MoE 的**专家布局是 `(E, d_model, 2h)`**（Qwen3.6 是反过来的），
+    #           而且**没有共享专家**；`lm_head` 存在（2B 是 tie 的）。
+    #   235B —— 同族放大，视觉塔**一个字没改**（merger 输出跟着 `d_model` 走）。
+    #   Omni —— **音频塔**（conv2d x3 + 32 层 Whisper 式 encoder），
+    #           文本 MoE 换成**逐专家存储**（`per_expert`），
+    #           视觉塔层内同形但**层外换了名**（`merger.ln_q` / `mlp.0` / `mlp.2`）。
+    ('Qwen3-VL-30B-A3B-Thinking.by1', None, 'torch.module', []),
+    ('Qwen3-VL-235B-A22B-Thinking.by1', None, 'torch.module', []),
+    ('Qwen3-Omni-30B-A3B-Thinking.by1', None, 'torch.module',
+     ['--sub', 'thinker_config.text_config']),
 ]
 
 # 六个合成模型：三后端
@@ -663,7 +687,8 @@ def main():
                 if _refs.repo_of(f):
                     derived_fail.append(f)
                 continue                     # 合成模型没有 config，正常
-            st, out = run(['by1verify.py', f, cfg, '--config'], 'config ' + f)
+            st, out = run(['by1verify.py', f, cfg, '--config'] + _x,
+                          'config ' + f)
             line = [l.strip() for l in out.splitlines() if '逐字段' in l]
             st = confirmed(st, out, line)
             rows.append(('config ' + f, st,

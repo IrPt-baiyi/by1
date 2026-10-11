@@ -63,3 +63,6 @@ NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16	Nemotron-3.5-Lightning	nvidia/NVIDIA-
 GLM-5.3-Flash	GLM-5.3-Flash	zai-org/GLM-5.3-Flash	mHC + 分组路由 + FP8
 gpt-oss-20b	gpt-oss-20b	openai/gpt-oss-20b	gpt-oss-120b 的小号：同族，只差 n_layer 24 / experts 32
 Qwen3-VL-2B-Thinking	Qwen3-VL-2B-Thinking	Qwen/Qwen3-VL-2B-Thinking	**第一个 VL**：视觉塔（24 层）+ deepstack_merger_list（18 个）
+Qwen3-VL-30B-A3B-Thinking	Qwen3-VL-30B-A3B-Thinking	Qwen/Qwen3-VL-30B-A3B-Thinking	VL 阶段 2：视觉塔复用 + 文本换 MoE（专家 `(E,d,2h)`、无共享专家）
+Qwen3-VL-235B-A22B-Thinking	Qwen3-VL-235B-A22B-Thinking	Qwen/Qwen3-VL-235B-A22B-Thinking	VL 阶段 3：同族放大（94 层 / d 4096 / q64），视觉塔与阶段 2 逐字相同
+Qwen3-Omni-30B-A3B-Thinking	Qwen3-Omni-30B-A3B-Thinking	Qwen/Qwen3-Omni-30B-A3B-Thinking	VL 阶段 4：**音频塔**（Whisper 式 32 层）+ 逐专家 MoE + merger 改名（ln_q / mlp.0/2）

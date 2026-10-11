@@ -549,7 +549,21 @@ def main(argv=None):
     backend = opt("--backend", "ggml" if gguf_path else "torch.module")
 
     cfg = by1io.read_json(cfg_path, encoding="utf-8")
-    tc = cfg.get(sub, cfg)
+    # `--sub` 支持**点分路径**：`thinker_config.text_config`。
+    #
+    # 原来只认单层键（`cfg.get(sub, cfg)`）。Qwen3-VL 那一族的文本架构
+    # 收在顶层 `text_config` 里，一层就够 ✓；而 Qwen3-Omni 收在
+    # `thinker_config.text_config` —— **两层** ✗。
+    #
+    # 逐段走，**任何一段不存在就退回整份 cfg**（和原来单层的行为一致：
+    # 非嵌套模型写 `--sub text_config` 会退化成整份 config，一条路管两种）。
+    tc = cfg
+    for _seg in (sub or "").split("."):
+        if isinstance(tc, dict) and _seg in tc:
+            tc = tc[_seg]
+        else:
+            tc = cfg
+            break
 
     bc = load_checker()
     _, info = bc.check(by1_path)
