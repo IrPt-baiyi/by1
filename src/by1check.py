@@ -1068,6 +1068,10 @@ def main(argv=None):
     # 少了 39 个模块，连 by1paths / by1io 都没列）。
     if argv is None:
         argv = sys.argv[1:]
+    # `--help` 打印用法并**正常退出**（原来是 CALLER 40，见 by1verify 同款）。
+    if argv and argv[0] in ('--help', '-h'):
+        print(__doc__)
+        return 0
     args = list(argv)
     emit_to = None
     if "--emit-config" in args:

@@ -42,6 +42,7 @@ _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)
 import by1paths  # noqa: E402,F401
 import argparse
 import os
+import re
 import subprocess
 import sys
 import tarfile
@@ -329,15 +330,19 @@ def cmd_run(args):
     合起来也更快：开一次连接的开销省掉三次。
     """
     print('  ── 逐层跑验证 ──')
+    # **不截断输出。** 原来每步都 `| tail -N`，而 by1all 的判定行
+    # （`N 项，M 项失败` / `[有失败]`）后面还跟着 10 余行各段耗时 ——
+    # `tail -10` 正好把判定行顶出去，于是 `bad=0`，**远程假通过**。
+    # 输出全拿回来再本地解析；控制台只打印STEP头和判定行，不会刷屏。
     steps = [
         ('① 设备无关性（本地也能跑，这里再跑一遍）',
-         '%s by1dev.py 2>&1 | tail -4' % PY),
+         '%s by1dev.py' % PY),
         ('② **显卡**：搬得过去吗、两边数一致吗',
-         '%s by1gpu.py 2>&1 | tail -30' % PY),
+         '%s by1gpu.py' % PY),
         ('③ 端到端：真产物 -> IR -> 三后端 -> 官方实现',
-         '%s by1e2e.py 2>&1 | tail -14' % PY),
+         '%s by1e2e.py' % PY),
         ('④ 全量（含 C 后端）',
-         '%s by1all.py 2>&1 | tail -10' % PY),
+         '%s by1all.py' % PY),
     ]
     # **一条命令里串起来，中间加分隔符** —— 这样输出还能分辨是哪一步。
     script = ' ; '.join(
@@ -351,9 +356,20 @@ def cmd_run(args):
         if line.startswith('===STEP==='):
             print()
             print('  ── ' + line.replace('===STEP===', ''))
-    bad = out.count('[FAIL]') + out.count('项失败')
+    # 判定信号：单项 FAIL、汇总的"N 项失败"（只数非零）、
+    # "N 项检查器坏了"、总判定行。
+    # **四个都要数** —— 只数前两个时，"3 项检查器坏了"会被算成通过。
+    def _n(pat):
+        return sum(int(m.group(1)) for m in re.finditer(pat, out))
+    bad = (out.count('[FAIL]') + _n(r'(\d+)\s*项失败')
+           + _n(r'(\d+)\s*项检查器坏') + out.count('[有失败]'))
+    for line in out.splitlines():
+        s = line.strip()
+        if ('项，' in s and '失败' in s) or s.startswith('[有失败]') \
+                or s.startswith('[全过') or '检查器自己坏了' in s:
+            print('    ' + s[:100])
     print()
-    print('  输出里出现 [FAIL] / 失败 %d 处' % bad)
+    print('  输出里出现失败信号 %d 处' % bad)
     return 0 if bad == 0 else 1
 
 

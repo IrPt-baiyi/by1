@@ -41,9 +41,15 @@ import sys
 import torch
 
 import by1codegen as cg
-from transformers.models.glm_moe_dsa.modeling_glm_moe_dsa import GlmMoeDsaIndexer
-from transformers.models.glm_moe_dsa.configuration_glm_moe_dsa import (
-    GlmMoeDsaConfig)
+import by1skip
+# 同 by1moe：判卷人可选，不在只置 None（库代码不 sys.exit，by1lint ⑩），
+# 跳过在 main() 里 `return by1skip.skip(...)`。
+try:
+    from transformers.models.glm_moe_dsa.modeling_glm_moe_dsa import GlmMoeDsaIndexer
+    from transformers.models.glm_moe_dsa.configuration_glm_moe_dsa import (
+        GlmMoeDsaConfig)
+except ImportError:
+    GlmMoeDsaIndexer = GlmMoeDsaConfig = None
 
 
 # ── 几组维度 ────────────────────────────────────────────────────────
@@ -220,6 +226,9 @@ def negatives():
 
 
 def main():
+    if GlmMoeDsaIndexer is None:
+        return by1skip.skip(
+            '找不到 transformers 的 glm_moe_dsa —— 这一项在这台机器上验不了')
     print("=" * 74)
     print("  DSA 稀疏索引器差分验证   by1 的 DSAIndexer  vs  "
           "transformers 的 GlmMoeDsaIndexer")

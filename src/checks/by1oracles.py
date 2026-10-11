@@ -56,6 +56,7 @@ import sys
 import tempfile
 
 import torch
+import numpy as np
 
 import by1io      # noqa: F401  —— import 即把 stdout 钉成 UTF-8
 
@@ -85,6 +86,9 @@ def build(src, name='oracle'):
     原来它被当作第 4 个返回值带出去，而**没有任何调用方删它** ——
     每跑一次神谕就在临时区漏 10 个目录（`by1oracle-*`）。
     一个只写不删的临时目录，跑一万遍就是一万个。
+
+    `_FAULT['attn']` 为真时给第一个 Attention 的输出加 1e-3 扰动 ——
+    这是 `--prove` 的注错口：参照型神谕（⑥⑦）此时**必须**转红。
     """
     bc, cg = _mod('by1check'), _mod('by1codegen')
     d = tempfile.mkdtemp(prefix='by1oracle-')
@@ -96,7 +100,17 @@ def build(src, name='oracle'):
         ir = cg.compile_ir(info)
         ns = {}
         exec(compile(cg.render_ir(ir, name + '.by1'), '<oracle>', 'exec'), ns)
-        return ns['build']().eval(), info, ir
+        m = ns['build']().eval()
+        if _FAULT.get('attn'):
+            for mod in m.modules():
+                if type(mod).__name__ == 'Attention':
+                    _orig = mod.forward
+
+                    def _faulty(x, _o=_orig):
+                        return _o(x) + 1e-3
+                    mod.forward = _faulty
+                    break
+        return m, info, ir
     finally:
         shutil.rmtree(d, ignore_errors=True)
 
@@ -278,68 +292,128 @@ def o05_layer_norm():
 
 
 # ── ⑥ 长度 1：attention 输出就是 V ────────────────────────────────
+def _ref_forward(sd, ids):
+    """NOFFN 架构的**第一性原理前向** —— 纯 numpy，不调 by1 的一行代码。
+
+    架构照 IR 逐字展开（`NOFFN`：embed -> RMSNorm -> Attention ->
+    残差 -> RMSNorm -> head）：
+
+        x   = embed[ids]
+        h   = x * rsqrt(mean(x^2) + eps) * w0            # eps = 1e-5
+        q/k/v = h @ Wq/Wk/Wv                              # [n, q*hd]
+        RoPE interleaved（奇偶进、半角出，base 10000，全维度）
+        att = softmax(q@k^T / sqrt(hd) + 因果 mask) @ v
+        x   = x + att_cat @ Wo
+        out = head(x * rsqrt(mean(x^2) + eps) * wf)
+
+    **为什么要手写**：三后端互拍证明的是自洽（三个可以一起错）；
+    这里期望值从定义直接来，和 by1 的实现没有一行共享。
+    """
+    W = {k: v.detach().cpu().double().numpy() for k, v in sd.items()}
+    need = ['embed.weight', 'layers.0.op0.w', 'layers.0.op1.wq.weight',
+            'layers.0.op1.wk.weight', 'layers.0.op1.wv.weight',
+            'layers.0.op1.wo.weight', 'final_norm.w', 'head.weight']
+    miss = [k for k in need if k not in W]
+    if miss:
+        raise KeyError('NOFFN 参照缺少张量: %s' % miss)
+    qh, kvh, hd = 2, 2, 4
+    eps = 1e-5
+
+    def rms(x, w):
+        return x / np.sqrt((x ** 2).mean(-1, keepdims=True) + eps) * w
+
+    ids = np.asarray(ids).reshape(-1)
+    n = len(ids)
+    x = W['embed.weight'][ids]                                # [n, d]
+    h = rms(x, W['layers.0.op0.w'])
+    q = (h @ W['layers.0.op1.wq.weight'].T).reshape(n, qh, hd)
+    k = (h @ W['layers.0.op1.wk.weight'].T).reshape(n, kvh, hd)
+    v = (h @ W['layers.0.op1.wv.weight'].T).reshape(n, kvh, hd)
+    # RoPE：interleaved = 奇偶进、拼接着出；theta_i = base^(-2i/hd)
+    base = 10000.0
+    inv = 1.0 / base ** (np.arange(0, hd // 2) / (hd // 2))
+
+    def rope(t, ang):
+        c, s = np.cos(ang), np.sin(ang)
+        e, o = t[0::2], t[1::2]
+        return np.concatenate([e * c - o * s, e * s + o * c])
+
+    qr = np.stack([rope(q[p, hh], p * inv) for p in range(n) for hh in range(qh)])
+    qr = qr.reshape(n, qh, hd)
+    kr = np.stack([rope(k[p, hh], p * inv) for p in range(n) for hh in range(kvh)])
+    kr = kr.reshape(n, kvh, hd)
+    # GQA：q 头 i 用 kv 头 i // (q//kv)
+    rep = qh // kvh
+    out_heads = []
+    for hh in range(qh):
+        kh = kr[:, hh // rep]                               # [n, hd]
+        vh = v[:, hh // rep]                                # [n, hd]
+        sc = (qr[:, hh] @ kh.T) / np.sqrt(hd)                 # [n, n]
+        for p in range(n):
+            sc[p, p + 1:] = -np.inf                           # 因果
+        sc = sc - sc.max(-1, keepdims=True)
+        w = np.exp(sc)
+        w = w / w.sum(-1, keepdims=True)
+        out_heads.append(w @ vh)                              # [n, hd]
+    a = np.concatenate(out_heads, -1) @ W['layers.0.op1.wo.weight'].T
+    y = rms(x + a, W['final_norm.w'])
+    return y @ W['head.weight'].T                             # [n, V]
+
+
+# 证明神谕"有牙"用的注错开关：build() 看到它就给注意力输出加 1e-3 扰动。
+# 参照型神谕（⑥⑦）在注错后**必须**转红 —— 不会红的神谕等于没有。
+_FAULT = {'attn': False}
+
+
 @oracle
 def o06_seq1_is_v():
     """只有自己可看时，softmax 权重 = 1，输出 = V。
 
-    真相：**手算 attention**（numpy 第一性原理），
-    然后和 by1 的后端比。
+    真相：**手算 NOFFN 的前向**（见 `_ref_forward`），逐位比。
+    第一版只查了 q/v 同形 —— 那永远为真，等于没查（ir.md 的同一族错误）。
     """
-    ex, cg = _mod('by1exec'), _mod('by1codegen')
-    m, info, ir = build(NOFFN)
+    m, _i, _r = build(NOFFN)
     fill(m, seed=1)
     sd = m.state_dict()
-    # 找 q/k/v 投影
-    qk = [k for k in sd if '.wq.' in k or '.wk.' in k]
-    if not qk:
-        return False, '模型里找不到 q/k 投影（键：%s）' % list(sd)[:6]
     ids = torch.tensor([[5]])
     with torch.no_grad():
         out = m(ids)
-    # **第一性原理重算**：单 token 时 attention = V 投影，再 out_proj
-    # 这里只验"输出是有限的且等于某个确定值"不够 —— 要真的手算。
-    h = sd['embed.weight'][5]                        # (d,)
-    wq = sd.get([k for k in sd if '.wq.' in k][0])
-    wv = sd.get([k for k in sd if '.wv.' in k][0])
-    d = h.shape[0]
-    q = (h @ wq.T) if wq.shape[0] != d else (wq @ h)
-    v = (h @ wv.T) if wv.shape[0] != d else (wv @ h)
-    # q 和 v 应该同形（q_dim == v_dim 在这个 mini 里）
-    ok_shape = q.shape == v.shape
-    # 单 token：softmax 只有一项 -> 权重 1 -> 输出 v（在 head 结构下）
-    return ok_shape, ('手算 q %s / v %s —— %s'
-                      % (tuple(q.shape), tuple(v.shape),
-                         '同形（单 token 时输出应等于 v 经 out_proj）'
-                         if ok_shape else '**形状不同，神谕前提不成立**'))
+    ref = _ref_forward(sd, [5])
+    d = float(np.abs(out[0, 0].double().numpy() - ref[0]).max())
+    # 单 token 时 attention 退化成"V 经 out_proj" —— 退化性质本身也验：
+    # 第一性原理参照里 softmax 只有一项，权重恰好 1。
+    return d < 1e-5, '与手算参照最大差 %.3e（单 token = V 经 out_proj）' % d
 
 
-# ── ⑦ GQA：权重相同的头必须输出相同 ───────────────────────────────
+# ── ⑦ GQA/多头：逐头手算参照 ──────────────────────────────────────
 @oracle
 def o07_gqa_heads_equal():
-    """把每个头的 q/k/v 权重设成**完全一样**，各头输出必须逐位相同。
+    """每个头独立手算，再和模型输出逐位比。
 
-    真相：**如果实现把 head 索引搞错了，各头就会不同** ——
-    而三后端互拍看不出来（三个都错得一样）。
+    ## 第一版错在哪（这就是它重写的原因）
+
+    原版把各头的 q/k/v 权重设成**完全一样**，然后只查
+    `isfinite(out)` —— 输出当然有限，**这条永远绿**。
+    而"权重相同"这个设计本身就抓不到 head 索引错误：
+    各头权重一样时，**搞混哪一head跟哪一head，输出毫无变化**
+    （混淆相同的东西还是相同）。所以它连理论上的牙都没有。
+
+    现在换成真正有牙的版本：**各头权重保持随机互不相同**，
+    用 `_ref_forward` 逐头手算参照（含 RoPE、GQA 映射、因果 mask），
+    和模型输出比。头索引、头布局、RoPE 配对、softmax 缩放
+    任何一处搞错，两边立刻分叉。
+
+    用 `NOFFN` 而不是 `MINI`：这条验的是注意力，FFN 归 ⑧ 管。
     """
-    m, _i, _r = build(MINI)
+    m, _i, _r = build(NOFFN)
     fill(m, seed=2)
     sd = m.state_dict()
-    hd = 4
-    for key in list(sd):
-        if key.endswith('wq') or key.endswith('wk') or key.endswith('wv'):
-            w = sd[key]
-            # 把每个头的块复制成第一块的
-            if w.shape[0] % hd == 0:
-                n = w.shape[0] // hd
-                with torch.no_grad():
-                    blk = w[:n].clone()
-                    for h in range(hd):
-                        w[h * n:(h + 1) * n] = blk
     ids = torch.tensor([[2, 4, 6]])
     with torch.no_grad():
         out = m(ids)
-    return bool(torch.isfinite(out).all()), \
-        '（各头权重已设成相同，输出幅度 %.3e）' % out.abs().max()
+    ref = _ref_forward(sd, [2, 4, 6])
+    d = float(np.abs(out[0].double().numpy() - ref).max())
+    return d < 1e-5, '逐头手算参照 vs 模型，最大差 %.3e' % d
 
 
 # ── ⑧ 门控 FFN：门 = 0 时输出 = 0 ─────────────────────────────────
@@ -407,23 +481,35 @@ def o10_zero_weights():
 
     真相：**0 @ x = 0**。如果实现里混进了不该有的项（比如写死的
     初始化、或残留的随机），这条会红。
+
+    第一版只查 `isfinite` —— 输出是垃圾也有限，永远绿。
+    现在：**输出必须逐位等于 0**，并且带一个反向对照
+    （故意留下 wv 不清零 -> 输出必须**非**0），两个方向都验。
     """
-    m, _i, _r = build(MINI)
-    sd = m.state_dict()
-    n_zero = 0
-    with torch.no_grad():
-        for k in sd:
-            if sd[k].dim() == 2 and ('wq' in k or 'wk' in k or 'wv' in k
-                                     or 'wo' in k):
-                sd[k].zero_()
-                n_zero += 1
-    ids = torch.tensor([[1, 2, 3]])
-    with torch.no_grad():
-        out = m(ids)
-    fin = bool(torch.isfinite(out).all())
-    return fin and n_zero > 0, \
-        '清零了 %d 个线性权重，输出有限=%s，幅度 %.3e' % (
-            n_zero, fin, out.float().abs().max())
+    def run(keep_head=False):
+        m, _i, _r = build(MINI)
+        sd = m.state_dict()
+        n_zero = 0
+        with torch.no_grad():
+            for k in sd:
+                # **所有**线性权重（attention / FFN / head），embed 是输入不清
+                if sd[k].dim() == 2 and not k.startswith('embed'):
+                    if keep_head and k.startswith('head'):
+                        continue
+                    sd[k].zero_()
+                    n_zero += 0 if keep_head else 1
+        ids = torch.tensor([[1, 2, 3]])
+        with torch.no_grad():
+            return m(ids), n_zero
+
+    out, n_zero = run()
+    d_all = float(out.abs().max())
+    out2, _ = run(keep_head=True)
+    d_keep = float(out2.abs().max())
+    ok = d_all == 0.0 and d_keep > 1e-6
+    return ok, ('清零 %d 个线性权重：输出幅度 %.3e（**必须恰为 0**）；'
+                '故意留下 head 不清：幅度 %.3e（**必须非 0**，否则这条没有牙）'
+                % (n_zero, d_all, d_keep))
 
 
 def main():
@@ -450,11 +536,20 @@ def main():
     print('  三后端互拍证明的是自洽；这里证明的是**对**。')
     print()
     if prove:
-        print('  --prove：故意改错一处，确认神谕会红')
-        with torch.no_grad():
-            pass
-        print('    （由每条神谕内部的"要求恰好 0 / 必须变"承担 ——')
-        print('      比如 ⑧ 门清零后输出**必须变**；不变就红。）')
+        print('  --prove：给注意力输出注入 1e-3 扰动，参照型神谕必须转红')
+        teeth = []
+        for fn in (o06_seq1_is_v, o07_gqa_heads_equal):
+            _FAULT['attn'] = True
+            try:
+                ok, detail = fn()
+            finally:
+                _FAULT['attn'] = False
+            teeth.append((fn.__name__, not ok))
+        for name, red in teeth:
+            print('    [%s] %-24s %s' % (
+                '有牙' if red else '**没有牙**', name,
+                '注错后转红' if red else '注错后居然还绿 —— 它验了个空'))
+        print('    （⑧⑩ 自带反向对照：门清零后输出必须变 / 留一个权重不清必须非 0）')
     return 0 if npass == len(ORACLES) else 1
 
 

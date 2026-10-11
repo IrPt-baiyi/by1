@@ -533,6 +533,11 @@ def main(argv=None):
     # 同上：入口 `by1-verify = "by1verify:main"` 是不带参数调的。
     if argv is None:
         argv = sys.argv[1:]
+    # `--help` 打印用法并**正常退出**。原来它落到下面的参数个数检查，
+    # 返回 by1skip.CALLER(40) —— 看着像"你用错了"，其实你问得没错。
+    if argv and argv[0] in ('--help', '-h'):
+        print(__doc__)
+        return 0
     if len(argv) < 2:
         print(__doc__)
         # 少给 .by1 / 产物 -> by1skip.CALLER

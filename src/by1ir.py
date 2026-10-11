@@ -827,6 +827,9 @@ def _norm(x):
 
 def _cli():
     import sys
+    if '--help' in sys.argv or '-h' in sys.argv:
+        print(__doc__ or 'by1ir —— IR 规格、校验、JSON 往返。')
+        return 0
     if '--spec' in sys.argv:
         print(spec_markdown())
         return 0

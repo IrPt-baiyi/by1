@@ -59,19 +59,24 @@ if _SRC not in sys.path:
 
 import by1skip  # noqa: E402
 
+# 判卷人可选，不在只置 None（库代码不 sys.exit，by1lint 第⑩类）——
+# `import by1ssm` 照旧成功，跳过在 main() 里 return by1skip.skip(...)。
+try:
+    from transformers.models.nemotron_h import NemotronHConfig
+    from transformers.models.nemotron_h.modeling_nemotron_h import (
+        NemotronHMamba2Mixer)
+except ImportError:
+    NemotronHConfig = NemotronHMamba2Mixer = None
+
 
 def _torch():
     try:
         import torch  # noqa: F401
     except ImportError:
         by1skip.skip('没装 torch —— 这一项在这台机器上验不了')
-    try:
-        from transformers.models.nemotron_h import (  # noqa: F401
-            NemotronHConfig)
-        from transformers.models.nemotron_h.modeling_nemotron_h import (  # noqa: F401,E501
-            NemotronHMamba2Mixer)
-    except ImportError:
-        by1skip.skip('这个 transformers 里没有 NemotronH —— 判卷人不在')
+    # **nemotron_h 的检查在模块级**（import 时置 None，main() 里跳过）——
+    # 原来这里也有一份，但它只打印不返回（`by1skip.skip` 的返回值被丢掉），
+    # 于是"保护"打印完就继续走，照样在 `_case` 里 ModuleNotFoundError。
     import torch
     return torch
 
@@ -138,9 +143,6 @@ def mine_mamba2(mx, x, *, eps=None, flip_conv=False, softplus=True):
 
 
 def _case(torch, d, h, hd, ssm, ng, k, seq, tag):
-    from transformers.models.nemotron_h import NemotronHConfig
-    from transformers.models.nemotron_h.modeling_nemotron_h import (
-        NemotronHMamba2Mixer)
     torch.manual_seed(0)
     cfg = NemotronHConfig(
         vocab_size=64, hidden_size=d, num_hidden_layers=1,
@@ -164,6 +166,11 @@ def _case(torch, d, h, hd, ssm, ng, k, seq, tag):
 def main(argv):
     torch = _torch()
     selftest = '--selftest' in argv
+
+    if NemotronHConfig is None:
+        # 判卷人不在就干净跳过（退出码 30），不是崩、不是"检查器坏了"
+        return by1skip.skip(
+            '找不到 transformers 的 nemotron_h —— 这一项在这台机器上验不了')
 
     print()
     print('  Mamba2 判卷人（递推 by1 要生成的式子，对官方 NemotronHMamba2Mixer）')

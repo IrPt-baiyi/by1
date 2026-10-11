@@ -45,11 +45,14 @@ c = ["numpy"]
 [project.scripts]
 by1 = "by1ver:main"
 "by1-spec" = "by1ir:_cli"
-"by1-all" = "by1all:main"
-"by1-verify" = "by1verify:main"
+# 这三个模块在 `src/checks/` 里，装出来是 **`checks.` 包内模块**，
+# 不是顶级名 —— 写成 `by1all:main` 的话，`pip install -e .` 之后
+# 三条命令一律 ModuleNotFoundError（实测）。包名映射只此一处。
+"by1-all" = "checks.by1all:main"
+"by1-verify" = "checks.by1verify:main"
 "by1-check" = "by1check:main"
 "by1-boot" = "by1boot:main"
-"by1-e2e" = "by1e2e:main"
+"by1-e2e" = "checks.by1e2e:main"
 
 [tool.setuptools]
 # **代码摊在 `src/` 下 —— 它仍然不是一个"包"**，是一堆能单独跑的小工具

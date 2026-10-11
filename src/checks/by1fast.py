@@ -35,6 +35,7 @@ import sys as _sys
 # （判据在 `by1paths.check_boot()`）。
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 import by1paths  # noqa: E402,F401
+import by1skip
 import json
 import os
 import py_compile
@@ -224,10 +225,11 @@ def main():
                            capture_output=True, text=True,
                            encoding='utf-8', errors='replace', timeout=300)
         out = (r.stdout or '') + (r.stderr or '')
-        # **退出码 2 = 跳过，不是失败。** 这是这个仓库的三态协议
-        # （`by1skip.py`），而这里原来只判了 `== 0` ——
-        # 于是"这台机器验不了"被算成了"坏了"。
-        if r.returncode == 2:
+        # **退出码 by1skip.CODE = 跳过，不是失败。** 这是这个仓库的三态
+        # 协议（`by1skip.py` 的 `CODE`，**只此一处**定义），而这里原来
+        # 写死了 `== 2` —— 协议值是 30，于是判卷人干净跳过（退出码 30）
+        # 被误判成"坏了"：假红。和协议脱节的硬编码正是这一类。
+        if r.returncode == by1skip.CODE:
             tail = [l.strip() for l in out.splitlines() if l.strip()]
             print('     --   %-16s %s'
                   % (script, (tail[-1] if tail else '')[:56]))

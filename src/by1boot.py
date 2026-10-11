@@ -559,6 +559,10 @@ def boot_ir(cfg, real, name="booted"):
 
 
 def main():
+    # `--help` 打印用法并正常退出 —— 原来是 CALLER(40)，像"你用错了"。
+    if '--help' in sys.argv or '-h' in sys.argv:
+        print(__doc__)
+        return 0
     if len(sys.argv) < 3:
         print(__doc__)
         # 少给 config / tensors -> by1skip.CALLER

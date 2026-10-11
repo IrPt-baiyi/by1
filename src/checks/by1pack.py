@@ -112,6 +112,19 @@ WANT = [
     ('by1paths.py', '仓库布局的唯一真相源'),
     ('by1ver.py', '版本号的唯一真相源'),
     ('by1name.py', '改名：models.tsv <-> 磁盘'),
+    # **语言层：`by1check` 在模块级 import 它们，而清单里一直没有。**
+    # 这 8 个是 `closure_missing()` 修好路径 bug 之后一次报出来的 ——
+    # 也就是说"上一包"（以及之前每一包）在云端跑到 by1check 时
+    # 就是 ModuleNotFoundError。modules 拆进 `src/lang/` 子目录时
+    # 漏了它们；WANT 写裸名、`_where()` 认子目录，所以补清单即可。
+    ('by1blocks.py', '块语句（stack / pattern）的展开'),
+    ('by1export.py', '.by1 -> 各框架 config 的导出（判卷人之一）'),
+    ('by1hp.py', 'hparams 的读取与别名'),
+    ('by1lower.py', '机制声明 -> 层算子序列'),
+    ('by1sched.py', '层的调度（layer_types）'),
+    ('by1stacks.py', '栈与逐层覆盖'),
+    ('by1state.py', 'state 块（KV/SSM 状态声明）'),
+    ('by1tens.py', '张量名与形状的推导'),
     ('gpt2-tiny.by1', '上一代的缩小版（无门控 FFN + LayerNorm + 查表位置）'),
     ('ext-demo.c', '示例外部机制：两个符号，证「不用改编译器」'),
     ('raw.py', '逃生舱的示例实现（配 raw-escape.by1）'),
@@ -139,20 +152,32 @@ def _where(name):
     """清单里的**裸名** -> 仓库根相对的来源路径。
 
     **规则只写这一处。** `.by1`（还有 `raw.py`）在 `models/`，
-    代码在 `src/`，其余按写的来。
+    代码在 `src/` **或其子目录**（子目录清单在 `by1paths.SUBDIRS`，
+    也只此一处），其余按写的来。
+
+    原来这里只会拼 `src/ + name` —— 而 41 个模块里 29 个在子目录里
+    （`checks/` `modelcheck/` `lang/` `data/` `escape/`），于是打包自检
+    永远报"清单里写了、磁盘上没有"，`by1pack` 必 exit 1。
     """
     if name.endswith('.by1') or name == 'raw.py':
         return 'models/' + name
     if name.endswith(('.py', '.c')):
-        return 'src/' + name
+        for sub in ('',) + tuple(by1paths.SUBDIRS):
+            rel = 'src/' + (sub + '/' if sub else '') + name
+            if os.path.exists(norm(rel)):
+                return rel
+        return 'src/' + name      # 兜底：让 absent 报出来，而不是静默错位
     return name
 
 
 def disk_modules():
-    """`src/` 下所有模块的裸名。"""
+    """`src/` 下所有模块的裸名（**含子目录** —— 41 个模块里 29 个在那）。"""
     import glob as _g
-    return {os.path.basename(p)
-            for p in _g.glob(norm('src/*.py'))}
+    out = set()
+    for pat in ('src/*.py',) + tuple(
+            'src/%s/*.py' % s for s in by1paths.SUBDIRS):
+        out.update(os.path.basename(p) for p in _g.glob(norm(pat)))
+    return out
 
 
 def closure_missing():
@@ -174,8 +199,10 @@ def closure_missing():
     graph = {}
     for f in sorted(want):
         try:
-            tree = ast.parse(by1io.read_text(norm('src/' + f), encoding='utf-8'))
-        except SyntaxError:
+            # 路径走 `_where()` —— 模块散在 `src/` 和 5 个子目录里，
+            # 硬拼 `src/ + f` 会在第一个子目录模块上 FileNotFoundError。
+            tree = ast.parse(by1io.read_text(norm(_where(f)), encoding='utf-8'))
+        except (SyntaxError, OSError):
             graph[f] = set()
             continue
         deps = set()

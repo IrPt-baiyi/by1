@@ -37,20 +37,32 @@ import torch
 
 import by1codegen as cg
 import by1ir
+import by1skip
 from transformers.models.deepseek_v3.modeling_deepseek_v3 import (
     DeepseekV3TopkRouter)
 from transformers.models.deepseek_v3.configuration_deepseek_v3 import (
     DeepseekV3Config)
-from transformers.models.deepseek_v4.modeling_deepseek_v4 import (
-    DeepseekV4TopKRouter)
-from transformers.models.deepseek_v4.configuration_deepseek_v4 import (
-    DeepseekV4Config)
+# **判卷人可选，不在就跳过 —— 但退出是调用方的事，库代码不 sys.exit**
+# （by1lint 第⑩类）。所以这里只把名字置 None，跳过放到 main() 里
+# `return by1skip.skip(...)`：`import by1moe` 照旧成功（by1fast 的
+# import 冒烟测试要的就是这个），跑起来才退出码 30。
+try:
+    from transformers.models.deepseek_v4.modeling_deepseek_v4 import (
+        DeepseekV4TopKRouter)
+    from transformers.models.deepseek_v4.configuration_deepseek_v4 import (
+        DeepseekV4Config)
+except ImportError:
+    DeepseekV4TopKRouter = DeepseekV4Config = None
 
 D, E, K, NG, TG = 256, 32, 4, 8, 4
 NT = 12
 
 
 def main():
+    if DeepseekV4TopKRouter is None:
+        # 判卷人不在就干净跳过（退出码 30），不是崩、更不是"检查器坏了"
+        return by1skip.skip(
+            '找不到 transformers 的 deepseek_v4 —— 这一项在这台机器上验不了')
     torch.manual_seed(0)
     cfg = DeepseekV3Config(
         hidden_size=D, num_hidden_layers=2, num_attention_heads=4,

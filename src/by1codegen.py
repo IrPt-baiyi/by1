@@ -1299,7 +1299,10 @@ class DSAIndexer(nn.Module):
         pos = torch.arange(n, device=x.device)
         idx = idx.masked_fill(pos[None, :] > pos[:, None], float("-inf"))
         t = min(self.topk, n)
-        return idx.topk(t, dim=-1).indices                  # [b, n, t]
+        # **稳定 top-k**（并列取较小下标）—— 和 NumPy 的 argsort stable、
+        # C 的稳定插入排序逐字对应。裸 `torch.topk` 的并列行为随版本变，
+        # 三后端会因此挑出不同的 key（ir.md 记着实测差 0.167）。
+        return _stable_topk(idx, t)                         # [b, n, t]
 
     def _pool_select(self, x, q, k):
         """k-pool：**池**打分，选中的池摊回原始 token。
@@ -1350,7 +1353,7 @@ class DSAIndexer(nn.Module):
         cand = vis & pool_valid[:, None, :]
         sc = sc.masked_fill(~cand, torch.finfo(sc.dtype).min)
         sk = min(self.topk // P, sc.shape[-1])
-        sel = sc.topk(sk, dim=-1).indices
+        sel = _stable_topk(sc, sk)
         sel_ok = cand.gather(-1, sel)
         sel_idx = pool_idx[bidx, sel]                            # [b, n, sk, P]
         out = sel_idx.flatten(-2)
@@ -1677,6 +1680,31 @@ def _score(logits, kind):
     raise ValueError("不认识的打分函数 <%r> —— 不许静默退回 softmax" % (kind,))
 
 
+def _stable_topk(v, k, dim=-1):
+    """稳定 top-k：**并列时取较小下标**。替代裸 `torch.topk`。
+
+    规矩是 `by1exec.py` 定死的（"并列取较小的 key 下标（稳定排序），
+    三个后端都按这条算"）：NumPy 侧 `np.argsort(-v, kind="stable")`，
+    C 侧稳定插入排序（严格 `>`）。**唯独 `torch.topk` 不保证** ——
+    它的并列挑选随版本/构建变化，于是同一份权重同一个输入，PyTorch
+    会和另两个后端**挑出不同的 key/专家**，输出当场差 1e-1 量级。
+    （实测：`mla-sparse-shaped.by1` 在 torch 2.10 上 NumPy vs PyTorch
+    差 0.167；DSA 打分过 ReLU 后大量分数恰好是 0，并列极多。
+    把互拍序列长压短只是降低撞并列的概率，不是根因修复。）
+
+    `torch.argsort(..., stable=True)`（torch>=1.9）与稳定排序逐字对应：
+    相等元素保持原相对顺序，即较小下标在前。
+    """
+    ordv = v.argsort(dim=dim, descending=True, stable=True)
+    return ordv.narrow(dim, 0, k)
+
+
+def _stable_topk2(v, k, dim=-1):
+    """`_stable_topk` 的变体：同时返回（值, 下标），替代 `v.topk(k)`。"""
+    topi = _stable_topk(v, k, dim)
+    return v.gather(dim, topi), topi
+
+
 def _swiglu(gate, up, style, limit, alpha):
     """两个都叫 SwiGLU，但不是一回事：
          标准   silu(gate) * up
@@ -1889,18 +1917,23 @@ class MoE(nn.Module):
             # 只是 `sc` 换成 sqrt(softplus(logits))。
             ng, tg = self.n_group, self.topk_group
             if not ng or not tg:
-                raise CodegenError(
+                # RuntimeError 不用 CodegenError —— 这段是**生成出去的代码**，
+                # 在那边 CodegenError 根本不存在（同上面 _swiglu 那条教训）。
+                raise RuntimeError(
                     "routing = sigmoid_group_topk 需要 n_group 与 topk_group")
             sc = _score(logits, self.score)
             choice = sc + self.score_bias if self.score_bias is not None else sc
             gs = choice.view(-1, ng, self.n_exp // ng).topk(2, dim=-1)[0].sum(-1)
-            gi = gs.topk(tg, dim=-1, sorted=False)[1]
+            # 选组：**稳定 top-k**（并列取较小下标），和 NumPy/C 一致。
+            # 上一行取"每组前 2 之和"，并列时取哪两个值没差别（和一样），
+            # 所以那一行不需要稳定。
+            gi = _stable_topk(gs, tg)
             gm = torch.zeros_like(gs).scatter_(1, gi, 1)
             mask = (gm.unsqueeze(-1)
                     .expand(-1, ng, self.n_exp // ng)
                     .reshape(-1, self.n_exp))
             choice = choice.masked_fill(~mask.bool(), float("-inf"))
-            topi = choice.topk(self.k, dim=-1, sorted=False)[1]
+            topi = _stable_topk(choice, self.k)
             tv = sc.gather(1, topi)
             topv = tv / (tv.sum(-1, keepdim=True) + 1e-20)
         elif self.routing == "sigmoid_topk":
@@ -1911,7 +1944,9 @@ class MoE(nn.Module):
             # 走成 softmax_topk。而 step-3.7 的前向从来没跑过，所以没人发现。
             sc = _score(logits, self.score)
             choice = sc + self.score_bias if self.score_bias is not None else sc
-            topi = choice.topk(self.k, dim=-1, sorted=False)[1]
+            # **稳定 top-k**（并列取较小下标）—— `torch.topk(sorted=False)`
+            # 的并列挑选随版本变，和 NumPy/C 后端会挑出不同的专家。
+            topi = _stable_topk(choice, self.k)
             tv = sc.gather(1, topi)
             topv = tv / (tv.sum(-1, keepdim=True) + 1e-20)
         elif self.routing == "topk_softmax":
@@ -1921,22 +1956,23 @@ class MoE(nn.Module):
             # 非 softmax 的 `score` 是矛盾（by1ir 那边已经拦住了，
             # 这里是第二道，因为 IR 也有人直接写）。
             if self.score != "softmax":
-                raise CodegenError(
+                raise RuntimeError(
                     "routing = topk_softmax 不经过打分函数，"
                     "score = %r 不会被读 —— 要么去掉，要么换 sigmoid_topk"
                     % (self.score,))
-            tv, topi = logits.topk(self.k, dim=-1)
+            # 值和下标都要，且并列取较小下标 —— `_stable_topk2` 替代裸 topk。
+            tv, topi = _stable_topk2(logits, self.k)
             topv = tv.softmax(-1)
         else:
             # 全体 softmax -> top-k -> 重新归一（Mixtral）。
             # 同上：这一支的 `score` 就是 softmax 本身。
             if self.score != "softmax":
-                raise CodegenError(
+                raise RuntimeError(
                     "routing = softmax_topk 不经过打分函数，"
                     "score = %r 不会被读 —— 要么去掉，要么换 sigmoid_topk"
                     % (self.score,))
             sel = logits + self.score_bias if self.score_bias is not None else logits
-            tv, topi = sel.softmax(-1).topk(self.k, dim=-1)
+            tv, topi = _stable_topk2(sel.softmax(-1), self.k)
             if self.score_bias is not None:
                 tv = logits.gather(-1, topi).softmax(-1)
             topv = tv / (tv.sum(-1, keepdim=True) + 1e-9)
