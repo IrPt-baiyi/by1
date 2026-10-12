@@ -999,9 +999,20 @@ def _lower_moe(g, p, x, dst, w, a, d):
                   "topk_softmax"):
         raise SystemExit("  [不支持] MoE.routing=%r 不在闭集里" % rt)
     _act = str(a.get("act", "silu"))
-    if _act not in ("silu", "gptoss"):
-        # op_moe 对别的 act 是**静默走 silu** —— 这里不跟：要么实现要么拒绝
+    if _act not in ("silu", "gptoss", "gelu", "gelu_new", "gelu_tanh",
+                    "tanh", "relu2"):
+        # 表外取值拒绝 —— op_moe 那边的静默 silu 是记过案的 bug
         raise SystemExit("  [不支持] MoE.act=%r 还没有 lowering" % a.get("act"))
+    _APRIM = {"silu": "silu", "gelu": "gelu", "gelu_new": "gelu_tanh",
+              "gelu_tanh": "gelu_tanh", "tanh": "gelu_tanh"}
+
+    def _act_node(inp, nm, shape):
+        """激活分派（照 `_act_apply` / `_act`）；relu2 = relu²，两个节点拼。"""
+        if _act == "relu2":
+            r = g.add("clamp_min", [inp], [p + nm + "0"],
+                      attrs={"min": 0.0}, shapes=[shape])
+            return g.add("mul", [r, r], [p + nm], shapes=[shape])
+        return g.add(_APRIM[_act], [inp], [p + nm], shapes=[shape])
     E, K, H = int(a["experts"]), int(a["top_k"]), int(a["hidden"])
     sb_on = bool(a.get("score_bias"))
     # **打分函数和选法正交**，解析走 `by1ir.moe_score` 那一份（唯一定义）。
@@ -1174,7 +1185,7 @@ def _lower_moe(g, p, x, dst, w, a, d):
                    shapes=[(H, K, None)])
         acc = g.add("mul", [t3, u1], [p + "acc0"], shapes=[(H, K, None)])
     else:
-        hb = g.add("silu", [hb], [p + "hb"], shapes=[(H, K, None)])
+        hb = _act_node(hb, "hb", (H, K, None))
         acc = g.add("mul", [hb, ob], [p + "acc0"], shapes=[(H, K, None)])
     acc4 = g.add("view", [acc], [p + "acc4"],
                  attrs={"shape": [H, 1, K, None]}, shapes=[(H, 1, K, None)])
@@ -1194,8 +1205,27 @@ def _lower_moe(g, p, x, dst, w, a, d):
     if a.get("shared"):
         sh = g.add("matmul", [w("sw1"), x], [p + "sh1"], shapes=[(None, None)])
         sh3 = g.add("matmul", [w("sw3"), x], [p + "sh3"], shapes=[(None, None)])
-        sh = g.add("silu", [sh], [p + "sh2"], shapes=[(None, None)])
-        se = g.add("mul", [sh, sh3], [p + "sh4"], shapes=[(None, None)])
+        if _act == "gptoss":
+            # 共享专家同样走 style + limit_shared（torch 的 `_swiglu` 同句）
+            _lm = a.get("limit_shared")
+            if _lm is not None:
+                sh = g.add("clamp_max", [sh], [p + "sh0"],
+                           attrs={"max": float(_lm)}, shapes=[(None, None)])
+                sh3 = g.add("clamp_min", [sh3], [p + "sh30"],
+                            attrs={"min": -float(_lm)}, shapes=[(None, None)])
+                sh3 = g.add("clamp_max", [sh3], [p + "sh31"],
+                            attrs={"max": float(_lm)}, shapes=[(None, None)])
+            t1 = g.add("scale", [sh], [p + "sh10"],
+                       attrs={"s": float(a.get("alpha", 1.702))},
+                       shapes=[(None, None)])
+            t2 = g.add("sigmoid", [t1], [p + "sh11"], shapes=[(None, None)])
+            t3 = g.add("mul", [sh, t2], [p + "sh12"], shapes=[(None, None)])
+            u1 = g.add("add_scalar", [sh3], [p + "sh13"], attrs={"c": 1.0},
+                       shapes=[(None, None)])
+            se = g.add("mul", [t3, u1], [p + "sh4"], shapes=[(None, None)])
+        else:
+            sh = _act_node(sh, "sh2", (None, None))
+            se = g.add("mul", [sh, sh3], [p + "sh4"], shapes=[(None, None)])
         se = g.add("matmul", [w("sw2"), se], [p + "se"], shapes=[(d, None)])
         if a.get("shared_gate"):
             gs = g.add("matmul", [w("shared_gate"), x], [p + "gs"],

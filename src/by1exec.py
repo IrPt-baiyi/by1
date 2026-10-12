@@ -654,13 +654,29 @@ def op_moe(P, a, ins, d):
                 u = np.clip(u, -lim, lim)
             h = (u + 1) * (g / (1.0 + np.exp(-a.get("alpha", 1.702) * g)))
         else:
-            h = silu(g) * u
+            # **激活要分派，不能写死 silu** —— `act = relu2`（Nemotron 的
+            # MoE）原来在这里被算成 silu，而 PyTorch 的 `_swiglu` 也写死
+            # silu：**两个后端一致，而两个都错**。现在走 `_act_apply`
+            # （和 op_ffn 同一份）。
+            h = _act_apply(g, a.get("act", "silu")) * u
         ye = h @ P["w2"][e].T
         if a.get("expert_bias") and "b2" in P:
             ye = ye + P["b2"][e]
         out[rows] += topv[rows][hit[rows]][:, None] * ye
     if a.get("shared"):
-        sh = silu(xf @ P["sw1"].T) * (xf @ P["sw3"].T)
+        # **共享专家走同一个激活与夹取值**（torch 的
+        # `_swiglu(sw1·x, sw3·x, style, limit_shared, alpha)`）——
+        # 这里原来写死 silu 且不夹：gptoss + 共享的模型两边会对不上。
+        _g2, _u2 = xf @ P["sw1"].T, xf @ P["sw3"].T
+        if a.get("act") == "gptoss":
+            _lm = a.get("limit_shared")
+            if _lm is not None:
+                _g2 = np.minimum(_g2, _lm)
+                _u2 = np.clip(_u2, -_lm, _lm)
+            sh = ((_u2 + 1)
+                  * (_g2 / (1.0 + np.exp(-a.get("alpha", 1.702) * _g2))))
+        else:
+            sh = _act_apply(_g2, a.get("act", "silu")) * _u2
         se = sh @ P["sw2"].T
         if a.get("shared_gate") and "shared_gate" in P:
             se = se * (1.0 / (1.0 + np.exp(-(xf @ P["shared_gate"].T))))

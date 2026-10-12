@@ -1707,14 +1707,18 @@ def _stable_topk2(v, k, dim=-1):
 
 def _swiglu(gate, up, style, limit, alpha):
     """两个都叫 SwiGLU，但不是一回事：
-         标准   silu(gate) * up
-         GPT-OSS gate*sigmoid(alpha*gate) * (up+1)，并且两侧都 clamp"""
+         标准   act(gate) * up        —— **act 按 style 分派**（silu/relu2/gelu…）
+         GPT-OSS gate*sigmoid(alpha*gate) * (up+1)，并且两侧都 clamp
+
+    ⚠ 这里的标准支原来写死 `F.silu(gate) * up` —— `act = relu2`（Nemotron
+    的 MoE）/ gelu 全被静默算成 silu。NumPy 的 `op_moe` 同一处也写死 silu：
+    **两个后端一致，而两个都错**。现在走 `_act`（和无门控 FFN 同一份）。"""
     if style == "gptoss":
         if limit is not None:
             gate = gate.clamp(max=limit)
             up = up.clamp(min=-limit, max=limit)
         return (up + 1) * (gate * torch.sigmoid(gate * alpha))
-    return F.silu(gate) * up
+    return _act(gate, style) * up
 
 
 def _load_raw(impl):

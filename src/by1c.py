@@ -1464,6 +1464,18 @@ def _emit_c_body(ir, params):
             if k == "FFN" and a.get("act") == "gptoss":
                 raise SystemExit(
                     f"  [不支持] 第 {L['index']} 层的 FFN 用了 gptoss 激活")
+            if k == "MoE" and a.get("act", "silu") not in ("silu", "gptoss"):
+                # 融合核 `act_gate_` 只有 silu/gptoss 两支 —— 表外的取值
+                # **不许静默算成 silu**（NumPy/PyTorch 两边就是这么错的，
+                # relu2 的 Nemotron 三后端一致地错；见 by1graph._lower_moe）
+                raise SystemExit(
+                    f"  [不支持] 第 {L['index']} 层的 MoE 用了 act="
+                    f"{a.get('act')!r} —— C 融合核只有 silu / gptoss")
+            if k == "MoE" and a.get("act") == "gptoss" and a.get("shared"):
+                # 共享专家那条支在融合核里没有 limit_shared / 激活分派
+                raise SystemExit(
+                    f"  [不支持] 第 {L['index']} 层 gptoss + 共享专家 —— "
+                    "融合核的共享支还没有 limit_shared / 激活分派")
             if k not in C_KINDS:
                 raise SystemExit(f"  [不支持] C 后端还没有 {k}")
 
