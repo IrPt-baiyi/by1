@@ -1961,6 +1961,12 @@ static void p_clamp_min(float *o, const float *x, long long tot, float m) {
     for (long long t = 0; t < tot; t++) o[t] = x[t] > m ? x[t] : m;
 }
 
+/* a + c（c 是 attr）—— **不是 clamp**：`+ 1e-20` 和 `max(·, 1e-9)` 是两个
+   公式（Σ < c 时不一样），别在机械表里合并成一条。 */
+static void p_add_scalar(float *o, const float *x, long long tot, float c) {
+    for (long long t = 0; t < tot; t++) o[t] = x[t] + c;
+}
+
 /* softmax 沿最后轴（`by1ir.moe_scores_array` 的 softmax 那一支）。 */
 static void p_softmax(float *o, const float *x, long long rows, long long k) {
     for (long long r = 0; r < rows; r++) {
@@ -2413,9 +2419,10 @@ def emit_c_graph(ir, params, g=None):
             body.append("    p_%s(%s, %s, %s, %d, %s, %s, %s);"
                         % (prim, dst, a[0], a[1], nd, _dims(out),
                            _dims(A), _dims(B)))
-        elif prim in ("scale", "clamp_min"):
+        elif prim in ("scale", "clamp_min", "add_scalar"):
             out = list(shp_in[0])
-            _k = "s" if prim == "scale" else "min"
+            _k = {"scale": "s", "clamp_min": "min",
+                  "add_scalar": "c"}[prim]
             body.append("    p_%s(%s, %s, %s, %sf);"
                         % (prim, dst, a[0], _prod(out),
                            repr(float(at[_k]))))

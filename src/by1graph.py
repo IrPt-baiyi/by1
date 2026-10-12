@@ -319,6 +319,15 @@ def _ref_clamp_min():
     return lambda x, m: np.maximum(x, float(m))
 
 
+def _ref_add_scalar():
+    """`a + c`（c 是 attr）。**不是 clamp**：sigmoid 那两支的归一守卫是
+    `tv / (Σtv + 1e-20)`（`by1exec.op_moe` 612 / 604），和 softmax_topk 的
+    `max(Σtv, 1e-9)` 是两个公式 —— `+` 和 `max` 在 Σ < c 时不一样，
+    描述层不许合并成一条。"""
+    np = _np()
+    return lambda a, c: a + float(c)
+
+
 def _ref_div():
     np = _np()
     return lambda a, b: a / b
@@ -534,6 +543,8 @@ PRIMS = {
                   "src": "ggml_sum_rows / numpy .sum"},
     "clamp_min": {"ins": 1, "f": "max(x, m)", "ref": _ref_clamp_min(),
                   "src": "by1exec 的 np.maximum(分母, eps)"},
+    "add_scalar": {"ins": 1, "f": "a + c", "ref": _ref_add_scalar(),
+                   "src": "by1exec.op_moe 的归一守卫 `sum + 1e-20`"},
     "div":       {"ins": 2, "f": "a / b（广播）", "ref": _ref_div(),
                   "src": "ggml_div / numpy"},
     # ── GDN / delta 规则那一族（Linear 与 KDA 共用）──
@@ -903,38 +914,82 @@ def _lower_moe(g, p, x, dst, w, a, d):
         out  = Σ_k topv[:,k] · Expert_k(x)
     """
     rt = a.get("routing") or "softmax_topk"
-    if rt != "softmax_topk":
-        raise SystemExit("  [不支持] MoE.routing=%s 还没有 lowering"
-                         "（这一刀只切 softmax_topk）" % rt)
+    if rt not in ("softmax_topk", "sigmoid_topk", "topk_softmax"):
+        raise SystemExit(
+            "  [不支持] MoE.routing=%s 还没有 lowering"
+            "（sigmoid_group_topk 要 noaux_tc 的分组排名那几步）" % rt)
     if a.get("expert_bias"):
         raise SystemExit("  [不支持] MoE.expert_bias 还没有 lowering")
     if str(a.get("act", "silu")) != "silu":
         raise SystemExit("  [不支持] MoE.act=%r 还没有 lowering" % a.get("act"))
     E, K, H = int(a["experts"]), int(a["top_k"]), int(a["hidden"])
     sb_on = bool(a.get("score_bias"))
+    # **打分函数和选法正交**，解析走 `by1ir.moe_score` 那一份（唯一定义）。
+    from by1ir import moe_score as _moe_score
+    _sc = _moe_score(a)
+    if _sc is None:
+        raise SystemExit("  [不支持] MoE 的打分函数推不出来（routing=%r）" % rt)
     # ── ① 路由 logits = x @ routerᵀ（+ bias） ───────────────────────
     lg = g.add("matmul", [w("router"), x], [p + "lg"], shapes=[(E, None)])
     if a.get("router_bias"):
         lg = g.add("add", [lg, w("router.bias")], [p + "lg1"],
                    shapes=[(E, None)])
-    sel = lg
-    if sb_on:
-        sel = g.add("add", [lg, w("score_bias")], [p + "sel"],
-                    shapes=[(E, None)])
-    sm = g.add("softmax", [sel], [p + "sm"], shapes=[(E, None)])
-    topi = g.add("top_k", [sm], [p + "topi"], attrs={"k": K},
-                 shapes=[(K, None)])
-    if sb_on:
-        # **权重用未加偏置的 logits 重算**（by1exec 的 `base`）
-        sm2 = g.add("softmax", [lg], [p + "sm2"], shapes=[(E, None)])
-        tv = g.add("gather", [sm2, topi], [p + "tv"], shapes=[(K, None)])
+    if rt == "softmax_topk":
+        # 全体 softmax -> top-k -> **权重用未加偏置的 logits 重算**（Mixtral）。
+        # score_bias 只进选择（by1exec 的 `sel` / `base`）。
+        if _sc != "softmax":
+            raise SystemExit(
+                "  [不支持] routing=softmax_topk 不经过打分函数，score=%r "
+                "不会被读 —— 要么去掉，要么换 sigmoid_topk" % _sc)
+        sel = lg
+        if sb_on:
+            sel = g.add("add", [lg, w("score_bias")], [p + "sel"],
+                        shapes=[(E, None)])
+        sm = g.add("softmax", [sel], [p + "sm"], shapes=[(E, None)])
+        topi = g.add("top_k", [sm], [p + "topi"], attrs={"k": K},
+                     shapes=[(K, None)])
+        if sb_on:
+            sm2 = g.add("softmax", [lg], [p + "sm2"], shapes=[(E, None)])
+            tv = g.add("gather", [sm2, topi], [p + "tv"], shapes=[(K, None)])
+        else:
+            tv = g.add("gather", [sm, topi], [p + "tv"], shapes=[(K, None)])
+        den = g.add("sum", [tv], [p + "den"], attrs={"axis": 0,
+                                                     "keepdims": True},
+                    shapes=[(1, None)])
+        den = g.add("clamp_min", [den], [p + "den1"], attrs={"min": 1e-9},
+                    shapes=[(1, None)])
+    elif rt == "sigmoid_topk":
+        # **先打分再直接 top-k**，不分组（Step-3.7）——照 `op_moe` 605-612：
+        #   sc = score(logits)        # 打分吃**未加偏置**的 logits
+        #   choice = sc + score_bias  # 只影响选择
+        #   topi = top_k(choice)；tv = gather(sc, topi)；tv / (Σtv + 1e-20)
+        # 归一守卫是 `+ 1e-20`，**不是** softmax_topk 的 `max(·, 1e-9)`。
+        sc = g.add(_sc, [lg], [p + "sc"], shapes=[(E, None)])
+        sel = sc
+        if sb_on:
+            sel = g.add("add", [sc, w("score_bias")], [p + "sel"],
+                        shapes=[(E, None)])
+        topi = g.add("top_k", [sel], [p + "topi"], attrs={"k": K},
+                     shapes=[(K, None)])
+        tv = g.add("gather", [sc, topi], [p + "tv"], shapes=[(K, None)])
+        den = g.add("sum", [tv], [p + "den"], attrs={"axis": 0,
+                                                     "keepdims": True},
+                    shapes=[(1, None)])
+        den = g.add("add_scalar", [den], [p + "den1"], attrs={"c": 1e-20},
+                    shapes=[(1, None)])
     else:
-        tv = g.add("gather", [sm, topi], [p + "tv"], shapes=[(K, None)])
-    den = g.add("sum", [tv], [p + "den"], attrs={"axis": 0, "keepdims": True},
-                shapes=[(1, None)])
-    den = g.add("clamp_min", [den], [p + "den1"], attrs={"min": 1e-9},
-                shapes=[(1, None)])
-    topv = g.add("div", [tv, den], [p + "topv"], shapes=[(K, None)])
+        # topk_softmax（GPT-OSS）：先 top-k，再**只对这 k 个 logits** 做
+        # softmax —— 选和权重都用 `logits`，不看 score_bias，不经过打分函数。
+        if _sc != "softmax":
+            raise SystemExit(
+                "  [不支持] routing=topk_softmax 不经过打分函数，score=%r "
+                "不会被读 —— 要么去掉，要么换 sigmoid_topk" % _sc)
+        topi = g.add("top_k", [lg], [p + "topi"], attrs={"k": K},
+                     shapes=[(K, None)])
+        tv = g.add("gather", [lg, topi], [p + "tv"], shapes=[(K, None)])
+        tv = g.add("softmax", [tv], [p + "sm"], shapes=[(K, None)])
+    topv = g.add("div", [tv, den], [p + "topv"], shapes=[(K, None)]) \
+        if rt != "topk_softmax" else tv
     if float(a.get("routed_scale", 1.0)) != 1.0:
         topv = g.add("scale", [topv], [p + "topv1"],
                      attrs={"s": float(a["routed_scale"])}, shapes=[(K, None)])
@@ -1434,6 +1489,8 @@ def run_graph(g, params, ids):
                                       bool(at.get("keepdims", True)))
         elif prim == "clamp_min":
             out = PRIMS["clamp_min"]["ref"](a[0], at["min"])
+        elif prim == "add_scalar":
+            out = PRIMS["add_scalar"]["ref"](a[0], at["c"])
         elif prim == "concat":
             out = PRIMS["concat"]["ref"](a[0], a[1], at["axis"])
         elif prim == "conv1d_causal":
@@ -1700,6 +1757,13 @@ def selftest():
     if not np.array_equal(PRIMS["clamp_min"]["ref"](np.array([-1.0, 2.0]), 0.5),
                           [0.5, 2.0]):
         bad.append("clamp_min 对不上手算")
+    # **add_scalar 不是 clamp_min** —— Σ < c 时 `+c` 和 `max(·, c)` 分叉，
+    # 两条各是各的公式（sigmoid 归一守卫用的是 `+ 1e-20`）。
+    _z = float(PRIMS["add_scalar"]["ref"](np.array([5e-21]), 1e-20)[0])
+    if abs(_z - 1.5e-20) > 1e-32:
+        bad.append("add_scalar 对不上手算（5e-21 + 1e-20 = 1.5e-20）")
+    if float(PRIMS["clamp_min"]["ref"](np.array([5e-21]), 1e-20)[0]) == _z:
+        bad.append("add_scalar 和 clamp_min 分不开 —— 有一个是错的")
     if not np.allclose(PRIMS["div"]["ref"](np.array([4.0, 6.0]),
                                            np.array([2.0, 3.0])), [2.0, 2.0]):
         bad.append("div 对不上手算")
@@ -1738,7 +1802,7 @@ def selftest():
         return 1
     print("  [PASS] 原语参考实现对拍手算（rms_norm / matmul / silu / rope · "
           "打分族 softmax/softplus/sqrtsoftplus/sigmoid 并与 by1ir 同源 · "
-          "路由归约 top_k/gather/sum/clamp_min/div · "
+          "路由归约 top_k/gather/sum/clamp_min/add_scalar/div · "
           "GDN concat/conv1d_causal〔含因果性〕/delta_rule/exp/log1p/sqrt）")
     return 0
 
