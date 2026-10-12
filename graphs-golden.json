@@ -1,15 +1,16 @@
 {
- "DeepSeek-R1-Distill-Qwen-1.5B.by1": "048672cef679eb64",
- "DeepSeek-R1-Distill-Qwen-7B.by1": "29d26b39eb378f49",
- "Qwen3-VL-2B-Thinking.by1": "a80ba910de2af4e8",
- "attn-fused-shaped.by1": "3f8d519b28d06e38",
- "embeddinggemma-2.by1": "4d14a5984e388803",
- "gemma-4-12B.by1": "9a2d451fa47804f7",
- "gemma-4-31B.by1": "241ac6d18ee2aa7f",
- "gemma-4-E4B.by1": "dd844b4fb574f547",
+ "DeepSeek-R1-Distill-Qwen-1.5B.by1": "8b5fbc13e0bce1ac",
+ "DeepSeek-R1-Distill-Qwen-7B.by1": "3314fb0f37b809aa",
+ "Qwen3-VL-2B-Thinking.by1": "00ae00715ed9f994",
+ "attn-fused-shaped.by1": "0038400c9c758e2d",
+ "embeddinggemma-2.by1": "70fd76f4af0e13c6",
+ "gemma-4-12B.by1": "00623d4e0dae3044",
+ "gemma-4-31B.by1": "3641dfd64c667b52",
+ "gemma-4-E4B.by1": "926e0c2f574a192f",
  "gpt2-tiny.by1": "052810f61b5b12fa",
  "gpt2.by1": "42d772bbad4659df",
- "hello.by1": "f656389d7d6543ec",
- "llama-shaped.by1": "981b30f277650801",
- "minimind-3.by1": "d98091207aaf516e"
+ "hello.by1": "826997948db4ea7e",
+ "llama-shaped.by1": "9a2f3f752027d8a1",
+ "llama3-shaped.by1": "e499858bc4117117",
+ "minimind-3.by1": "a42b6dde3284eae6"
 }

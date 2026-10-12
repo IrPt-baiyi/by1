@@ -154,19 +154,65 @@ def _ref_sigmoid():
     return lambda x: 1.0 / (1.0 + np.exp(-x))
 
 
+def rope_inv(n_dims, base, yarn=None):
+    """θ 的**逆频率表**（长度 `n_dims // 2`）—— 只有这一份。
+
+    三支：普通 · **YaRN** · **llama3**（YaRN 的另一种刻度）。
+    逐字搬自 `by1exec.rope_tables` —— 而 `by1codegen` 另有一份 torch 版，
+    图的 rope 原语以前又把普通那一支**内联**算了一遍：**一条规则三处实现**。
+    搬到这里之后图与 by1exec 共用这一份；torch 那一份仍由
+    `src/modelcheck/by1rope.py` 盯着（它对 `_compute_llama3_parameters`）。
+
+    `n_dims` 就是参与旋转的维数（partial rope 时是 `head_dim * rope_partial`）。
+    """
+    np = _np()
+    half = n_dims // 2
+    if yarn and (yarn.get("type") or "yarn") == "llama3":
+        fac = float(yarn["factor"])
+        hf, lf = float(yarn["high_freq"]), float(yarn["low_freq"])
+        old = float(yarn["original"])
+        p0 = 1.0 / (base ** (np.arange(0, half) / half))
+        wl = 2 * np.pi / p0
+        lo_wl, hi_wl = old / lf, old / hf
+        out = np.where(wl > lo_wl, p0 / fac, p0)
+        smooth = (old / wl - lf) / (hf - lf)
+        return np.where((wl >= hi_wl) & (wl <= lo_wl),
+                        (1 - smooth) * out / fac + smooth * out, out)
+    if yarn:
+        fac, orig = yarn["factor"], yarn["original"]
+        bf, bs = yarn["beta_fast"], yarn["beta_slow"]
+
+        def corr_dim(nr):
+            return (n_dims * np.log(orig / (nr * 2 * np.pi))
+                    / (2 * np.log(base)))
+        lo, hi = corr_dim(bf), corr_dim(bs)
+        if yarn.get("truncate", True):
+            lo, hi = np.floor(lo), np.ceil(hi)
+        lo, hi = max(lo, 0.0), min(hi, n_dims - 1)
+        if lo == hi:
+            hi += 0.001
+        ramp = np.clip((np.arange(half) - lo) / (hi - lo), 0, 1)
+        pos = base ** (np.arange(0, n_dims, 2) / n_dims)
+        return (1.0 / (fac * pos)) * ramp + (1.0 / pos) * (1 - ramp)
+    return 1.0 / (base ** (np.arange(0, half) / half))
+
+
 def _ref_rope():
-    # 位置 t 对每对维度 (u, v) 转 theta_t = t · base^(-2i/n_dims)：
+    # 位置 t 对每对维度 (u, v) 转 theta_t = t · inv[i]：
     #   half        -> 配对 (i, i+half)
     #   interleaved -> 配对 (2i, 2i+1)，**输出拼接**
     # 约定：x [..., n, hd]（特征在最后轴、位置在倒数第二轴）、pos [n]。
+    # `inv` 由 `rope_inv` 给（普通 / YaRN / llama3 三种都在那一处）；
+    # `rope_scale` 是 **cos/sin 的缩放**（和 YaRN 是两件事，by1exec 也分开）。
     np = _np()
 
-    def f(x, pos, base, pairing, n_dims):
+    def f(x, pos, base, pairing, n_dims, yarn=None, rope_scale=1.0):
         out = np.array(x, copy=True)
+        inv = rope_inv(n_dims, base, yarn)
         half = n_dims // 2
         for i in range(half):
-            th = pos * (base ** (-2.0 * i / n_dims))       # [n]
-            c, s = np.cos(th), np.sin(th)
+            th = pos * inv[i]                              # [n]
+            c, s = np.cos(th) * rope_scale, np.sin(th) * rope_scale
             if pairing == "half":
                 u, v = x[..., i], x[..., i + half]
                 out[..., i] = u * c - v * s
@@ -272,7 +318,8 @@ PRIMS = {
                   "src": "by1c.gelu_erf_ / ggml_gelu_erf"},
     "sigmoid":   {"ins": 1, "f": "σ(x)", "ref": _ref_sigmoid(),
                   "src": "MoE 打分 / head_gate"},
-    "rope":      {"ins": 2, "f": "每对维度转 θ_t = t·base^(-2i/n_dims)；"
+    "rope":      {"ins": 2, "f": "每对维度转 θ_t = t·inv[i]（inv 见 rope_inv："
+                                "普通 / YaRN / llama3）；"
                                 "half 配对 (i,i+h)，interleaved 配对 (2i,2i+1)"
                                 "且**拼接输出**",
                   "ref": _ref_rope(),
@@ -440,8 +487,6 @@ def _lower_attn(g, p, x, dst, w, a, d):
     for flag, what in (("q_gate", "q_gate"), ("head_gate", "head_gate")):
         if a.get(flag) and (flag != "head_gate" or a.get(flag) != "off"):
             raise SystemExit("  [不支持] Attention.%s 还没有 lowering" % what)
-    if a.get("yarn") or float(a.get("rope_scale", 1.0)) != 1.0:
-        raise SystemExit("  [不支持] yarn / rope_scale != 1 还没有 lowering")
     bias = bool(a.get("bias"))
     # **融合 q/k/v 只是布局**：`by1exec` 的做法是把它拆回 wq/wk/wv/wo，
     # 「后面一格不动」—— 这里同样拆，拆的是**权重叶子**（`slice` 原语）。
@@ -507,7 +552,10 @@ def _lower_attn(g, p, x, dst, w, a, d):
         nrot = int(hd * float(a.get("rope_partial", 1.0)))
         rp = {"base": float(a["rope_base"]),
               "pairing": str(a.get("rope_pairing", "half")),
-              "n_dims": nrot}
+              "n_dims": nrot,
+              # **YaRN / llama3 与 rope_scale 都走这一条**（`rope_inv` 一处定义）
+              "yarn": a.get("yarn"),
+              "rope_scale": float(a.get("rope_scale", 1.0))}
         q3 = g.add("rope", [q3, "pos"], [p + "q3r"], attrs=rp,
                    shapes=[(hd, nh, None)])
         k3 = g.add("rope", [k3, "pos"], [p + "k3r"], attrs=rp,
@@ -659,7 +707,8 @@ def run_graph(g, params, ids):
             # [n, nh, hd]：位置在轴 -2 —— 转成 [..., n, hd] 再转回
             x = np.transpose(a[0], (1, 0, 2))
             out = PRIMS["rope"]["ref"](x, a[1], at["base"], at["pairing"],
-                                       at["n_dims"])
+                                       at["n_dims"], at.get("yarn"),
+                                       at.get("rope_scale", 1.0))
             out = np.transpose(out, (1, 0, 2))
         elif prim == "soft_max":
             # a: [头, query, key]（exec 约定），mask [query, key]
