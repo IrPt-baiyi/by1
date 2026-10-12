@@ -1678,6 +1678,20 @@ def _lower_attn(g, p, x, dst, w, a, d):
     kq_ = g.add("matmul", [WK, x], [p + "k0"], shapes=[(nkv * hd, None)])
     if bias:
         kq_ = g.add("add", [kq_, BK], [p + "k1"], shapes=[(nkv * hd, None)])
+    if _qk_on(a.get("qk_norm")) and str(a.get("qk_norm")).lower() == "full":
+        # **full：拆头之前按整宽归一**（torch 同句；Instella 实测
+        # `q_norm.weight` [q*head_dim]）。per_head 在拆头之后按 head_dim ——
+        # 名字一样、位置不同、宽度也不同，不许混。
+        if qg is not None:
+            raise SystemExit("  [不支持] qk_norm=full 与 q_gate 同时出现")
+        eps = float(a.get("norm_eps", _DEFAULT_EPS))
+        _one = bool(a.get("norm_one_plus", False))
+        q = g.add("rms_norm", [q, w("qn.w")], [p + "q1n"],
+                  attrs={"eps": eps, "one_plus": _one},
+                  shapes=[(nh * hd, None)])
+        kq_ = g.add("rms_norm", [kq_, w("kn.w")], [p + "k1n"],
+                    attrs={"eps": eps, "one_plus": _one},
+                    shapes=[(nkv * hd, None)])
     # **kv_tie：v 是 k 的原始投影** —— 分叉在 norm/rope 之前（判卷人
     # by1exec：`v = kraw`）。
     if a.get("kv_tie"):
@@ -1694,9 +1708,8 @@ def _lower_attn(g, p, x, dst, w, a, d):
                shapes=[(hd, nh, None)])
     k3 = g.add("view", [kq_], [p + "k3"], attrs={"shape": [hd, nkv, None]},
                shapes=[(hd, nkv, None)])
-    if _qk_on(a.get("qk_norm")):
-        if str(a.get("qk_norm")).lower() != "per_head":
-            raise SystemExit("  [不支持] qk_norm=full 还没有 lowering")
+    if _qk_on(a.get("qk_norm")) and str(a.get("qk_norm")).lower() == "per_head":
+        # full 在上面（拆头之前）已经归过了 —— 这里只管 per_head
         eps = float(a.get("norm_eps", _DEFAULT_EPS))
         # **one_plus 是属性，不是常量** —— 第一版这里写死 False，于是
         # 所有 one_plus=True 的模型（qwen3-next 的注意力就是）算出别的数：

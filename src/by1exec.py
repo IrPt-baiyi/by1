@@ -205,9 +205,19 @@ def op_attention(P, a, ins, d):
             P["wo.bias"] = P["proj.bias"]
     q_gate = a.get("q_gate", False)
     w = a["head_dim"] * (2 if q_gate else 1)
+    # **两种 qk_norm 的区别是"在哪一步归一化"**（torch 同句）：
+    #   per_head  拆头之后，按 head_dim
+    #   full      拆头**之前**，按 q*head_dim 整宽（Instella 实测
+    #             `q_norm.weight` 是 [2560] 不是 [80]）
+    # 这里原来**不分 full**，一律按头算 —— 和契约的 (80,) 一致地错。
+    _qfull = str(a.get("qk_norm", "")).strip().lower() == "full"
+    _qeps = float(a.get("norm_eps", _DEFAULT_EPS))
+    _qop = a.get("norm_one_plus", False)
     qq = x @ P["wq"].T
     if "wq.bias" in P:
         qq = qq + P["wq.bias"]
+    if _qfull:
+        qq = rms_norm(qq, P["qn.w"], eps=_qeps, one_plus=_qop)
     qq = qq.reshape(b, n, a["q"], w)
     if q_gate:
         q, gate = qq[..., :a["head_dim"]], qq[..., a["head_dim"]:]
@@ -220,6 +230,8 @@ def op_attention(P, a, ins, d):
     kraw = x @ P["wk"].T
     if "wk.bias" in P:
         kraw = kraw + P["wk.bias"]
+    if _qfull:
+        kraw = rms_norm(kraw, P["kn.w"], eps=_qeps, one_plus=_qop)
     kraw = kraw.reshape(b, n, a["kv"], a["head_dim"]).transpose(0, 2, 1, 3)
     if a.get("kv_tie"):
         v = kraw
@@ -229,7 +241,7 @@ def op_attention(P, a, ins, d):
             v = v + P["wv.bias"]
         v = v.reshape(b, n, a["kv"], a["head_dim"]).transpose(0, 2, 1, 3)
     k = kraw
-    if _qk_on(a.get("qk_norm")):
+    if _qk_on(a.get("qk_norm")) and not _qfull:
         # **eps 必须传，不能吃默认参数。**
         # 这里原来调 `rms_norm(q, P["qn.w"], one_plus=...)` —— **不传 eps**，
         # 于是吃 `rms_norm` 的默认 1e-5。而 by1codegen 那边读的是
@@ -237,11 +249,8 @@ def op_attention(P, a, ins, d):
         # norm_eps 是 1e-6 —— **同一份 IR，两个后端两个答案**
         # （相对差 1.05e-05，低于 1e-4 判据所以一直绿）。
         # 这正是 by1c 的 C_HEAD 里记着"犯过五次"的那一类。
-        _qeps = float(a.get("norm_eps", _DEFAULT_EPS))
-        q = rms_norm(q, P["qn.w"], eps=_qeps,
-                     one_plus=a.get("norm_one_plus", False))
-        k = rms_norm(k, P["kn.w"], eps=_qeps,
-                     one_plus=a.get("norm_one_plus", False))
+        q = rms_norm(q, P["qn.w"], eps=_qeps, one_plus=_qop)
+        k = rms_norm(k, P["kn.w"], eps=_qeps, one_plus=_qop)
     hd, part = a["head_dim"], a.get("rope_partial", 1.0)
     # **`rope` 是一个开关，不是一个常量。**
     # 这一段以前无条件转 —— 而 GPT-2 的 `rope = false`

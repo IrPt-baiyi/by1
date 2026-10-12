@@ -1461,6 +1461,13 @@ def _emit_c_body(ir, params):
                 raise SystemExit(
                     f"  [不支持] 第 {L['index']} 层的注意力用了 head_gate"
                     " —— C 后端还没实现")
+            if k == "Attention" and str(a.get("qk_norm", "")
+                                        ).strip().lower() == "full":
+                # 融合核 `qk_norm()` 是按头的 —— full 是拆头前整宽，
+                # **不许静默算成 per_head**（NumPy 曾经就这么错着）
+                raise SystemExit(
+                    f"  [不支持] 第 {L['index']} 层 qk_norm=full —— "
+                    "C 融合核的 qk_norm 是按头的")
             if k == "FFN" and a.get("act") == "gptoss":
                 raise SystemExit(
                     f"  [不支持] 第 {L['index']} 层的 FFN 用了 gptoss 激活")

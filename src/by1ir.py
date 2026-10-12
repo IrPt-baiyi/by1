@@ -564,6 +564,21 @@ def _qk_on(v):
     return str(v).strip().lower() not in ("off", "", "none", "false", "0")
 
 
+def _qk_norm_shapes(a, q, kv, hd):
+    """`qn.w` / `kn.w` 的形状 —— **full 和 per_head 名字一样、宽度不同**：
+
+        per_head  拆头之后按 head_dim 归一        -> (hd,)
+        full      拆头**之前**按整宽归一          -> (q*hd,) / (kv*hd,)
+
+    Instella 的 `full` 实测 `self_attn.q_norm.weight` 是 [2560] 不是 [80]
+    （`.by1` 里就写着这句）。这里原来两处都推 (hd,) —— 于是 shapes_of
+    与契约差一个宽度，`by1sync` 把它列在「未编码的布局差」里，而它其实
+    是**语义差**（by1opdiff 直接 `shape '[2560]' is invalid for size 80`）。"""
+    if str(a.get("qk_norm", "")).strip().lower() == "full":
+        return (q * hd,), (kv * hd,)
+    return (hd,), (hd,)
+
+
 def params_of(ir):
     """**从 IR 自己推**每个 op 需要的参数形状。IR 里没有形状，这是后端的活。
 
@@ -597,8 +612,8 @@ def params_of(ir):
                         out[pre + "qkv.bias"] = (q * hd + 2 * kv * hd,)
                         out[pre + "proj.bias"] = (d,)
                     if _qk_on(a.get("qk_norm")):
-                        out[pre + "qn.w"] = (hd,)
-                        out[pre + "kn.w"] = (hd,)
+                        out[pre + "qn.w"], out[pre + "kn.w"] = \
+                            _qk_norm_shapes(a, q, kv, hd)
                     if a.get("head_gate", "off") != "off":
                         out[pre + "g_proj"] = ((q if a["head_gate"] == "per_head"
                                               else q * hd), d)
@@ -615,8 +630,8 @@ def params_of(ir):
                         out[pre + "wv.bias"] = (kv * hd,)
                     out[pre + "wo.bias"] = (d,)
                 if _qk_on(a.get("qk_norm")):
-                    out[pre + "qn.w"] = (hd,)
-                    out[pre + "kn.w"] = (hd,)
+                    out[pre + "qn.w"], out[pre + "kn.w"] = \
+                        _qk_norm_shapes(a, q, kv, hd)
                 if a.get("sink"):
                     out[pre + "sink"] = (q,)
                 if a.get("head_gate", "off") != "off":
