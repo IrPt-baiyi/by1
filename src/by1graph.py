@@ -324,6 +324,96 @@ def _ref_div():
     return lambda a, b: a / b
 
 
+def _ref_concat():
+    """接两条 I/O（沿 **ggml 视角**的 axis）。
+
+    Linear 的 `q|k|v` 拼一边进卷积、GGUF 的融合权重都是它。attr 用 ggml
+    视角写（和 slice / sum 同一套），ref 自己换算 exec 轴。"""
+    np = _np()
+
+    def f(a, b, axis):
+        return np.concatenate([a, b], axis=a.ndim - 1 - int(axis))
+    return f
+
+
+def _ref_conv1d_causal():
+    """**深度可分离因果卷积**（GDN 的短卷积）。
+
+    `x` [n, C]（样本在前）、`w` [C, kernel]（逐通道一份小核）：
+
+        xpad = [0, x]                                   # 左边补 kernel-1
+        out[:, t] = Σ_i w[:, i] · xpad[:, t + (kernel-1-i)]
+
+    **激活不在这里** —— by1exec 是 `silu(conv)`，图里 silu 是独立节点：
+    一个节点一个公式（两个节点就是两份语义）。
+    """
+    np = _np()
+
+    def f(x, w, kernel):
+        b, s, C = x.shape
+        pad = np.zeros((b, int(kernel) - 1, C), dtype=x.dtype)
+        mp = np.concatenate([pad, x], 1)
+        out = np.zeros((b, s, C), dtype=x.dtype)
+        for i in range(int(kernel)):
+            out += mp[:, i:i + s, :] * w[:, i][None, None, :]
+        return out
+    return f
+
+
+def _ref_delta_rule():
+    """**delta 规则**（GDN 的递推扫描）—— Linear / KDA 的心脏。
+
+    exec 约定：k/q [b, 头, n, dk] · v [b, 头, n, dv] · beta/decay [b, 头, n, 1]。
+
+        st = 0                                              # 状态，后端自持
+        逐 token t：
+            st  *= exp(decay[t])                            # **先衰减**
+            kvi  = Σ_d st[·,d,v] · k[t,d]                   # 当前读出来的值
+            δ    = (v[t] − kvi) · beta[t]
+            st  += k[t] ⊗ δ                                  # 写入
+            out[t] = Σ_d st[·,d,v] · q[t,d]                  # 输出读的是**更新后**的
+
+    **状态是一步一步的，没有并行公式** —— 所以它是原语而不是 matmul 的组合
+    （by1exec 就写成一个 for）。判卷人是 by1exec 的这个 for 本身。
+    `q` 的 `dk^-0.5` 由 lowering 用一个 scale 节点做，不在这个公式里。
+    """
+    np = _np()
+
+    def f(q, k, v, beta, decay):
+        dk, dv = k.shape[-1], v.shape[-1]
+        st = np.zeros(k.shape[:-2] + (dk, dv), dtype=np.float64)
+        out = np.empty(v.shape, dtype=np.float64)
+        q64, k64 = q.astype(np.float64), k.astype(np.float64)
+        v64, b64 = v.astype(np.float64), beta.astype(np.float64)
+        g64 = decay.astype(np.float64)
+        # ⚠ **token 轴是第 2 轴**（b, 头, n, dim）—— `x[:, i]` 切的是**头**。
+        # 第一版就写成 `g64[:, i]`：当头数=1 时不越界，于是静默算出别的数
+        # （手推 [1.5,-0.5]，它给 [1.5,4.0]）。by1exec 写的是 `kk[:, :, i]`。
+        for i in range(k.shape[2]):
+            st = st * np.exp(g64[:, :, i])[..., None]              # 先衰减
+            kvi = (st * k64[:, :, i][..., None]).sum(-2)           # 读
+            delta = (v64[:, :, i] - kvi) * b64[:, :, i]            # δ
+            st = st + k64[:, :, i][..., None] * delta[..., None, :]   # 写
+            out[:, :, i] = (st * q64[:, :, i][..., None]).sum(-2)   # 输出读更新后的
+        return out
+    return f
+
+
+def _ref_exp():
+    np = _np()
+    return np.exp
+
+
+def _ref_log1p():
+    np = _np()
+    return np.log1p
+
+
+def _ref_sqrt():
+    np = _np()
+    return np.sqrt
+
+
 def _ref_get_rows():
     np = _np()
     return lambda table, ids: table[ids]
@@ -409,6 +499,25 @@ PRIMS = {
                   "src": "by1exec 的 np.maximum(分母, eps)"},
     "div":       {"ins": 2, "f": "a / b（广播）", "ref": _ref_div(),
                   "src": "ggml_div / numpy"},
+    # ── GDN / delta 规则那一族（Linear 与 KDA 共用）──
+    "concat":    {"ins": 2, "f": "沿 ggml 轴 axis 接两条",
+                  "ref": _ref_concat(),
+                  "src": "torch.cat / ggml_concat / by1exec 的 np.concatenate"},
+    "conv1d_causal": {"ins": 2, "f": "深度可分离因果卷积（逐通道一份核，"
+                                     "左边补 kernel-1）；**激活不在这里**",
+                      "ref": _ref_conv1d_causal(),
+                      "src": "by1exec.op_linear 的短卷积 / causal_conv1d"},
+    "delta_rule": {"ins": 5,
+                   "f": "逐 token：st*=exp(decay)；δ=(v−(st·k))·beta；"
+                        "st+=k⊗δ；out=(st·q)",
+                   "ref": _ref_delta_rule(),
+                   "src": "by1exec.op_linear / op_kda 的 for"},
+    "exp":       {"ins": 1, "f": "eˣ", "ref": _ref_exp(),
+                  "src": "by1exec 的 np.exp（衰减门要用）"},
+    "log1p":     {"ins": 1, "f": "log(1+x)", "ref": _ref_log1p(),
+                  "src": "by1exec.op_linear 的 np.log1p（衰减门要用）"},
+    "sqrt":      {"ins": 1, "f": "√x", "ref": _ref_sqrt(),
+                  "src": "by1exec 的 1/sqrt(·)（L2 归一 / 输出归一）"},
     "rope":      {"ins": 2, "f": "每对维度转 θ_t = t·inv[i]（inv 见 rope_inv："
                                 "普通 / YaRN / llama3）；"
                                 "half 配对 (i,i+h)，interleaved 配对 (2i,2i+1)"
@@ -922,6 +1031,14 @@ def run_graph(g, params, ids):
                                       bool(at.get("keepdims", True)))
         elif prim == "clamp_min":
             out = PRIMS["clamp_min"]["ref"](a[0], at["min"])
+        elif prim == "concat":
+            out = PRIMS["concat"]["ref"](a[0], a[1], at["axis"])
+        elif prim == "conv1d_causal":
+            out = PRIMS["conv1d_causal"]["ref"](a[0], a[1], at["kernel"])
+        elif prim == "delta_rule":
+            out = PRIMS["delta_rule"]["ref"](a[0], a[1], a[2], a[3], a[4])
+        elif prim in ("exp", "log1p", "sqrt"):
+            out = PRIMS[prim]["ref"](a[0])
         elif prim == "rope":
             # [n, nh, hd]：位置在轴 -2 —— 转成 [..., n, hd] 再转回
             x = np.transpose(a[0], (1, 0, 2))
@@ -1179,13 +1296,43 @@ def selftest():
     if not np.allclose(PRIMS["div"]["ref"](np.array([4.0, 6.0]),
                                            np.array([2.0, 3.0])), [2.0, 2.0]):
         bad.append("div 对不上手算")
+    # ── GDN / delta 规则那一族（Linear 与 KDA 共用）── 手算 ──
+    for k, want in (("exp", 1.0), ("log1p", 0.0), ("sqrt", 2.0)):
+        z = PRIMS[k]["ref"](np.array([0.0 if k != "sqrt" else 4.0]))
+        if abs(float(z[0]) - want) > 1e-12:
+            bad.append("%s 对不上手算（应 %r）" % (k, want))
+    if not np.array_equal(PRIMS["concat"]["ref"](np.array([[1.0, 2.0]]),
+                                                 np.array([[3.0]]), 0),
+                          [[1.0, 2.0, 3.0]]):
+        bad.append("concat（ggml 轴 0 = 最后轴）对不上手算")
+    xc = np.array([[[1.0], [2.0], [3.0]]])           # (b,n,C)
+    wc = np.array([[1.0, 1.0]])                      # (C,kernel)
+    cc = PRIMS["conv1d_causal"]["ref"](xc, wc, 2)
+    if not np.array_equal(cc, [[[1.0], [3.0], [5.0]]]):
+        bad.append("conv1d_causal 对不上手算（补 1 个的滑动窗）")
+    # **因果性**：out[0] 不许受后面的 token 影响（这是"因果"两个字的意思）
+    # 注意**改 x[1]（第二个 token）**，不是 x[0] —— 第一版改的是 x[0]，
+    # 于是测的是"输出依赖第一个输入"，那当然成立（我自己的注释都写错了）。
+    xc2 = np.array([[[1.0], [9.0], [3.0]]])
+    cc2 = PRIMS["conv1d_causal"]["ref"](xc2, wc, 2)
+    if not np.array_equal(cc2[0, 0], cc[0, 0]):
+        bad.append("conv1d_causal 不因果：改了 x[1]，out[0] 跟着变")
+    dq = np.full((1, 1, 2, 1), 0.5)
+    dk_ = np.array([1.0, 2.0]).reshape(1, 1, 2, 1)
+    dv_ = np.array([3.0, 4.0]).reshape(1, 1, 2, 1)
+    dbeta = np.ones((1, 1, 2, 1))
+    dg = np.zeros((1, 1, 2, 1))
+    dr = PRIMS["delta_rule"]["ref"](dq, dk_, dv_, dbeta, dg)
+    if not np.allclose(dr, [[[[1.5], [-0.5]]]]):
+        bad.append("delta_rule 对不上手算（手推两步的状态更新）")
     if bad:
         for b in bad:
             print("  [FAIL] " + b)
         return 1
     print("  [PASS] 原语参考实现对拍手算（rms_norm / matmul / silu / rope · "
           "打分族 softmax/softplus/sqrtsoftplus/sigmoid 并与 by1ir 同源 · "
-          "路由归约 top_k/gather/sum/clamp_min/div）")
+          "路由归约 top_k/gather/sum/clamp_min/div · "
+          "GDN concat/conv1d_causal〔含因果性〕/delta_rule/exp/log1p/sqrt）")
     return 0
 
 
