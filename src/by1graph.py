@@ -89,6 +89,22 @@ def _ref_matmul():
     return lambda w, x: x @ w.T
 
 
+def _ref_batch_matmul():
+    # out[β,j,i] = Σ_k a[β//r,i,k] · b[β,j,k]，r = B/b_a（GQA 广播，
+    # 和 by1exec 的 np.repeat 同一语义：查询头 h 用 kv 头 h//r）。
+    # exec 约定：a [ba, m, k]、b [bb, n, k] -> out [B, n, m]。
+    np = _np()
+
+    def f(a, b):
+        B = max(a.shape[0], b.shape[0])
+        if a.shape[0] < B:
+            a = np.repeat(a, B // a.shape[0], axis=0)
+        if b.shape[0] < B:
+            b = np.repeat(b, B // b.shape[0], axis=0)
+        return np.matmul(b, np.swapaxes(a, -1, -2))
+    return f
+
+
 def _ref_rms_norm():
     # y = x * rsqrt(mean(x^2) + eps) * (one_plus ? 1+w : w)
     np = _np()
@@ -138,42 +154,40 @@ def _ref_sigmoid():
 
 def _ref_rope():
     # 位置 t 对每对维度 (u, v) 转 theta_t = t · base^(-2i/n_dims)：
-    #   half        -> u' = u·c - v·s,  v' = u·s + v·c   （配对 i, i+half）
-    #   interleaved -> 同公式的配对 (2i, 2i+1)（输出拼接 —— 和 ggml
-    #                  NORMAL 的奇偶出差一个**共同置换**，点积不变）
+    #   half        -> 配对 (i, i+half)
+    #   interleaved -> 配对 (2i, 2i+1)，**输出拼接**
+    # 约定：x [..., n, hd]（特征在最后轴、位置在倒数第二轴）、pos [n]。
     np = _np()
 
     def f(x, pos, base, pairing, n_dims):
-        # x: [n_dims, n]（行 = 维度、列 = 位置）—— 形状约定由 lower() 保证
-        half = n_dims // 2
         out = np.array(x, copy=True)
+        half = n_dims // 2
         for i in range(half):
-            th = pos * (base ** (-2.0 * i / n_dims))
+            th = pos * (base ** (-2.0 * i / n_dims))       # [n]
             c, s = np.cos(th), np.sin(th)
             if pairing == "half":
-                u = np.array(x[i, :], copy=True)
-                v = np.array(x[i + half, :], copy=True)
-                out[i, :] = u * c - v * s
-                out[i + half, :] = u * s + v * c
+                u, v = x[..., i], x[..., i + half]
+                out[..., i] = u * c - v * s
+                out[..., i + half] = u * s + v * c
             else:
-                u = np.array(x[2 * i, :], copy=True)
-                v = np.array(x[2 * i + 1, :], copy=True)
+                u, v = x[..., 2 * i], x[..., 2 * i + 1]
                 # 奇偶进、**拼接**着出
-                out[i, :] = u * c - v * s
-                out[i + half, :] = u * s + v * c
+                out[..., i] = u * c - v * s
+                out[..., i + half] = u * s + v * c
         return out
     return f
 
 
 def _ref_soft_max():
-    # softmax(a·scale + mask)，沿 dim0（key 轴）
+    # softmax(a·scale + mask)，沿 **key 轴 = 最后轴**（exec 约定：
+    # out [头, query, key]）。
     np = _np()
 
     def f(a, mask, scale):
         z = a * scale + (mask if mask is not None else 0.0)
-        z = z - z.max(axis=0, keepdims=True)
+        z = z - z.max(axis=-1, keepdims=True)
         e = np.exp(z)
-        return e / e.sum(axis=0, keepdims=True)
+        return e / e.sum(axis=-1, keepdims=True)
     return f
 
 
@@ -197,10 +211,15 @@ PRIMS = {
                   "f": "out[...,i,j] = Σ_k x[...,i,k]·w[j,k] = x @ w.T",
                   "ref": _ref_matmul(),
                   "src": "by1c.linear / ggml_mul_mat / torch F.linear"},
-    "rms_norm":  {"ins": 1, "f": "x · rsqrt(mean(x²)+eps) · (one_plus?1+w:w)",
+    "batch_matmul": {"ins": 2,
+                     "f": "out[β,j,i] = Σ_k a[β//r,i,k]·b[β,j,k]，"
+                          "r = B/b_a（GQA 广播）",
+                     "ref": _ref_batch_matmul(),
+                     "src": "by1exec.op_attention 的 q@kᵀ 与 att@v"},
+    "rms_norm":  {"ins": 2, "f": "x · rsqrt(mean(x²)+eps) · (one_plus?1+w:w)",
                   "ref": _ref_rms_norm(),
                   "src": "by1c.rmsnorm / ggml_rms_norm / by1exec.rms_norm"},
-    "layer_norm": {"ins": 1,
+    "layer_norm": {"ins": 3,
                    "f": "(x-μ)/sqrt(var+eps) · (one_plus?1+w:w) + b",
                    "ref": _ref_layer_norm(),
                    "src": "by1c.layernorm / ggml_norm / by1exec"},
@@ -285,14 +304,28 @@ def _qk_on(v):
 # lowering：IR op -> 原语图。**降不动就报错**（拒绝纪律）。
 # ════════════════════════════════════════════════════════════════════
 
-def lower_op(g, i, j, o, d):
-    """把 IR 的一个算子降成原语节点，追加进 g。值名带层号防撞。"""
+def lower_op(g, i, j, o, d, pname, refmap):
+    """把 IR 的一个算子降成原语节点，追加进 g。
+
+    `pname`：短名 -> **真参数键**（`layers.0.op1.wq` 这种）。图里的权重
+    叶子必须是真名 —— 局部名（L0O1_wq）在求值器里根本找不到
+    （第一版就是这么断的）。中间值才用 p 前缀防撞。
+    `refmap`：值引用 -> 产出它的节点名（`opK.out` / `normed` 都在里面）——
+    **不靠名字模式匹配**：模式匹配在 globals 链上当场断过一次。"""
     a, k = o["attrs"], o["kind"]
     p = "L%dO%d_" % (i, j)
-    src = [("x" if r == "hidden" else p + r.replace(".", "_"))
-           for r in o["inputs"]]
+
+    def _src(r):
+        if r == "hidden":
+            return "x"
+        if r not in refmap:
+            raise SystemExit("  [FAIL] %s 引用了没产出的值 %r" % (p, r))
+        return refmap[r]
+    src = [_src(r) for r in o["inputs"]]
     dst = p + o["outputs"][0].replace(".", "_")
-    w = lambda nm: p + nm.replace(".", "_")
+    for r in o["outputs"]:
+        refmap[r] = dst
+    w = lambda nm: pname(nm)
 
     if k not in ("Embed", "Norm", "Head", "Attention", "FFN", "Add"):
         raise SystemExit("  [不支持] %s 还没有 lowering（原语未收编，"
@@ -389,14 +422,14 @@ def _lower_attn(g, p, x, dst, w, a, d):
         if str(a.get("qk_norm")).lower() != "per_head":
             raise SystemExit("  [不支持] qk_norm=full 还没有 lowering")
         eps = float(a.get("norm_eps", _DEFAULT_EPS))
-        q3 = g.add("mul", [g.add("rms_norm", [q3], [p + "qn0"],
-                                 attrs={"eps": eps, "one_plus": False},
-                                 shapes=[(hd, nh, None)]),
-                           w("qn.w")], [p + "q3n"], shapes=[(hd, nh, None)])
-        k3 = g.add("mul", [g.add("rms_norm", [k3], [p + "kn0"],
-                                 attrs={"eps": eps, "one_plus": False},
-                                 shapes=[(hd, nkv, None)]),
-                           w("kn.w")], [p + "k3n"], shapes=[(hd, nkv, None)])
+        # **norm 的公式自带乘 w**（PRIMS["rms_norm"] 就是那一条）——
+        # 不是 norm 一个节点、mul 一个节点：两个节点就是两份语义。
+        q3 = g.add("rms_norm", [q3, w("qn.w")], [p + "q3n"],
+                   attrs={"eps": eps, "one_plus": False},
+                   shapes=[(hd, nh, None)])
+        k3 = g.add("rms_norm", [k3, w("kn.w")], [p + "k3n"],
+                   attrs={"eps": eps, "one_plus": False},
+                   shapes=[(hd, nkv, None)])
     if a.get("rope", True):
         nrot = int(hd * float(a.get("rope_partial", 1.0)))
         rp = {"base": float(a["rope_base"]),
@@ -411,7 +444,8 @@ def _lower_attn(g, p, x, dst, w, a, d):
                shapes=[(hd, None, nh)])
     k3 = g.add("permute", [k3], [p + "k3p"], attrs={"axes": [0, 2, 1]},
                shapes=[(hd, None, nkv)])
-    kq = g.add("matmul", [k3, q3], [p + "kq"], shapes=[(None, None, nh)])
+    kq = g.add("batch_matmul", [k3, q3], [p + "kq"],
+               shapes=[(None, None, nh)])
     win = int(a.get("window") or 0)
     kq = g.add("soft_max", [kq, p + "mask_%d" % win], [p + "sm"],
                attrs={"scale": 1.0 / (hd ** 0.5)}, shapes=[(None, None, nh)])
@@ -422,7 +456,8 @@ def _lower_attn(g, p, x, dst, w, a, d):
                               attrs={"axes": [1, 0, 2]},
                               shapes=[(None, hd, nkv)])],
                [p + "v3c"], shapes=[(None, hd, nkv)])
-    kqv = g.add("matmul", [vt, p + "sm"], [p + "kqv"], shapes=[(hd, None, nh)])
+    kqv = g.add("batch_matmul", [vt, p + "sm"], [p + "kqv"],
+                shapes=[(hd, None, nh)])
     att = g.add("cont", [g.add("permute", [kqv], [p + "kqvp"],
                                attrs={"axes": [0, 2, 1]},
                                shapes=[(hd, nh, None)])],
@@ -456,15 +491,170 @@ def lower_model(ir, name="model"):
         i = L["index"]
         din = L.get("in_dim") or d
         prev = None
+        refmap = {}
         for j, o in enumerate(L["ops"]):
-            # 层内值名重绑定：hidden -> x
-            dst = lower_op(g, i, j, o, din)
+            # 层内值名重绑定：hidden -> x；权重叶子用真参数键
+            pname = (lambda nm, i=i, j=j:
+                     "layers.%d.op%d.%s" % (i, j, nm))
+            dst = lower_op(g, i, j, o, din, pname, refmap)
             prev = dst
         # 层输出 -> 下一层的 hidden
         g.add("cont", [prev], ["x"], shapes=[(din, None)])
+    gmap = {"Norm": {"w": "final_norm.w", "b": "final_norm.b"},
+            "Head": {"head.weight": "head.weight"}}
+    refmap = {}
     for j, o in enumerate(post):
-        lower_op(g, len(ir["layers"]) + 1, j, o, d)
+        m = gmap[o["kind"]]
+        lower_op(g, len(ir["layers"]) + 1, j, o, d,
+                 lambda nm, m=m: m[nm], refmap)
     return g
+
+
+# ════════════════════════════════════════════════════════════════════
+# 图求值器 —— **唯一语义 = 现有语义** 的判卷人（A3 的第一块砖）。
+# 用 PRIMS 的参考实现把图跑出来，和 by1exec 逐位对拍。
+# 在这之前"图是对的"只是一句话；在这之后它是一个数。
+# ════════════════════════════════════════════════════════════════════
+
+def _exec_view(x, gshape):
+    """ggml 视角的 view（特征在前）-> by1exec 视角（样本在前）。
+
+    ggml [d0, d1, n] 的内存 == 行主序 [n, d1, d0] —— **同一块内存的
+    两种读法**，翻转形状就是全部。"""
+    import numpy as np
+    t = tuple(reversed([s if s is not None else -1 for s in gshape]))
+    return np.reshape(x, t)
+
+
+def _exec_permute(x, axes):
+    """ggml_permute（输出轴 j = 输入轴 axes[j]，ggml 视角）-> exec transpose。"""
+    import numpy as np
+    nd = len(axes)
+    # exec 轴 = ggml 轴倒序。输出 exec 轴 k 对应 ggml 输出轴 nd-1-k
+    # = ggml 输入轴 axes[nd-1-k] = exec 输入轴 nd-1-axes[nd-1-k]。
+    tp = tuple(nd - 1 - axes[nd - 1 - k] for k in range(nd))
+    return np.transpose(x, tp)
+
+
+def run_graph(g, params, ids):
+    """按图求值（by1exec 约定：x [n, d]）。判卷人是 by1exec 自己。"""
+    import numpy as np
+    V = {}
+    for k, v in params.items():
+        V[k.replace(".", "_")] = v
+    V["tok"] = np.asarray(ids)
+    V["pos"] = np.arange(len(ids))
+    for n in g.nodes:
+        prim, ins, outs, at = n["prim"], n["ins"], n["outs"], n["attrs"]
+        # mask_* 是**叶子**：值表里没有，soft_max 分支按名字里的
+        # window 现场构造（掩码只由 n 和 window 决定，确定性）
+        a = [None if "mask_" in i else V[i.replace(".", "_")] for i in ins]
+        if prim == "get_rows":
+            out = a[0][a[1]]
+        elif prim == "add":
+            out = a[0] + a[1]
+        elif prim == "mul":
+            out = a[0] * a[1]
+        elif prim == "scale":
+            out = a[0] * at["s"]
+        elif prim in ("matmul", "batch_matmul"):
+            out = PRIMS[prim]["ref"](a[0], a[1])
+        elif prim == "rms_norm":
+            out = PRIMS["rms_norm"]["ref"](
+                a[0], a[1], at["eps"], bool(at.get("one_plus")))
+        elif prim == "layer_norm":
+            out = PRIMS["layer_norm"]["ref"](
+                a[0], a[1], a[2], at["eps"], bool(at.get("one_plus")))
+        elif prim in ("silu", "gelu_tanh", "gelu", "sigmoid"):
+            out = PRIMS[prim]["ref"](a[0])
+        elif prim == "rope":
+            # [n, nh, hd]：位置在轴 -2 —— 转成 [..., n, hd] 再转回
+            x = np.transpose(a[0], (1, 0, 2))
+            out = PRIMS["rope"]["ref"](x, a[1], at["base"], at["pairing"],
+                                       at["n_dims"])
+            out = np.transpose(out, (1, 0, 2))
+        elif prim == "soft_max":
+            # a: [头, query, key]（exec 约定），mask [query, key]
+            w = int(n["ins"][1].rsplit("_", 1)[-1])
+            m = _mask(a[0].shape[1], w)
+            out = PRIMS["soft_max"]["ref"](a[0], m, at["scale"])
+        elif prim == "view":
+            out = _exec_view(a[0], at["shape"])
+        elif prim == "permute":
+            out = _exec_permute(a[0], at["axes"])
+        elif prim == "cont":
+            # cont 不带 shape = 纯物化；带 shape = 物化 + 按 ggml 视角
+            # 重排（合头那一步的 cont_2d 就是它）
+            out = a[0]
+            if at.get("shape"):
+                out = _exec_view(out, at["shape"])
+            out = np.ascontiguousarray(out)
+        else:
+            raise SystemExit("  [不支持] 求值器还没有 %s" % prim)
+        V[outs[0].replace(".", "_")] = out
+    return V
+
+
+def _mask(n, window):
+    """因果 + 滑窗掩码（by1exec 的规则：j <= i 且 j > i - window）。"""
+    import numpy as np
+    idx = np.arange(n)
+    m = idx[None, :] <= idx[:, None]
+    if window:
+        m = m & (idx[None, :] > idx[:, None] - window)
+    return np.where(m, 0.0, -np.inf)
+
+
+def e2e(models=None):
+    """**图求值 vs by1exec**：同一批随机权重、同一条输入，逐位对拍。
+    这是"lowering 降对了"和"唯一语义真的是唯一"的判卷人。"""
+    import importlib.util
+    import numpy as np
+    sp = importlib.util.spec_from_file_location(
+        "bcm", by1paths.tool("by1check.py"))
+    bc = importlib.util.module_from_spec(sp)
+    sp.loader.exec_module(bc)
+    import by1codegen as cg
+    import by1ir as bir
+    ex = _load("by1exec")
+    names = models or sorted(by1io.read_json(GOLDEN).keys())
+    bad = []
+    for f in names:
+        path = _os.path.join(by1paths.MODELS, f)
+        try:
+            _r, info = bc.check(path)
+            ir = cg.compile_ir(info)
+        except Exception:
+            continue
+        try:
+            g = lower_model(ir, f)
+        except SystemExit:
+            continue
+        rng = np.random.default_rng(0)
+        params = {k: rng.normal(0, 0.1, s).astype(np.float32)
+                  for k, s in bir.params_of(ir).items()}
+        ids = rng.integers(0, ir["vocab"], 16).astype(np.int32)
+        e = ex.Exec(ir, params)
+        e.P["_g"] = {k: params[k] for k in
+                     ("embed.weight", "pos.weight", "final_norm.w",
+                      "final_norm.b", "head.weight") if k in params}
+        want = e(ids[None, :])[0]
+        V = run_graph(g, params, ids)
+        got = next(v for k, v in V.items() if k.endswith("_logits"))
+        dd = np.abs(got - want).max()
+        amp = max(np.abs(want).max(), 1e-9)
+        if dd / amp >= 1e-4:
+            bad.append("%s 相对差 %.3e" % (f, dd / amp))
+        else:
+            print("     ✓ %-28s 相对差 %.3e" % (f, dd / amp))
+    if bad:
+        for b in bad:
+            print("  [FAIL] " + b)
+        print("  [FAIL] 图求值 vs by1exec：%d 处" % len(bad))
+        return 1
+    print("  [PASS] 图求值 vs by1exec：%d 份模型同权重同输入一致"
+          "（lowering 降对了，唯一语义是真的唯一）" % len(names))
+    return 0
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -533,10 +723,10 @@ def selftest():
     z = PRIMS["silu"]["ref"](np.array([0.0, 2.0]))
     if abs(z[0]) > 1e-6 or abs(z[1] - 2.0 / (1.0 + np.exp(-2.0))) > 1e-6:
         bad.append("silu 对不上手算")
-    # rope：位置 0 不动；位置 1 的 half 配对和 interleaved 配对
-    # **输入配对不同**（i,i+2 vs 2i,2i+1）—— 各自对公式。
-    xr = np.zeros((4, 1))          # [dims=4, n=1]
-    xr[:, 0] = [1.0, 0.0, 0.0, 1.0]
+    # rope：位置 0 不动；half 与 interleaved 的**输入配对不同**
+    # （i,i+2 vs 2i,2i+1），各自对公式。
+    xr = np.zeros((1, 4))          # [n=1, hd=4]
+    xr[0] = [1.0, 0.0, 0.0, 1.0]
     rr = PRIMS["rope"]["ref"](xr, np.array([0.0]), 10000.0, "half", 4)
     if not np.allclose(rr, xr):
         bad.append("rope 位置 0 应当不动")
@@ -560,6 +750,8 @@ def main(argv=None):
     argv = argv if argv is not None else _sys.argv[1:]
     if "--selftest" in argv:
         return selftest()
+    if "--e2e" in argv:
+        return e2e()
     if "--golden" in argv:
         return golden(write="--write" in argv)
     if not argv:
