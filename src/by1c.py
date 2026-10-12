@@ -1803,12 +1803,637 @@ def _emit_c_body(ir, params):
     return "\n".join(lines), order, off
 
 
+# ════════════════════════════════════════════════════════════════════
+# 从图发射（1.0.0-rc0 · A3-3）—— **PRIMS -> C 的机械表**。
+#
+# 和 `by1ggml.emit_model_c_graph` 同一个做法：图里没有"机制"分支 ——
+# Attention / FFN 早被 lowering 拆成 matmul / rope / soft_max 这样的原语，
+# 所以这里只有一张逐节点的机械表。**内核逐条对着 `by1graph.PRIMS` 的
+# ref()**（可执行规格）——公式在那一边，这里只做机械化翻译。
+#
+# 和 `_emit_c_body`（按 IR kind 调融合核）是**两条发射路径**：
+#   --from-graph  走这条（迁移中的新路）
+#   默认          走融合核那条（迁移完成前的判卷人，A3-3 收尾时互换）
+# 两条路的数字都要记在 `docs/1.0-roadmap.md` —— 不许只记一条。
+#
+# **形状从 PRIMS 的语义推，不读 `g.vals` 的声明**：声明里有推不出东西的
+# （Head 的 `shapes=[(None, None)]` —— vocab 是多少它没说），两份事实
+# 并存就是 `ir.md 130` 那个病。唯一事实是 ref() 的 numpy 广播语义，
+# 发射器按同一套规则推形状，推不出来的**当场拒绝**。
+# ════════════════════════════════════════════════════════════════════
+
+C_PRIMS = r'''
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <math.h>
+
+static float *W;                 /* 所有权重，扁平存放 */
+#define P(nm) (W + OFF_##nm)
+
+/* ── 原语内核 ─────────────────────────────────────────────────────
+   每条内核**逐字对着 `by1graph.PRIMS` 的 ref()**。约定：exec 视角、
+   行主序（样本在前、特征在最后轴）。dims 从发射器来（n 是运行期序列长）。
+   ⚠ Windows 是 LLP64：`long` 只有 32 位，尺寸一律 `long long`。 */
+
+static void p_copy(float *o, const float *x, long long tot) {
+    memcpy(o, x, sizeof(float) * (size_t)tot);
+}
+
+static void p_get_rows(float *o, const float *tab, const int *ids,
+                       int n, long long d) {
+    for (int i = 0; i < n; i++)
+        memcpy(o + (size_t)i * d, tab + (size_t)ids[i] * d,
+               sizeof(float) * (size_t)d);
+}
+
+/* 广播二元（numpy 右对齐；dim==1 的输入 stride 记 0）。
+   op: 0=a+b  1=a*b  2=a/b */
+static void p_bin(float *o, const float *a, const float *b, int nd,
+                  const long long *od, const long long *ad,
+                  const long long *bd, int op) {
+    long long tot = 1, os[6], as[6], bs[6], idx[6];
+    int i; long long t, acc;
+    for (i = 0; i < nd; i++) tot *= od[i];
+    acc = 1; for (i = nd - 1; i >= 0; i--) { os[i] = acc; acc *= od[i]; }
+    acc = 1; for (i = nd - 1; i >= 0; i--) { as[i] = ad[i] == 1 ? 0 : acc; acc *= ad[i]; }
+    acc = 1; for (i = nd - 1; i >= 0; i--) { bs[i] = bd[i] == 1 ? 0 : acc; acc *= bd[i]; }
+    for (i = 0; i < nd; i++) idx[i] = 0;
+    for (t = 0; t < tot; t++) {
+        long long ao = 0, bo = 0;
+        for (i = 0; i < nd; i++) { ao += idx[i] * as[i]; bo += idx[i] * bs[i]; }
+        float u = a[ao], v = b[bo];
+        o[t] = op == 0 ? u + v : (op == 1 ? u * v : u / v);
+        for (i = nd - 1; i >= 0; i--) { if (++idx[i] < od[i]) break; idx[i] = 0; }
+    }
+}
+
+static void p_add(float *o, const float *a, const float *b, int nd,
+                  const long long *od, const long long *ad,
+                  const long long *bd) {
+    p_bin(o, a, b, nd, od, ad, bd, 0);
+}
+static void p_mul(float *o, const float *a, const float *b, int nd,
+                  const long long *od, const long long *ad,
+                  const long long *bd) {
+    p_bin(o, a, b, nd, od, ad, bd, 1);
+}
+static void p_div(float *o, const float *a, const float *b, int nd,
+                  const long long *od, const long long *ad,
+                  const long long *bd) {
+    p_bin(o, a, b, nd, od, ad, bd, 2);
+}
+
+/* 一元（保形）。op: 0=silu 1=gelu_tanh 2=gelu 3=sigmoid 4=exp
+   5=log1p 6=sqrt 7=softplus 8=sqrtsoftplus —— 公式照 PRIMS 的 f 列。 */
+static void p_un(float *o, const float *x, long long tot, int op) {
+    for (long long t = 0; t < tot; t++) {
+        float u = x[t], r;
+        switch (op) {
+        case 0: r = u / (1.0f + expf(-u)); break;
+        case 1: r = 0.5f * u * (1.0f + tanhf(
+                    (float)0.7978845608028654 * (u + 0.044715f * u * u * u)));
+                break;
+        case 2: r = 0.5f * u * (1.0f + erff(
+                    (float)0.7071067811865476 * u)); break;
+        case 3: r = 1.0f / (1.0f + expf(-u)); break;
+        case 4: r = expf(u); break;
+        case 5: r = log1pf(u); break;
+        case 6: r = sqrtf(u); break;
+        case 7: r = (u > 0.f ? u : 0.f) + log1pf(expf(-fabsf(u))); break;
+        case 8: r = sqrtf((u > 0.f ? u : 0.f) + log1pf(expf(-fabsf(u)))); break;
+        default: r = u; break;
+        }
+        o[t] = r;
+    }
+}
+
+static void p_scale(float *o, const float *x, long long tot, float s) {
+    for (long long t = 0; t < tot; t++) o[t] = x[t] * s;
+}
+
+static void p_clamp_min(float *o, const float *x, long long tot, float m) {
+    for (long long t = 0; t < tot; t++) o[t] = x[t] > m ? x[t] : m;
+}
+
+/* softmax 沿最后轴（`by1ir.moe_scores_array` 的 softmax 那一支）。 */
+static void p_softmax(float *o, const float *x, long long rows, long long k) {
+    for (long long r = 0; r < rows; r++) {
+        const float *in = x + r * k;
+        float *ou = o + r * k;
+        float mx = -INFINITY;
+        for (long long j = 0; j < k; j++) if (in[j] > mx) mx = in[j];
+        float s = 0.f;
+        for (long long j = 0; j < k; j++) { ou[j] = expf(in[j] - mx); s += ou[j]; }
+        for (long long j = 0; j < k; j++) ou[j] /= s;
+    }
+}
+
+/* x / sqrt(Σx² + eps)，沿最后轴（sum 不是 mean —— PRIMS["l2_norm"]）。 */
+static void p_l2_norm(float *o, const float *x, float eps,
+                      long long rows, long long d) {
+    for (long long i = 0; i < rows; i++) {
+        const float *r = x + i * d;
+        float *q = o + i * d;
+        float s = 0.f;
+        for (long long j = 0; j < d; j++) s += r[j] * r[j];
+        s = 1.0f / sqrtf(s + eps);
+        for (long long j = 0; j < d; j++) q[j] = r[j] * s;
+    }
+}
+
+/* x · rsqrt(mean(x²)+eps) · (one_plus ? 1+w : w) */
+static void p_rms_norm(float *o, const float *x, const float *w, float eps,
+                       int one_plus, long long rows, long long d) {
+    for (long long i = 0; i < rows; i++) {
+        const float *r = x + i * d;
+        float *q = o + i * d;
+        float s = 0.f;
+        for (long long j = 0; j < d; j++) s += r[j] * r[j];
+        s = 1.0f / sqrtf(s / (float)d + eps);
+        for (long long j = 0; j < d; j++)
+            q[j] = r[j] * s * (one_plus ? (1.f + w[j]) : w[j]);
+    }
+}
+
+/* (x-μ)/sqrt(var+eps) · (one_plus ? 1+w : w) + b */
+static void p_layer_norm(float *o, const float *x, const float *w,
+                         const float *b, float eps, int one_plus,
+                         long long rows, long long d) {
+    for (long long i = 0; i < rows; i++) {
+        const float *r = x + i * d;
+        float *q = o + i * d;
+        float mu = 0.f;
+        for (long long j = 0; j < d; j++) mu += r[j];
+        mu /= (float)d;
+        float var = 0.f;
+        for (long long j = 0; j < d; j++) { float u = r[j] - mu; var += u * u; }
+        var /= (float)d;
+        float s = 1.0f / sqrtf(var + eps);
+        for (long long j = 0; j < d; j++)
+            q[j] = (r[j] - mu) * s * (one_plus ? (1.f + w[j]) : w[j])
+                   + (b ? b[j] : 0.f);
+    }
+}
+
+/* out = x @ swapaxes(w,-1,-2)：w [..., j, k]、x [..., m, k] -> o [..., m, j]。
+   批维 numpy 右对齐广播（dim==1 -> stride 0）—— MoE 的专家权重就是
+   4 维的（`_ref_matmul` 的 swapaxes 那一课）。
+   ⚠ dims 是**形状**，索引用的是**步长**（后缀积）—— 第一版把形状当步长
+   用，2 维时 (n,128) 恰好一路带病到段错误。形状 != 步长，两回事。 */
+static void p_matmul(float *o, const float *w, const float *x, int nd,
+                     const long long *od, const long long *wd,
+                     const long long *xd) {
+    long long os[6], ws[6], xs[6], idx[6], btot = 1;
+    int i; long long t, acc;
+    acc = 1; for (i = nd - 1; i >= 0; i--) { os[i] = acc; acc *= od[i]; }
+    acc = 1; for (i = nd - 1; i >= 0; i--) { ws[i] = wd[i] == 1 ? 0 : acc; acc *= wd[i]; }
+    acc = 1; for (i = nd - 1; i >= 0; i--) { xs[i] = xd[i] == 1 ? 0 : acc; acc *= xd[i]; }
+    for (i = 0; i < nd - 2; i++) btot *= od[i];
+    for (i = 0; i < nd; i++) idx[i] = 0;
+    for (t = 0; t < btot; t++) {
+        long long wo = 0, xo = 0, oo = 0;
+        for (i = 0; i < nd - 2; i++) {
+            wo += idx[i] * ws[i]; xo += idx[i] * xs[i]; oo += idx[i] * os[i];
+        }
+        long long m = od[nd-2], j = od[nd-1], k = xd[nd-1];
+        for (long long p2 = 0; p2 < m; p2++)
+            for (long long q2 = 0; q2 < j; q2++) {
+                float s = 0.f;
+                for (long long c2 = 0; c2 < k; c2++)
+                    s += x[xo + p2 * xs[nd-2] + c2 * xs[nd-1]]
+                       * w[wo + q2 * ws[nd-2] + c2 * ws[nd-1]];
+                o[oo + p2 * os[nd-2] + q2 * os[nd-1]] = s;
+            }
+        for (i = nd - 3; i >= 0; i--) { if (++idx[i] < od[i]) break; idx[i] = 0; }
+    }
+}
+
+/* out[β,j,i] = Σ_k a[β//ra,i,k] · b[β//rb,j,k]（GQA 广播照
+   `_ref_batch_matmul` 的 np.repeat 语义：头 h 用 kv 头 h//r）。 */
+static void p_bmm(float *o, const float *a, const float *b,
+                  long long ba, long long bb, long long m, long long nn,
+                  long long k) {
+    long long B = ba > bb ? ba : bb;
+    long long ra = B / ba, rb = B / bb;
+    for (long long be = 0; be < B; be++) {
+        const float *aa = a + (be / ra) * m * k;
+        const float *bb2 = b + (be / rb) * nn * k;
+        float *oo = o + be * nn * m;
+        for (long long j = 0; j < nn; j++)
+            for (long long i = 0; i < m; i++) {
+                float s = 0.f;
+                for (long long c = 0; c < k; c++)
+                    s += aa[i * k + c] * bb2[j * k + c];
+                oo[j * m + i] = s;
+            }
+    }
+}
+
+/* rope：x [n, nh, hd]（exec）—— 位置在轴 0、特征在最后轴。
+   配对 half (i, i+h2) / interleaved (2i, 2i+1)，**输出都拼接**
+   （out[..., i] / out[..., i+h2]），h2 = n_dims/2 —— 公式照
+   `_ref_rope`（partial rope 时配对间距是 n_dims/2，不是 hd/2）。
+   `inv` 是发射器按 `by1graph.rope_inv`（普通/YaRN/llama3 一支定义）
+   算好烤进来的 —— **不在这里再算一遍**。 */
+static void p_rope(float *o, const float *x, const int *pos,
+                   long long n, int nh, int hd, int n_dims, int half_pair,
+                   double rscale, const double *inv) {
+    int h2 = n_dims / 2;
+    /* **先把 x 拷进来** —— `_ref_rope` 是 `out = 复制 x` 再改旋转对，
+       partial rope（n_dims < hd）时**没转的维度带着原值**。第一版直接
+       写输出、其余留 calloc 的 0：全量 rope 看不出来，partial 一来
+       就差 1e-2 ~ 1e-4（llama3-shaped / _gemma-shaped 两处同时露头）。 */
+    memcpy(o, x, sizeof(float) * (size_t)n * nh * hd);
+    for (long long t = 0; t < n; t++)
+        for (int h = 0; h < nh; h++) {
+            const float *xx = x + (t * nh + h) * hd;
+            float *oo = o + (t * nh + h) * hd;
+            for (int i = 0; i < h2; i++) {
+                double th = (double)pos[t] * inv[i];
+                float c = (float)(cos(th) * rscale), s = (float)(sin(th) * rscale);
+                float u, v;
+                if (half_pair) { u = xx[i]; v = xx[i + h2]; }
+                else           { u = xx[2 * i]; v = xx[2 * i + 1]; }
+                oo[i] = u * c - v * s;
+                oo[i + h2] = u * s + v * c;
+            }
+        }
+}
+
+/* softmax(a·scale + mask)，a [头, query, key]，mask 是因果+滑窗
+   （by1 的规则：j <= i 且 j > i - window —— 照 `by1graph._mask`）。 */
+static void p_soft_max(float *o, const float *a, float scale, int win,
+                       long long h, long long q, long long k) {
+    for (long long hh = 0; hh < h; hh++)
+        for (long long i = 0; i < q; i++) {
+            const float *in = a + (hh * q + i) * k;
+            float *ou = o + (hh * q + i) * k;
+            float mx = -INFINITY;
+            for (long long j = 0; j < k; j++) {
+                int ok = (j <= i) && (win == 0 || j > i - win);
+                float z = in[j] * scale + (ok ? 0.f : -INFINITY);
+                ou[j] = z;
+                if (z > mx) mx = z;
+            }
+            float s = 0.f;
+            for (long long j = 0; j < k; j++) { ou[j] = expf(ou[j] - mx); s += ou[j]; }
+            for (long long j = 0; j < k; j++) ou[j] /= s;
+        }
+}
+
+/* soft_max + 一个 sink 槽：key 维尾巴拼一列（逐头 sink 标量，无 mask）
+   再 softmax，然后**扔掉那一列** —— 于是权重不再和为 1
+   （照 `_ref_soft_max_sink`；先加 mask 再拼 sink，顺序要紧）。 */
+static void p_soft_max_sink(float *o, const float *a, const float *sink,
+                            float scale, int win,
+                            long long h, long long q, long long k) {
+    for (long long hh = 0; hh < h; hh++)
+        for (long long i = 0; i < q; i++) {
+            const float *in = a + (hh * q + i) * k;
+            float *ou = o + (hh * q + i) * k;
+            float mx = sink[hh];
+            for (long long j = 0; j < k; j++) {
+                int ok = (j <= i) && (win == 0 || j > i - win);
+                float z = in[j] * scale + (ok ? 0.f : -INFINITY);
+                ou[j] = z;
+                if (z > mx) mx = z;
+            }
+            float s = expf(sink[hh] - mx);
+            for (long long j = 0; j < k; j++) { ou[j] = expf(ou[j] - mx); s += ou[j]; }
+            for (long long j = 0; j < k; j++) ou[j] /= s;
+        }
+}
+
+/* np.transpose(x, tp)：输出轴 k 取输入轴 tp[k]。od 是输出形状，
+   输入形状 = od 按 tp 重排（ish[tp[k]] = od[k]）。 */
+static void p_perm(float *o, const float *x, int nd, const long long *od,
+                   const int *tp) {
+    long long tot = 1, ish[6], xs[6], idx[6];
+    int i, k; long long t, acc;
+    for (i = 0; i < nd; i++) tot *= od[i];
+    for (i = 0; i < nd; i++) ish[tp[i]] = od[i];
+    acc = 1; for (i = nd - 1; i >= 0; i--) { xs[i] = acc; acc *= ish[i]; }
+    for (i = 0; i < nd; i++) idx[i] = 0;
+    for (t = 0; t < tot; t++) {
+        long long xo = 0;
+        for (k = 0; k < nd; k++) xo += idx[k] * xs[tp[k]];
+        o[t] = x[xo];
+        for (i = nd - 1; i >= 0; i--) { if (++idx[i] < od[i]) break; idx[i] = 0; }
+    }
+}
+
+/* 沿 exec 轴 ax 取 [start, start+d)：rows = 轴前元素数、tail = 轴后元素数。 */
+static void p_slice(float *o, const float *x, long long rows, long long d,
+                    long long tail, long long start, long long in_d) {
+    for (long long r = 0; r < rows; r++)
+        for (long long s = 0; s < d; s++)
+            memcpy(o + (r * d + s) * tail,
+                   x + (r * in_d + (start + s)) * tail,
+                   sizeof(float) * (size_t)tail);
+}
+'''
+
+
+# 一元原语 -> p_un 的 op 序（和 C_PRIMS 里的 switch 一一对应）
+_UN_OP = {"silu": 0, "gelu_tanh": 1, "gelu": 2, "sigmoid": 3, "exp": 4,
+          "log1p": 5, "sqrt": 6, "softplus": 7, "sqrtsoftplus": 8}
+
+_UN_SHAPE_OK = set(_UN_OP) | {"softmax"}
+
+
+def emit_c_graph(ir, params, g=None):
+    """**从图发射 C**：逐节点把 PRIMS 翻成 `C_PRIMS` 的内核调用。
+
+    返回 (源码, order, 总长) —— 和 `_emit_c_body` 同一个接口。
+    图外的装配（w.bin 读入 / ids / logits 写出）在 `C_MAIN_G` 里，
+    和融合路径的 `C_MAIN` 同一个命令行契约。
+    """
+    import by1graph as _bg
+    import by1ir as _bir
+    if g is None:
+        g = _bg.lower_model(ir, "model")
+    order = _bir.weight_plan(ir)
+    pmap = {pname: macro for macro, pname in order}
+
+    # ── 形状表：值名 -> exec 形状（C 表达式字符串的列表） ──────────
+    shp = {"tok": ["n"], "pos": ["n"]}
+    for nm, s in params.items():
+        shp[nm] = [str(int(x)) for x in s]
+
+    def _bc(a, b, what):
+        """numpy 右对齐广播。推不出来就**拒绝**，不猜。"""
+        nd = max(len(a), len(b))
+        A = ["1"] * (nd - len(a)) + list(a)
+        B = ["1"] * (nd - len(b)) + list(b)
+        O = []
+        for u, v in zip(A, B):
+            if u == v or v == "1":
+                O.append(u)
+            elif u == "1":
+                O.append(v)
+            else:
+                raise SystemExit("  [不支持] %s 的广播对不上：%s vs %s"
+                                 % (what, a, b))
+        return O, A, B
+
+    def _dims(s):
+        return "(const long long[]){" + ", ".join(s) + "}"
+
+    def _prod(s):
+        return " * ".join("(%s)" % x for x in s) or "1"
+
+    def _ax(xshape, axis):
+        """attr 的 ggml 轴 -> exec 轴（和 ref 们同一句换算）。"""
+        return len(xshape) - 1 - int(axis)
+
+    # ── 逐节点 ────────────────────────────────────────────────────
+    decls, body = [], []
+    decls.append("/* %s */" % _stamp())
+    decls.append("#define D_MODEL %d" % ir["d_model"])
+    decls.append("#define VOCAB %d" % ir["vocab"])
+    off = 0
+    for macro, pname in order:
+        n2 = int(np.prod(params[pname]))
+        decls.append("#define OFF_%s %d" % (macro, off))
+        decls.append("#define LEN_%s %d" % (macro, n2))
+        off += n2
+    decls.append("#define TOTAL_W %d" % off)
+
+    used = set()
+    int_vals = {"tok", "pos"}
+    rp_n = 0
+
+    def _ref(name):
+        """输入 -> C 表达式。mask_* 是**叶子**（值表里没有，soft_max
+        分支按名字里的 window 现场构造）。"""
+        if name in pmap:
+            return "P(%s)" % pmap[name]
+        if "mask_" in name:
+            return None
+        return "v_" + name.replace(".", "_")
+
+    for node in g.nodes:
+        prim, ins, outs, at = (node["prim"], node["ins"], node["outs"],
+                               node["attrs"])
+        a = [_ref(x) for x in ins]
+        dst = "v_" + outs[0].replace(".", "_")
+        used.add(outs[0])
+        shp_in = []
+        for x in ins:
+            if "mask_" in x:
+                shp_in.append(None)
+                continue
+            if x not in shp:
+                raise SystemExit("  [FAIL] %s 的输入 %r 推不出形状" % (prim, x))
+            shp_in.append(shp[x])
+        body.append("    /* %s -> %s */" % (prim, outs[0]))
+
+        if prim == "get_rows":
+            tab, ids_ = shp_in[0], shp_in[1]
+            if len(tab) != 2:
+                raise SystemExit("  [不支持] get_rows 的表是 %d 维 —— 只实现了 2 维"
+                                 % len(tab))
+            out = ids_ + tab[1:]
+            body.append("    p_get_rows(%s, %s, %s, n, %s);"
+                        % (dst, a[0], a[1], tab[1]))
+        elif prim in ("add", "mul", "div"):
+            out, A, B = _bc(shp_in[0], shp_in[1], prim)
+            nd = len(out)
+            body.append("    p_%s(%s, %s, %s, %d, %s, %s, %s);"
+                        % (prim, dst, a[0], a[1], nd, _dims(out),
+                           _dims(A), _dims(B)))
+        elif prim in ("scale", "clamp_min"):
+            out = list(shp_in[0])
+            _k = "s" if prim == "scale" else "min"
+            body.append("    p_%s(%s, %s, %s, %sf);"
+                        % (prim, dst, a[0], _prod(out),
+                           repr(float(at[_k]))))
+        elif prim in _UN_SHAPE_OK:
+            out = list(shp_in[0])
+            if prim == "softmax":
+                k = out[-1]
+                rows = _prod(out[:-1])
+                body.append("    p_softmax(%s, %s, %s, %s);"
+                            % (dst, a[0], rows, k))
+            else:
+                body.append("    p_un(%s, %s, %s, %d);"
+                            % (dst, a[0], _prod(out), _UN_OP[prim]))
+        elif prim == "l2_norm":
+            out = list(shp_in[0])
+            body.append("    p_l2_norm(%s, %s, %sf, %s, %s);"
+                        % (dst, a[0], repr(float(at["eps"])),
+                           _prod(out[:-1]), out[-1]))
+        elif prim == "rms_norm":
+            out = list(shp_in[0])
+            body.append("    p_rms_norm(%s, %s, %s, %sf, %d, %s, %s);"
+                        % (dst, a[0], a[1], repr(float(at["eps"])),
+                           1 if at.get("one_plus") else 0,
+                           _prod(out[:-1]), out[-1]))
+        elif prim == "layer_norm":
+            out = list(shp_in[0])
+            body.append("    p_layer_norm(%s, %s, %s, %s, %sf, %d, %s, %s);"
+                        % (dst, a[0], a[1], a[2], repr(float(at["eps"])),
+                           1 if at.get("one_plus") else 0,
+                           _prod(out[:-1]), out[-1]))
+        elif prim == "matmul":
+            w, x = shp_in[0], shp_in[1]
+            if len(w) < 2 or len(x) < 2:
+                raise SystemExit("  [不支持] matmul 的输入维度 < 2")
+            if w[-1] != x[-1]:
+                raise SystemExit("  [FAIL] matmul 的 k 对不上：%s vs %s" % (w, x))
+            ob, A, B = _bc(x[:-2], w[:-2], "matmul 批维")
+            out = ob + [x[-2], w[-2]]
+            nd = len(out)
+            # 参数顺序：dst, w, x, nd, od, wd, xd —— A 是 x 的批维、
+            # B 是 w 的批维（第一版在这儿把两边传反了，2 维看不出来）
+            body.append("    p_matmul(%s, %s, %s, %d, %s, %s, %s);"
+                        % (dst, a[0], a[1], nd, _dims(out),
+                           _dims(B + [w[-2], w[-1]]),
+                           _dims(A + [x[-2], x[-1]])))
+        elif prim == "batch_matmul":
+            A3, B3 = shp_in[0], shp_in[1]
+            if len(A3) != 3 or len(B3) != 3 or A3[2] != B3[2]:
+                raise SystemExit("  [不支持] batch_matmul 只吃两个 3 维、k 相等"
+                                 "（%s / %s）" % (A3, B3))
+            if A3[0] == "n" or B3[0] == "n":
+                raise SystemExit("  [不支持] batch_matmul 的批维是 n —— 没推过")
+            out = [str(max(int(A3[0]), int(B3[0]))), B3[1], A3[1]]
+            body.append("    p_bmm(%s, %s, %s, %s, %s, %s, %s, %s);"
+                        % (dst, a[0], a[1], A3[0], B3[0], A3[1], B3[1], A3[2]))
+        elif prim == "rope":
+            x = shp_in[0]
+            if len(x) != 3:
+                raise SystemExit("  [不支持] rope 只吃 [n, 头, hd]（现在是 %s）" % x)
+            out = list(x)
+            inv = _bg.rope_inv(int(at["n_dims"]), float(at["base"]),
+                               at.get("yarn"))
+            rn = "RP_%d" % rp_n
+            rp_n += 1
+            decls.append("static const double %s[] = {%s};"
+                         % (rn, ", ".join(repr(float(v)) for v in inv)))
+            body.append("    p_rope(%s, %s, v_pos, n, %s, %s, %d, %d, %r, %s);"
+                        % (dst, a[0], x[1], x[2], int(at["n_dims"]),
+                           1 if str(at.get("pairing")) == "half" else 0,
+                           float(at.get("rope_scale", 1.0)), rn))
+        elif prim in ("soft_max", "soft_max_sink"):
+            x = shp_in[0]
+            if len(x) != 3:
+                raise SystemExit("  [不支持] %s 只吃 [头, query, key]" % prim)
+            out = list(x)
+            win = int(ins[1].rsplit("_", 1)[-1])
+            if prim == "soft_max":
+                body.append("    p_soft_max(%s, %s, %r, %d, %s, %s, %s);"
+                            % (dst, a[0], float(at["scale"]), win,
+                               x[0], x[1], x[2]))
+            else:
+                body.append("    p_soft_max_sink(%s, %s, %s, %r, %d,"
+                            " %s, %s, %s);"
+                            % (dst, a[0], a[2], float(at["scale"]), win,
+                               x[0], x[1], x[2]))
+        elif prim in ("view", "cont"):
+            # view / cont 带 shape：**按 ggml 视角逐字换算成 exec 形状**
+            # （`_exec_view` 那一课）；cont 不带 shape 就是纯物化。
+            # 两者都只是**按行主序拷贝** —— reshape 不改元素序。
+            if prim == "view" or at.get("shape"):
+                sh = at["shape"]
+                out = ["n" if s is None else str(int(s)) for s in reversed(sh)]
+            else:
+                out = list(shp_in[0])
+            body.append("    p_copy(%s, %s, %s);" % (dst, a[0], _prod(out)))
+        elif prim == "permute":
+            x = shp_in[0]
+            axes = list(at["axes"])
+            nd = len(x)
+            tp = tuple(nd - 1 - axes[nd - 1 - k] for k in range(nd))
+            out = [x[tp[k]] for k in range(nd)]
+            body.append("    p_perm(%s, %s, %d, %s, (const int[]){%s});"
+                        % (dst, a[0], nd, _dims(out),
+                           ", ".join(str(t) for t in tp)))
+        elif prim == "slice":
+            x = shp_in[0]
+            ax = _ax(x, at["axis"])
+            d = int(at["stop"]) - int(at["start"])
+            out = list(x)
+            out[ax] = str(d)
+            body.append("    p_slice(%s, %s, %s, %d, %s, %d, %s);"
+                        % (dst, a[0], _prod(x[:ax]), d, _prod(x[ax + 1:]),
+                           int(at["start"]), x[ax]))
+        else:
+            raise SystemExit(
+                "  [不支持] 图的 %r 原语还没有 C 映射 —— "
+                "**要么实现、要么拒绝**（A3-3 的下一刀）" % prim)
+        shp[outs[0]] = out
+
+    # ── 装配：值缓冲 + 逐节点 + 同一个命令行契约 ──────────────────
+    logit = None
+    for n2 in reversed(g.nodes):
+        if n2["outs"][0].replace(".", "_").endswith("logits"):
+            logit = n2["outs"][0]
+            break
+    if logit is None:
+        logit = g.nodes[-1]["outs"][0]
+    alloc = ["", "    /* ---- 值缓冲（一个值一块，exec 约定行主序） ---- */"]
+    alloc.append("    int *v_pos = (int *) malloc(sizeof(int) * (size_t) n);")
+    alloc.append("    for (int i = 0; i < n; i++) v_pos[i] = i;")
+    for v in sorted(used):
+        nm = "v_" + v.replace(".", "_")
+        if v in int_vals:
+            continue
+        alloc.append("    float *%s = (float *) calloc((size_t)(%s),"
+                     " sizeof(float));" % (nm, _prod(shp[v])))
+    main = [
+        "",
+        "int main(int argc, char **argv) {",
+        "    int n = atoi(argv[1]);",
+        "    FILE *f = fopen(argv[2], \"rb\");",
+        "    if (!f) { fprintf(stderr, \"w.bin open fail\\n\"); return 1; }",
+        "    fseek(f, 0, SEEK_END);",
+        "    long sz = ftell(f);",
+        "    fseek(f, 0, SEEK_SET);",
+        "    W = (float *) malloc(sz);",
+        "    if (fread(W, 1, sz, f) != (size_t) sz) {"
+        " fprintf(stderr, \"weights read fail\\n\"); return 1; }",
+        "    fclose(f);",
+        "    int *ids = (int *) malloc(sizeof(int) * (size_t) n);",
+        "    f = fopen(argv[3], \"rb\");",
+        "    if (fread(ids, sizeof(int), (size_t) n, f) != (size_t) n) {"
+        " fprintf(stderr, \"ids read fail\\n\"); return 1; }",
+        "    fclose(f);",
+        "    /* tok 就是读进来的 ids —— 图里 get_rows 的第二输入 */",
+        "    int *v_tok = ids;",
+    ]
+    tail = [
+        "    f = fopen(argv[4], \"wb\");",
+        "    fwrite(%s, sizeof(float), (size_t)(%s), f);"
+        % ("v_" + logit.replace(".", "_"), _prod(shp[logit])),
+        "    fclose(f);",
+        "    printf(\"ok %d x %d\\n\", n, VOCAB);",
+        "    return 0;",
+        "}",
+    ]
+    src = "\n".join([C_PRIMS] + decls + main + alloc + body + tail)
+    return src, order, off
+
+
+def _stamp():
+    try:
+        from by1ver import stamp as _s
+    except ImportError:
+        def _s():
+            return "by1"
+    return _s()
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="by1 C 后端")
     ap.add_argument("by1")
     ap.add_argument("--gcc", required=True)
     ap.add_argument("--seq", type=int, default=16)
     ap.add_argument("--workdir", default="cgen")
+    ap.add_argument("--from-graph", action="store_true",
+                    help="走图路径（A3-3 的 PRIMS->C 机械表）；"
+                         "默认还是融合核路径")
     args = ap.parse_args(argv)
 
     bc, cg = load("by1check"), load("by1codegen")
@@ -1819,7 +2444,14 @@ def main(argv=None):
 
     print(f"\n{'='*72}\n  {name}  ->  C\n{'='*72}")
     try:
-        decls, order, total = emit_c(ir, info, ex_mod.shapes_of(ir))
+        if args.from_graph:
+            # **图路径**（A3-3）：整份源码由 emit_c_graph 装配好
+            src, order, total = emit_c_graph(ir, ex_mod.shapes_of(ir))
+            print("  发射路径：图（PRIMS -> C 机械表）")
+        else:
+            decls, order, total = emit_c(ir, info, ex_mod.shapes_of(ir))
+            src = C_HEAD + "\n" + decls + "\n" + C_MAIN
+            print("  发射路径：IR 融合核（迁移期间的判卷人）")
     except SystemExit as e:
         print(str(e))
         return 1
@@ -1835,7 +2467,6 @@ def main(argv=None):
     ids = rng.integers(0, ir["vocab"], args.seq).astype(np.int32)
     by1io.write_bytes(os.path.join(args.workdir, "ids.bin"), ids.tobytes())
 
-    src = C_HEAD + "\n" + decls + "\n" + C_MAIN
     cpath = os.path.join(args.workdir, "model.c")
     by1io.write_text(cpath, src)
     print(f"  生成 {cpath}  （{len(src.splitlines())} 行）")
