@@ -1914,7 +1914,7 @@ static void p_sum(float *o, const float *x, long long rows, long long m,
 }
 
 /* 广播二元（numpy 右对齐；dim==1 的输入 stride 记 0）。
-   op: 0=a+b  1=a*b  2=a/b */
+   op: 0=a+b  1=a*b  2=a/b  3=(a<=b ? 1 : 0) */
 static void p_bin(float *o, const float *a, const float *b, int nd,
                   const long long *od, const long long *ad,
                   const long long *bd, int op) {
@@ -1929,7 +1929,10 @@ static void p_bin(float *o, const float *a, const float *b, int nd,
         long long ao = 0, bo = 0;
         for (i = 0; i < nd; i++) { ao += idx[i] * as[i]; bo += idx[i] * bs[i]; }
         float u = a[ao], v = b[bo];
-        o[t] = op == 0 ? u + v : (op == 1 ? u * v : u / v);
+        o[t] = op == 0 ? u + v
+             : op == 1 ? u * v
+             : op == 2 ? u / v
+             : (u <= v ? 1.f : 0.f);
         for (i = nd - 1; i >= 0; i--) { if (++idx[i] < od[i]) break; idx[i] = 0; }
     }
 }
@@ -1948,6 +1951,12 @@ static void p_div(float *o, const float *a, const float *b, int nd,
                   const long long *od, const long long *ad,
                   const long long *bd) {
     p_bin(o, a, b, nd, od, ad, bd, 2);
+}
+static void p_le(float *o, const float *a, const float *b, int nd,
+                 const long long *od, const long long *ad,
+                 const long long *bd) {
+    /* out = 1 若 a <= b 否则 0 —— `_ref_le`（DSA 的因果掩码） */
+    p_bin(o, a, b, nd, od, ad, bd, 3);
 }
 
 /* 一元（保形）。op: 0=silu 1=gelu_tanh 2=gelu 3=sigmoid 4=exp
@@ -2004,10 +2013,23 @@ static void p_one_hot(float *o, const int *ids, long long rows,
         }
 }
 
-/* out = m > 0 ? x : v —— `_ref_masked_fill`（v 常是 -inf）。 */
+/* out = m > 0 ? x : v —— `_ref_masked_fill`（v 常是 -inf）。
+   m **右对齐广播**到 x 的形状（np.where 本来就播：DSA 的 keep [n,n]
+   摊到 [nh,n,n] 的分数上就是这一条）。 */
 static void p_masked_fill(float *o, const float *x, const float *m,
-                          long long tot, float v) {
-    for (long long t = 0; t < tot; t++) o[t] = m[t] > 0.f ? x[t] : v;
+                          int nd, const long long *od, const long long *md,
+                          float v) {
+    long long tot = 1, ms[6], idx[6];
+    int i; long long t, acc;
+    for (i = 0; i < nd; i++) tot *= od[i];
+    acc = 1; for (i = nd - 1; i >= 0; i--) { ms[i] = md[i] == 1 ? 0 : acc; acc *= md[i]; }
+    for (i = 0; i < nd; i++) idx[i] = 0;
+    for (t = 0; t < tot; t++) {
+        long long mo = 0;
+        for (i = 0; i < nd; i++) mo += idx[i] * ms[i];
+        o[t] = m[mo] > 0.f ? x[t] : v;
+        for (i = nd - 1; i >= 0; i--) { if (++idx[i] < od[i]) break; idx[i] = 0; }
+    }
 }
 
 /* softmax 沿最后轴（`by1ir.moe_scores_array` 的 softmax 那一支）。 */
@@ -2424,13 +2446,19 @@ def emit_c_graph(ir, params, g=None):
     rp_n = 0
 
     def _ref(name):
-        """输入 -> C 表达式。mask_* 是**叶子**（值表里没有，soft_max
-        分支按名字里的 window 现场构造）。"""
+        """输入 -> C 表达式（float 上下文）。mask_* 是**叶子**（值表里没有，
+        soft_max 分支按名字里的 window 现场构造）。`pos` 在 float 上下文里
+        用 float 孪生（int 那份给 get_rows / rope 用）。"""
         if name in pmap:
             return "P(%s)" % pmap[name]
         if "mask_" in name:
             return None
-        return "v_" + name.replace(".", "_")
+        return "v_pos_f" if name == "pos" else "v_" + name.replace(".", "_")
+
+    def _iref(name):
+        """int 上下文的输入（get_rows 的下标 / one_hot 的 ids / gather 的
+        idx）—— tok / pos 是 int，top_k 的输出也是 int。"""
+        return "v_pos" if name == "pos" else _ref(name)
 
     for node in g.nodes:
         prim, ins, outs, at = (node["prim"], node["ins"], node["outs"],
@@ -2459,37 +2487,33 @@ def emit_c_graph(ir, params, g=None):
             # (E,out,in) 的专家整行 -> (n,K,out,in) 就是这一条）
             out = ids_ + tab[1:]
             body.append("    p_get_rows(%s, %s, %s, %s, %s);"
-                        % (dst, a[0], a[1], _prod(ids_), _prod(tab[1:])))
+                        % (dst, a[0], _iref(ins[1]), _prod(ids_),
+                           _prod(tab[1:])))
         elif prim == "top_k":
             out = list(shp_in[0])
             _m = shp_in[0][-1]
-            if _m == "n":
-                raise SystemExit("  [不支持] top_k 的行宽是 n —— 没推过")
-            # ref 的 `[..., :k]` 自动钳到行宽，这里同规则（否则 C 越界）
-            out[-1] = str(min(int(at["k"]), int(_m)))
+            # ref 的 `[..., :k]` 自动钳到行宽，这里同规则（否则 C 越界）；
+            # 行宽是 n 时按 k 铺缓冲 —— 内核运行期钳，只会少写不多写
+            out[-1] = (str(min(int(at["k"]), int(_m))) if _m != "n"
+                       else str(int(at["k"])))
             body.append("    p_top_k(%s, %s, %s, %s, %s);"
                         % (dst, a[0], _prod(shp_in[0][:-1]),
                            _m, out[-1]))
         elif prim == "one_hot":
-            x = shp_in[0]
+            x, rf = shp_in[0], shp_in[1]
             if typ.get(ins[0]) != "i":
                 raise SystemExit("  [FAIL] one_hot 的下标 %r 不是 int" % ins[0])
-            if x[-1] == "n":
-                raise SystemExit("  [不支持] one_hot 的下标行宽是 n —— 没推过")
-            out = x[:-1] + [str(int(at["cols"]))]
+            out = x[:-1] + [rf[-1]]       # 宽度 = 参照的最后一维
             body.append("    p_one_hot(%s, %s, %s, %s, %s);"
-                        % (dst, a[0], _prod(x[:-1]), out[-1], x[-1]))
+                        % (dst, _iref(ins[0]), _prod(x[:-1]), out[-1], x[-1]))
         elif prim == "masked_fill":
-            if shp_in[0] != shp_in[1]:
-                raise SystemExit("  [不支持] masked_fill 的 x / m 形状不同"
-                                 "（%s vs %s）—— 广播没实现就拒绝"
-                                 % (shp_in[0], shp_in[1]))
-            out = list(shp_in[0])
+            out, _A, B = _bc(shp_in[0], shp_in[1], "masked_fill")
             _v = float(at["value"])
             _vs = ("-INFINITY" if _v == float("-inf") else
                    "INFINITY" if _v == float("inf") else repr(_v) + "f")
-            body.append("    p_masked_fill(%s, %s, %s, %s, %s);"
-                        % (dst, a[0], a[1], _prod(out), _vs))
+            body.append("    p_masked_fill(%s, %s, %s, %d, %s, %s, %s);"
+                        % (dst, a[0], a[1], len(out), _dims(out), _dims(B),
+                           _vs))
         elif prim == "gather":
             x, ii = shp_in[0], shp_in[1]
             if typ.get(ins[1]) != "i":
@@ -2500,7 +2524,8 @@ def emit_c_graph(ir, params, g=None):
                                  % (x, ii))
             out = x[:-1] + [ii[-1]]
             body.append("    p_gather(%s, %s, %s, %s, %s, %s);"
-                        % (dst, a[0], a[1], _prod(x[:-1]), x[-1], ii[-1]))
+                        % (dst, a[0], _iref(ins[1]), _prod(x[:-1]), x[-1],
+                           ii[-1]))
         elif prim == "sum":
             x = shp_in[0]
             ax = _ax(x, at["axis"])
@@ -2511,7 +2536,7 @@ def emit_c_graph(ir, params, g=None):
                 out = out[:ax] + out[ax + 1:]
             body.append("    p_sum(%s, %s, %s, %s, %s);"
                         % (dst, a[0], _prod(x[:ax]), x[ax], _prod(x[ax + 1:])))
-        elif prim in ("add", "mul", "div"):
+        elif prim in ("add", "mul", "div", "le"):
             out, A, B = _bc(shp_in[0], shp_in[1], prim)
             nd = len(out)
             body.append("    p_%s(%s, %s, %s, %d, %s, %s, %s);"
@@ -2571,9 +2596,20 @@ def emit_c_graph(ir, params, g=None):
             if len(A3) != 3 or len(B3) != 3 or A3[2] != B3[2]:
                 raise SystemExit("  [不支持] batch_matmul 只吃两个 3 维、k 相等"
                                  "（%s / %s）" % (A3, B3))
-            if A3[0] == "n" or B3[0] == "n":
-                raise SystemExit("  [不支持] batch_matmul 的批维是 n —— 没推过")
-            out = [str(max(int(A3[0]), int(B3[0]))), B3[1], A3[1]]
+            # 批维可以是 n（DSA 的按-token 加权和）—— B = max(ba, bb) 由
+            # 内核算，缓冲按**运行期 max 表达式**铺，别赌 n 一定更大
+            if A3[0] == B3[0]:
+                _B = A3[0]
+            elif A3[0] == "1":
+                _B = B3[0]
+            elif B3[0] == "1":
+                _B = A3[0]
+            elif A3[0] != "n" and B3[0] != "n":
+                _B = str(max(int(A3[0]), int(B3[0])))
+            else:
+                _B = ("((%s) > (%s) ? (%s) : (%s))"
+                      % (A3[0], B3[0], A3[0], B3[0]))
+            out = [_B, B3[1], A3[1]]
             body.append("    p_bmm(%s, %s, %s, %s, %s, %s, %s, %s);"
                         % (dst, a[0], a[1], A3[0], B3[0], A3[1], B3[1], A3[2]))
         elif prim == "rope":
@@ -2610,6 +2646,10 @@ def emit_c_graph(ir, params, g=None):
             # view / cont 带 shape：**按 ggml 视角逐字换算成 exec 形状**
             # （`_exec_view` 那一课）；cont 不带 shape 就是纯物化。
             # 两者都只是**按行主序拷贝** —— reshape 不改元素序。
+            if typ.get(ins[0]) == "i" and ins[0] != "pos":
+                # pos 的 float 孪生走 _ref；别的 int 值（top_k 输出）的
+                # 视图没实现就拒绝，不许默默按 float 拷
+                raise SystemExit("  [不支持] %s 的输入 %r 是 int" % (prim, ins[0]))
             if prim == "view" or at.get("shape"):
                 sh = at["shape"]
                 out = ["n" if s is None else str(int(s)) for s in reversed(sh)]
@@ -2617,6 +2657,8 @@ def emit_c_graph(ir, params, g=None):
                 out = list(shp_in[0])
             body.append("    p_copy(%s, %s, %s);" % (dst, a[0], _prod(out)))
         elif prim == "permute":
+            if typ.get(ins[0]) == "i":
+                raise SystemExit("  [不支持] permute 的输入 %r 是 int" % ins[0])
             x = shp_in[0]
             axes = list(at["axes"])
             nd = len(x)
@@ -2727,7 +2769,10 @@ def emit_c_graph(ir, params, g=None):
         logit = g.nodes[-1]["outs"][0]
     alloc = ["", "    /* ---- 值缓冲（一个值一块，exec 约定行主序） ---- */"]
     alloc.append("    int *v_pos = (int *) malloc(sizeof(int) * (size_t) n);")
-    alloc.append("    for (int i = 0; i < n; i++) v_pos[i] = i;")
+    alloc.append("    float *v_pos_f = (float *) malloc(sizeof(float)"
+                 " * (size_t) n);")
+    alloc.append("    for (int i = 0; i < n; i++) { v_pos[i] = i;"
+                 " v_pos_f[i] = (float) i; }")
     for v in sorted(used):
         nm = "v_" + v.replace(".", "_")
         if typ.get(v) == "i":

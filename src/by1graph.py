@@ -338,13 +338,15 @@ def _ref_add_scalar():
 def _ref_one_hot():
     """把下标行散成 0/1 行：`out[..., j] = 1` 若 `j ∈ ids[..., :]`，否则 0。
 
-    noaux_tc 的组选择掩码就是它（`by1exec.op_moe` 的
-    `put_along_axis(gm, gi, 1.0)`）；并列/重复的下标就置 1 两次（无害）。"""
+    **宽度由第二个输入（参照）的最后一维给** —— 它可能是静态的（MoE 的
+    组数）也可能是运行期的 n（DSA 的 key 全集），attr 表达不了运行期。
+    并列/重复的下标就置 1 两次（无害）。"""
     np = _np()
 
-    def f(ids, cols):
+    def f(ids, ref):
         ids = np.asarray(ids).astype(np.int64)
-        out = np.zeros(ids.shape[:-1] + (int(cols),), dtype=np.float64)
+        out = np.zeros(ids.shape[:-1] + (int(np.asarray(ref).shape[-1]),),
+                       dtype=np.float64)
         np.put_along_axis(out, ids, 1.0, axis=-1)
         return out
     return f
@@ -355,6 +357,16 @@ def _ref_masked_fill():
     `by1exec.op_moe` 的 `np.where(mask > 0, choice, -np.inf)`。"""
     np = _np()
     return lambda x, m, v: np.where(np.asarray(m) > 0, x, float(v))
+
+
+def _ref_le():
+    """`out = 1` 若 `a <= b` 否则 0（广播二元，掩码族的第三个成员）。
+
+    DSA 索引器的因果掩码就是它（`by1exec._dsa_index` 的
+    `np.where(ar[None,:] > ar[:,None], -inf, ·)` —— 取反一下就是 `<=`）。
+    1/0 而不是 bool：掩码要能进 `masked_fill` 的 `m > 0`，也要能乘。"""
+    np = _np()
+    return lambda a, b: (np.asarray(a) <= np.asarray(b)).astype(np.float64)
 
 
 def _ref_div():
@@ -612,12 +624,16 @@ PRIMS = {
                   "src": "by1exec.op_moe 的 np.minimum(g, limit)"},
     "add_scalar": {"ins": 1, "f": "a + c", "ref": _ref_add_scalar(),
                    "src": "by1exec.op_moe 的归一守卫 `sum + 1e-20`"},
-    "one_hot":   {"ins": 1, "f": "out[...,j] = 1 若 j ∈ ids 否则 0（int 行 -> 0/1 行）",
+    "one_hot":   {"ins": 2, "f": "out[...,j] = 1 若 j ∈ ids 否则 0"
+                                "（宽度 = 参照的最后一维）",
                   "ref": _ref_one_hot(),
                   "src": "by1exec.op_moe 的 put_along_axis(gm, gi, 1.0)"},
     "masked_fill": {"ins": 2, "f": "out = m > 0 ? x : v",
                     "ref": _ref_masked_fill(),
                     "src": "by1exec.op_moe 的 np.where(mask, choice, -inf)"},
+    "le":        {"ins": 2, "f": "out = 1 若 a <= b 否则 0（广播二元）",
+                  "ref": _ref_le(),
+                  "src": "by1exec._dsa_index 的因果比较 ar[None,:] <= ar[:,None]"},
     "div":       {"ins": 2, "f": "a / b（广播）", "ref": _ref_div(),
                   "src": "ggml_div / numpy"},
     # ── GDN / delta 规则那一族（Linear 与 KDA 共用）──
@@ -1097,8 +1113,7 @@ def _lower_moe(g, p, x, dst, w, a, d):
                      shapes=[(ng, None)])
         gi = g.add("top_k", [gsum], [p + "gi"], attrs={"k": tg},
                    shapes=[(tg, None)])
-        gm = g.add("one_hot", [gi], [p + "gm"], attrs={"cols": ng},
-                   shapes=[(ng, None)])
+        gm = g.add("one_hot", [gi, gsum], [p + "gm"], shapes=[(ng, None)])
         # 组选择 -> 专家掩码：[n, ng] -> [n, ng, 1] -> 每组整块重复 eg 次
         gm3 = g.add("view", [gm], [p + "gm3"],
                     attrs={"shape": [1, ng, None]}, shapes=[(1, ng, None)])
@@ -1388,6 +1403,111 @@ def _lower_kda(g, p, x, dst, w, a, d):
     return dst
 
 
+def _lower_dsa(g, p, x, q_resid, w, a, nq):
+    """SparseMLA 的 DSA 索引器（**非池路径**）—— 用原语拼出来，照
+    `by1exec._dsa_index` 的数学（那份是循环 + 散射写的；这里机械化翻译，
+    两份实现独立，e2e 就是它们的对拍）：
+
+        q = view(q_resid @ wq_b)；**rope 那一半在前**（和主 MLA 的
+            `[qk_nope | qk_rope]` 正好相反 —— 抄错过一次的地方）；
+            索引器的 rope 配对**固定 interleaved**，和主 MLA 的 pairing 无关
+        k = **LayerNorm**(x @ wk, k_norm.w, k_norm.b, eps=1e-6)（带 bias，
+            不是 RMSNorm —— 参考就是这么写的）
+        scores = max(q·kᵀ, 0) · hd^-0.5；sc = Σ_h w·scores，
+            w = (x @ weights_proj) · nh^-0.5
+        sc 因果掩掉未来（`le` 外积）-> top_k -> **one_hot 散成 keep**
+            （循环版的那两层 `keep[bi, ti, sel] = True` 就是这个散射）
+
+    `topk >= n` 的特例不用单写：top_k 钳到行宽，one_hot 全 1 ——
+    和参考的 `keep[:] = True` 同一个结果。
+    """
+    nh, hd = int(a["index_heads"]), int(a["index_dim"])
+    topk = int(a["index_topk"])
+    nr = int(a.get("qk_rope") or 0)
+    if nr > hd:
+        raise SystemExit("  [FAIL] index qk_rope=%d > index_dim=%d" % (nr, hd))
+    # q 侧
+    iq = g.add("matmul", [w("indexer.wq_b.weight"), q_resid], [p + "iq0"],
+               shapes=[(nh * hd, None)])
+    iq = g.add("view", [iq], [p + "iq3"], attrs={"shape": [hd, nh, None]},
+               shapes=[(hd, nh, None)])
+    iq_rot = g.add("slice", [iq], [p + "iqr"],
+                   attrs={"axis": 0, "start": 0, "stop": nr},
+                   shapes=[(nr, nh, None)])
+    iq_pass = g.add("slice", [iq], [p + "iqp"],
+                    attrs={"axis": 0, "start": nr, "stop": hd},
+                    shapes=[(hd - nr, nh, None)])
+    # k 侧
+    ik = g.add("matmul", [w("indexer.wk.weight"), x], [p + "ik0"],
+               shapes=[(hd, None)])
+    ik = g.add("layer_norm", [ik, w("indexer.k_norm.weight"),
+                              w("indexer.k_norm.bias")], [p + "ikn"],
+               attrs={"eps": 1e-6, "one_plus": False}, shapes=[(hd, None)])
+    ik_rot = g.add("slice", [ik], [p + "ikr0"],
+                   attrs={"axis": 0, "start": 0, "stop": nr},
+                   shapes=[(nr, None)])
+    ik_pass = g.add("slice", [ik], [p + "ikp"],
+                    attrs={"axis": 0, "start": nr, "stop": hd},
+                    shapes=[(hd - nr, None)])
+    if nr:
+        rp = {"base": float(a["rope_base"]), "pairing": "interleaved",
+              "n_dims": nr, "yarn": None, "rope_scale": 1.0}
+        iq_rot = g.add("rope", [iq_rot, "pos"], [p + "iqr2"], attrs=rp,
+                       shapes=[(nr, nh, None)])
+        ik3 = g.add("view", [ik_rot], [p + "ikr1"],
+                    attrs={"shape": [nr, 1, None]}, shapes=[(nr, 1, None)])
+        ik3 = g.add("rope", [ik3, "pos"], [p + "ikr2"], attrs=rp,
+                    shapes=[(nr, 1, None)])
+        ik_rot = g.add("view", [ik3], [p + "ikr3"],
+                       attrs={"shape": [nr, None]}, shapes=[(nr, None)])
+    iq = (g.add("concat", [iq_rot, iq_pass], [p + "iq4"], attrs={"axis": 0},
+                shapes=[(hd, nh, None)]) if nr else iq_pass)
+    ik = (g.add("concat", [ik_rot, ik_pass], [p + "ik4"], attrs={"axis": 0},
+                shapes=[(hd, None)]) if nr else ik_pass)
+    # 打分：scores[h, ti, tj] = max(Σ_d q·k, 0) · hd^-0.5
+    # k 是单头的：view 成 [1, n, hd]（批维 1，batch_matmul 的 GQA 重复
+    # 把它摊给每个查询头）—— 写成 [n, 1, hd] 批维就对到 token 上了
+    ikk = g.add("view", [ik], [p + "ik5"], attrs={"shape": [hd, None, 1]},
+                shapes=[(hd, None, 1)])
+    qp = g.add("permute", [iq], [p + "iq5"], attrs={"axes": [0, 2, 1]},
+               shapes=[(hd, None, nh)])
+    sc0 = g.add("batch_matmul", [ikk, qp], [p + "isc0"],
+                shapes=[(None, None, nh)])
+    sc0 = g.add("clamp_min", [sc0], [p + "isc1"], attrs={"min": 0.0},
+                shapes=[(None, None, nh)])
+    sc0 = g.add("scale", [sc0], [p + "isc2"],
+                attrs={"s": float(hd) ** -0.5}, shapes=[(None, None, nh)])
+    wv = g.add("matmul", [w("indexer.weights_proj.weight"), x], [p + "iw0"],
+               shapes=[(nh, None)])
+    wv = g.add("scale", [wv], [p + "iw1"], attrs={"s": float(nh) ** -0.5},
+               shapes=[(nh, None)])
+    # sc[ti, tj] = Σ_h w[ti,h] · scores[h, ti, tj]
+    s3 = g.add("permute", [sc0], [p + "isc3"], attrs={"axes": [2, 0, 1]},
+               shapes=[(None, None, nh)])
+    w2 = g.add("view", [wv], [p + "iw2"], attrs={"shape": [nh, 1, None]},
+               shapes=[(nh, 1, None)])
+    sc = g.add("batch_matmul", [w2, s3], [p + "isc4"],
+               shapes=[(None, None, 1)])
+    # 挤掉尾部那个 1：对长度 1 的轴求和 == squeeze（浮点逐位相同）——
+    # `view` 两个未知维是推不出的（reshape 只许一个 -1）
+    sc = g.add("sum", [sc], [p + "isc5"], attrs={"axis": 0, "keepdims": False},
+               shapes=[(None, None)])
+    # 因果：`le` 的外积广播（key[1,n] <= query[n,1]）-> 未来填 -inf
+    pcol = g.add("view", ["pos"], [p + "pcol"], attrs={"shape": [None, 1]},
+                 shapes=[(None, 1)])
+    prow = g.add("view", ["pos"], [p + "prow"], attrs={"shape": [1, None]},
+                 shapes=[(1, None)])
+    cm = g.add("le", [pcol, prow], [p + "cm"], shapes=[(None, None)])
+    sc = g.add("masked_fill", [sc, cm], [p + "sc2"],
+               attrs={"value": float("-inf")}, shapes=[(None, None)])
+    topi = g.add("top_k", [sc], [p + "itopi"], attrs={"k": topk},
+                 shapes=[(topk, None)])
+    # keep [n, n] 直接交给 masked_fill —— 掩码**右对齐广播**到每个查询头
+    # （view 成 [1,n,n] + repeat 那条路要两个未知维的 reshape，推不出）
+    return g.add("one_hot", [topi, pcol], [p + "keep"],
+                 shapes=[(None, None)])
+
+
 def _lower_mla(g, p, x, dst, w, a, d):
     """MLA（Multi-Latent Attention，低秩压缩注意力）的 lowering ——
     语义照 `by1exec.op_mla`（e2e 的判据就是它）。
@@ -1406,9 +1526,10 @@ def _lower_mla(g, p, x, dst, w, a, d):
     hd = nope + nr
     _op = bool(a.get("norm_one_plus", False))
     _eps = float(a.get("norm_eps", _DEFAULT_EPS))
-    if a.get("index_heads"):
-        raise SystemExit("  [不支持] MLA.index_heads（SparseMLA 的 DSA "
-                         "索引器还没收编）")
+    if a.get("index_heads") and int(a.get("index_kpool") or 1) > 1:
+        # k-pool 那条路（GLM-5.3 的池打分）还没收编 —— 要么实现要么拒绝
+        raise SystemExit("  [不支持] MLA.index_kpool > 1"
+                         "（k-pool 路径还没收编）")
     if a.get("head_gate", "off") not in ("off", "per_head"):
         raise SystemExit("  [不支持] MLA.head_gate=%r 只实现了 per_head"
                          % a["head_gate"])
@@ -1423,6 +1544,8 @@ def _lower_mla(g, p, x, dst, w, a, d):
                shapes=[(ql, None)])
     qr = g.add("rms_norm", [qr, w("q_a_layernorm.w")], [p + "qan"],
                attrs={"eps": _eps, "one_plus": _op}, shapes=[(ql, None)])
+    keep = (_lower_dsa(g, p, x, qr, w, a, nh) if a.get("index_heads")
+            else None)
     q = g.add("matmul", [w("q_b_proj"), qr], [p + "qb"],
               shapes=[(nh * hd, None)])
     q = g.add("view", [q], [p + "q3"], attrs={"shape": [hd, nh, None]},
@@ -1444,28 +1567,37 @@ def _lower_mla(g, p, x, dst, w, a, d):
     k_pass = _cut(kv, 0, nope, "kp", (nope, nh, None))
     v = _cut(kv, nope, nope + vd, "vv", (vd, nh, None))
     # ── rope：q_rot 每头；k_rot **单头** rope 后广播到 nh 头 ─────────
+    # `qk_rope = 0` 是合法配置（纯 nope）—— 空切片不 rope 不拼，
+    # 和 op_mla 的 `if nr:` 同构（空切片 + 带未知维的 reshape 会炸）。
     rp = {"base": float(a["rope_base"]),
           "pairing": str(a.get("pairing", "interleaved")),
           "n_dims": nr, "yarn": None, "rope_scale": 1.0}
-    q_rot = g.add("rope", [q_rot, "pos"], [p + "qr2"], attrs=rp,
-                  shapes=[(nr, nh, None)])
-    k_rot = g.add("view", [k_rot], [p + "kr1"],
-                  attrs={"shape": [nr, 1, None]}, shapes=[(nr, 1, None)])
-    k_rot = g.add("rope", [k_rot, "pos"], [p + "kr2"], attrs=rp,
-                  shapes=[(nr, 1, None)])
-    k_rot = g.add("repeat", [k_rot], [p + "kr3"],
-                  attrs={"reps": nh, "axis": 1}, shapes=[(nr, nh, None)])
+    if nr:
+        q_rot = g.add("rope", [q_rot, "pos"], [p + "qr2"], attrs=rp,
+                      shapes=[(nr, nh, None)])
+        k_rot = g.add("view", [k_rot], [p + "kr1"],
+                      attrs={"shape": [nr, 1, None]}, shapes=[(nr, 1, None)])
+        k_rot = g.add("rope", [k_rot, "pos"], [p + "kr2"], attrs=rp,
+                      shapes=[(nr, 1, None)])
+        k_rot = g.add("repeat", [k_rot], [p + "kr3"],
+                      attrs={"reps": nh, "axis": 1}, shapes=[(nr, nh, None)])
     # ── 拼回 -> 因果注意力（scale = 1/√(nope+nr)）───────────────────
-    qq = g.add("concat", [q_pass, q_rot], [p + "qq"], attrs={"axis": 0},
-               shapes=[(hd, nh, None)])
-    kk = g.add("concat", [k_pass, k_rot], [p + "kk"], attrs={"axis": 0},
-               shapes=[(hd, nh, None)])
+    qq = (g.add("concat", [q_pass, q_rot], [p + "qq"], attrs={"axis": 0},
+                shapes=[(hd, nh, None)]) if nr else q_pass)
+    kk = (g.add("concat", [k_pass, k_rot], [p + "kk"], attrs={"axis": 0},
+                shapes=[(hd, nh, None)]) if nr else k_pass)
     q3p = g.add("permute", [qq], [p + "q3p"], attrs={"axes": [0, 2, 1]},
                 shapes=[(hd, None, nh)])
     k3p = g.add("permute", [kk], [p + "k3p"], attrs={"axes": [0, 2, 1]},
                 shapes=[(hd, None, nh)])
     kq = g.add("batch_matmul", [k3p, q3p], [p + "kq"],
                shapes=[(None, None, nh)])
+    if keep is not None:
+        # DSA 的 keep：未选中的 (query, key) 填 -inf。因果那半在 soft_max
+        # 的 mask_0 里 —— 两重掩码结果一样（-inf 还是 -inf），
+        # 和 op_mla 的 `causal & keep` 同义。
+        kq = g.add("masked_fill", [kq, keep], [p + "kqm"],
+                   attrs={"value": float("-inf")}, shapes=[(None, None, nh)])
     sm = g.add("soft_max", [kq, p + "mask_0"], [p + "sm"],
                attrs={"scale": 1.0 / (hd ** 0.5)}, shapes=[(None, None, nh)])
     vt = g.add("permute", [v], [p + "v3p"], attrs={"axes": [0, 2, 1]},
@@ -1860,6 +1992,11 @@ def _exec_view(x, gshape):
     ggml [d0, d1, n] 的内存 == 行主序 [n, d1, d0] —— **同一块内存的
     两种读法**，翻转形状就是全部。"""
     import numpy as np
+    if sum(1 for s in gshape if s is None) > 1:
+        # 两个未知维 numpy 推不出（(1, n, n) 从 n² 是歧义的）——
+        # 要么改写 lowering，要么走广播，别在这儿赌
+        raise SystemExit("  [FAIL] view 的目标形状 %r 有两个未知维"
+                         "（一次 reshape 只许一个 -1）" % (list(gshape),))
     t = tuple(reversed([s if s is not None else -1 for s in gshape]))
     return np.reshape(x, t)
 
@@ -1922,9 +2059,11 @@ def run_graph(g, params, ids):
         elif prim == "add_scalar":
             out = PRIMS["add_scalar"]["ref"](a[0], at["c"])
         elif prim == "one_hot":
-            out = PRIMS["one_hot"]["ref"](a[0], at["cols"])
+            out = PRIMS["one_hot"]["ref"](a[0], a[1])
         elif prim == "masked_fill":
             out = PRIMS["masked_fill"]["ref"](a[0], a[1], at["value"])
+        elif prim == "le":
+            out = PRIMS["le"]["ref"](a[0], a[1])
         elif prim == "concat":
             out = PRIMS["concat"]["ref"](a[0], a[1], at["axis"])
         elif prim == "conv1d_causal":
@@ -2204,7 +2343,8 @@ def selftest():
     if not np.array_equal(PRIMS["clamp_max"]["ref"](np.array([-1.0, 2.0]), 0.5),
                           [-1.0, 0.5]):
         bad.append("clamp_max 对不上手算")
-    if not np.array_equal(PRIMS["one_hot"]["ref"](np.array([[1, 2]]), 4),
+    if not np.array_equal(PRIMS["one_hot"]["ref"](np.array([[1, 2]]),
+                                                  np.zeros(4)),
                           [[0.0, 1.0, 1.0, 0.0]]):
         bad.append("one_hot 对不上手算（下标 [1,2] 散成 0/1 行）")
     _mf = PRIMS["masked_fill"]["ref"](np.array([1.0, 2.0]),
