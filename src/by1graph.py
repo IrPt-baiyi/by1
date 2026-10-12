@@ -988,7 +988,7 @@ def _lower_attn(g, p, x, dst, w, a, d):
     if int(a["out_dim"]) != nh * hd:
         raise SystemExit("  [不支持] out_dim != q*head_dim 的注意力"
                          "（输出重排还没收编）")
-    for flag, what in (("q_gate", "q_gate"), ("head_gate", "head_gate")):
+    for flag, what in (("head_gate", "head_gate"),):
         if a.get(flag) and (flag != "head_gate" or a.get(flag) != "off"):
             raise SystemExit("  [不支持] Attention.%s 还没有 lowering" % what)
     bias = bool(a.get("bias"))
@@ -1019,10 +1019,34 @@ def _lower_attn(g, p, x, dst, w, a, d):
         BK = w("wk.bias") if bias else None
         BV = w("wv.bias") if bias else None
         BO = w("wo.bias") if bias else None
-    q = g.add("matmul", [WQ, x], [p + "q0"], shapes=[(nh * hd, None)])
+    # **q_gate**：`wq` 出**双倍宽**（每头 2·hd），前半是 q、后半是门 ——
+    # `sigmoid(门)` 乘到**注意力输出**上（不是乘到 q 上）。照 by1exec：
+    # `q, gate = qq[..., :hd], qq[..., hd:]`，然后 `o = o * sigmoid(gate)`。
+    # bias 加在**切分之前**的整条 qq 上（by1exec 的顺序）。
+    qg = None
+    if a.get("q_gate"):
+        qq = g.add("matmul", [WQ, x], [p + "qg0"],
+                   shapes=[(2 * nh * hd, None)])
+        if bias:
+            qq = g.add("add", [qq, BQ], [p + "qg1"],
+                       shapes=[(2 * nh * hd, None)])
+        qq3 = g.add("view", [qq], [p + "qg2"],
+                    attrs={"shape": [2 * hd, nh, None]},
+                    shapes=[(2 * hd, nh, None)])
+        q = g.add("slice", [qq3], [p + "qg3"],
+                  attrs={"axis": 0, "start": 0, "stop": hd},
+                  shapes=[(hd, nh, None)])
+        qg = g.add("slice", [qq3], [p + "qg4"],
+                   attrs={"axis": 0, "start": hd, "stop": 2 * hd},
+                   shapes=[(hd, nh, None)])
+        qg = g.add("view", [qg], [p + "qg5"],
+                   attrs={"shape": [nh * hd, None]}, shapes=[(nh * hd, None)])
+    else:
+        q = g.add("matmul", [WQ, x], [p + "q0"], shapes=[(nh * hd, None)])
+        if bias:
+            q = g.add("add", [q, BQ], [p + "q1"], shapes=[(nh * hd, None)])
     kq_ = g.add("matmul", [WK, x], [p + "k0"], shapes=[(nkv * hd, None)])
     if bias:
-        q = g.add("add", [q, BQ], [p + "q1"], shapes=[(nh * hd, None)])
         kq_ = g.add("add", [kq_, BK], [p + "k1"], shapes=[(nkv * hd, None)])
     # **kv_tie：v 是 k 的原始投影** —— 分叉在 norm/rope 之前（判卷人
     # by1exec：`v = kraw`）。
@@ -1044,13 +1068,17 @@ def _lower_attn(g, p, x, dst, w, a, d):
         if str(a.get("qk_norm")).lower() != "per_head":
             raise SystemExit("  [不支持] qk_norm=full 还没有 lowering")
         eps = float(a.get("norm_eps", _DEFAULT_EPS))
+        # **one_plus 是属性，不是常量** —— 第一版这里写死 False，于是
+        # 所有 one_plus=True 的模型（qwen3-next 的注意力就是）算出别的数：
+        # qk_norm 少乘了个 1，而判据只会说"差 0.19"。
+        _one = bool(a.get("norm_one_plus", False))
         # **norm 的公式自带乘 w**（PRIMS["rms_norm"] 就是那一条）——
         # 不是 norm 一个节点、mul 一个节点：两个节点就是两份语义。
         q3 = g.add("rms_norm", [q3, w("qn.w")], [p + "q3n"],
-                   attrs={"eps": eps, "one_plus": False},
+                   attrs={"eps": eps, "one_plus": _one},
                    shapes=[(hd, nh, None)])
         k3 = g.add("rms_norm", [k3, w("kn.w")], [p + "k3n"],
-                   attrs={"eps": eps, "one_plus": False},
+                   attrs={"eps": eps, "one_plus": _one},
                    shapes=[(hd, nkv, None)])
     if a.get("rope", True):
         nrot = int(hd * float(a.get("rope_partial", 1.0)))
@@ -1097,6 +1125,10 @@ def _lower_attn(g, p, x, dst, w, a, d):
                                shapes=[(hd, nh, None)])],
                 [p + "att"], attrs={"shape": [nh * hd, None]},
                 shapes=[(nh * hd, None)])
+    if qg is not None:
+        # **门乘在注意力输出上**（合头之后、wo 之前）—— 不是乘到 q 上。
+        gs = g.add("sigmoid", [qg], [p + "gs"], shapes=[(nh * hd, None)])
+        att = g.add("mul", [att, gs], [p + "am"], shapes=[(nh * hd, None)])
     out = g.add("matmul", [WO, att], [p + "o0"], shapes=[(d, None)])
     if bias:
         out = g.add("add", [out, BO], [dst], shapes=[(d, None)])
