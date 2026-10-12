@@ -1,6 +1,6 @@
 # 这个仓库里每个文件是干什么的
 
-> 280 个跟踪文件。按"你会想找什么"分组，不按字母表。
+> 283 个跟踪文件。按"你会想找什么"分组，不按字母表。
 >
 > **这份文档是生成的**：`python src/by1files.py --write`。
 > 文件清单、每组的个数、每个文件的一句话都从目录树和 docstring 来 ——
@@ -42,7 +42,7 @@
 
 ---
 
-## `src/` —— 69 个模块 + 1 个非 .py
+## `src/` —— 70 个模块 + 1 个非 .py
 
 ### 底座（留在 src/ 顶层）
 
@@ -140,6 +140,7 @@
 | `by1run.py` | 推送前的门，以及每四次一次数值档 |
 | `by1fast.py` | 快速检查：30 秒内告诉你有没有改坏 |
 | `by1gpu.py` | 只有显卡能做的那几件验证 |
+| `by1sync.py` | 推导 ↔ 契约 的同步报表**（1.0.0-rc0 的 T0.2） |
 
 ### `modelcheck/` —— 一个模型一个判卷人
 
@@ -198,7 +199,7 @@
 |---|---|
 | `ci.yml` | 每次提交都跑档 1 —— **这是这个仓库唯一的自动门 |
 
-## `docs/` —— 7 个
+## `docs/` —— 8 个
 
 活的文档 —— 还没做完的事记在这里，做完的挪去 `history/`。
 
@@ -208,6 +209,7 @@
 | `check-map.md` | `check()` 的结构图 |
 | `criteria-review.md` | **请人重算**的任务卡：判据本身没人验过，这一份是那份活。含"refs 判 by1 不是外部判卷"那一节 |
 | `ggml-plan.md` | 接 llama.cpp：第一个外部判卷人 |
+| `llamacpp-plan.md` | 接 llama.cpp：完整计划（执行版） |
 | `pattern-design-review.md` | 对上面那份草案的审查 —— **照做之前先读它** |
 | `pattern-design.md` | 设计草案 v0，**状态：待审**。它挡着 4 个模型 |
 | `which-gpu.md` | > 从 `README.md` 挪出来的。它是一次**具体的调查** —— 这台开发机上 |
@@ -404,6 +406,14 @@
 | `by1sparse.py` | DSA 稀疏索引器的验证（对着 transformers 的 `GlmMoeDsaIndexer`）。**`index_kpool_compress_*` 那两个张量没验** —— 没有可比的官方实现 |
 | `by1ssm.py` | Mamba2 的判卷人**：by1 要生成的递推 vs 官方 mixer |
 | `by1train.py` | 按 .by1 的描述搭一个模型，训练它，然后让它写字 |
+
+## `tools/` —— 1 个
+
+一次性脚本。**没有任何代码引用它们。**
+
+| 文件 | 用途 |
+|---|---|
+| `ggml-smoke.c` | **M0 的判卷人**：ggml 的 mul_mat / rms_norm / silu 对手算。接 llama.cpp 那一轮的构建自检（编译命令在文件头注） |
 
 ## `tools/remote/` —— 34 个
 

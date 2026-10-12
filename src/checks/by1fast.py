@@ -212,6 +212,20 @@ def main():
     print('     %d / %d 份没问题（含 selftest 的"正好 %d 错"对照）'
           % (n_parse, len(models), SELFTEST[1]))
 
+    # ── ③b IR 层的静态防线（1.0.0-rc0 T0.1 的判卷人）───────────────
+    # 反例必须红、正例必须绿 —— 见 `by1ir._selftest_widths`。
+    # 这一层拦的是"有人直接写 IR"那条路上的坏引用/坏宽度。
+    r = subprocess.run([sys.executable, by1paths.tool('by1ir.py'), '--selftest'],
+                       cwd=by1paths.SRC, capture_output=True, text=True,
+                       encoding='utf-8', errors='replace', timeout=300)
+    if r.returncode != 0:
+        bad.append('by1ir --selftest：%s'
+                   % ((r.stdout or r.stderr or '').strip()[-200:]))
+    else:
+        for ln in ((r.stdout or '').strip().splitlines() or ['']):
+            if 'PASS' in ln:
+                print('     ' + ln.strip())
+
     # ── ④ 便宜的那几个判卷人 ────────────────────────────────────
     print()
     print('  ④ 文档 / 引用 / 静默写法')

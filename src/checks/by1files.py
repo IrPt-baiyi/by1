@@ -100,7 +100,7 @@ GROUPS = [
         'by1irentry', 'by1gate', 'by1docs', 'by1files', 'by1lint',
         'by1blind', 'by1debt', 'by1pat', 'by1smoke', 'by1pack',
         'by1rebuild', 'by1bootir', 'by1oracles', 'by1oracle',
-        'by1run', 'by1fast', 'by1gpu']),
+        'by1run', 'by1fast', 'by1gpu', 'by1sync']),
 
     ('`modelcheck/` —— 一个模型一个判卷人', 'modelcheck', '''每个都用自己的官方产物当真相源。''', [
         'by1gpt2', 'by1instella', 'by1mla', 'by1moe', 'by1rope',

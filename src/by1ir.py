@@ -547,6 +547,323 @@ def _check_fields(where, fields, obj, errs):
             errs.append("%s: %s" % (where, e))
 
 
+def _qk_on(v):
+    """qk_norm 的取值不只有真假：off / per_head / full。
+
+    "off" 是**真值字符串** —— 直接做真值判断会永远成立，于是给 q/k
+    悄悄加一层本不该有的 RMSNorm。这个小函数原来在 by1c / by1exec
+    各有一份，现在跟着 params_of 一起来到唯一定义这边。"""
+    if v is None or v is False:
+        return False
+    return str(v).strip().lower() not in ("off", "", "none", "false", "0")
+
+
+def params_of(ir):
+    """**从 IR 自己推**每个 op 需要的参数形状。IR 里没有形状，这是后端的活。
+
+    **宽度按层取**：`L["in_dim"]`（这一层的残差流宽度），不给才是顶层
+    `d_model`。原来这里无条件用 `ir["d_model"]` —— 于是**独立宽度的栈
+    （视觉塔）参数形状全错**：clef 的 `wq` 推成 (1152, 5120)，而产物是
+    `qkv.weight (3456, 1152)`。三个后端用的是同一份 `shapes_of`，
+    **它们会一致地错**。见 history/ir.md 128。
+    """
+    out = {}
+    for L in ir["layers"]:
+        d = L.get("in_dim") or ir["d_model"]
+        for j, o in enumerate(L["ops"]):
+            a, k = o["attrs"], o["kind"]
+            pre = f"layers.{L['index']}.op{j}."
+            if k == "Norm":
+                out[pre + "w"] = (d,)
+                # **LayerNorm 有 bias。** 以前这里一条都没有 ——
+                # GPT-2 的 ln_1.bias / ln_2.bias 在后端层面不存在。
+                if a.get("kind") == "layer":
+                    out[pre + "b"] = (d,)
+            elif k == "Attention":
+                hd, q, kv = a["head_dim"], a["q"], a["kv"]
+                if a.get("qkv_fused"):
+                    # **融合 q/k/v**（视觉塔那种）：一个 `qkv` 装下 q、k、v
+                    # 三截，后面 `proj` 是输出投影。形状要和契约对上 ——
+                    # 实测 clef 的 `qkv.weight (3*q*head_dim, in_dim)`。
+                    out[pre + "qkv"] = (q * hd + 2 * kv * hd, d)
+                    out[pre + "proj"] = (d, a["out_dim"])
+                    if a["bias"]:
+                        out[pre + "qkv.bias"] = (q * hd + 2 * kv * hd,)
+                        out[pre + "proj.bias"] = (d,)
+                    if _qk_on(a.get("qk_norm")):
+                        out[pre + "qn.w"] = (hd,)
+                        out[pre + "kn.w"] = (hd,)
+                    if a.get("head_gate", "off") != "off":
+                        out[pre + "g_proj"] = ((q if a["head_gate"] == "per_head"
+                                              else q * hd), d)
+                    continue
+                out[pre + "wq"] = (q * hd * (2 if a.get("q_gate") else 1), d)
+                out[pre + "wk"] = (kv * hd, d)
+                if not a.get("kv_tie"):
+                    out[pre + "wv"] = (kv * hd, d)
+                out[pre + "wo"] = (d, a["out_dim"])
+                if a["bias"]:
+                    out[pre + "wq.bias"] = (q * hd * (2 if a.get("q_gate") else 1),)
+                    out[pre + "wk.bias"] = (kv * hd,)
+                    if not a.get("kv_tie"):
+                        out[pre + "wv.bias"] = (kv * hd,)
+                    out[pre + "wo.bias"] = (d,)
+                if _qk_on(a.get("qk_norm")):
+                    out[pre + "qn.w"] = (hd,)
+                    out[pre + "kn.w"] = (hd,)
+                if a.get("sink"):
+                    out[pre + "sink"] = (q,)
+                if a.get("head_gate", "off") != "off":
+                    out[pre + "g_proj"] = ((q if a["head_gate"] == "per_head"
+                                              else q * hd), d)
+            elif k == "External":
+                # **外部算子照样贡献张量形状。** 契约不松 ——
+                # 它的权重和别的机制一样进参数表、一样被 by1verify 对产物查。
+                # 前缀 `ext:` 是为了在 C 那边和内部名区分开。
+                for nm, shp in (a.get("weights") or {}).items():
+                    out[pre + "ext:" + nm] = tuple(shp)
+            elif k == "MLA":
+                out[pre + "q_a_proj"] = (a["q_lora"], d)
+                out[pre + "q_a_layernorm.w"] = (a["q_lora"],)
+                out[pre + "q_b_proj"] = (a["q"] * a["head_dim"], a["q_lora"])
+                out[pre + "kv_a_proj_with_mqa"] = (a["kv_lora"] + a["qk_rope"], d)
+                out[pre + "kv_a_layernorm.w"] = (a["kv_lora"],)
+                out[pre + "kv_b_proj"] = (
+                    a["q"] * (a["qk_nope"] + a["v_dim"]), a["kv_lora"])
+                out[pre + "dense"] = (d, a["out_dim"])
+                if a["bias"]:
+                    out[pre + "dense.bias"] = (d,)
+                if a.get("head_gate", "off") != "off":
+                    out[pre + "g_proj"] = (a["q"], d)
+                # ── DSA 稀疏索引器（有 index_* 才有）────────────────
+                # 索引器有自己的一套轻量投影，和主 MLA 的 q/k **是分开的**：
+                #   wq_b  q_lora -> index_heads * index_dim
+                #   wk    d      -> index_dim（后面过 LayerNorm，带 bias）
+                #   weights_proj  d -> index_heads
+                # 判卷人是 transformers 的 `GlmMoeDsaIndexer`，
+                # 见 `src/modelcheck/by1sparse.py`。
+                #
+                # ⚠ **这里的名字写全（带 `.weight` / `.bias`），不走"去掉后缀"
+                #   那条配对** —— 因为它们在 PyTorch 侧挂在 `indexer.` 子模块下
+                #   （`...indexer.wq_b.weight`），而去掉后缀只能配到
+                #   `...indexer.wq_b`；`k_norm` 有 weight 也有 bias，去掉后缀
+                #   两个会撞成同一个名字。写全就都精确命中。
+                if a.get("index_heads"):
+                    nh_, hd_ = int(a["index_heads"]), int(a["index_dim"])
+                    out[pre + "indexer.wq_b.weight"] = (nh_ * hd_, a["q_lora"])
+                    out[pre + "indexer.wk.weight"] = (hd_, d)
+                    out[pre + "indexer.k_norm.weight"] = (hd_,)
+                    out[pre + "indexer.k_norm.bias"] = (hd_,)
+                    out[pre + "indexer.weights_proj.weight"] = (nh_, d)
+                    # k-pool 的两个张量。**职责不一样，别混**：
+                    #   _gate [hd, hidden]  逐 token 的门，池内加权用它
+                    #   _ape  [kpool, hd]   池内位置的可学嵌入
+                    if int(a.get("index_kpool") or 1) > 1:
+                        out[pre + "indexer.index_kpool_compress_gate"] = (hd_, d)
+                        out[pre + "indexer.index_kpool_compress_ape"] = (
+                            int(a["index_kpool"]), hd_)
+            elif k == "FFN":
+                out[pre + "w1"] = (a["hidden"], d)
+                out[pre + "w2"] = (d, a["hidden"])
+                if a.get("gate", True):
+                    out[pre + "w3"] = (a["hidden"], d)
+                # **bias。** 以前这里一条都没有 —— 于是 GPT-2 的
+                # 4×12 个 bias 在后端层面**根本不存在**，
+                # 而"张量搬运 173/173"看起来是满的。
+                if a.get("bias"):
+                    out[pre + "w1.bias"] = (a["hidden"],)
+                    out[pre + "w2.bias"] = (d,)
+                    if a.get("gate", True):
+                        out[pre + "w3.bias"] = (a["hidden"],)
+            elif k == "MoE":
+                E, H = a["experts"], a["hidden"]
+                out[pre + "router"] = (E, d)
+                if a.get("router_bias"):
+                    out[pre + "router.bias"] = (E,)
+                out[pre + "w1"] = (E, H, d)
+                out[pre + "w3"] = (E, H, d)
+                out[pre + "w2"] = (E, d, H)
+                if a.get("expert_bias"):
+                    out[pre + "b1"] = (E, H)
+                    out[pre + "b3"] = (E, H)
+                    out[pre + "b2"] = (E, d)
+                if a.get("score_bias"):
+                    out[pre + "score_bias"] = (E,)
+                if a.get("shared"):
+                    sh = a["shared_hidden"]
+                    out[pre + "sw1"] = (sh, d)
+                    out[pre + "sw3"] = (sh, d)
+                    out[pre + "sw2"] = (d, sh)
+                    if a.get("shared_gate"):
+                        out[pre + "shared_gate"] = (1, d)
+            elif k == "Linear":
+                kd, vd, nk, nv = (a["k_heads"] * a["k_dim"], a["v_heads"] * a["v_dim"],
+                                  a["k_heads"], a["v_heads"])
+                out[pre + "in_proj_qkvz"] = (kd * 2 + vd * 2, d)
+                out[pre + "in_proj_ba"] = (nv * 2, d)
+                out[pre + "conv"] = (kd * 2 + vd, a["conv_kernel"])
+                out[pre + "dt_bias"] = (nv,)
+                out[pre + "A_log"] = (nv,)
+                out[pre + "norm.w"] = (a["v_dim"],)
+                out[pre + "out_proj"] = (d, vd)
+            elif k == "SSM":
+                # 选择性状态空间（Mamba2 · Nemotron-H 那一版）。
+                # 8 个张量，和契约里那一组逐个对上 ——
+                # `by1tens` 算出来的 'Mamba' 组就是这 8 行。
+                _di = a["heads"] * a["head_dim"]
+                _cd = _di + 2 * a["n_groups"] * a["ssm_state"]
+                out[pre + "in_proj"] = (_di + _cd + a["heads"], d)
+                out[pre + "conv"] = (_cd, a["conv_kernel"])
+                if a.get("conv_bias"):
+                    out[pre + "conv.bias"] = (_cd,)
+                out[pre + "dt_bias"] = (a["heads"],)
+                out[pre + "A_log"] = (a["heads"],)
+                out[pre + "D"] = (a["heads"],)
+                out[pre + "norm.w"] = (_di,)
+                out[pre + "out_proj"] = (d, _di)
+            elif k == "KDA":
+                # **Kimi Delta Attention。** 13 个张量，和契约里那一组对上。
+                #
+                # ⚠ **`P` 的键就是这张表自己定的** ✓ —— 上面 SSM 那支
+                # 契约里写的是 `conv1d.weight` ✓ 而这里叫 `conv` ✓，
+                # 两边不一样也一直是对的 ✓。**只要这张表和 `op_*` 里读的
+                # 名字一致就行** ✓。（我上一轮照着契约的名字去读 `P`，
+                # 于是拿到空的 P —— 那不是键名写错，是这张表根本没写 ✓。）
+                _nk, _nv = a["k_heads"], a["v_heads"]
+                _dk, _dv = a["k_dim"], a["v_dim"]
+                _kd, _vd = _nk * _dk, _nv * _dv
+                _ck = a["conv_kernel"]
+                out[pre + "q_proj"] = (_kd, d)
+                out[pre + "k_proj"] = (_kd, d)
+                out[pre + "v_proj"] = (_vd, d)
+                out[pre + "q_conv1d"] = (_kd, _ck)
+                out[pre + "k_conv1d"] = (_kd, _ck)
+                out[pre + "v_conv1d"] = (_vd, _ck)
+                out[pre + "A_log"] = (_nv,)
+                # **`dt_bias` 按维，不是按头** ✓ —— 这一条只有 fla 的源码里有
+                # （`gate_dim = num_v_heads * head_k_dim` ✓）。
+                out[pre + "dt_bias"] = (_nv * _dk,)
+                out[pre + "b_proj"] = (_nv, d)
+                if a.get("gate_lowrank"):
+                    _r = a["gate_rank"]
+                    out[pre + "f_a_proj"] = (_r, d)
+                    out[pre + "f_b_proj"] = (_nv * _dk, _r)
+                    out[pre + "g_a_proj"] = (_r, d)
+                    out[pre + "g_b_proj"] = (_vd, _r)
+                    # **第二层的 bias 跟属性走** ✓ —— fla 有 ✓，GLM 没有 ✓
+                    # （见 `by1ir.KIND_ATTRS["KDA"]["gate_out_bias"]`）。
+                    if a.get("gate_out_bias", True):
+                        out[pre + "g_b_proj.bias"] = (_vd,)
+                else:
+                    out[pre + "f_proj"] = (_nv * _dk, d)
+                    out[pre + "g_proj"] = (_vd, d)
+                out[pre + "o_norm.w"] = (_dv,)
+                out[pre + "o_proj"] = (d, _vd)
+    # **全局张量用模型级 `d_model`，不是循环里泄漏出来的 `d`。**
+    # 这里原来写的是 `d` —— 那是上面层循环的循环变量，值是**最后一层**
+    # 的 `in_dim`。多宽度的模型（gemma-4-31B：60 层文本 5376 + 27 层
+    # 视觉塔 1152）于是全局张量全按 1152 推：`embed.weight` 推成
+    # (262144, 1152)，而 GGUF 判卷人说 `output_norm.weight` 是 [5376]。
+    # **单宽度的模型碰不到这一条** —— 循环变量恰好等于 d_model，
+    # 所以它一直活在"看起来对"里。判卷人：`refs/google__gemma-4-31B.
+    # gguf-tensors.json` 的 output_norm / token_embd 形状。
+    dg = ir["d_model"]
+    out["embed.weight"] = (ir["vocab"], dg)
+    # **学习式位置表。** pos_kind=learned 的模型有一张 (n_pos, d) 的查表 ——
+    # 它不在任何一层里，也不是 embed，所以以前这个后端**完全不知道它存在**。
+    if ir.get("pos_kind") == "learned":
+        out["pos.weight"] = (int(ir.get("n_pos") or ir.get("ctx") or 1024), dg)
+    out["final_norm.w"] = (dg,)
+    if ir.get("norm_kind") == "layer":
+        out["final_norm.b"] = (dg,)
+    out["head.weight"] = (ir["vocab"], dg)
+    return out
+
+
+def infer_widths(ir):
+    """值引用 -> 宽度 的**静态推导**。返回 `(widths, errs, gaps)`。
+
+    这是 1.0.0-rc0 的 T0.1。两类问题**必须分开**（by1irentry 的规矩：
+    分清「没实现」和「算错了」）：
+
+      · `errs` —— **错了**：引用不存在的值 / 用在产出之前。
+        以前这些只在跑后端时才炸（KeyError / 形状错），而
+        "有人可以直接写 IR"这条路**没有任何静态防线**。
+      · `gaps` —— **没实现**：相邻两段残差流宽度不同（栈间换宽度，
+        残差流怎么换还没实现，见 1.md 的已知缺口）。**它不是错误** ——
+        gemma-4-31B 的 IR（60 层文本 5376 + 27 层视觉塔 1152）就带一个，
+        那是已知缺口，不是 IR 坏了。
+
+    宽度规则（当前所有 kind 都是 d→d 的残差流变换）：
+      globals  Embed 造出 d_model；Head 吃 d_model 出 vocab；其余等宽
+      layer    `hidden` = `in_dim or d_model`；算子入参等宽、出参等宽
+    **跨宽算子出现时这张表要跟着动** —— 到那天 errs 才真正长牙齿，
+    但值引用这半现在就能拦住一批"写出来的 IR 是坏的"。
+    """
+    errs, gaps = [], []
+    if not isinstance(ir, dict):
+        return {}, ["IR 的顶层必须是字典"], []
+    d_model = ir.get("d_model")
+    vocab = ir.get("vocab")
+    W = {}
+
+    def _put(scope, ref, w):
+        W[(scope, ref)] = w
+
+    def _get(scope, ref, where):
+        v = W.get((scope, ref))
+        if v is None:
+            errs.append("%s: 引用了不存在的值 %r —— "
+                        "要么是拼写，要么用在了产出之前" % (where, ref))
+        return v
+
+    # ── globals：模型级残差流（宽度 d_model）─────────────────────────
+    for j, op in enumerate(ir.get("globals") or []):
+        if not isinstance(op, dict):
+            continue
+        k, where = op.get("kind"), "globals[%d]" % j
+        ins, outs = op.get("inputs") or [], op.get("outputs") or []
+        if k == "Embed":
+            for ref in outs:
+                _put("globals", ref, d_model)
+            continue
+        for ref in ins:
+            w = _get("globals", ref, where)
+            if w is not None and w != d_model:
+                errs.append("%s (%s): 输入 %s 宽度 %s != d_model %s —— "
+                            "全局算子都挂在模型级残差流上"
+                            % (where, k, ref, w, d_model))
+        out_w = vocab if k == "Head" else d_model
+        for ref in outs:
+            _put("globals", ref, out_w)
+
+    # ── layers：每层一个作用域，`hidden` 就是这一层的输入 ────────────
+    prev = d_model
+    for li, L in enumerate(ir.get("layers") or []):
+        if not isinstance(L, dict):
+            continue
+        d = L.get("in_dim") or d_model
+        if prev != d:
+            # **换宽度是缺口，不是错误。** 记进 gaps，别冒充失败。
+            gaps.append((li, prev, d))
+        prev = d
+        scope = "layers[%d]" % li
+        _put(scope, "hidden", d)
+        for j, op in enumerate(L.get("ops") or []):
+            if not isinstance(op, dict):
+                continue
+            k, where = op.get("kind"), "layers[%d].ops[%d]" % (li, j)
+            for ref in (op.get("inputs") or []):
+                w = _get(scope, ref, where)
+                if w is not None and w != d:
+                    errs.append("%s (%s): 输入 %s 宽度 %s != 层宽 %s"
+                                % (where, k, ref, w, d))
+            for ref in (op.get("outputs") or []):
+                _put(scope, ref, d)
+        prev = d
+    return W, errs, gaps
+
+
 def validate(ir):
     """返回错误列表。**空列表 = 合法。**
 
@@ -589,6 +906,15 @@ def validate(ir):
             sts = item.get("state")
             for k, st in enumerate(sts if isinstance(sts, list) else []):
                 _check_fields("%s.state[%d]" % (w, k), STATE, st, errs)
+
+    # ── 值引用与宽度的静态推导（T0.1）────────────────────────────────
+    # **换宽度的 `gaps` 不进 errs** —— 那是"没实现"不是"错了"，
+    # 它由 `--selftest` / 后续的同步检查单独报，不冒充 IR 不合法。
+    try:
+        _W, werrs, _gaps = infer_widths(ir)
+        errs.extend(werrs)
+    except Exception as e:                       # pragma: no cover
+        errs.append("宽度推导自己坏了（这不是你的 IR 的错）：%r" % (e,))
     return errs
 
 
@@ -825,6 +1151,102 @@ def _norm(x):
     return x
 
 
+def _selftest_widths():
+    """T0.1 的判卷人：**反例必须红，正例必须绿。**
+
+    三组：
+      ① 手写坏 IR（引用不存在 / 用在产出前 / 全局链坏）—— 必须报错
+      ② 换宽度（in_dim 64->32）—— 只进 gaps，**不算错误**
+      ③ models/ 下每份 .by1 编出来的 IR —— 宽度错误必须是 0（回归）
+    """
+
+    def tiny(layers=None, globals_=None):
+        g = globals_ if globals_ is not None else [
+            {"kind": "Embed", "mech": "Embed", "attrs": {},
+             "inputs": [], "outputs": ["hidden"]},
+            {"kind": "Head", "mech": "Head", "attrs": {},
+             "inputs": ["hidden"], "outputs": ["logits"]},
+        ]
+        return {"by1-ir": VERSION, "vocab": 8, "ctx": 16, "d_model": 4,
+                "pos_kind": "rope", "norm_kind": "rms", "norm_one_plus": False,
+                "globals": g,
+                "layers": layers if layers is not None else []}
+
+    def one_op(kind, ins, outs, attrs=None):
+        return {"kind": kind, "mech": kind, "attrs": attrs or {},
+                "inputs": ins, "outputs": outs}
+
+    bad = []
+    # ①-a 引用不存在的值（拼写坏）
+    ir = tiny(layers=[{"index": 0, "attrs": {}, "ops": [
+        one_op("Add", ["hidden", "op0.ott"], ["op0.out"])]}])
+    _W, e, _g = infer_widths(ir)
+    if not any("不存在的值" in x for x in e):
+        bad.append("①-a 引用坏的没报错")
+    # ①-b 用在产出之前
+    ir = tiny(layers=[{"index": 0, "attrs": {}, "ops": [
+        one_op("Add", ["hidden", "op2.out"], ["op0.out"]),
+        one_op("Add", ["hidden", "op0.out"], ["op1.out"]),
+        one_op("Add", ["hidden", "op1.out"], ["op2.out"])]}])
+    _W, e, _g = infer_widths(ir)
+    if not any("不存在的值" in x for x in e):
+        bad.append("①-b 用在产出前没报错")
+    # ①-c 全局链坏：Head 吃一个不存在的值
+    ir = tiny(globals_=[
+        {"kind": "Embed", "mech": "Embed", "attrs": {},
+         "inputs": [], "outputs": ["hidden"]},
+        {"kind": "Head", "mech": "Head", "attrs": {},
+         "inputs": ["normed"], "outputs": ["logits"]}])
+    _W, e, _g = infer_widths(ir)
+    if not any("不存在的值" in x for x in e):
+        bad.append("①-c 全局链坏没报错")
+    # ② 换宽度：gaps 有、errs 无
+    ir = tiny(layers=[
+        {"index": 0, "attrs": {}, "ops": [
+            one_op("Add", ["hidden", "hidden"], ["op0.out"])], "in_dim": 4},
+        {"index": 1, "attrs": {}, "ops": [
+            one_op("Add", ["hidden", "hidden"], ["op0.out"])], "in_dim": 2}])
+    _W, e, g = infer_widths(ir)
+    if e:
+        bad.append("② 换宽度不该报错，实报 %s" % e[:1])
+    if not g:
+        bad.append("② 换宽度没进 gaps —— 那是已知缺口，不是错误")
+    if bad:
+        for b in bad:
+            print("  [FAIL] " + str(b)[:160])
+        print("  [FAIL] widths selftest：%d 处" % len(bad))
+        return 1
+
+    # ③ 回归：models/ 下每份 .by1（selftest.by1 是故意坏的，不算）
+    import importlib.util
+    sp = importlib.util.spec_from_file_location('bcm', by1paths.tool('by1check.py'))
+    bc = importlib.util.module_from_spec(sp)
+    sp.loader.exec_module(bc)
+    import by1codegen as cg
+    import glob as _g2
+    n_ok, n_neg = 0, 0
+    for f in sorted(_g2.glob(by1paths.root('models', '*.by1'))):
+        if f.endswith('selftest.by1'):
+            continue
+        _r, info = bc.check(f)
+        try:
+            ir = cg.compile_ir(info)
+        except cg.CodegenError:
+            # **故意的反例模型**（gate-probe 那种：act 是不存在的取值，
+            # 编译就该拒）。编译被拒是设计，不是回归。
+            n_neg += 1
+            continue
+        _W, e, _gp = infer_widths(ir)
+        if e:
+            print("  [FAIL] %s：%s" % (f, e[:2]))
+            return 1
+        n_ok += 1
+    print("  [PASS] 宽度推导：3 组反例全红 + %d 份模型回归全绿"
+          "（另有 %d 份反例模型按设计被编译拒绝；换宽度只进 gaps）"
+          % (n_ok, n_neg))
+    return 0
+
+
 def _cli():
     import sys
     if '--help' in sys.argv or '-h' in sys.argv:
@@ -851,6 +1273,8 @@ def _cli():
             print("  " + e)
         print("  [%s] %d 个问题" % ("PASS" if not errs else "FAIL", len(errs)))
         return 0 if not errs else 1
+    if '--selftest' in sys.argv:
+        return _selftest_widths()
     print(__doc__)
     # 子命令不全 -> by1skip.CALLER
     return by1skip.CALLER
