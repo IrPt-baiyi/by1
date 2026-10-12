@@ -1,6 +1,6 @@
 # 这个仓库里每个文件是干什么的
 
-> 285 个跟踪文件。按"你会想找什么"分组，不按字母表。
+> 286 个跟踪文件。按"你会想找什么"分组，不按字母表。
 >
 > **这份文档是生成的**：`python src/by1files.py --write`。
 > 文件清单、每组的个数、每个文件的一句话都从目录树和 docstring 来 ——
@@ -42,7 +42,7 @@
 
 ---
 
-## `src/` —— 71 个模块 + 1 个非 .py
+## `src/` —— 72 个模块 + 1 个非 .py
 
 ### 底座（留在 src/ 顶层）
 
@@ -78,6 +78,7 @@
 | `by1exec.py` | 第二个后端：纯 NumPy 执行器 |
 | `by1c.py` | 第三个后端：从 IR 生成 **C 代码**，编译，跑起来，和 NumPy 后端对拍 |
 | `by1ggml.py` | 第四个后端：从 IR 生成 **调 ggml 原语的 C 代码**，编译， |
+| `by1graph.py` | 原语图：IR kind -> 原语节点的唯一语义定义**（1.0.0-rc0 部件 A） |
 | `by1refs.py` | refs/ 的路径规则，只此一处 |
 | `by1check.py` | 不变式检查器 v0.1 |
 | `by1boot.py` | 从一个已发布的 checkpoint **反推**一份 .by1 草稿 |
@@ -322,7 +323,7 @@
 | `ISTA-DASLab__Qwen3.8-27B-GSQ-RCO-GGUF.IQ2_S-mtp.alloc.txt` | 14 | |
 
 
-## `src/checks/` —— 24 个
+## `src/checks/` —— 25 个
 
 | 文件 | 用途 |
 |---|---|
@@ -340,6 +341,7 @@
 | `by1gpu.py` | 只有显卡能做的那几件验证 |
 | `by1irentry.py` | 三个后端必须能从 IR 入口跑通**，而不是只从 .by1 入口 |
 | `by1lint.py` | 只盯这个项目真正怕的那几类 |
+| `by1mutate.py` | 变异反例库**（1.0.0-rc0 的 T0.3） |
 | `by1opdiff.py` | 逐个算子**比 NumPy 和 PyTorch |
 | `by1oracle.py` | 执行神谕：把 .by1 声明的状态策略与**真实前向的行为**对拍 |
 | `by1oracles.py` | 10 个神谕：每个都有独立的真相源 |

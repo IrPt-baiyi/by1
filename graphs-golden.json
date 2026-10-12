@@ -1,0 +1,11 @@
+{
+ "DeepSeek-R1-Distill-Qwen-1.5B.by1": "553ae10850157af7",
+ "DeepSeek-R1-Distill-Qwen-7B.by1": "4b955718a573e600",
+ "embeddinggemma-2.by1": "4e6f512211307d1f",
+ "gemma-4-12B.by1": "2184227ba226b816",
+ "gemma-4-31B.by1": "4c02428a0b0c1e1b",
+ "gemma-4-E4B.by1": "42347b2bc20be675",
+ "hello.by1": "dc9c760de3bf85be",
+ "llama-shaped.by1": "fe74aa2b62f8f4e9",
+ "minimind-3.by1": "f31536e67d209185"
+}

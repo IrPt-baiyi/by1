@@ -771,6 +771,26 @@ def main():
         if st == 'fail':
             fails.append('mutate')
 
+        # **原语图**（1.0.0-rc0 部件 A）：参考实现对拍手算 + golden 快照
+        # 逐字节稳定 —— A3 的四后端机械化重写前后必须同图。
+        st, out = run(['by1graph.py', '--selftest'], 'graph-selftest')
+        line = [l.strip() for l in out.splitlines() if '[PASS]' in l
+                or '[FAIL]' in l]
+        st = confirmed(st, out, line)
+        rows.append(('原语图 参考实现 by1graph.py', st,
+                     note_of(st, out, line, empty='（没有判定行）')))
+        if st == 'fail':
+            fails.append('graph-selftest')
+
+        st, out = run(['by1graph.py', '--golden'], 'graph-golden')
+        line = [l.strip() for l in out.splitlines() if '[PASS]' in l
+                or '[FAIL]' in l]
+        st = confirmed(st, out, line)
+        rows.append(('原语图 golden 快照', st,
+                     note_of(st, out, line, empty='（没有判定行）')))
+        if st == 'fail':
+            fails.append('graph-golden')
+
         t0 = _tick('1.6 静态检查', t0)
 
     # ---- 2. config 逐字段 ----

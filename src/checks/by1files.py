@@ -77,8 +77,8 @@ GROUPS = [
 重复的东西必须能被检查，否则新加一个脚本忘了加，症状是
 `No module named 'by1paths'`，看起来像"文件丢了"。''', [
         'by1paths', 'by1io', 'by1codegen', 'by1skip', 'by1ir', 'by1ver',
-        'by1exec', 'by1c', 'by1ggml', 'by1refs', 'by1check', 'by1boot',
-        'by1ext']),
+        'by1exec', 'by1c', 'by1ggml', 'by1graph', 'by1refs', 'by1check',
+        'by1boot', 'by1ext']),
 
     ('`lang/` —— 语言本身', 'lang', '''把 `.by1` 变成一份能算的东西。
 
@@ -140,6 +140,8 @@ DIR_INTRO = {
 # ════════════════════════════════════════════════════════════════════
 OVERRIDE = {
     'ext-demo.c': '逃生舱第二层的示例：两个语言里没有的机制。`by1extdemo` 编它',
+    'graphs-golden.json': '**生成物（golden 快照）**：每个可降模型的原语图 sha256。'
+                          '`by1graph.py --golden --write`；后端机械化重写前后必须同图',
     'ggml-smoke.c': '**M0 的判卷人**：ggml 的 mul_mat / rms_norm / silu 对手算。'
                     '接 llama.cpp 那一轮的构建自检（编译命令在文件头注）',
     '1.md': '立项宣言：这门语言要解决什么、不解决什么',
