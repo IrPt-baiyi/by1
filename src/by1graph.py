@@ -341,8 +341,13 @@ def _ref_conv1d_causal():
 
     `x` [n, C]（样本在前）、`w` [C, kernel]（逐通道一份小核）：
 
-        xpad = [0, x]                                   # 左边补 kernel-1
-        out[:, t] = Σ_i w[:, i] · xpad[:, t + (kernel-1-i)]
+        xpad = [0, x]                              # 左边补 kernel-1
+        out[:, t] = Σ_i w[:, i] · xpad[:, t + i]    # 卷积核按 i 走
+
+    ⚠ 这条公式以前写作 `xpad[:, t + (kernel-1-i)]` —— **和下面的实现
+    对不上**（实现是 `mp[:, i:i+s] * w[:, i]`，核没翻转）。判卷人是
+    `by1exec`，实现是对的那一个；注释错的那版被 by1c 的图路径照着
+    翻成 C，当场差 3e-01 —— **注释也是规格，写错了照样咬人**。
 
     **激活不在这里** —— by1exec 是 `silu(conv)`，图里 silu 是独立节点：
     一个节点一个公式（两个节点就是两份语义）。

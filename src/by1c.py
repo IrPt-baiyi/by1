@@ -1841,10 +1841,55 @@ static void p_copy(float *o, const float *x, long long tot) {
 }
 
 static void p_get_rows(float *o, const float *tab, const int *ids,
-                       int n, long long d) {
-    for (int i = 0; i < n; i++)
+                       long long n, long long d) {
+    /* out = table[ids]：ids 可以是多维（MoE 的 (n,K) 下标），整行取
+       `prod(tab.shape[1:])` 个 float —— 平铺后和 ref 的 `table[ids]`
+       逐元素一样。 */
+    for (long long i = 0; i < n; i++)
         memcpy(o + (size_t)i * d, tab + (size_t)ids[i] * d,
                sizeof(float) * (size_t)d);
+}
+
+/* top_k：每行前 k 大的**下标**（不是值），并列取小 —— `_ref_top_k` 的
+   `argsort(-x, kind="stable")`：稳定插入排序，严格 `<`，相等保持原序。
+   输出是 int（索引），和 `by1exec.op_moe._topk` 同一句：并列处取谁
+   没有定义，两个后端挑出不同的不算 bug（`ir.md 129`）。 */
+static void p_top_k(int *o, const float *x, long long rows, long long m,
+                    long long k) {
+    long long *ord = (long long *) malloc(sizeof(long long) * (size_t)m);
+    for (long long r = 0; r < rows; r++) {
+        const float *in = x + r * m;
+        for (long long j = 0; j < m; j++) ord[j] = j;
+        for (long long a = 1; a < m; a++) {
+            long long v = ord[a], b = a - 1;
+            while (b >= 0 && in[ord[b]] < in[v]) { ord[b + 1] = ord[b]; b--; }
+            ord[b + 1] = v;
+        }
+        for (long long j = 0; j < k; j++) o[r * k + j] = (int)ord[j];
+    }
+    free(ord);
+}
+
+/* take_along_axis(x, idx, -1)：out[r, j] = x[r, idx[r, j]]。
+   前缀维必须一样（numpy 也只广播前缀；这里**不实现就拒绝**）。 */
+static void p_gather(float *o, const float *x, const int *idx,
+                     long long rows, long long m, long long k) {
+    for (long long r = 0; r < rows; r++)
+        for (long long j = 0; j < k; j++)
+            o[r * k + j] = x[r * m + (long long)idx[r * k + j]];
+}
+
+/* 沿 exec 轴求和：x [rows, m, tail] -> o [rows, tail]。
+   keepdims 只改形状元数据，不改布局（[rows,1,tail] 和 [rows,tail]
+   的行主序一样）—— 所以一个内核两用。 */
+static void p_sum(float *o, const float *x, long long rows, long long m,
+                  long long tail) {
+    for (long long r = 0; r < rows; r++)
+        for (long long u = 0; u < tail; u++) {
+            float s = 0.f;
+            for (long long j = 0; j < m; j++) s += x[(r * m + j) * tail + u];
+            o[r * tail + u] = s;
+        }
 }
 
 /* 广播二元（numpy 右对齐；dim==1 的输入 stride 记 0）。
@@ -2132,6 +2177,92 @@ static void p_slice(float *o, const float *x, long long rows, long long d,
                    x + (r * in_d + (start + s)) * tail,
                    sizeof(float) * (size_t)tail);
 }
+
+/* 接两条（沿 exec 轴；前后 rows / tail 块）—— `_ref_concat`。 */
+static void p_concat(float *o, const float *a, const float *b,
+                     long long rows, long long da, long long db,
+                     long long tail) {
+    long long d = da + db;
+    for (long long r = 0; r < rows; r++)
+        for (long long u = 0; u < tail; u++) {
+            for (long long j = 0; j < da; j++)
+                o[(r * d + j) * tail + u] = a[(r * da + j) * tail + u];
+            for (long long j = 0; j < db; j++)
+                o[(r * d + da + j) * tail + u] = b[(r * db + j) * tail + u];
+        }
+}
+
+/* np.repeat 的**整块**重复 [q0,q0,q1,q1]（平铺是 [q0,q1,q0,q1]，和 v 的
+   配对对不上，不是一回事）—— `_ref_repeat`。
+   x [rows, m, tail] -> o [rows, m*reps, tail]。 */
+static void p_repeat(float *o, const float *x, long long rows, long long m,
+                     long long tail, int reps) {
+    for (long long r = 0; r < rows; r++)
+        for (long long j = 0; j < m; j++)
+            for (long long z = 0; z < reps; z++)
+                for (long long u = 0; u < tail; u++)
+                    o[(r * m * reps + j * reps + z) * tail + u]
+                        = x[(r * m + j) * tail + u];
+}
+
+/* 深度可分离因果卷积（GDN 的短卷积）—— `_ref_conv1d_causal` 的**代码**
+   逐句（注意：那段注释里原来的公式 `xpad[:, t+(kernel-1-i)]` 和实现
+   `mp[:, i:i+s]` **对不上**，差一次核的翻转；判卷人是 by1exec，实现为准，
+   注释已在 by1graph 里改对）。
+   x [b, s, C]、w [C, kernel]：out[b,t,c] = Σ_i w[c,i] · x[b, t+i-(kernel-1), c]，
+   t+i-(kernel-1) < 0 处补 0。**激活不在这里**（图里 silu 是独立节点）。 */
+static void p_conv1d_causal(float *o, const float *x, const float *w,
+                            long long b, long long s, long long C,
+                            int kernel) {
+    for (long long bi = 0; bi < b; bi++)
+        for (long long t = 0; t < s; t++)
+            for (long long c = 0; c < C; c++) {
+                double acc = 0.0;
+                for (int i = 0; i < kernel; i++) {
+                    long long src = t + i - (kernel - 1);
+                    if (src >= 0)
+                        acc += (double)w[c * kernel + i]
+                             * (double)x[(bi * s + src) * C + c];
+                }
+                o[(bi * s + t) * C + c] = (float)acc;
+            }
+}
+
+/* delta 规则（GDN 的递推扫描）—— `_ref_delta_rule` 逐句：
+   st *= exp(decay[t])；δ = (v[t] − (st·k[t])) · beta[t]；st += k[t]⊗δ；
+   out[t] = st·q[t]（读的是**更新后**的 st）。状态一步一步走，没有并行
+   公式；内部 double 累（和 ref 同精度）。 */
+static void p_delta_rule(float *o, const float *q, const float *k,
+                         const float *v, const float *beta,
+                         const float *decay, long long b, long long h,
+                         long long n, long long dk, long long dv) {
+    double *st = (double *) calloc((size_t)b * h * dk * dv, sizeof(double));
+    for (long long t = 0; t < n; t++)
+        for (long long bh = 0; bh < b * h; bh++) {
+            double *S = st + (size_t)bh * dk * dv;
+            const float *kt = k + ((size_t)bh * n + t) * dk;
+            const float *qt = q + ((size_t)bh * n + t) * dk;
+            const float *vt = v + ((size_t)bh * n + t) * dv;
+            double g = exp((double)decay[(size_t)bh * n + t]);
+            double bt = (double)beta[(size_t)bh * n + t];
+            long long di, dj;
+            for (di = 0; di < dk; di++)
+                for (dj = 0; dj < dv; dj++) S[di * dv + dj] *= g;
+            for (dj = 0; dj < dv; dj++) {
+                double kv = 0.;
+                for (di = 0; di < dk; di++)
+                    kv += S[di * dv + dj] * (double)kt[di];
+                double del = ((double)vt[dj] - kv) * bt;
+                for (di = 0; di < dk; di++)
+                    S[di * dv + dj] += (double)kt[di] * del;
+                double ou = 0.;
+                for (di = 0; di < dk; di++)
+                    ou += S[di * dv + dj] * (double)qt[di];
+                o[((size_t)bh * n + t) * dv + dj] = (float)ou;
+            }
+        }
+    free(st);
+}
 '''
 
 
@@ -2157,9 +2288,13 @@ def emit_c_graph(ir, params, g=None):
     pmap = {pname: macro for macro, pname in order}
 
     # ── 形状表：值名 -> exec 形状（C 表达式字符串的列表） ──────────
+    # typ：值的类型（"f" float / "i" int）—— top_k 出的是**下标**，
+    # get_rows / gather 的第二输入只吃 int，混了就要报错，不许将就。
     shp = {"tok": ["n"], "pos": ["n"]}
+    typ = {"tok": "i", "pos": "i"}
     for nm, s in params.items():
         shp[nm] = [str(int(x)) for x in s]
+        typ[nm] = "f"
 
     def _bc(a, b, what):
         """numpy 右对齐广播。推不出来就**拒绝**，不猜。"""
@@ -2201,7 +2336,6 @@ def emit_c_graph(ir, params, g=None):
     decls.append("#define TOTAL_W %d" % off)
 
     used = set()
-    int_vals = {"tok", "pos"}
     rp_n = 0
 
     def _ref(name):
@@ -2231,12 +2365,43 @@ def emit_c_graph(ir, params, g=None):
 
         if prim == "get_rows":
             tab, ids_ = shp_in[0], shp_in[1]
-            if len(tab) != 2:
-                raise SystemExit("  [不支持] get_rows 的表是 %d 维 —— 只实现了 2 维"
-                                 % len(tab))
+            if len(tab) < 2:
+                raise SystemExit("  [不支持] get_rows 的表是 %d 维 —— "
+                                 "至少要 2 维" % len(tab))
+            if typ.get(ins[1]) != "i":
+                raise SystemExit("  [FAIL] get_rows 的下标 %r 不是 int" % ins[1])
+            # out = table[ids]：ids 形状 + 表的行宽（MoE 的 (n,K) 下标取
+            # (E,out,in) 的专家整行 -> (n,K,out,in) 就是这一条）
             out = ids_ + tab[1:]
-            body.append("    p_get_rows(%s, %s, %s, n, %s);"
-                        % (dst, a[0], a[1], tab[1]))
+            body.append("    p_get_rows(%s, %s, %s, %s, %s);"
+                        % (dst, a[0], a[1], _prod(ids_), _prod(tab[1:])))
+        elif prim == "top_k":
+            out = list(shp_in[0])
+            out[-1] = str(int(at["k"]))
+            body.append("    p_top_k(%s, %s, %s, %s, %s);"
+                        % (dst, a[0], _prod(shp_in[0][:-1]),
+                           shp_in[0][-1], out[-1]))
+        elif prim == "gather":
+            x, ii = shp_in[0], shp_in[1]
+            if typ.get(ins[1]) != "i":
+                raise SystemExit("  [FAIL] gather 的下标 %r 不是 int" % ins[1])
+            if x[:-1] != ii[:-1]:
+                raise SystemExit("  [不支持] gather 的前缀维对不上：%s vs %s"
+                                 "（numpy 只广播前缀，这里不实现就拒绝）"
+                                 % (x, ii))
+            out = x[:-1] + [ii[-1]]
+            body.append("    p_gather(%s, %s, %s, %s, %s, %s);"
+                        % (dst, a[0], a[1], _prod(x[:-1]), x[-1], ii[-1]))
+        elif prim == "sum":
+            x = shp_in[0]
+            ax = _ax(x, at["axis"])
+            out = list(x)
+            if bool(at.get("keepdims", True)):
+                out[ax] = "1"
+            else:
+                out = out[:ax] + out[ax + 1:]
+            body.append("    p_sum(%s, %s, %s, %s, %s);"
+                        % (dst, a[0], _prod(x[:ax]), x[ax], _prod(x[ax + 1:])))
         elif prim in ("add", "mul", "div"):
             out, A, B = _bc(shp_in[0], shp_in[1], prim)
             nd = len(out)
@@ -2359,11 +2524,66 @@ def emit_c_graph(ir, params, g=None):
             body.append("    p_slice(%s, %s, %s, %d, %s, %d, %s);"
                         % (dst, a[0], _prod(x[:ax]), d, _prod(x[ax + 1:]),
                            int(at["start"]), x[ax]))
+        elif prim == "concat":
+            A3, B3 = shp_in[0], shp_in[1]
+            ax = _ax(A3, at["axis"])
+            if A3[:ax] + A3[ax + 1:] != B3[:ax] + B3[ax + 1:]:
+                raise SystemExit("  [不支持] concat 的非拼接维对不上：%s vs %s"
+                                 % (A3, B3))
+            if A3[ax] == "n" or B3[ax] == "n":
+                raise SystemExit("  [不支持] concat 沿 n 轴拼 —— 没推过")
+            out = list(A3)
+            out[ax] = str(int(A3[ax]) + int(B3[ax]))
+            body.append("    p_concat(%s, %s, %s, %s, %s, %s, %s);"
+                        % (dst, a[0], a[1], _prod(A3[:ax]), A3[ax], B3[ax],
+                           _prod(A3[ax + 1:])))
+        elif prim == "repeat":
+            x = shp_in[0]
+            ax = _ax(x, at["axis"])
+            reps = int(at["reps"])
+            if x[ax] == "n":
+                raise SystemExit("  [不支持] repeat 沿 n 轴 —— 没推过")
+            out = list(x)
+            out[ax] = str(int(x[ax]) * reps)
+            body.append("    p_repeat(%s, %s, %s, %s, %s, %d);"
+                        % (dst, a[0], _prod(x[:ax]), x[ax],
+                           _prod(x[ax + 1:]), reps))
+        elif prim == "conv1d_causal":
+            x, w = shp_in[0], shp_in[1]
+            if len(x) != 3 or len(w) != 2:
+                raise SystemExit("  [不支持] conv1d_causal 吃 x[b,s,C] + "
+                                 "w[C,kernel]（现在 %s / %s）" % (x, w))
+            if x[2] != w[0]:
+                raise SystemExit("  [FAIL] conv1d_causal 的通道对不上：%s vs %s"
+                                 % (x, w))
+            out = list(x)
+            body.append("    p_conv1d_causal(%s, %s, %s, %s, %s, %s, %d);"
+                        % (dst, a[0], a[1], x[0], x[1], x[2],
+                           int(at["kernel"])))
+        elif prim == "delta_rule":
+            Q, K, V, B5, G5 = shp_in
+            if any(len(s) != 4 for s in (Q, K, V, B5, G5)):
+                raise SystemExit("  [不支持] delta_rule 的输入都要 4 维 "
+                                 "[b, 头, n, dim]（现在 %s）" % (shp_in,))
+            if not (Q[:3] == K[:3] == V[:3] == B5[:3] == G5[:3]):
+                raise SystemExit("  [FAIL] delta_rule 的 (b,头,n) 对不上")
+            if B5[3] != "1" or G5[3] != "1":
+                raise SystemExit("  [不支持] delta_rule 的 beta/decay 尾维 "
+                                 "!= 1（%s / %s）" % (B5, G5))
+            if Q[3] != K[3]:
+                raise SystemExit("  [FAIL] delta_rule 的 dk 对不上：%s vs %s"
+                                 % (Q, K))
+            out = list(V)
+            body.append("    p_delta_rule(%s, %s, %s, %s, %s, %s,"
+                        " %s, %s, %s, %s, %s);"
+                        % (dst, a[0], a[1], a[2], a[3], a[4],
+                           Q[0], Q[1], Q[2], Q[3], V[3]))
         else:
             raise SystemExit(
                 "  [不支持] 图的 %r 原语还没有 C 映射 —— "
                 "**要么实现、要么拒绝**（A3-3 的下一刀）" % prim)
         shp[outs[0]] = out
+        typ[outs[0]] = "i" if prim == "top_k" else "f"
 
     # ── 装配：值缓冲 + 逐节点 + 同一个命令行契约 ──────────────────
     logit = None
@@ -2378,10 +2598,12 @@ def emit_c_graph(ir, params, g=None):
     alloc.append("    for (int i = 0; i < n; i++) v_pos[i] = i;")
     for v in sorted(used):
         nm = "v_" + v.replace(".", "_")
-        if v in int_vals:
-            continue
-        alloc.append("    float *%s = (float *) calloc((size_t)(%s),"
-                     " sizeof(float));" % (nm, _prod(shp[v])))
+        if typ.get(v) == "i":
+            alloc.append("    int *%s = (int *) calloc((size_t)(%s),"
+                         " sizeof(int));" % (nm, _prod(shp[v])))
+        else:
+            alloc.append("    float *%s = (float *) calloc((size_t)(%s),"
+                         " sizeof(float));" % (nm, _prod(shp[v])))
     main = [
         "",
         "int main(int argc, char **argv) {",
@@ -2413,6 +2635,9 @@ def emit_c_graph(ir, params, g=None):
         "}",
     ]
     src = "\n".join([C_PRIMS] + decls + main + alloc + body + tail)
+    # 形状表留给调用方（差分定位 / 调试要看每个值的尺寸）
+    emit_c_graph.last_shp = shp
+    emit_c_graph.last_typ = typ
     return src, order, off
 
 
