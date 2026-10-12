@@ -1856,6 +1856,8 @@ static void p_get_rows(float *o, const float *tab, const int *ids,
    没有定义，两个后端挑出不同的不算 bug（`ir.md 129`）。 */
 static void p_top_k(int *o, const float *x, long long rows, long long m,
                     long long k) {
+    /* k > m 时 ref 的 `[..., :k]` 只会给 m 个 —— 这里同样钳住 */
+    if (k > m) k = m;
     long long *ord = (long long *) malloc(sizeof(long long) * (size_t)m);
     for (long long r = 0; r < rows; r++) {
         const float *in = x + r * m;
@@ -1965,6 +1967,23 @@ static void p_clamp_min(float *o, const float *x, long long tot, float m) {
    公式（Σ < c 时不一样），别在机械表里合并成一条。 */
 static void p_add_scalar(float *o, const float *x, long long tot, float c) {
     for (long long t = 0; t < tot; t++) o[t] = x[t] + c;
+}
+
+/* 把 int 下标行散成 0/1 行：`o[.., j] = 1` 若 j ∈ ids[.., :] —— `_ref_one_hot`。 */
+static void p_one_hot(float *o, const int *ids, long long rows,
+                      long long cols, long long nidx) {
+    memset(o, 0, sizeof(float) * (size_t)(rows * cols));
+    for (long long r = 0; r < rows; r++)
+        for (long long t = 0; t < nidx; t++) {
+            long long j = ids[r * nidx + t];
+            if (j >= 0 && j < cols) o[r * cols + j] = 1.f;
+        }
+}
+
+/* out = m > 0 ? x : v —— `_ref_masked_fill`（v 常是 -inf）。 */
+static void p_masked_fill(float *o, const float *x, const float *m,
+                          long long tot, float v) {
+    for (long long t = 0; t < tot; t++) o[t] = m[t] > 0.f ? x[t] : v;
 }
 
 /* softmax 沿最后轴（`by1ir.moe_scores_array` 的 softmax 那一支）。 */
@@ -2388,10 +2407,34 @@ def emit_c_graph(ir, params, g=None):
                         % (dst, a[0], a[1], _prod(ids_), _prod(tab[1:])))
         elif prim == "top_k":
             out = list(shp_in[0])
-            out[-1] = str(int(at["k"]))
+            _m = shp_in[0][-1]
+            if _m == "n":
+                raise SystemExit("  [不支持] top_k 的行宽是 n —— 没推过")
+            # ref 的 `[..., :k]` 自动钳到行宽，这里同规则（否则 C 越界）
+            out[-1] = str(min(int(at["k"]), int(_m)))
             body.append("    p_top_k(%s, %s, %s, %s, %s);"
                         % (dst, a[0], _prod(shp_in[0][:-1]),
-                           shp_in[0][-1], out[-1]))
+                           _m, out[-1]))
+        elif prim == "one_hot":
+            x = shp_in[0]
+            if typ.get(ins[0]) != "i":
+                raise SystemExit("  [FAIL] one_hot 的下标 %r 不是 int" % ins[0])
+            if x[-1] == "n":
+                raise SystemExit("  [不支持] one_hot 的下标行宽是 n —— 没推过")
+            out = x[:-1] + [str(int(at["cols"]))]
+            body.append("    p_one_hot(%s, %s, %s, %s, %s);"
+                        % (dst, a[0], _prod(x[:-1]), out[-1], x[-1]))
+        elif prim == "masked_fill":
+            if shp_in[0] != shp_in[1]:
+                raise SystemExit("  [不支持] masked_fill 的 x / m 形状不同"
+                                 "（%s vs %s）—— 广播没实现就拒绝"
+                                 % (shp_in[0], shp_in[1]))
+            out = list(shp_in[0])
+            _v = float(at["value"])
+            _vs = ("-INFINITY" if _v == float("-inf") else
+                   "INFINITY" if _v == float("inf") else repr(_v) + "f")
+            body.append("    p_masked_fill(%s, %s, %s, %s, %s);"
+                        % (dst, a[0], a[1], _prod(out), _vs))
         elif prim == "gather":
             x, ii = shp_in[0], shp_in[1]
             if typ.get(ins[1]) != "i":

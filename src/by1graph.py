@@ -328,6 +328,28 @@ def _ref_add_scalar():
     return lambda a, c: a + float(c)
 
 
+def _ref_one_hot():
+    """把下标行散成 0/1 行：`out[..., j] = 1` 若 `j ∈ ids[..., :]`，否则 0。
+
+    noaux_tc 的组选择掩码就是它（`by1exec.op_moe` 的
+    `put_along_axis(gm, gi, 1.0)`）；并列/重复的下标就置 1 两次（无害）。"""
+    np = _np()
+
+    def f(ids, cols):
+        ids = np.asarray(ids).astype(np.int64)
+        out = np.zeros(ids.shape[:-1] + (int(cols),), dtype=np.float64)
+        np.put_along_axis(out, ids, 1.0, axis=-1)
+        return out
+    return f
+
+
+def _ref_masked_fill():
+    """`out = m > 0 ? x : v`（v 是 attr，典型是 -inf）——
+    `by1exec.op_moe` 的 `np.where(mask > 0, choice, -np.inf)`。"""
+    np = _np()
+    return lambda x, m, v: np.where(np.asarray(m) > 0, x, float(v))
+
+
 def _ref_div():
     np = _np()
     return lambda a, b: a / b
@@ -545,6 +567,12 @@ PRIMS = {
                   "src": "by1exec 的 np.maximum(分母, eps)"},
     "add_scalar": {"ins": 1, "f": "a + c", "ref": _ref_add_scalar(),
                    "src": "by1exec.op_moe 的归一守卫 `sum + 1e-20`"},
+    "one_hot":   {"ins": 1, "f": "out[...,j] = 1 若 j ∈ ids 否则 0（int 行 -> 0/1 行）",
+                  "ref": _ref_one_hot(),
+                  "src": "by1exec.op_moe 的 put_along_axis(gm, gi, 1.0)"},
+    "masked_fill": {"ins": 2, "f": "out = m > 0 ? x : v",
+                    "ref": _ref_masked_fill(),
+                    "src": "by1exec.op_moe 的 np.where(mask, choice, -inf)"},
     "div":       {"ins": 2, "f": "a / b（广播）", "ref": _ref_div(),
                   "src": "ggml_div / numpy"},
     # ── GDN / delta 规则那一族（Linear 与 KDA 共用）──
@@ -914,10 +942,9 @@ def _lower_moe(g, p, x, dst, w, a, d):
         out  = Σ_k topv[:,k] · Expert_k(x)
     """
     rt = a.get("routing") or "softmax_topk"
-    if rt not in ("softmax_topk", "sigmoid_topk", "topk_softmax"):
-        raise SystemExit(
-            "  [不支持] MoE.routing=%s 还没有 lowering"
-            "（sigmoid_group_topk 要 noaux_tc 的分组排名那几步）" % rt)
+    if rt not in ("softmax_topk", "sigmoid_topk", "sigmoid_group_topk",
+                  "topk_softmax"):
+        raise SystemExit("  [不支持] MoE.routing=%r 不在闭集里" % rt)
     if a.get("expert_bias"):
         raise SystemExit("  [不支持] MoE.expert_bias 还没有 lowering")
     if str(a.get("act", "silu")) != "silu":
@@ -970,6 +997,54 @@ def _lower_moe(g, p, x, dst, w, a, d):
             sel = g.add("add", [sc, w("score_bias")], [p + "sel"],
                         shapes=[(E, None)])
         topi = g.add("top_k", [sel], [p + "topi"], attrs={"k": K},
+                     shapes=[(K, None)])
+        tv = g.add("gather", [sc, topi], [p + "tv"], shapes=[(K, None)])
+        den = g.add("sum", [tv], [p + "den"], attrs={"axis": 0,
+                                                     "keepdims": True},
+                    shapes=[(1, None)])
+        den = g.add("add_scalar", [den], [p + "den1"], attrs={"c": 1e-20},
+                    shapes=[(1, None)])
+    elif rt == "sigmoid_group_topk":
+        # noaux_tc（Ling / DeepSeek V3 / GLM / DeepSeek V4）——
+        # 照 `op_moe` 585-604 逐句：**先打分**，组内前 2 之和排名选组，
+        # 组外填 -inf 再 top-k；`score_bias` **只进选择**，权重用未加偏置的 sc。
+        ng, tg = int(a.get("n_group") or 0), int(a.get("topk_group") or 0)
+        if not ng or not tg:
+            raise SystemExit("  [FAIL] routing=sigmoid_group_topk 需要 "
+                             "n_group 与 topk_group")
+        if E % ng:
+            raise SystemExit("  [FAIL] experts=%d 不是 n_group=%d 的整数倍"
+                             % (E, ng))
+        eg = E // ng
+        sc = g.add(_sc, [lg], [p + "sc"], shapes=[(E, None)])
+        sel = sc
+        if sb_on:
+            sel = g.add("add", [sc, w("score_bias")], [p + "sel"],
+                        shapes=[(E, None)])
+        # 每组取**前 2 之和**排名：sort[-2:].sum == top_k(2) -> gather -> sum
+        # （两个加数交换次序在 IEEE 里逐位相同）—— **不加排序原语**。
+        gs = g.add("view", [sel], [p + "gs0"],
+                   attrs={"shape": [eg, ng, None]}, shapes=[(eg, ng, None)])
+        t2i = g.add("top_k", [gs], [p + "t2i"], attrs={"k": 2},
+                    shapes=[(2, ng, None)])
+        t2 = g.add("gather", [gs, t2i], [p + "t2"], shapes=[(2, ng, None)])
+        gsum = g.add("sum", [t2], [p + "gsum"],
+                     attrs={"axis": 0, "keepdims": False},
+                     shapes=[(ng, None)])
+        gi = g.add("top_k", [gsum], [p + "gi"], attrs={"k": tg},
+                   shapes=[(tg, None)])
+        gm = g.add("one_hot", [gi], [p + "gm"], attrs={"cols": ng},
+                   shapes=[(ng, None)])
+        # 组选择 -> 专家掩码：[n, ng] -> [n, ng, 1] -> 每组整块重复 eg 次
+        gm3 = g.add("view", [gm], [p + "gm3"],
+                    attrs={"shape": [1, ng, None]}, shapes=[(1, ng, None)])
+        mk = g.add("repeat", [gm3], [p + "mk"],
+                   attrs={"reps": eg, "axis": 0}, shapes=[(eg, ng, None)])
+        mk = g.add("view", [mk], [p + "mk2"], attrs={"shape": [E, None]},
+                   shapes=[(E, None)])
+        ch = g.add("masked_fill", [sel, mk], [p + "ch"],
+                   attrs={"value": float("-inf")}, shapes=[(E, None)])
+        topi = g.add("top_k", [ch], [p + "topi"], attrs={"k": K},
                      shapes=[(K, None)])
         tv = g.add("gather", [sc, topi], [p + "tv"], shapes=[(K, None)])
         den = g.add("sum", [tv], [p + "den"], attrs={"axis": 0,
@@ -1491,6 +1566,10 @@ def run_graph(g, params, ids):
             out = PRIMS["clamp_min"]["ref"](a[0], at["min"])
         elif prim == "add_scalar":
             out = PRIMS["add_scalar"]["ref"](a[0], at["c"])
+        elif prim == "one_hot":
+            out = PRIMS["one_hot"]["ref"](a[0], at["cols"])
+        elif prim == "masked_fill":
+            out = PRIMS["masked_fill"]["ref"](a[0], a[1], at["value"])
         elif prim == "concat":
             out = PRIMS["concat"]["ref"](a[0], a[1], at["axis"])
         elif prim == "conv1d_causal":
@@ -1764,6 +1843,13 @@ def selftest():
         bad.append("add_scalar 对不上手算（5e-21 + 1e-20 = 1.5e-20）")
     if float(PRIMS["clamp_min"]["ref"](np.array([5e-21]), 1e-20)[0]) == _z:
         bad.append("add_scalar 和 clamp_min 分不开 —— 有一个是错的")
+    if not np.array_equal(PRIMS["one_hot"]["ref"](np.array([[1, 2]]), 4),
+                          [[0.0, 1.0, 1.0, 0.0]]):
+        bad.append("one_hot 对不上手算（下标 [1,2] 散成 0/1 行）")
+    _mf = PRIMS["masked_fill"]["ref"](np.array([1.0, 2.0]),
+                                      np.array([1.0, 0.0]), float("-inf"))
+    if not (float(_mf[0]) == 1.0 and np.isneginf(_mf[1])):
+        bad.append("masked_fill 对不上手算（m=0 处该填 -inf）")
     if not np.allclose(PRIMS["div"]["ref"](np.array([4.0, 6.0]),
                                            np.array([2.0, 3.0])), [2.0, 2.0]):
         bad.append("div 对不上手算")
