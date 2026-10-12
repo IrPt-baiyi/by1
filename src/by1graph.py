@@ -414,6 +414,36 @@ def _ref_sqrt():
     return np.sqrt
 
 
+def _ref_l2_norm():
+    """`x / √(Σx² + eps)`，沿**最后轴**（sum，不是 mean）。
+
+    GDN 的 q/k 归一就是这一条（`by1exec.op_linear` 的
+    `q * (1/sqrt((q*q).sum(-1) + l2_eps))`）。**注意是 sum**：输出那一支
+    用的是 mean，而 `l2_norm(x, vd·ε)` 乘上 `√vd` 正好就是 mean 那一支 ——
+    所以图的闭集只需要这一个归一（另一支由 lowering 现拼）。
+    """
+    np = _np()
+
+    def f(x, eps):
+        return x / np.sqrt((x * x).sum(-1, keepdims=True) + float(eps))
+    return f
+
+
+def _ref_repeat():
+    """沿 **ggml 视角**的 axis 把每一份重复 reps 次（`np.repeat` 的**整块**重复）。
+
+    GDN 的 GQA 广播要它：q/k 是 nk 个头，状态是 nv 个头，映射是 `头 → 头//rep`
+    —— **整块**重复才是 `[q0,q0,q1,q1]`；而"平铺"给出 `[q0,q1,q0,q1]`，
+    和 v 的配对对不上（判别过：两者不是一回事，不是等价改写）。
+    attr 用 ggml 视角写（和 slice / sum / concat 同一套），ref 自己换算。
+    """
+    np = _np()
+
+    def f(x, reps, axis):
+        return np.repeat(x, int(reps), axis=x.ndim - 1 - int(axis))
+    return f
+
+
 def _ref_get_rows():
     np = _np()
     return lambda table, ids: table[ids]
@@ -518,6 +548,15 @@ PRIMS = {
                   "src": "by1exec.op_linear 的 np.log1p（衰减门要用）"},
     "sqrt":      {"ins": 1, "f": "√x", "ref": _ref_sqrt(),
                   "src": "by1exec 的 1/sqrt(·)（L2 归一 / 输出归一）"},
+    # GDN 的归一与 GQA 广播。
+    # `l2_norm(x, vd·eps) · √vd` **就是** mean 那一支（图里现拼），
+    # 所以闭集只需要这一个归一。
+    "l2_norm":   {"ins": 1, "f": "x / √(Σx²+eps)，沿最后轴（**sum 不是 mean**）",
+                  "ref": _ref_l2_norm(),
+                  "src": "by1exec.op_linear 的 q/k 归一 / torch l2norm"},
+    "repeat":    {"ins": 1, "f": "沿 ggml 轴 axis 整块重复 reps 次",
+                  "ref": _ref_repeat(),
+                  "src": "np.repeat / by1exec.op_linear 的 GQA 广播"},
     "rope":      {"ins": 2, "f": "每对维度转 θ_t = t·inv[i]（inv 见 rope_inv："
                                 "普通 / YaRN / llama3）；"
                                 "half 配对 (i,i+h)，interleaved 配对 (2i,2i+1)"
@@ -624,7 +663,8 @@ def lower_op(g, i, j, o, d, pname, refmap):
         refmap[r] = dst
     w = lambda nm: pname(nm)
 
-    if k not in ("Embed", "Norm", "Head", "Attention", "FFN", "Add", "MoE"):
+    if k not in ("Embed", "Norm", "Head", "Attention", "FFN", "Add", "MoE",
+                 "Linear"):
         raise SystemExit("  [不支持] %s 还没有 lowering（原语未收编，"
                          "见 by1graph.UNLOWERED）" % k)
 
@@ -680,6 +720,154 @@ def lower_op(g, i, j, o, d, pname, refmap):
         _lower_attn(g, p, src[0], dst, w, a, d)
     elif k == "MoE":
         _lower_moe(g, p, src[0], dst, w, a, d)
+    elif k == "Linear":
+        _lower_linear(g, p, src[0], dst, w, a, d)
+    return dst
+
+
+def _lower_linear(g, p, x, dst, w, a, d):
+    """GDN（Linear）的 lowering —— 语义照 `by1exec.op_linear`（e2e 的判据）。
+
+    一条链：融合投影 → 按头切开 → β / 衰减门 → 拼回去进**短卷积** →
+    切回 → per-head L2 归一 → **delta_rule** 递推 → 输出 RMS + 门 + out_proj。
+
+    三处 layout 的关键（都写在这，别再错第三遍）：
+
+    ① **exec 约定、ggml 视角标形状**。图里的值是 (n, …) 在前，节点上的
+       shape 是 ggml 视角（特征在前）—— 同一块内存的两种读法；
+    ② **slice/concat 的 axis 按 ggml 视角写**（axis 0 = 最后那条轴）；
+    ③ **delta_rule 吃 [b, 头, n, dim]**（四个轴），所以要给 3 维张量补一个
+       batch 轴 —— 用 view，不是 reshape 之外的东西。
+    """
+    nk, nv = int(a["k_heads"]), int(a["v_heads"])
+    dk, dv = int(a["k_dim"]), int(a["v_dim"])
+    rep = nv // nk
+    kd, vd = nk * dk, nv * dv
+    C = 2 * dk + 2 * dv * rep          # in_proj_qkvz 的每头宽度
+    R = 2 * rep                         # in_proj_ba 的每头宽度
+    L = 2 * kd + vd                     # 卷积那一支的通道数（q|k|v）
+    eps_l2 = float(a.get("l2_eps", 1e-6))
+    eps_nm = float(a.get("norm_eps", _DEFAULT_EPS))
+    kern = int(a["conv_kernel"])
+    if str(a.get("act", "silu")) != "silu":
+        raise SystemExit("  [不支持] Linear.act=%r 还没有 lowering" % a.get("act"))
+
+    def _cut(t, s0, s1, nm, shape=None):
+        return g.add("slice", [t], [p + nm],
+                     attrs={"axis": 0, "start": int(s0), "stop": int(s1)},
+                     shapes=shape)
+    # ── ① 融合投影，按头（nk）切开 ─────────────────────────────────
+    qz = g.add("matmul", [w("in_proj_qkvz"), x], [p + "qz"], shapes=[(None, None)])
+    qz = g.add("view", [qz], [p + "qz3"], attrs={"shape": [C, nk, None]},
+               shapes=[(C, nk, None)])
+    q0 = _cut(qz, 0, dk, "q0")                                  # (n,nk,dk)
+    k0 = _cut(qz, dk, 2 * dk, "k0")
+    v0 = _cut(qz, 2 * dk, 2 * dk + dv * rep, "v0")              # (n,nk,dv·rep)
+    z0 = _cut(qz, 2 * dk + dv * rep, C, "z0")
+    v0 = g.add("view", [v0], [p + "v1"], attrs={"shape": [dv, nv, None]},
+               shapes=[(dv, nv, None)])                         # z 的门在后面才用
+    z0 = g.add("view", [z0], [p + "z1"], attrs={"shape": [dv, nv, None]},
+               shapes=[(dv, nv, None)])
+    q1 = g.add("view", [q0], [p + "q1"], attrs={"shape": [kd, None]},
+               shapes=[(kd, None)])
+    k1 = g.add("view", [k0], [p + "k1"], attrs={"shape": [kd, None]},
+               shapes=[(kd, None)])
+    v1 = g.add("view", [v0], [p + "v2"], attrs={"shape": [vd, None]},
+               shapes=[(vd, None)])
+    # ── ② β 与衰减门 g = −exp(A_log)·log1p(exp(aa + dt_bias)) ──────
+    ba = g.add("matmul", [w("in_proj_ba"), x], [p + "ba"], shapes=[(None, None)])
+    ba = g.add("view", [ba], [p + "ba3"], attrs={"shape": [R, nk, None]},
+               shapes=[(R, nk, None)])
+    bb = _cut(ba, 0, rep, "bb")
+    # (n, nk, rep) -> (n, nv)：ggml 视角就是 (nv, n)
+    bb = g.add("view", [bb], [p + "bb2"], attrs={"shape": [nv, None]},
+               shapes=[(nv, None)])
+    aa = _cut(ba, rep, 2 * rep, "aa")
+    aa = g.add("view", [aa], [p + "aa2"], attrs={"shape": [nv, None]},
+               shapes=[(nv, None)])
+    beta = g.add("sigmoid", [bb], [p + "beta"], shapes=[(nv, None)])
+    t1 = g.add("add", [aa, w("dt_bias")], [p + "t1"], shapes=[(nv, None)])
+    t2 = g.add("exp", [t1], [p + "t2"], shapes=[(nv, None)])
+    t3 = g.add("log1p", [t2], [p + "t3"], shapes=[(nv, None)])
+    t4 = g.add("exp", [w("A_log")], [p + "t4"], shapes=[(nv,)])
+    t4 = g.add("scale", [t4], [p + "t5"], attrs={"s": -1.0}, shapes=[(nv,)])
+    gm = g.add("mul", [t3, t4], [p + "g"], shapes=[(nv, None)])
+    # ── ③ 拼回 q|k|v 进**因果短卷积**，silu，再切回 ─────────────────
+    mk = g.add("concat", [q1, k1], [p + "mk0"], attrs={"axis": 0},
+               shapes=[(2 * kd, None)])
+    mk = g.add("concat", [mk, v1], [p + "mk"], attrs={"axis": 0},
+               shapes=[(L, None)])
+    # conv1d_causal 的 ref 吃 [b, n, C] —— ggml 视角是 [C, n, b]，
+    # 所以这里要写 **[L, None, 1]**（第一版写成 [L, 1, None]：把 batch 轴
+    # 和 token 轴对调，于是 b=n、s=1，卷积算了个完全不是那个的东西）。
+    mk3 = g.add("view", [mk], [p + "mk3"], attrs={"shape": [L, None, 1]},
+                shapes=[(L, None, 1)])
+    c3 = g.add("conv1d_causal", [mk3, w("conv")], [p + "c3"],
+               attrs={"kernel": kern}, shapes=[(L, 1, None)])
+    cm = g.add("view", [c3], [p + "cm"], attrs={"shape": [L, None]},
+               shapes=[(L, None)])
+    cm = g.add("silu", [cm], [p + "cms"], shapes=[(L, None)])
+    q2 = _cut(cm, 0, kd, "q2")
+    k2 = _cut(cm, kd, 2 * kd, "k2")
+    v2 = _cut(cm, 2 * kd, L, "v3")
+    # ── ④ 归头 + per-head L2 归一（GQA 广播在最前） ─────────────────
+    q3 = g.add("view", [q2], [p + "q4"], attrs={"shape": [dk, nk, None]},
+               shapes=[(dk, nk, None)])
+    k3 = g.add("view", [k2], [p + "k4"], attrs={"shape": [dk, nk, None]},
+               shapes=[(dk, nk, None)])
+    v3 = g.add("view", [v2], [p + "v4"], attrs={"shape": [dv, nv, None]},
+               shapes=[(dv, nv, None)])
+    if rep > 1:
+        # **整块**重复 [q0,q0,q1,q1]：映射是"头 → 头//rep"。
+        # 平铺会给出 [q0,q1,q0,q1]，和 v 的配对对不上（不是等价改写）。
+        q3 = g.add("repeat", [q3], [p + "q5"], attrs={"reps": rep, "axis": 1},
+                   shapes=[(dk, nv, None)])
+        k3 = g.add("repeat", [k3], [p + "k5"], attrs={"reps": rep, "axis": 1},
+                   shapes=[(dk, nv, None)])
+    q3 = g.add("l2_norm", [q3], [p + "qn"], attrs={"eps": eps_l2},
+               shapes=[(dk, nv, None)])
+    k3 = g.add("l2_norm", [k3], [p + "kn"], attrs={"eps": eps_l2},
+               shapes=[(dk, nv, None)])
+    # ── ⑤ delta_rule：q 先乘 dk^-0.5；递推吃 [b, 头, n, dim] ──────
+    q3 = g.add("scale", [q3], [p + "qs"], attrs={"s": float(dk) ** -0.5},
+               shapes=[(dk, nv, None)])
+    # **ggml 视角要把"头"挪到 n 前面**：手上是 ggml [dim, 头, n] /
+    # [头, n]，而 delta_rule 要 exec [1, 头, n, dim] = ggml [dim, n, 头, 1]。
+    # 所以**先 permute 补视图**（第一版少了这一步：直接 view 成 4 维，
+    # 于是 batch 轴和 token 轴对调，递推算在"每头一个 token"上）。
+    def _b4(t, nm, d0, h1, two):
+        ax = [1, 0] if two else [0, 2, 1]
+        pp = g.add("permute", [t], [p + nm + "p"], attrs={"axes": ax},
+                   shapes=[(None, None)])
+        shp = ([1, None, h1, 1] if two else [d0, None, h1, 1])
+        return g.add("view", [pp], [p + nm], attrs={"shape": shp},
+                     shapes=[tuple(shp[:2]) + (h1, shp[-1])])
+    o = g.add("delta_rule", [_b4(q3, "qh", dk, nv, False),
+                             _b4(k3, "kh", dk, nv, False),
+                             _b4(v3, "vh", dv, nv, False),
+                             _b4(beta, "bh", 1, nv, True),
+                             _b4(gm, "gh", 1, nv, True)],
+              [p + "dr"], shapes=[(dv, None, nv, 1)])
+    # 出来是 exec [1, 头, n, dv]；ggml 视角 [dv, n, 头, 1] -> permute ->
+    # [dv, 头, n, 1] -> view 掉 batch 轴 -> exec (n, 头, dv)
+    o = g.add("permute", [o], [p + "drp"], attrs={"axes": [0, 2, 1, 3]},
+              shapes=[(dv, None, nv, 1)])
+    o = g.add("view", [o], [p + "o2"], attrs={"shape": [dv, nv, None]},
+              shapes=[(dv, nv, None)])
+    # ── ⑥ 输出 RMS + 门 ───────────────────────────────────────────
+    # mean 那一支现拼：`l2_norm(x, dv·ε) · √dv` **就是** `x/√(mean(x²)+ε)`
+    #   √dv·x/√(Σ+dv·ε) = x/√((Σ+dvε)/dv) = x/√(mean+ε)
+    y = g.add("l2_norm", [o], [p + "yn"], attrs={"eps": eps_nm * dv},
+              shapes=[(dv, nv, None)])
+    y = g.add("scale", [y], [p + "ys"], attrs={"s": float(dv) ** 0.5},
+              shapes=[(dv, nv, None)])
+    y = g.add("mul", [y, w("norm.w")], [p + "yw"], shapes=[(dv, nv, None)])
+    zs = g.add("silu", [z0], [p + "zs"], shapes=[(dv, nv, None)])
+    y = g.add("mul", [y, zs], [p + "yz"], shapes=[(dv, nv, None)])
+    y = g.add("view", [y], [p + "y2"], attrs={"shape": [vd, None]},
+              shapes=[(vd, None)])
+    g.add("matmul", [w("out_proj"), y], [p + "o"], shapes=[(None, None)])
+    g.nodes[-1]["outs"] = [dst]
     return dst
 
 
@@ -1039,6 +1227,10 @@ def run_graph(g, params, ids):
             out = PRIMS["delta_rule"]["ref"](a[0], a[1], a[2], a[3], a[4])
         elif prim in ("exp", "log1p", "sqrt"):
             out = PRIMS[prim]["ref"](a[0])
+        elif prim == "l2_norm":
+            out = PRIMS["l2_norm"]["ref"](a[0], at["eps"])
+        elif prim == "repeat":
+            out = PRIMS["repeat"]["ref"](a[0], at["reps"], at["axis"])
         elif prim == "rope":
             # [n, nh, hd]：位置在轴 -2 —— 转成 [..., n, hd] 再转回
             x = np.transpose(a[0], (1, 0, 2))
