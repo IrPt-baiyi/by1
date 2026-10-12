@@ -730,6 +730,9 @@ def main():
         rows.append(('静态检查 by1lint.py', 'skip',
                          '档 2 才有（%d 段，这次跑档 %d）'
                          % (SECTION_TIER['1.6'], TIER)))
+        rows.append(('变异反例库 by1mutate.py', 'skip',
+                         '档 2 才有（%d 段，这次跑档 %d）'
+                         % (SECTION_TIER['1.6'], TIER)))
     else:
         t0 = time.time()
         #
@@ -755,6 +758,18 @@ def main():
         rows.append(('by1lint 自检（十条规则都要会红）', st, note_of(st, out, line)))
         if st == 'fail':
             fails.append('lint-selftest')
+
+        # **变异反例库**（1.0.0-rc0 T0.3）：by1ir.validate 的每条规则
+        # 一个"必须红"的反例 —— 反例全红 + 基线全绿才算过。
+        # 规则加了却没反例 = 它可能永远绿，而"永远绿"和"坏了"一样。
+        st, out = run(['by1mutate.py'], 'mutate')
+        line = [l.strip() for l in out.splitlines() if '[PASS]' in l
+                or '[FAIL]' in l]
+        st = confirmed(st, out, line)
+        rows.append(('变异反例库 by1mutate.py', st,
+                     note_of(st, out, line, empty='（没有判定行）')))
+        if st == 'fail':
+            fails.append('mutate')
 
         t0 = _tick('1.6 静态检查', t0)
 
