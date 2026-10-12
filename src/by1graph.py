@@ -476,10 +476,6 @@ def lower_model(ir, name="model"):
     """整份 IR -> 一张图。globals 在层前后各一截（ggml 惰性图那一课：
     最终 norm/head **必须在层之后**接线）。"""
     d = ir["d_model"]
-    if str(ir.get("pos_kind", "rope")).lower() == "learned":
-        # **拒绝，不许悄悄少一块。** 学习式位置表是 embed 后的一次加法，
-        # 还没收编 —— 降了就是"看起来对但算错"。
-        raise SystemExit("  [不支持] 学习式位置表的 lowering 还没收编")
     g = Graph(name)
     g.vals["tok"] = (None,)
     g.vals["pos"] = (None,)
@@ -489,6 +485,16 @@ def lower_model(ir, name="model"):
     # Embed 的输出就是 `x`（残差流起点）
     for o in pre:
         g.add("get_rows", ["embed.weight", "tok"], ["x"], shapes=[(d, None)])
+    # **学习式位置表**（GPT-2 那一支）：embed 之后一次加法。
+    # 语义照 `by1exec`（`x = x + pos.weight[:n]`）—— 求值器给的
+    # `pos` 就是 `arange(n)`，所以 `get_rows(pos.weight, pos)` 与
+    # `pos.weight[:n]` 逐位相同。**这一条以前是直接拒绝的**
+    # （"还没收编"），于是 gpt2-tiny 降不了 —— 而它是 by1ggml 自检的
+    # ② 号判据（layernorm / 学习位置 / gelu_new / 无门控）。
+    if str(ir.get("pos_kind", "rope")).lower() == "learned":
+        pe = g.add("get_rows", ["pos.weight", "pos"], ["pos_emb"],
+                   shapes=[(d, None)])
+        g.add("add", ["x", pe], ["x"], shapes=[(d, None)])
     for L in ir["layers"]:
         i = L["index"]
         din = L.get("in_dim") or d
