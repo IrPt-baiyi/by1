@@ -2298,6 +2298,37 @@ static void p_delta_rule(float *o, const float *q, const float *k,
         }
     free(st);
 }
+
+/* Mamba2 的递推扫描 —— `_ref_ssm_scan` 逐句：st = exp(d·A)·st + d·(x⊗B)；
+   y = st·C + D·x。布局 [b,h,n,*]；内部 double 累（和 ref 同精度）。 */
+static void p_ssm_scan(float *o, const float *d, const float *A,
+                       const float *x, const float *B, const float *C,
+                       const float *D, long long b, long long h,
+                       long long n, long long hd, long long ssm) {
+    double *st = (double *) calloc((size_t)b * h * hd * ssm, sizeof(double));
+    for (long long t = 0; t < n; t++)
+        for (long long bh = 0; bh < b * h; bh++) {
+            double dd = (double)d[(size_t)bh * n + t];
+            double dec = exp(dd * (double)A[bh % h]);
+            const float *xt = x + ((size_t)bh * n + t) * hd;
+            const float *bt = B + ((size_t)bh * n + t) * ssm;
+            const float *ct = C + ((size_t)bh * n + t) * ssm;
+            double *S = st + (size_t)bh * hd * ssm;
+            long long i, s2;
+            for (i = 0; i < hd; i++)
+                for (s2 = 0; s2 < ssm; s2++)
+                    S[i * ssm + s2] = dec * S[i * ssm + s2]
+                        + dd * (double)xt[i] * (double)bt[s2];
+            for (i = 0; i < hd; i++) {
+                double acc = 0.0;
+                for (s2 = 0; s2 < ssm; s2++)
+                    acc += S[i * ssm + s2] * (double)ct[s2];
+                o[((size_t)bh * n + t) * hd + i] =
+                    (float)(acc + (double)D[bh % h] * (double)xt[i]);
+            }
+        }
+    free(st);
+}
 '''
 
 
@@ -2642,6 +2673,24 @@ def emit_c_graph(ir, params, g=None):
                         " %s, %s, %s, %s, %s, %s);"
                         % (dst, a[0], a[1], a[2], a[3], a[4],
                            Q[0], Q[1], Q[2], Q[3], V[3], G5[3]))
+        elif prim == "ssm_scan":
+            DD, A1, X4, B4, C4, D1 = shp_in
+            if len(X4) != 4 or any(len(s) != 4 for s in (DD, B4, C4)):
+                raise SystemExit("  [不支持] ssm_scan 吃 d/x/B/C 四维 "
+                                 "[b,头,n,*]（现在 %s）" % (shp_in,))
+            if not (DD[:3] == X4[:3] == B4[:3] == C4[:3]) or DD[3] != "1":
+                raise SystemExit("  [FAIL] ssm_scan 的 (b,头,n) 对不上"
+                                 "（%s）" % (shp_in,))
+            if B4[3] != C4[3]:
+                raise SystemExit("  [FAIL] ssm_scan 的 ssm 维对不上")
+            if A1 != [X4[1]] or D1 != [X4[1]]:
+                raise SystemExit("  [不支持] ssm_scan 的 A/D 要逐头 [头]"
+                                 "（%s / %s）" % (A1, D1))
+            out = list(X4)
+            body.append("    p_ssm_scan(%s, %s, %s, %s, %s, %s, %s,"
+                        " %s, %s, %s, %s, %s);"
+                        % (dst, a[0], a[1], a[2], a[3], a[4], a[5],
+                           X4[0], X4[1], X4[2], X4[3], B4[3]))
         else:
             raise SystemExit(
                 "  [不支持] 图的 %r 原语还没有 C 映射 —— "

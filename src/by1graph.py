@@ -449,6 +449,42 @@ def _ref_exp():
     return np.exp
 
 
+def _ref_ssm_scan():
+    """**Mamba2 的递推扫描** —— `by1exec.op_ssm` 的 876-883 逐句：
+
+        st = exp(d·A)·st + d·(x ⊗ B)      # 先衰减，再**外积**写入
+        y  = st·C + D·x                    # 读出是 **h 右乘 C**
+
+    状态 `[b, 头, hd, ssm]` 是一步一步走的，**没有并行公式** ——
+    和 delta_rule 同一个理由：递推就是原语，不是 matmul 的组合。
+    内部 float64 累（op_ssm 的 st/out 都是 float64）。
+
+    约定：d `[b,头,n,1]` · A `[头]` · x `[b,头,n,hd]` · B/C `[b,头,n,ssm]`
+    · D `[头]` -> y `[b,头,n,hd]`。
+    """
+    np = _np()
+
+    def f(d, A, x, B, C, D):
+        b, h, n = int(d.shape[0]), int(d.shape[1]), int(d.shape[2])
+        hd, ssm = int(x.shape[-1]), int(B.shape[-1])
+        st = np.zeros((b, h, hd, ssm), dtype=np.float64)
+        out = np.empty((b, h, n, hd), dtype=np.float64)
+        d64 = d.astype(np.float64)[:, :, :, 0]
+        A64 = np.asarray(A, dtype=np.float64)
+        D64 = np.asarray(D, dtype=np.float64)
+        x64, B64, C64 = (x.astype(np.float64), B.astype(np.float64),
+                         C.astype(np.float64))
+        for i in range(n):
+            dd = d64[:, :, i]
+            st = (np.exp(dd[:, :, None, None] * A64[None, :, None, None]) * st
+                  + dd[:, :, None, None]
+                  * (x64[:, :, i][:, :, :, None] * B64[:, :, i][:, :, None, :]))
+            out[:, :, i] = ((st * C64[:, :, i][:, :, None, :]).sum(-1)
+                            + D64[None, :, None] * x64[:, :, i])
+        return out
+    return f
+
+
 def _ref_log1p():
     np = _np()
     return np.log1p
@@ -597,6 +633,10 @@ PRIMS = {
                         "st+=k⊗δ；out=(st·q)",
                    "ref": _ref_delta_rule(),
                    "src": "by1exec.op_linear / op_kda 的 for"},
+    "ssm_scan":  {"ins": 6,
+                  "f": "逐 token：st=exp(d·A)·st + d·(x⊗B)；y=st·C + D·x",
+                  "ref": _ref_ssm_scan(),
+                  "src": "by1exec.op_ssm 的递推 for（Mamba2）"},
     "exp":       {"ins": 1, "f": "eˣ", "ref": _ref_exp(),
                   "src": "by1exec 的 np.exp（衰减门要用）"},
     "log1p":     {"ins": 1, "f": "log(1+x)", "ref": _ref_log1p(),
@@ -642,15 +682,15 @@ PRIMS = {
 }
 
 # **还没收编的机制**（各就各位，谁也不冒充谁）：
-#   MoE   ：四种选法全收编；还缺 expert_bias / gptoss 激活（gpt-oss 全系）
+#   MoE   ：四种选法 + expert_bias + gptoss 激活全收编
 #   KDA   ：已收编（低秩门 / GVA / gate_lower 三支）
 #   MLA   ：已收编（非稀疏）；**SparseMLA（index_heads）拒绝** ——
 #           dsa_index 的判卷人是 transformers 的 GlmMoeDsaIndexer
-#   SSM   ：递推扫描（by1ssm 已验过）
+#   SSM   ：已收编（Mamba2 递推 = `ssm_scan` 原语）
 #   Linear：GDN 已收编（conv1d_causal + delta_rule）
 #   Raw / External：逃生舱，按设计不收编
 # 每条下沉时：公式 + ref() + 反例一起进来，别只搬代码。
-UNLOWERED = ("SSM", "Raw", "External")
+UNLOWERED = ("Raw", "External")
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -720,7 +760,7 @@ def lower_op(g, i, j, o, d, pname, refmap):
     w = lambda nm: pname(nm)
 
     if k not in ("Embed", "Norm", "Head", "Attention", "FFN", "Add", "MoE",
-                 "Linear", "KDA", "MLA"):
+                 "Linear", "KDA", "MLA", "SSM"):
         raise SystemExit("  [不支持] %s 还没有 lowering（原语未收编，"
                          "见 by1graph.UNLOWERED）" % k)
 
@@ -778,6 +818,8 @@ def lower_op(g, i, j, o, d, pname, refmap):
         _lower_kda(g, p, src[0], dst, w, a, d)
     elif k == "MLA":
         _lower_mla(g, p, src[0], dst, w, a, d)
+    elif k == "SSM":
+        _lower_ssm(g, p, src[0], dst, w, a, d)
     elif k == "MoE":
         _lower_moe(g, p, src[0], dst, w, a, d)
     elif k == "Linear":
@@ -1432,6 +1474,116 @@ def _lower_mla(g, p, x, dst, w, a, d):
     return dst
 
 
+def _lower_ssm(g, p, x, dst, w, a, d):
+    """SSM（选择性状态空间，Mamba2 · Nemotron-H 那一版）的 lowering ——
+    语义照 `by1exec.op_ssm`（判卷人 `by1ssm` 对官方 NemotronHMamba2Mixer
+    验过）。链条：融合投影切三段（gate / bc / dt）-> 因果深度卷积 + silu ->
+    切 xs / B / C（B、C 从组广播到头）-> **`ssm_scan` 递推** ->
+    门乘 -> 分组 gated norm -> out_proj。
+
+    递推是原语（`ssm_scan`），理由和 delta_rule 一样：状态一步一步走，
+    没有并行公式。
+    """
+    h, hd = int(a["heads"]), int(a["head_dim"])
+    ng, ssm, ck = (int(a["n_groups"]), int(a["ssm_state"]),
+                   int(a["conv_kernel"]))
+    di = h * hd
+    cd = di + 2 * ng * ssm
+    rep = h // ng
+    eps_nm = float(a.get("norm_eps", _DEFAULT_EPS))
+    if str(a.get("act", "silu")) != "silu":
+        raise SystemExit("  [不支持] SSM.act=%r 还没有 lowering" % a.get("act"))
+    if a.get("proj_bias"):
+        # op_ssm 的 `proj = x @ in_proj.T` **不带 bias** —— 声明了不许静默算
+        raise SystemExit("  [不支持] SSM.proj_bias 还没有 lowering")
+    if h % ng:
+        raise SystemExit("  [FAIL] SSM heads=%d 不是 n_groups=%d 的整数倍"
+                         % (h, ng))
+
+    def _cut(t, s0, s1, nm, shape):
+        return g.add("slice", [t], [p + nm],
+                     attrs={"axis": 0, "start": int(s0), "stop": int(s1)},
+                     shapes=[shape])
+
+    # ── ① 融合投影，切 gate / bc / dt ───────────────────────────────
+    proj = g.add("matmul", [w("in_proj"), x], [p + "pj"],
+                 shapes=[(di + cd + h, None)])
+    gate = _cut(proj, 0, di, "gate", (di, None))
+    bc = _cut(proj, di, di + cd, "bc", (cd, None))
+    dt = _cut(proj, di + cd, di + cd + h, "dt", (h, None))
+    # ── ② 因果深度卷积（+ 可选 conv.bias）+ silu ────────────────────
+    bc3 = g.add("view", [bc], [p + "bc3"], attrs={"shape": [cd, None, 1]},
+                shapes=[(cd, None, 1)])
+    conv = g.add("conv1d_causal", [bc3, w("conv")], [p + "cv"],
+                 attrs={"kernel": ck}, shapes=[(cd, 1, None)])
+    conv = g.add("view", [conv], [p + "cv2"], attrs={"shape": [cd, None]},
+                 shapes=[(cd, None)])
+    if a.get("conv_bias"):
+        conv = g.add("add", [conv, w("conv.bias")], [p + "cv3"],
+                     shapes=[(cd, None)])
+    bc2 = g.add("silu", [conv], [p + "bc4"], shapes=[(cd, None)])
+    # ── ③ 切 xs / B / C；B、C 从组广播到头（np.repeat 的整块重复） ──
+    xs = _cut(bc2, 0, di, "xs", (di, None))
+    B = _cut(bc2, di, di + ng * ssm, "B0", (ng * ssm, None))
+    C = _cut(bc2, di + ng * ssm, di + 2 * ng * ssm, "C0", (ng * ssm, None))
+    xs = g.add("view", [xs], [p + "xs3"], attrs={"shape": [hd, h, None]},
+               shapes=[(hd, h, None)])
+    B = g.add("view", [B], [p + "B1"], attrs={"shape": [ssm, ng, None]},
+              shapes=[(ssm, ng, None)])
+    C = g.add("view", [C], [p + "C1"], attrs={"shape": [ssm, ng, None]},
+              shapes=[(ssm, ng, None)])
+    if rep > 1:
+        B = g.add("repeat", [B], [p + "B2"], attrs={"reps": rep, "axis": 1},
+                  shapes=[(ssm, h, None)])
+        C = g.add("repeat", [C], [p + "C2"], attrs={"reps": rep, "axis": 1},
+                  shapes=[(ssm, h, None)])
+    # ── ④ A = -exp(A_log)；d = softplus(dt + dt_bias)；ssm_scan 递推 ──
+    # A_log / dt_bias / D 都是**逐头**的 (h,)
+    A = g.add("exp", [w("A_log")], [p + "A1"], shapes=[(h,)])
+    A = g.add("scale", [A], [p + "A2"], attrs={"s": -1.0}, shapes=[(h,)])
+    dtt = g.add("add", [dt, w("dt_bias")], [p + "d0"], shapes=[(h, None)])
+    dtt = g.add("softplus", [dtt], [p + "d1"], shapes=[(h, None)])
+    o = g.add("ssm_scan", [_b4ish(g, p, dtt, "dd", 1, h, True),
+                           A,
+                           _b4ish(g, p, xs, "x4", hd, h, False),
+                           _b4ish(g, p, B, "B4", ssm, h, False),
+                           _b4ish(g, p, C, "C4", ssm, h, False),
+                           w("D")],
+              [p + "sc"], shapes=[(hd, None, h, 1)])
+    o = g.add("permute", [o], [p + "scp"], attrs={"axes": [0, 2, 1, 3]},
+              shapes=[(hd, None, h, 1)])
+    o = g.add("view", [o], [p + "o2"], attrs={"shape": [di, None]},
+              shapes=[(di, None)])
+    # ── ⑤ 门乘 -> 分组 gated norm（mean 版 = l2_norm(x, gs·ε)·√gs） ──
+    y = g.add("mul", [o, g.add("silu", [gate], [p + "gt"],
+                               shapes=[(di, None)])],
+              [p + "y0"], shapes=[(di, None)])
+    gs_ = di // ng
+    g4 = g.add("view", [y], [p + "g4"], attrs={"shape": [gs_, ng, None]},
+               shapes=[(gs_, ng, None)])
+    g4 = g.add("l2_norm", [g4], [p + "gn"], attrs={"eps": eps_nm * gs_},
+               shapes=[(gs_, ng, None)])
+    g4 = g.add("scale", [g4], [p + "gs2"], attrs={"s": float(gs_) ** 0.5},
+               shapes=[(gs_, ng, None)])
+    y = g.add("view", [g4], [p + "y2"], attrs={"shape": [di, None]},
+              shapes=[(di, None)])
+    y = g.add("mul", [y, w("norm.w")], [p + "y3"], shapes=[(di, None)])
+    g.add("matmul", [w("out_proj"), y], [p + "o"], shapes=[(None, None)])
+    g.nodes[-1]["outs"] = [dst]
+    return dst
+
+
+def _b4ish(g, p, t, nm, d0, h1, two):
+    """2/3 维 -> exec [1, 头, n, dim]（GDN/KDA 的 `_b4` 同一个意思）。
+    这个放模块级，SSM 和别处共用。"""
+    ax = [1, 0] if two else [0, 2, 1]
+    pp = g.add("permute", [t], [p + nm + "p"], attrs={"axes": ax},
+               shapes=[(None, None)])
+    shp = ([1, None, h1, 1] if two else [d0, None, h1, 1])
+    return g.add("view", [pp], [p + nm], attrs={"shape": shp},
+                 shapes=[tuple(shp[:2]) + (h1, shp[-1])])
+
+
 def _lower_attn(g, p, x, dst, w, a, d):
     hd, nh, nkv = int(a["head_dim"]), int(a["q"]), int(a["kv"])
     if int(a["out_dim"]) != nh * hd:
@@ -1736,6 +1888,9 @@ def run_graph(g, params, ids):
             out = PRIMS["conv1d_causal"]["ref"](a[0], a[1], at["kernel"])
         elif prim == "delta_rule":
             out = PRIMS["delta_rule"]["ref"](a[0], a[1], a[2], a[3], a[4])
+        elif prim == "ssm_scan":
+            out = PRIMS["ssm_scan"]["ref"](a[0], a[1], a[2], a[3], a[4],
+                                           a[5])
         elif prim in ("exp", "log1p", "sqrt"):
             out = PRIMS[prim]["ref"](a[0])
         elif prim == "l2_norm":
@@ -2013,6 +2168,14 @@ def selftest():
                                       np.array([1.0, 0.0]), float("-inf"))
     if not (float(_mf[0]) == 1.0 and np.isneginf(_mf[1])):
         bad.append("masked_fill 对不上手算（m=0 处该填 -inf）")
+    # ssm_scan：手推两步的状态更新（b=h=hd=ssm=1，d=[1,1]，x=[2,3]）
+    _ss = PRIMS["ssm_scan"]["ref"](
+        np.ones((1, 1, 2, 1)), np.array([-1.0]),
+        np.array([[[[2.0], [3.0]]]]), np.ones((1, 1, 2, 1)),
+        np.ones((1, 1, 2, 1)), np.array([0.5]))
+    if (abs(float(_ss[0, 0, 0, 0]) - 3.0) > 1e-9
+            or abs(float(_ss[0, 0, 1, 0]) - 5.2357588824) > 1e-9):
+        bad.append("ssm_scan 对不上手算（手推两步的状态更新）")
     if not np.allclose(PRIMS["div"]["ref"](np.array([4.0, 6.0]),
                                            np.array([2.0, 3.0])), [2.0, 2.0]):
         bad.append("div 对不上手算")
@@ -2052,7 +2215,7 @@ def selftest():
     print("  [PASS] 原语参考实现对拍手算（rms_norm / matmul / silu / rope · "
           "打分族 softmax/softplus/sqrtsoftplus/sigmoid 并与 by1ir 同源 · "
           "路由归约 top_k/gather/sum/clamp_min/clamp_max/add_scalar/div · "
-          "GDN concat/conv1d_causal〔含因果性〕/delta_rule/exp/log1p/sqrt）")
+          "GDN concat/conv1d_causal〔含因果性〕/delta_rule/ssm_scan/exp/log1p/sqrt）")
     return 0
 
 
