@@ -319,6 +319,13 @@ def _ref_clamp_min():
     return lambda x, m: np.maximum(x, float(m))
 
 
+def _ref_clamp_max():
+    """`min(x, m)` —— `clamp_min` 的对称面。gptoss 激活的 limit 钳制就是它
+    （`by1exec.op_moe` 的 `np.minimum(g, lim)` / `np.clip(u, -lim, lim)`）。"""
+    np = _np()
+    return lambda x, m: np.minimum(x, float(m))
+
+
 def _ref_add_scalar():
     """`a + c`（c 是 attr）。**不是 clamp**：sigmoid 那两支的归一守卫是
     `tv / (Σtv + 1e-20)`（`by1exec.op_moe` 612 / 604），和 softmax_topk 的
@@ -565,6 +572,8 @@ PRIMS = {
                   "src": "ggml_sum_rows / numpy .sum"},
     "clamp_min": {"ins": 1, "f": "max(x, m)", "ref": _ref_clamp_min(),
                   "src": "by1exec 的 np.maximum(分母, eps)"},
+    "clamp_max": {"ins": 1, "f": "min(x, m)", "ref": _ref_clamp_max(),
+                  "src": "by1exec.op_moe 的 np.minimum(g, limit)"},
     "add_scalar": {"ins": 1, "f": "a + c", "ref": _ref_add_scalar(),
                    "src": "by1exec.op_moe 的归一守卫 `sum + 1e-20`"},
     "one_hot":   {"ins": 1, "f": "out[...,j] = 1 若 j ∈ ids 否则 0（int 行 -> 0/1 行）",
@@ -947,9 +956,9 @@ def _lower_moe(g, p, x, dst, w, a, d):
     if rt not in ("softmax_topk", "sigmoid_topk", "sigmoid_group_topk",
                   "topk_softmax"):
         raise SystemExit("  [不支持] MoE.routing=%r 不在闭集里" % rt)
-    if a.get("expert_bias"):
-        raise SystemExit("  [不支持] MoE.expert_bias 还没有 lowering")
-    if str(a.get("act", "silu")) != "silu":
+    _act = str(a.get("act", "silu"))
+    if _act not in ("silu", "gptoss"):
+        # op_moe 对别的 act 是**静默走 silu** —— 这里不跟：要么实现要么拒绝
         raise SystemExit("  [不支持] MoE.act=%r 还没有 lowering" % a.get("act"))
     E, K, H = int(a["experts"]), int(a["top_k"]), int(a["hidden"])
     sb_on = bool(a.get("score_bias"))
@@ -1087,13 +1096,44 @@ def _lower_moe(g, p, x, dst, w, a, d):
         gv = g.add("get_rows", [w(wname), topi], [p + wname + "_g"],
                    shapes=[(in_w, out_w, K, None)])
         mm = g.add("matmul", [gv, inp], [p + wname + "_m"])
-        return g.add("view", [mm], [p + wname + "_v"],
-                     attrs={"shape": [out_w, K, None]},
-                     shapes=[(out_w, K, None)])
+        yv = g.add("view", [mm], [p + wname + "_v"],
+                   attrs={"shape": [out_w, K, None]},
+                   shapes=[(out_w, K, None)])
+        if a.get("expert_bias"):
+            # **专家偏置按同一个下标整行取**（op_moe 647-649 / 659-660）：
+            # b1/b3 加在激活前，b2 加在 w2 之后 —— 都是 get_rows + add。
+            br = g.add("get_rows",
+                       [w({"w1": "b1", "w2": "b2", "w3": "b3"}[wname]), topi],
+                       [p + wname + "_b"], shapes=[(out_w, K, None)])
+            yv = g.add("add", [yv, br], [p + wname + "_b1"],
+                       shapes=[(out_w, K, None)])
+        return yv
     hb = _expert("w1", xr, H, d)
     ob = _expert("w3", xr, H, d)
-    hb = g.add("silu", [hb], [p + "hb"], shapes=[(H, K, None)])
-    acc = g.add("mul", [hb, ob], [p + "acc0"], shapes=[(H, K, None)])
+    if _act == "gptoss":
+        # **gptoss 激活**（op_moe 650-655 逐句）：
+        #   g 先 min(g, lim)、u 先 clip(u, -lim, lim)
+        #   h = (u + 1) · (g · sigmoid(α·g))
+        # `min` 是 `clamp_max`（clamp_min 的对称面），`clip` 两个夹。
+        _lim = a.get("limit")
+        if _lim is not None:
+            hb = g.add("clamp_max", [hb], [p + "hb0"],
+                       attrs={"max": float(_lim)}, shapes=[(H, K, None)])
+            ob = g.add("clamp_min", [ob], [p + "ob0"],
+                       attrs={"min": -float(_lim)}, shapes=[(H, K, None)])
+            ob = g.add("clamp_max", [ob], [p + "ob1"],
+                       attrs={"max": float(_lim)}, shapes=[(H, K, None)])
+        t1 = g.add("scale", [hb], [p + "g1"],
+                   attrs={"s": float(a.get("alpha", 1.702))},
+                   shapes=[(H, K, None)])
+        t2 = g.add("sigmoid", [t1], [p + "g2"], shapes=[(H, K, None)])
+        t3 = g.add("mul", [hb, t2], [p + "g3"], shapes=[(H, K, None)])
+        u1 = g.add("add_scalar", [ob], [p + "u1"], attrs={"c": 1.0},
+                   shapes=[(H, K, None)])
+        acc = g.add("mul", [t3, u1], [p + "acc0"], shapes=[(H, K, None)])
+    else:
+        hb = g.add("silu", [hb], [p + "hb"], shapes=[(H, K, None)])
+        acc = g.add("mul", [hb, ob], [p + "acc0"], shapes=[(H, K, None)])
     acc4 = g.add("view", [acc], [p + "acc4"],
                  attrs={"shape": [H, 1, K, None]}, shapes=[(H, 1, K, None)])
     ye = _expert("w2", acc4, d, H)      # (n,K,d)
@@ -1682,6 +1722,8 @@ def run_graph(g, params, ids):
                                       bool(at.get("keepdims", True)))
         elif prim == "clamp_min":
             out = PRIMS["clamp_min"]["ref"](a[0], at["min"])
+        elif prim == "clamp_max":
+            out = PRIMS["clamp_max"]["ref"](a[0], at["max"])
         elif prim == "add_scalar":
             out = PRIMS["add_scalar"]["ref"](a[0], at["c"])
         elif prim == "one_hot":
@@ -1961,6 +2003,9 @@ def selftest():
         bad.append("add_scalar 对不上手算（5e-21 + 1e-20 = 1.5e-20）")
     if float(PRIMS["clamp_min"]["ref"](np.array([5e-21]), 1e-20)[0]) == _z:
         bad.append("add_scalar 和 clamp_min 分不开 —— 有一个是错的")
+    if not np.array_equal(PRIMS["clamp_max"]["ref"](np.array([-1.0, 2.0]), 0.5),
+                          [-1.0, 0.5]):
+        bad.append("clamp_max 对不上手算")
     if not np.array_equal(PRIMS["one_hot"]["ref"](np.array([[1, 2]]), 4),
                           [[0.0, 1.0, 1.0, 0.0]]):
         bad.append("one_hot 对不上手算（下标 [1,2] 散成 0/1 行）")
@@ -2006,7 +2051,7 @@ def selftest():
         return 1
     print("  [PASS] 原语参考实现对拍手算（rms_norm / matmul / silu / rope · "
           "打分族 softmax/softplus/sqrtsoftplus/sigmoid 并与 by1ir 同源 · "
-          "路由归约 top_k/gather/sum/clamp_min/add_scalar/div · "
+          "路由归约 top_k/gather/sum/clamp_min/clamp_max/add_scalar/div · "
           "GDN concat/conv1d_causal〔含因果性〕/delta_rule/exp/log1p/sqrt）")
     return 0
 

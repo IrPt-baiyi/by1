@@ -1963,6 +1963,11 @@ static void p_clamp_min(float *o, const float *x, long long tot, float m) {
     for (long long t = 0; t < tot; t++) o[t] = x[t] > m ? x[t] : m;
 }
 
+/* min(x, m) —— clamp_min 的对称面（gptoss 激活的 limit 钳制）。 */
+static void p_clamp_max(float *o, const float *x, long long tot, float m) {
+    for (long long t = 0; t < tot; t++) o[t] = x[t] < m ? x[t] : m;
+}
+
 /* a + c（c 是 attr）—— **不是 clamp**：`+ 1e-20` 和 `max(·, 1e-9)` 是两个
    公式（Σ < c 时不一样），别在机械表里合并成一条。 */
 static void p_add_scalar(float *o, const float *x, long long tot, float c) {
@@ -2462,9 +2467,9 @@ def emit_c_graph(ir, params, g=None):
             body.append("    p_%s(%s, %s, %s, %d, %s, %s, %s);"
                         % (prim, dst, a[0], a[1], nd, _dims(out),
                            _dims(A), _dims(B)))
-        elif prim in ("scale", "clamp_min", "add_scalar"):
+        elif prim in ("scale", "clamp_min", "clamp_max", "add_scalar"):
             out = list(shp_in[0])
-            _k = {"scale": "s", "clamp_min": "min",
+            _k = {"scale": "s", "clamp_min": "min", "clamp_max": "max",
                   "add_scalar": "c"}[prim]
             body.append("    p_%s(%s, %s, %s, %sf);"
                         % (prim, dst, a[0], _prod(out),
