@@ -563,6 +563,14 @@ TWIN_BY1 = '''model GemmaShaped {
 
 def ggml_dirs(args):
     src_dir = args.ggml_src or by1paths.root("llamacpp", "llama.cpp", "ggml")
+    if not os.path.isdir(src_dir):
+        # **ggml 也可以来自独立仓**（`llamacpp/ggml`）。2026-10-12 实测：
+        # 本机到 GitHub 只有 ~42 KB/s，llama.cpp 的 tarball 要 20–30 分钟，
+        # 而 **ggml 早已独立成仓**（4.1 MB，一分钟拿到）。判卷人不变 ——
+        # `tools/ggml-smoke.c` 判的还是"ggml 在这台机器上算的是这个数学"。
+        alt = by1paths.root("llamacpp", "ggml")
+        if os.path.isdir(alt):
+            src_dir = alt
     build = args.ggml_build or by1paths.root("llamacpp", "build-ggml")
     return src_dir, build
 
