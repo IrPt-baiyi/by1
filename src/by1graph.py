@@ -149,11 +149,6 @@ def _ref_gelu():
         x * 0.7071067811865476))
 
 
-def _ref_sigmoid():
-    np = _np()
-    return lambda x: 1.0 / (1.0 + np.exp(-x))
-
-
 def rope_inv(n_dims, base, yarn=None):
     """θ 的**逆频率表**（长度 `n_dims // 2`）—— 只有这一份。
 
@@ -262,6 +257,20 @@ def _ref_soft_max_sink():
     return f
 
 
+def _ref_score(kind):
+    """打分函数原语（`softmax` / `sigmoid` / `softplus` / `sqrtsoftplus`）。
+
+    **委托给 `by1ir.moe_scores_array`** —— NumPy 侧唯一的那一份定义
+    （取值表 `SCORE_KINDS` 也在那里）。图的 ref **不另写一遍公式**：
+    「一条规则三处实现」正是这个仓库在猎的病（`ir.md 130`），
+    而这一族刚在 `ir.md 132` 里被拆成独立原语，更不能当场长出第二份。
+    """
+    def f(x):
+        from by1ir import moe_scores_array
+        return moe_scores_array(kind, x, _np())
+    return f
+
+
 def _ref_get_rows():
     np = _np()
     return lambda table, ids: table[ids]
@@ -316,8 +325,23 @@ PRIMS = {
                   "src": "by1c.gelu_tanh_ / by1exec（ggml 那边要拼原语）"},
     "gelu":      {"ins": 1, "f": "0.5·x·(1+erf(x/√2))", "ref": _ref_gelu(),
                   "src": "by1c.gelu_erf_ / ggml_gelu_erf"},
-    "sigmoid":   {"ins": 1, "f": "σ(x)", "ref": _ref_sigmoid(),
-                  "src": "MoE 打分 / head_gate"},
+    "sigmoid":   {"ins": 1, "f": "σ(x)（= `moe_scores_array('sigmoid')`）",
+                  "ref": _ref_score("sigmoid"),
+                  "src": "by1ir.moe_scores_array / ACT2FN"},
+    # **打分函数那一族**（MoE 路由的第一步：logits -> scores）。
+    # 取值照 `by1ir.SCORE_KINDS`，语义委托给 `moe_scores_array` ——
+    # `routing` 说"怎么挑专家"，`score` 说"logits 怎么变成分数"，正交。
+    # 现在**还没有 lowering 用它们**（MoE 的 lowering 是下一个增量），
+    # 但它们在闭集里各就各位，且被 `--selftest` 对着手算盯着。
+    "softmax":   {"ins": 1, "f": "exp(x-max)/Σ，沿最后轴",
+                  "ref": _ref_score("softmax"),
+                  "src": "by1ir.moe_scores_array / ACT2FN"},
+    "softplus":  {"ins": 1, "f": "log(1+eˣ)（数值稳定：max(x,0)+log1p(e^-|x|)）",
+                  "ref": _ref_score("softplus"),
+                  "src": "by1ir.moe_scores_array / ACT2FN"},
+    "sqrtsoftplus": {"ins": 1, "f": "√softplus(x)（DeepSeek V4 的打分函数）",
+                     "ref": _ref_score("sqrtsoftplus"),
+                     "src": "by1ir.moe_scores_array / ACT2FN"},
     "rope":      {"ins": 2, "f": "每对维度转 θ_t = t·inv[i]（inv 见 rope_inv："
                                 "普通 / YaRN / llama3）；"
                                 "half 配对 (i,i+h)，interleaved 配对 (2i,2i+1)"
@@ -348,7 +372,9 @@ PRIMS = {
 }
 
 # **还没收编的原语**（各就各位，谁也不冒充谁）：
-#   MoE 路由：topk_ids / expert_matmul（ggml_mul_mat_id）/ score 系
+#   MoE 路由：**score 系已收编**（softmax/sigmoid/softplus/sqrtsoftplus，
+#             委托 `by1ir.moe_scores_array`）；还缺 topk_ids /
+#             expert_matmul（ggml_mul_mat_id）/ 分组选法那几步
 #   GDN/Linear：conv1d_causal / delta_rule（delta-net-base.cpp 三个实现）
 #   KDA/SSM：conv1d_causal / 递推扫描（by1kda/by1ssm 已各自验过）
 #   MLA/DSA：dsa_index（by1sparse 的判卷人是 GlmMoeDsaIndexer）
@@ -701,7 +727,8 @@ def run_graph(g, params, ids):
         elif prim == "layer_norm":
             out = PRIMS["layer_norm"]["ref"](
                 a[0], a[1], a[2], at["eps"], bool(at.get("one_plus")))
-        elif prim in ("silu", "gelu_tanh", "gelu", "sigmoid"):
+        elif prim in ("silu", "gelu_tanh", "gelu", "sigmoid",
+                      "softmax", "softplus", "sqrtsoftplus"):
             out = PRIMS[prim]["ref"](a[0])
         elif prim == "rope":
             # [n, nh, hd]：位置在轴 -2 —— 转成 [..., n, hd] 再转回
@@ -929,11 +956,28 @@ def selftest():
     rr = PRIMS["rope"]["ref"](xr, np.array([0.0]), 10000.0, "half", 4)
     if not np.allclose(rr, xr):
         bad.append("rope 位置 0 应当不动")
+    # ── 打分函数那一族（MoE 路由的第一步）── 手算 + **与 by1ir 同源** ──
+    for k, want in (("softplus", np.log(2.0)),
+                    ("sqrtsoftplus", np.sqrt(np.log(2.0))),
+                    ("sigmoid", 0.5)):
+        z = PRIMS[k]["ref"](np.array([0.0]))
+        if abs(float(z[0]) - want) > 1e-9:
+            bad.append("%s(0) 对不上手算（应 %r）" % (k, want))
+    sm = PRIMS["softmax"]["ref"](np.array([[0.0, 0.0], [1.0, 1.0]]))
+    if not np.allclose(sm, 0.5):
+        bad.append("softmax 对等值应当均匀")
+    from by1ir import moe_scores_array
+    _xs = np.array([[-3.0, 0.5, 2.0]])
+    for k in ("softmax", "sigmoid", "softplus", "sqrtsoftplus"):
+        if not np.array_equal(PRIMS[k]["ref"](_xs),
+                              moe_scores_array(k, _xs, np)):
+            bad.append("打分函数 %s 与 by1ir 那份**不同源**" % k)
     if bad:
         for b in bad:
             print("  [FAIL] " + b)
         return 1
-    print("  [PASS] 原语参考实现对拍手算（rms_norm / matmul / silu / rope）")
+    print("  [PASS] 原语参考实现对拍手算（rms_norm / matmul / silu / rope / "
+          "softmax / softplus / sqrtsoftplus / sigmoid，并与 by1ir 同源）")
     return 0
 
 
