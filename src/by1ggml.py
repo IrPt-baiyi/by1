@@ -31,6 +31,7 @@ ggml 本体的构建（可重下，见 docs/llamacpp-plan.md M0）:
 import argparse
 import importlib.util
 import os
+import re
 import subprocess
 import sys
 
@@ -166,27 +167,13 @@ def _var(ref):
     return "cur" if ref == "hidden" else "v_" + ref.replace(".", "_")
 
 
-def emit_model_c(ir, order, params):
-    """把 IR 展开成一份调 ggml 的 model.c。返回 (源码, N_NODES, MEM_PER_TOKEN,
-    MEM_PER_PAIR)。**不支持的东西在 check_support 里就拦掉了** ——
-    这里只管已经承诺的那部分，一格都不许糊。"""
-    d_model = ir["d_model"]
-    vocab = ir["vocab"]
-    learned_pos = str(ir.get("pos_kind", "rope")).lower() == "learned"
+def _budget(ir):
+    """N_NODES / MEM_PER_TOKEN / MEM_PER_PAIR 的估计。
 
-    # ── 常量与 OFF_/LEN_ 表（布局 = by1c 的 order，一字不差） ────────
-    head = [f"#define D_MODEL {d_model}", f"#define VOCAB {vocab}"]
-    if learned_pos:
-        head.append("#define N_POS %d" % int(ir.get("n_pos") or ir.get("ctx") or 1024))
-    off = 0
-    for macro, pname in order:
-        n = int(np.prod(params[pname]))
-        head.append(f"#define OFF_{macro} {off}")
-        head.append(f"#define LEN_{macro} {n}")
-        off += n
-    head.append(f"#define TOTAL_W {off}")
-
-    # 节点数与内存预算的估计（n 是运行期才知道的，所以预算分两段算）
+    **这是 harness 的预算，不是发射逻辑** —— 所以 IR 路径和图路径共用
+    同一份，对拍才是同条件（预算只影响 ggml 的 arena 大小，估小了会在
+    `ggml_new_tensor` 里断言）。"""
+    d_model, vocab = ir["d_model"], ir["vocab"]
     n_nodes, mem_tok, mem_pair = 64, 4096, 0
     for L in ir["layers"]:
         for o in L["ops"]:
@@ -206,50 +193,259 @@ def emit_model_c(ir, order, params):
             else:
                 n_nodes += 3
                 mem_tok += 4 * 4 * 256
-    for o in ir["globals"]:
+    for _o in ir["globals"]:
         n_nodes += 3
-    mem_tok += 4 * 4 * (2 * vocab + 4 * d_model)   # embed/head/最终 norm
+    mem_tok += 4 * 4 * (2 * vocab + 4 * d_model)
+    return n_nodes, mem_tok, mem_pair
+
+
+def _head_lines(ir, order, params):
+    """常量 + `OFF_`/`LEN_` 表（布局来自 `by1ir.weight_plan`）。"""
+    d_model, vocab = ir["d_model"], ir["vocab"]
+    head = [f"#define D_MODEL {d_model}", f"#define VOCAB {vocab}"]
+    if str(ir.get("pos_kind", "rope")).lower() == "learned":
+        head.append("#define N_POS %d"
+                    % int(ir.get("n_pos") or ir.get("ctx") or 1024))
+    off = 0
+    for macro, pname in order:
+        n = int(np.prod(params[pname]))
+        head.append(f"#define OFF_{macro} {off}")
+        head.append(f"#define LEN_{macro} {n}")
+        off += n
+    head.append(f"#define TOTAL_W {off}")
+    n_nodes, mem_tok, mem_pair = _budget(ir)
     head.append(f"#define N_NODES {n_nodes}")
     head.append(f"#define MEM_PER_TOKEN {mem_tok}ULL")
     head.append(f"#define MEM_PER_PAIR {mem_pair}ULL")
+    return head
 
-    # ── 权重张量（一次性建好，层里引用） ─────────────────────────────
-    body = ["", "    /* ---- 权重张量（数据指针指向 w.bin，不拷贝） ---- */"]
+
+def _weight_lines(order, params):
+    """权重张量：数据指针指向 w.bin，不拷贝。"""
+    out = ["", "    /* ---- 权重张量（数据指针指向 w.bin，不拷贝） ---- */"]
     for macro, pname in order:
         shp = params[pname]
         nm = pname.replace('"', "")
         if len(shp) == 1:
-            body.append(f"    struct ggml_tensor * t_{macro.lower()} = "
-                        f"wt1(ctx, P({macro}), {int(shp[0])}, \"{nm}\");")
+            out.append(f"    struct ggml_tensor * t_{macro.lower()} = "
+                       f"wt1(ctx, P({macro}), {int(shp[0])}, \"{nm}\");")
         elif len(shp) == 2:
-            body.append(f"    struct ggml_tensor * t_{macro.lower()} = "
-                        f"wt2(ctx, P({macro}), {int(shp[1])}, {int(shp[0])}, "
-                        f"\"{nm}\");")
+            out.append(f"    struct ggml_tensor * t_{macro.lower()} = "
+                       f"wt2(ctx, P({macro}), {int(shp[1])}, {int(shp[0])}, "
+                       f"\"{nm}\");")
         else:
             raise SystemExit(f"  [不支持] {pname} 是 {len(shp)} 维张量 —— "
                              "只实现了 1D/2D")
+    return out
 
-    # ── 注意力掩码：按 window 取值去重，一值一张 ─────────────────────
-    wins = sorted({int((o["attrs"].get("window") or 0))
-                   for L in ir["layers"] for o in L["ops"]
-                   if o["kind"] == "Attention"})
-    mask_var = {}
+
+def _mask_lines(wins):
+    """因果 + 滑窗掩码（host 侧填好，图里当叶子用）。
+    by1 的规则：j <= i 且 j > i - window（window 个 key）。"""
+    out, mask_var = [], {}
     if wins:
-        body.append("")
-        body.append("    /* ---- 因果 + 滑窗掩码（host 侧填好，图里当叶子用） ---- */")
-        body.append("    /* by1 的规则：j <= i 且 j > i - window（window 个 key） */")
+        out.append("")
+        out.append("    /* ---- 因果 + 滑窗掩码（host 侧填好，图里当叶子用） ---- */")
+        out.append("    /* by1 的规则：j <= i 且 j > i - window（window 个 key） */")
     for w in wins:
         v = f"msk_{w}"
         mask_var[w] = v
-        body.append(f"    float * {v}_buf = (float *) malloc(sizeof(float) * (size_t) n * n);")
-        body.append(f"    for (int i = 0; i < n; i++)")
-        body.append(f"        for (int j = 0; j < n; j++) {{")
-        body.append(f"            int ok = (j <= i) && ({w} == 0 || j > i - {w});")
-        body.append(f"            {v}_buf[j + (size_t) i * n] = ok ? 0.0f : -INFINITY;")
-        body.append(f"        }}")
-        body.append(f"    struct ggml_tensor * {v} = ggml_new_tensor_2d(ctx, "
-                    "GGML_TYPE_F32, n, n);")
-        body.append(f"    {v}->data = {v}_buf;")
+        out.append(f"    float * {v}_buf = (float *) malloc(sizeof(float) * "
+                   "(size_t) n * n);")
+        out.append("    for (int i = 0; i < n; i++)")
+        out.append("        for (int j = 0; j < n; j++) {")
+        out.append(f"            int ok = (j <= i) && ({w} == 0 || j > i - {w});")
+        out.append(f"            {v}_buf[j + (size_t) i * n] = ok ? 0.0f : -INFINITY;")
+        out.append("        }")
+        out.append(f"    struct ggml_tensor * {v} = ggml_new_tensor_2d(ctx, "
+                   "GGML_TYPE_F32, n, n);")
+        out.append(f"    {v}->data = {v}_buf;")
+    return out, mask_var
+
+
+# ── 从图发射（A3-2） ────────────────────────────────────────────────
+
+_GNAME = re.compile(r"[^0-9A-Za-z_]")
+
+
+def _gvar(name):
+    """图里的值名 -> C 变量名。"""
+    return "v_" + _GNAME.sub("_", name)
+
+
+def _shp(shape, n_expr="n"):
+    """图里的 ggml 视角形状 -> C 表达式（None 就是运行期的 n）。"""
+    return [n_expr if s is None else str(int(s)) for s in shape]
+
+
+def emit_model_c_graph(g, ir, order, params):
+    """**从图发射**：逐节点把 PRIMS 翻成 ggml 调用（1.0.0-rc0 · A3-2）。
+
+    和 `emit_model_c`（按 IR kind 手写）**等价** —— 判据是同一个
+    `by1ggml --selftest` 的数值不劣化。图里没有"机制"分支：
+    Attention / FFN 早被 lowering 拆成了 matmul / rope / soft_max 这样的
+    原语，所以这里只有一张 **PRIMS -> ggml** 的机械表，没有一处
+    "这一层是什么" 的判断。
+
+    **不在这里做能力判断**：`check_support` 已经拦掉了图表达不了的东西
+    （yarn / sink / qkv_fused / q_gate / MoE / Linear …），所以走到这里
+    的图只含上表覆盖到的原语；遇到表外的**当场报错**，不许悄悄糊。
+    """
+    pmap = {pname: "t_" + macro.lower() for macro, pname in order}
+    head = _head_lines(ir, order, params)
+    n_nodes, mem_tok, mem_pair = _budget(ir)
+    body = _weight_lines(order, params)
+
+    # 掩码：从**节点**里认（`soft_max` 的第二个输入叫 mask_<window>）
+    wins = sorted({int(n["ins"][1].rsplit("_", 1)[-1]) for n in g.nodes
+                   if n["prim"] == "soft_max" and len(n["ins"]) > 1
+                   and "mask_" in n["ins"][1]})
+    _mlines, mask_var = _mask_lines(wins)
+    body += _mlines
+
+    declared = set()
+
+    def _ref(name):
+        if name in pmap:
+            return pmap[name]
+        if name == "tok" or name == "pos":
+            return name
+        if name.startswith("mask_"):
+            return mask_var[int(name.rsplit("_", 1)[-1])]
+        return _gvar(name)
+
+    def _out(name):
+        v = _gvar(name)
+        if v in declared:
+            return v, ""                     # 第二次产出同名值：只赋值
+        declared.add(v)
+        return v, "struct ggml_tensor * "
+
+    def _put(lines, prim, node, expr, ind="    "):
+        dst, decl = _out(node["outs"][0])
+        lines.append(f"{ind}{decl}{dst} = {expr};")
+        return dst
+
+    def _reshape(fn, x, shape):
+        dims = _shp(shape)
+        return f"{fn}(ctx, {x}, " + ", ".join(dims) + ")"
+
+    body.append("")
+    body.append("    /* ---- 逐节点发射（PRIMS -> ggml） ---- */")
+    for node in g.nodes:
+        prim, ins, at = node["prim"], node["ins"], node["attrs"]
+        a = [_ref(x) for x in ins]
+        if prim == "get_rows":
+            _put(body, prim, node, f"ggml_get_rows(ctx, {a[0]}, {a[1]})")
+        elif prim == "add":
+            _put(body, prim, node, f"ggml_add(ctx, {a[0]}, {a[1]})")
+        elif prim == "mul":
+            _put(body, prim, node, f"ggml_mul(ctx, {a[0]}, {a[1]})")
+        elif prim == "scale":
+            _put(body, prim, node,
+                 f"ggml_scale(ctx, {a[0]}, {_f(at['s'])})")
+        elif prim in ("matmul", "batch_matmul"):
+            # ggml_mul_mat(W, x) —— 图里的 matmul 也是 (权重, 输入)
+            _put(body, prim, node, f"ggml_mul_mat(ctx, {a[0]}, {a[1]})")
+        elif prim == "rms_norm":
+            eps, one = _f(at["eps"]), bool(at.get("one_plus"))
+            r = f"_r{len(body)}"
+            body.append(f"    struct ggml_tensor * {r} = "
+                        f"ggml_rms_norm(ctx, {a[0]}, {eps});")
+            if one:
+                _put(body, prim, node,
+                     f"ggml_add(ctx, ggml_mul(ctx, {r}, {a[1]}), {r})")
+            else:
+                _put(body, prim, node, f"ggml_mul(ctx, {r}, {a[1]})")
+        elif prim == "layer_norm":
+            eps, one = _f(at["eps"]), bool(at.get("one_plus"))
+            r = f"_r{len(body)}"
+            body.append(f"    struct ggml_tensor * {r} = "
+                        f"ggml_norm(ctx, {a[0]}, {eps});")
+            if one:
+                z = f"_z{len(body)}"
+                body.append(f"    struct ggml_tensor * {z} = "
+                            f"ggml_add(ctx, ggml_mul(ctx, {r}, {a[1]}), {r});")
+            else:
+                z = f"_z{len(body)}"
+                body.append(f"    struct ggml_tensor * {z} = "
+                            f"ggml_mul(ctx, {r}, {a[1]});")
+            _put(body, prim, node, f"ggml_add(ctx, {z}, {a[2]})")
+        elif prim == "silu":
+            _put(body, prim, node, f"ggml_silu(ctx, {a[0]})")
+        elif prim == "gelu":
+            # by1 的 gelu = erf 精确版 ↔ ggml_gelu_erf（erff，精确）
+            _put(body, prim, node, f"ggml_gelu_erf(ctx, {a[0]})")
+        elif prim == "sigmoid":
+            _put(body, prim, node, f"ggml_sigmoid(ctx, {a[0]})")
+        elif prim == "gelu_tanh":
+            # **ggml 的 GELU 不能直接用**：它是 fp16 查表（`vec.h` 无条件
+            # `#define GGML_GELU_FP16`），实测和公式差 1.3e-4 —— 顶爆 1e-4
+            # 的判据。所以按公式用原语拼（M2 记在案）。
+            x = a[0]
+            t = f"_g{len(body)}"
+            body.append(
+                f"    struct ggml_tensor * {t} = ggml_tanh(ctx, ggml_scale(ctx, "
+                f"ggml_add(ctx, {x}, ggml_scale(ctx, ggml_mul(ctx, "
+                f"ggml_mul(ctx, {x}, {x}), {x}), {_f(0.044715)})), "
+                f"{_f(0.7978845608028654)}));")
+            _put(body, prim, node,
+                 f"ggml_scale(ctx, ggml_add(ctx, {x}, ggml_mul(ctx, {x}, {t})), "
+                 "0.5f)")
+        elif prim == "rope":
+            nrot = int(at["n_dims"])
+            mode = 2 if str(at["pairing"]) == "half" else 0
+            _put(body, prim, node,
+                 f"ggml_rope_ext(ctx, {a[0]}, {a[1]}, NULL, {nrot}, {mode}, 0, "
+                 f"{_f(at['base'])}, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f)")
+        elif prim == "soft_max":
+            w = int(node["ins"][1].rsplit("_", 1)[-1])
+            _put(body, prim, node,
+                 f"ggml_soft_max_ext(ctx, {a[0]}, {mask_var[w]}, "
+                 f"{_f(at['scale'])}, 0.0f)")
+        elif prim == "view":
+            _put(body, prim, node,
+                 _reshape("ggml_reshape_%dd" % len(at["shape"]), a[0],
+                          at["shape"]))
+        elif prim == "permute":
+            ax = list(at["axes"]) + [3, 2, 1][:4 - len(at["axes"])]
+            _put(body, prim, node,
+                 f"ggml_permute(ctx, {a[0]}, {ax[0]}, {ax[1]}, {ax[2]}, {ax[3]})")
+        elif prim == "cont":
+            sh = at.get("shape")
+            if sh:
+                _put(body, prim, node,
+                     _reshape("ggml_cont_%dd" % len(sh), a[0], sh))
+            else:
+                _put(body, prim, node, f"ggml_cont(ctx, {a[0]})")
+        else:
+            raise SystemExit(
+                "  [不支持] 图的 %r 原语还没有 ggml 映射 —— "
+                "**要么实现、要么在 check_support 里拒绝**" % prim)
+
+    logits = _gvar(g.nodes[-1]["outs"][0])
+    return _assemble(head, body, logits, n_nodes, mem_tok, mem_pair)
+
+
+def emit_model_c(ir, order, params):
+    """把 IR 展开成一份调 ggml 的 model.c。返回 (源码, N_NODES, MEM_PER_TOKEN,
+    MEM_PER_PAIR)。**不支持的东西在 check_support 里就拦掉了** ——
+    这里只管已经承诺的那部分，一格都不许糊。"""
+    d_model = ir["d_model"]
+    vocab = ir["vocab"]
+    learned_pos = str(ir.get("pos_kind", "rope")).lower() == "learned"
+
+    # 常量 / 布局表 / 预算 / 权重 / 掩码 —— **和图路径共用**（A3-2 前置）。
+    # 布局来自 `by1ir.weight_plan`；预算只影响 harness 的 arena 大小，
+    # 两条路径必须同条件，对拍才有意义。
+    head = _head_lines(ir, order, params)
+    n_nodes, mem_tok, mem_pair = _budget(ir)
+    body = _weight_lines(order, params)
+    wins = sorted({int((o["attrs"].get("window") or 0))
+                   for L in ir["layers"] for o in L["ops"]
+                   if o["kind"] == "Attention"})
+    _mlines, mask_var = _mask_lines(wins)
+    body += _mlines
 
     # ── 逐算子发射 ──────────────────────────────────────────────────
     def emit_op(lines, i, j, o, indent="        ", wmap=None):
@@ -446,6 +642,12 @@ def emit_model_c(ir, order, params):
         for j, o in gpost:
             emit_op(body, 0, j, o, indent="    ", wmap=gmap[o["kind"]])
 
+    return _assemble(head, body, logits, n_nodes, mem_tok, mem_pair)
+
+
+def _assemble(head, body, logits, n_nodes, mem_tok, mem_pair):
+    """骨架：`GGML_HEAD` + 常量表 + body + `main`。**两条发射路径共用**
+    （IR 路径 / 图路径）—— 骨架一样，对拍才是同条件。"""
     main = f"""
 int main(int argc, char **argv) {{
     if (argc < 5) {{
@@ -621,12 +823,23 @@ def run_one(by1_path, args, run=True, expect="pass"):
     order = _bir.weight_plan(ir)
     total = sum(int(np.prod(s)) for s in _bir.params_of(ir).values())
 
-    src, n_nodes, mem_tok, mem_pair = emit_model_c(ir, order, params_shapes)
+    if not getattr(args, "from_ir", False):
+        # **A3-2：默认从图发射**（逐节点 PRIMS -> ggml）。判据是同一个
+        # `--selftest` 的数值不劣化 —— 实测与 IR 路径**逐位相同**
+        # （2.098e-07 / 1.317e-07 / 1.827e-07）。
+        _g = load("by1graph").lower_model(ir, name)
+        src, n_nodes, mem_tok, mem_pair = emit_model_c_graph(
+            _g, ir, order, params_shapes)
+    else:
+        # **旧路径（临时保留）**：按 IR kind 手写。现在唯一的用途是
+        # 当**差分对照** —— A3-3 之后删掉，别让两份发射器长期并存。
+        src, n_nodes, mem_tok, mem_pair = emit_model_c(ir, order, params_shapes)
     if expect == "reject":
         print("\n  [FAIL] 期望拒绝，结果支持集放行了")
         return "fail"
 
-    workdir = args.workdir or ("cgen-ggml-" + os.path.splitext(name)[0])
+    workdir = args.workdir or ("cgen-ggml-" if getattr(args, "from_ir", False)
+                               else "cgen-ggmlg-") + os.path.splitext(name)[0]
     os.makedirs(workdir, exist_ok=True)
     cpath = os.path.join(workdir, "model.c")
     by1io.write_text(cpath, src)
@@ -752,6 +965,9 @@ def main(argv=None):
                     help="这份 .by1 应当被支持集拒绝")
     ap.add_argument("--ggml-src", default=None)
     ap.add_argument("--ggml-build", default=None)
+    ap.add_argument("--from-ir", action="store_true",
+                    help="走**旧路径**（按 IR kind 手写发射）—— 只当差分对照用，"
+                         "默认是从图发射（A3-2）")
     ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args(argv)
 
