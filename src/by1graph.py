@@ -633,15 +633,15 @@ PRIMS = {
 }
 
 # **还没收编的机制**（各就各位，谁也不冒充谁）：
-#   MoE   ：softmax_topk 已收编；还缺 sigmoid_topk / sigmoid_group_topk /
-#           topk_softmax 三种选法
+#   MoE   ：四种选法全收编；还缺 expert_bias / gptoss 激活（gpt-oss 全系）
 #   KDA   ：已收编（低秩门 / GVA / gate_lower 三支）
-#   MLA/DSA：dsa_index（by1sparse 的判卷人是 GlmMoeDsaIndexer）
+#   MLA   ：已收编（非稀疏）；**SparseMLA（index_heads）拒绝** ——
+#           dsa_index 的判卷人是 transformers 的 GlmMoeDsaIndexer
 #   SSM   ：递推扫描（by1ssm 已验过）
 #   Linear：GDN 已收编（conv1d_causal + delta_rule）
 #   Raw / External：逃生舱，按设计不收编
 # 每条下沉时：公式 + ref() + 反例一起进来，别只搬代码。
-UNLOWERED = ("MoE", "MLA", "SSM", "Raw", "External")
+UNLOWERED = ("SSM", "Raw", "External")
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -711,7 +711,7 @@ def lower_op(g, i, j, o, d, pname, refmap):
     w = lambda nm: pname(nm)
 
     if k not in ("Embed", "Norm", "Head", "Attention", "FFN", "Add", "MoE",
-                 "Linear", "KDA"):
+                 "Linear", "KDA", "MLA"):
         raise SystemExit("  [不支持] %s 还没有 lowering（原语未收编，"
                          "见 by1graph.UNLOWERED）" % k)
 
@@ -767,6 +767,8 @@ def lower_op(g, i, j, o, d, pname, refmap):
         _lower_attn(g, p, src[0], dst, w, a, d)
     elif k == "KDA":
         _lower_kda(g, p, src[0], dst, w, a, d)
+    elif k == "MLA":
+        _lower_mla(g, p, src[0], dst, w, a, d)
     elif k == "MoE":
         _lower_moe(g, p, src[0], dst, w, a, d)
     elif k == "Linear":
@@ -1270,6 +1272,122 @@ def _lower_kda(g, p, x, dst, w, a, d):
     y = g.add("view", [y], [p + "y2"], attrs={"shape": [vd, None]},
               shapes=[(vd, None)])
     g.add("matmul", [w("o_proj"), y], [p + "o"], shapes=[(None, None)])
+    g.nodes[-1]["outs"] = [dst]
+    return dst
+
+
+def _lower_mla(g, p, x, dst, w, a, d):
+    """MLA（Multi-Latent Attention，低秩压缩注意力）的 lowering ——
+    语义照 `by1exec.op_mla`（e2e 的判据就是它）。
+
+    链条：q/kv 各一条**低秩分解**（a_proj -> layernorm -> b_proj），kv_a
+    出口切出**单头**的 k_rot 走 rope 再广播到 nh 头；拼回
+    `[q_pass | q_rot]` / `[k_pass | k_rot]` 走普通因果注意力；输出门
+    head_gate（per_head）+ dense。
+
+    **SparseMLA（`index_heads`）明确拒绝** —— DSA 索引器还没收编
+    （判卷人是 transformers 的 `GlmMoeDsaIndexer`），要么实现要么拒绝。
+    """
+    nh, nope, nr = int(a["q"]), int(a["qk_nope"]), int(a["qk_rope"])
+    vd, kvl = int(a["v_dim"]), int(a["kv_lora"])
+    ql = int(a["q_lora"])
+    hd = nope + nr
+    _op = bool(a.get("norm_one_plus", False))
+    _eps = float(a.get("norm_eps", _DEFAULT_EPS))
+    if a.get("index_heads"):
+        raise SystemExit("  [不支持] MLA.index_heads（SparseMLA 的 DSA "
+                         "索引器还没收编）")
+    if a.get("head_gate", "off") not in ("off", "per_head"):
+        raise SystemExit("  [不支持] MLA.head_gate=%r 只实现了 per_head"
+                         % a["head_gate"])
+
+    def _cut(t, s0, s1, nm, shape):
+        return g.add("slice", [t], [p + nm],
+                     attrs={"axis": 0, "start": int(s0), "stop": int(s1)},
+                     shapes=[shape])
+
+    # ── q 链：q_a_proj -> rms_norm -> q_b_proj ──────────────────────
+    qr = g.add("matmul", [w("q_a_proj"), x], [p + "qa"],
+               shapes=[(ql, None)])
+    qr = g.add("rms_norm", [qr, w("q_a_layernorm.w")], [p + "qan"],
+               attrs={"eps": _eps, "one_plus": _op}, shapes=[(ql, None)])
+    q = g.add("matmul", [w("q_b_proj"), qr], [p + "qb"],
+              shapes=[(nh * hd, None)])
+    q = g.add("view", [q], [p + "q3"], attrs={"shape": [hd, nh, None]},
+              shapes=[(hd, nh, None)])
+    q_pass = _cut(q, 0, nope, "qp", (nope, nh, None))
+    q_rot = _cut(q, nope, hd, "qr", (nr, nh, None))
+    # ── kv 链：kv_a_proj_with_mqa 出口切 c_kv / k_rot，再 kv_b_proj ──
+    ckv = g.add("matmul", [w("kv_a_proj_with_mqa"), x], [p + "ka"],
+                shapes=[(kvl + nr, None)])
+    c_kv = _cut(ckv, 0, kvl, "ckv", (kvl, None))
+    k_rot = _cut(ckv, kvl, kvl + nr, "kr0", (nr, None))
+    kvn = g.add("rms_norm", [c_kv, w("kv_a_layernorm.w")], [p + "kan"],
+                attrs={"eps": _eps, "one_plus": _op}, shapes=[(kvl, None)])
+    kv = g.add("matmul", [w("kv_b_proj"), kvn], [p + "kb"],
+               shapes=[(nh * (nope + vd), None)])
+    kv = g.add("view", [kv], [p + "kv3"],
+               attrs={"shape": [nope + vd, nh, None]},
+               shapes=[(nope + vd, nh, None)])
+    k_pass = _cut(kv, 0, nope, "kp", (nope, nh, None))
+    v = _cut(kv, nope, nope + vd, "vv", (vd, nh, None))
+    # ── rope：q_rot 每头；k_rot **单头** rope 后广播到 nh 头 ─────────
+    rp = {"base": float(a["rope_base"]),
+          "pairing": str(a.get("pairing", "interleaved")),
+          "n_dims": nr, "yarn": None, "rope_scale": 1.0}
+    q_rot = g.add("rope", [q_rot, "pos"], [p + "qr2"], attrs=rp,
+                  shapes=[(nr, nh, None)])
+    k_rot = g.add("view", [k_rot], [p + "kr1"],
+                  attrs={"shape": [nr, 1, None]}, shapes=[(nr, 1, None)])
+    k_rot = g.add("rope", [k_rot, "pos"], [p + "kr2"], attrs=rp,
+                  shapes=[(nr, 1, None)])
+    k_rot = g.add("repeat", [k_rot], [p + "kr3"],
+                  attrs={"reps": nh, "axis": 1}, shapes=[(nr, nh, None)])
+    # ── 拼回 -> 因果注意力（scale = 1/√(nope+nr)）───────────────────
+    qq = g.add("concat", [q_pass, q_rot], [p + "qq"], attrs={"axis": 0},
+               shapes=[(hd, nh, None)])
+    kk = g.add("concat", [k_pass, k_rot], [p + "kk"], attrs={"axis": 0},
+               shapes=[(hd, nh, None)])
+    q3p = g.add("permute", [qq], [p + "q3p"], attrs={"axes": [0, 2, 1]},
+                shapes=[(hd, None, nh)])
+    k3p = g.add("permute", [kk], [p + "k3p"], attrs={"axes": [0, 2, 1]},
+                shapes=[(hd, None, nh)])
+    kq = g.add("batch_matmul", [k3p, q3p], [p + "kq"],
+               shapes=[(None, None, nh)])
+    sm = g.add("soft_max", [kq, p + "mask_0"], [p + "sm"],
+               attrs={"scale": 1.0 / (hd ** 0.5)}, shapes=[(None, None, nh)])
+    vt = g.add("permute", [v], [p + "v3p"], attrs={"axes": [0, 2, 1]},
+               shapes=[(vd, None, nh)])
+    vt = g.add("cont", [g.add("permute", [vt], [p + "v3t"],
+                              attrs={"axes": [1, 0, 2]},
+                              shapes=[(None, vd, nh)])],
+               [p + "v3c"], shapes=[(None, vd, nh)])
+    kqv = g.add("batch_matmul", [vt, sm], [p + "kqv"],
+                shapes=[(vd, None, nh)])
+    att = g.add("cont", [g.add("permute", [kqv], [p + "kqvp"],
+                               attrs={"axes": [0, 2, 1]},
+                               shapes=[(vd, nh, None)])],
+                [p + "att"], attrs={"shape": [nh * vd, None]},
+                shapes=[(nh * vd, None)])
+    if a.get("head_gate", "off") == "per_head":
+        # 和 `_lower_attn` 的 head_gate 同一条公式（op_mla 486-491 同句）
+        _act = "sigmoid" if a.get("gate_act") == "sigmoid" else "softplus"
+        gg = g.add("matmul", [w("g_proj"), x], [p + "hg0"],
+                   shapes=[(nh, None)])
+        gg = g.add(_act, [gg], [p + "hg1"], shapes=[(nh, None)])
+        gg = g.add("view", [gg], [p + "hg2"],
+                   attrs={"shape": [1, nh, None]}, shapes=[(1, nh, None)])
+        att3 = g.add("view", [att], [p + "hg3"],
+                     attrs={"shape": [vd, nh, None]}, shapes=[(vd, nh, None)])
+        att3 = g.add("mul", [att3, gg], [p + "hg4"],
+                     shapes=[(vd, nh, None)])
+        att = g.add("view", [att3], [p + "hg5"],
+                    attrs={"shape": [nh * vd, None]},
+                    shapes=[(nh * vd, None)])
+    out = g.add("matmul", [w("dense"), att], [p + "o"], shapes=[(d, None)])
+    if a.get("bias"):
+        out = g.add("add", [out, w("dense.bias")], [p + "o1"],
+                    shapes=[(d, None)])
     g.nodes[-1]["outs"] = [dst]
     return dst
 
