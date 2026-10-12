@@ -2228,14 +2228,17 @@ static void p_conv1d_causal(float *o, const float *x, const float *w,
             }
 }
 
-/* delta 规则（GDN 的递推扫描）—— `_ref_delta_rule` 逐句：
+/* delta 规则（GDN/KDA 的递推扫描）—— `_ref_delta_rule` 逐句：
    st *= exp(decay[t])；δ = (v[t] − (st·k[t])) · beta[t]；st += k[t]⊗δ；
    out[t] = st·q[t]（读的是**更新后**的 st）。状态一步一步走，没有并行
-   公式；内部 double 累（和 ref 同精度）。 */
+   公式；内部 double 累（和 ref 同精度）。
+   `gk` 是 decay 的尾维：**1**（GDN 按头一个）或 **dk**（KDA 按维）——
+   写错了不报错、只是算错，所以由发射器核过再传进来。 */
 static void p_delta_rule(float *o, const float *q, const float *k,
                          const float *v, const float *beta,
                          const float *decay, long long b, long long h,
-                         long long n, long long dk, long long dv) {
+                         long long n, long long dk, long long dv,
+                         long long gk) {
     double *st = (double *) calloc((size_t)b * h * dk * dv, sizeof(double));
     for (long long t = 0; t < n; t++)
         for (long long bh = 0; bh < b * h; bh++) {
@@ -2243,11 +2246,13 @@ static void p_delta_rule(float *o, const float *q, const float *k,
             const float *kt = k + ((size_t)bh * n + t) * dk;
             const float *qt = q + ((size_t)bh * n + t) * dk;
             const float *vt = v + ((size_t)bh * n + t) * dv;
-            double g = exp((double)decay[(size_t)bh * n + t]);
             double bt = (double)beta[(size_t)bh * n + t];
             long long di, dj;
-            for (di = 0; di < dk; di++)
+            for (di = 0; di < dk; di++) {
+                double g = exp((double)decay[((size_t)bh * n + t) * gk
+                                             + (gk == 1 ? 0 : di)]);
                 for (dj = 0; dj < dv; dj++) S[di * dv + dj] *= g;
+            }
             for (dj = 0; dj < dv; dj++) {
                 double kv = 0.;
                 for (di = 0; di < dk; di++)
@@ -2567,17 +2572,21 @@ def emit_c_graph(ir, params, g=None):
                                  "[b, 头, n, dim]（现在 %s）" % (shp_in,))
             if not (Q[:3] == K[:3] == V[:3] == B5[:3] == G5[:3]):
                 raise SystemExit("  [FAIL] delta_rule 的 (b,头,n) 对不上")
-            if B5[3] != "1" or G5[3] != "1":
-                raise SystemExit("  [不支持] delta_rule 的 beta/decay 尾维 "
-                                 "!= 1（%s / %s）" % (B5, G5))
+            if B5[3] != "1":
+                raise SystemExit("  [不支持] delta_rule 的 beta 尾维 != 1（%s）"
+                                 % B5)
+            if G5[3] != "1" and G5[3] != Q[3]:
+                raise SystemExit("  [不支持] delta_rule 的 decay 尾维 %s —— "
+                                 "只实现了 1（GDN 按头）或 dk（KDA 按维）"
+                                 % G5[3])
             if Q[3] != K[3]:
                 raise SystemExit("  [FAIL] delta_rule 的 dk 对不上：%s vs %s"
                                  % (Q, K))
             out = list(V)
             body.append("    p_delta_rule(%s, %s, %s, %s, %s, %s,"
-                        " %s, %s, %s, %s, %s);"
+                        " %s, %s, %s, %s, %s, %s);"
                         % (dst, a[0], a[1], a[2], a[3], a[4],
-                           Q[0], Q[1], Q[2], Q[3], V[3]))
+                           Q[0], Q[1], Q[2], Q[3], V[3], G5[3]))
         else:
             raise SystemExit(
                 "  [不支持] 图的 %r 原语还没有 C 映射 —— "

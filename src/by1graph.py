@@ -366,9 +366,11 @@ def _ref_conv1d_causal():
 
 
 def _ref_delta_rule():
-    """**delta 规则**（GDN 的递推扫描）—— Linear / KDA 的心脏。
+    """**delta 规则**（GDN / KDA 的递推扫描）—— Linear / KDA 的心脏。
 
-    exec 约定：k/q [b, 头, n, dk] · v [b, 头, n, dv] · beta/decay [b, 头, n, 1]。
+    exec 约定：k/q [b, 头, n, dk] · v [b, 头, n, dv] · beta [b, 头, n, 1] ·
+    decay [b, 头, n, 1 **或** dk]（GDN 的衰减按头一个、**KDA 的按维** ——
+    `[b,h,n,dk]` 乘 `st` 时是逐 d 广播；写错形状**不报错**，只是算错）。
 
         st = 0                                              # 状态，后端自持
         逐 token t：
@@ -591,15 +593,16 @@ PRIMS = {
                   "src": "ggml_view_* 的 offset / numpy 切片"},
 }
 
-# **还没收编的原语**（各就各位，谁也不冒充谁）：
-#   MoE 路由：**score 系已收编**（softmax/sigmoid/softplus/sqrtsoftplus，
-#             委托 `by1ir.moe_scores_array`）；还缺 topk_ids /
-#             expert_matmul（ggml_mul_mat_id）/ 分组选法那几步
-#   GDN/Linear：conv1d_causal / delta_rule（delta-net-base.cpp 三个实现）
-#   KDA/SSM：conv1d_causal / 递推扫描（by1kda/by1ssm 已各自验过）
+# **还没收编的机制**（各就各位，谁也不冒充谁）：
+#   MoE   ：softmax_topk 已收编；还缺 sigmoid_topk / sigmoid_group_topk /
+#           topk_softmax 三种选法
+#   KDA   ：已收编（低秩门 / GVA / gate_lower 三支）
 #   MLA/DSA：dsa_index（by1sparse 的判卷人是 GlmMoeDsaIndexer）
+#   SSM   ：递推扫描（by1ssm 已验过）
+#   Linear：GDN 已收编（conv1d_causal + delta_rule）
+#   Raw / External：逃生舱，按设计不收编
 # 每条下沉时：公式 + ref() + 反例一起进来，别只搬代码。
-UNLOWERED = ("MoE", "MLA", "KDA", "SSM", "Linear", "Raw", "External")
+UNLOWERED = ("MoE", "MLA", "SSM", "Raw", "External")
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -669,7 +672,7 @@ def lower_op(g, i, j, o, d, pname, refmap):
     w = lambda nm: pname(nm)
 
     if k not in ("Embed", "Norm", "Head", "Attention", "FFN", "Add", "MoE",
-                 "Linear"):
+                 "Linear", "KDA"):
         raise SystemExit("  [不支持] %s 还没有 lowering（原语未收编，"
                          "见 by1graph.UNLOWERED）" % k)
 
@@ -723,6 +726,8 @@ def lower_op(g, i, j, o, d, pname, refmap):
             g.nodes[-1]["outs"] = [dst]
     elif k == "Attention":
         _lower_attn(g, p, src[0], dst, w, a, d)
+    elif k == "KDA":
+        _lower_kda(g, p, src[0], dst, w, a, d)
     elif k == "MoE":
         _lower_moe(g, p, src[0], dst, w, a, d)
     elif k == "Linear":
@@ -984,6 +989,157 @@ def _lower_moe(g, p, x, dst, w, a, d):
             gs = g.add("sigmoid", [gs], [p + "gs1"], shapes=[(1, None)])
             se = g.add("mul", [se, gs], [p + "se1"], shapes=[(d, None)])
         out = g.add("add", [out, se], [p + "out2"], shapes=[(d, None)])
+    g.nodes[-1]["outs"] = [dst]
+    return dst
+
+
+def _lower_kda(g, p, x, dst, w, a, d):
+    """KDA（Kimi Delta Attention）的 lowering —— 语义照 `by1exec.op_kda`
+    （e2e 的判据就是它）。和 GDN 的四处差别（`op_kda` 的注释里逐条量过）：
+
+      ① q / k / v **分开**投影，各带一条深度卷积（+ silu）
+      ② 衰减 g 是**逐维**的 `[n, nv, dk]`（GDN 按头）—— **写错了不报错**，
+         所以 dt_bias 要 view 成 `[nv, dk]`、A_log 要 view 成 `[nv, 1]`
+         （它是**逐头**的 `(nv,)`，沿 dk 广播）
+      ③ 输出门 g_proj 喂给 o_norm（激活是 **sigmoid**，不是 silu —— 这个
+         错误 NumPy / PyTorch 两边一起犯过，`--compare` 一直绿）
+      ④ 门低秩两层（f_a/f_b，GLM）还是一层（f_proj，Ling）——
+         **契约里有 f_b_proj 才走低秩**（`by1ir.params_of` 同一条规则，
+         bias 也只在低秩支、跟 `gate_out_bias` 走）
+
+    gate_lower 支路：`g = lower · sigmoid(exp(A_log)·(fg+dt_bias))`；
+    否则 `g = −exp(A_log)·softplus(fg+dt_bias)`（`softplus` 原语就是
+    log1p(exp)，数值稳定版、同一个公式）。
+    """
+    nk, nv = int(a["k_heads"]), int(a["v_heads"])
+    dk, dv = int(a["k_dim"]), int(a["v_dim"])
+    kd, vd = nk * dk, nv * dv
+    ck = int(a["conv_kernel"])
+    eps_l2 = float(a.get("l2_eps", 1e-6))
+    eps_nm = float(a.get("norm_eps", _DEFAULT_EPS))
+    if str(a.get("act", "silu")) != "silu":
+        raise SystemExit("  [不支持] KDA.act=%r 还没有 lowering" % a.get("act"))
+    if a.get("conv_bias"):
+        # `op_kda` 的 dconv **不带** conv bias —— 声明了还不加就是静默算错
+        raise SystemExit("  [不支持] KDA.conv_bias 还没有 lowering")
+    if nv % nk:
+        raise SystemExit("  [FAIL] KDA v_heads=%d 不是 k_heads=%d 的整数倍"
+                         % (nv, nk))
+
+    def _dconv(z, cw, chan, nm):
+        """深度卷积 + silu：[n, chan] -> conv1d_causal([1, n, chan]) -> silu。"""
+        z3 = g.add("view", [z], [p + nm + "3"],
+                   attrs={"shape": [chan, None, 1]},
+                   shapes=[(chan, None, 1)])
+        c = g.add("conv1d_causal", [z3, w(cw)], [p + nm + "c"],
+                  attrs={"kernel": ck}, shapes=[(chan, 1, None)])
+        c = g.add("view", [c], [p + nm + "2"], attrs={"shape": [chan, None]},
+                  shapes=[(chan, None)])
+        return g.add("silu", [c], [p + nm + "s"], shapes=[(chan, None)])
+
+    def _b4(t, nm, d0, h1, two):
+        # 2/3 维 -> exec [1, 头, n, dim]（和 GDN 的 `_b4` 同一个意思）
+        ax = [1, 0] if two else [0, 2, 1]
+        pp = g.add("permute", [t], [p + nm + "p"], attrs={"axes": ax},
+                   shapes=[(None, None)])
+        shp = ([1, None, h1, 1] if two else [d0, None, h1, 1])
+        return g.add("view", [pp], [p + nm], attrs={"shape": shp},
+                     shapes=[tuple(shp[:2]) + (h1, shp[-1])])
+
+    q = _dconv(g.add("matmul", [w("q_proj"), x], [p + "qz"],
+                     shapes=[(kd, None)]), "q_conv1d", kd, "q")
+    k = _dconv(g.add("matmul", [w("k_proj"), x], [p + "kz"],
+                     shapes=[(kd, None)]), "k_conv1d", kd, "k")
+    v = _dconv(g.add("matmul", [w("v_proj"), x], [p + "vz"],
+                     shapes=[(vd, None)]), "v_conv1d", vd, "v")
+    q3 = g.add("view", [q], [p + "q4"], attrs={"shape": [dk, nk, None]},
+               shapes=[(dk, nk, None)])
+    k3 = g.add("view", [k], [p + "k4"], attrs={"shape": [dk, nk, None]},
+               shapes=[(dk, nk, None)])
+    v3 = g.add("view", [v], [p + "v4"], attrs={"shape": [dv, nv, None]},
+               shapes=[(dv, nv, None)])
+    # ── 门：fg（衰减门）/ gt（输出门） ─────────────────────────────
+    if a.get("gate_lowrank"):
+        _r = int(a["gate_rank"])
+        fg = g.add("matmul", [w("f_b_proj"),
+                              g.add("matmul", [w("f_a_proj"), x], [p + "fa"],
+                                    shapes=[(_r, None)])],
+                   [p + "fg"], shapes=[(nv * dk, None)])
+        gt = g.add("matmul", [w("g_b_proj"),
+                              g.add("matmul", [w("g_a_proj"), x], [p + "ga"],
+                                    shapes=[(_r, None)])],
+                   [p + "gt"], shapes=[(vd, None)])
+        if a.get("gate_out_bias", True):
+            gt = g.add("add", [gt, w("g_b_proj.bias")], [p + "gt1"],
+                       shapes=[(vd, None)])
+    else:
+        fg = g.add("matmul", [w("f_proj"), x], [p + "fg"],
+                   shapes=[(nv * dk, None)])
+        gt = g.add("matmul", [w("g_proj"), x], [p + "gt"],
+                   shapes=[(vd, None)])
+    fg4 = g.add("view", [fg], [p + "fg4"], attrs={"shape": [dk, nv, None]},
+                shapes=[(dk, nv, None)])
+    gt4 = g.add("view", [gt], [p + "gt4"], attrs={"shape": [dv, nv, None]},
+                shapes=[(dv, nv, None)])
+    # ── 衰减 g：**逐维** [n, nv, dk] ──────────────────────────────
+    av = g.add("view", [w("A_log")], [p + "a1"], attrs={"shape": [1, nv]},
+               shapes=[(1, nv)])
+    dtb = g.add("view", [w("dt_bias")], [p + "dt"],
+                attrs={"shape": [dk, nv]}, shapes=[(dk, nv)])
+    tt = g.add("add", [fg4, dtb], [p + "gt0"], shapes=[(dk, nv, None)])
+    if a.get("gate_lower") is not None:
+        # g = lower * sigmoid(exp(A_log) * (fg + dt_bias))
+        ea = g.add("exp", [av], [p + "ea"], shapes=[(1, nv)])
+        z = g.add("mul", [ea, tt], [p + "gz"], shapes=[(dk, nv, None)])
+        z = g.add("sigmoid", [z], [p + "gs"], shapes=[(dk, nv, None)])
+        gm = g.add("scale", [z], [p + "g"],
+                   attrs={"s": float(a["gate_lower"])}, shapes=[(dk, nv, None)])
+    else:
+        # g = -exp(A_log) * softplus(fg + dt_bias)（fla/ops/kda/gate.py:50-54）
+        sp = g.add("softplus", [tt], [p + "sp"], shapes=[(dk, nv, None)])
+        ea = g.add("exp", [av], [p + "ea"], shapes=[(1, nv)])
+        z = g.add("mul", [ea, sp], [p + "gz"], shapes=[(dk, nv, None)])
+        gm = g.add("scale", [z], [p + "g"], attrs={"s": -1.0},
+                   shapes=[(dk, nv, None)])
+    # ── L2 归一 -> GVA 广播 -> dk^-0.5 ────────────────────────────
+    q3 = g.add("l2_norm", [q3], [p + "qn"], attrs={"eps": eps_l2},
+               shapes=[(dk, nk, None)])
+    k3 = g.add("l2_norm", [k3], [p + "kn"], attrs={"eps": eps_l2},
+               shapes=[(dk, nk, None)])
+    if nv != nk:
+        rep = nv // nk
+        q3 = g.add("repeat", [q3], [p + "q5"], attrs={"reps": rep, "axis": 1},
+                   shapes=[(dk, nv, None)])
+        k3 = g.add("repeat", [k3], [p + "k5"], attrs={"reps": rep, "axis": 1},
+                   shapes=[(dk, nv, None)])
+    q3 = g.add("scale", [q3], [p + "qs"], attrs={"s": float(dk) ** -0.5},
+               shapes=[(dk, nv, None)])
+    # ── beta -> delta_rule（decay 逐维） ──────────────────────────
+    # ⚠ beta 是 **sigmoid(b_proj @ x)**，不是裸投影 —— 第一版漏了 sigmoid，
+    # 递推照跑、形状全对，差 2e-03 起步（逐值定位：bh 是第一个分叉点）。
+    beta = g.add("matmul", [w("b_proj"), x], [p + "bp"], shapes=[(nv, None)])
+    beta = g.add("sigmoid", [beta], [p + "b1"], shapes=[(nv, None)])
+    o = g.add("delta_rule", [_b4(q3, "qh", dk, nv, False),
+                             _b4(k3, "kh", dk, nv, False),
+                             _b4(v3, "vh", dv, nv, False),
+                             _b4(beta, "bh", 1, nv, True),
+                             _b4(gm, "gh", dk, nv, False)],
+              [p + "dr"], shapes=[(dv, None, nv, 1)])
+    o = g.add("permute", [o], [p + "drp"], attrs={"axes": [0, 2, 1, 3]},
+              shapes=[(dv, None, nv, 1)])
+    o = g.add("view", [o], [p + "o2"], attrs={"shape": [dv, nv, None]},
+              shapes=[(dv, nv, None)])
+    # ── 输出 norm（mean 版 = l2_norm(x, dv·ε)·√dv）+ 输出门 sigmoid ──
+    y = g.add("l2_norm", [o], [p + "yn"], attrs={"eps": eps_nm * dv},
+              shapes=[(dv, nv, None)])
+    y = g.add("scale", [y], [p + "ys"], attrs={"s": float(dv) ** 0.5},
+              shapes=[(dv, nv, None)])
+    y = g.add("mul", [y, w("o_norm.w")], [p + "yw"], shapes=[(dv, nv, None)])
+    gs2 = g.add("sigmoid", [gt4], [p + "gt5"], shapes=[(dv, nv, None)])
+    y = g.add("mul", [y, gs2], [p + "yz"], shapes=[(dv, nv, None)])
+    y = g.add("view", [y], [p + "y2"], attrs={"shape": [vd, None]},
+              shapes=[(vd, None)])
+    g.add("matmul", [w("o_proj"), y], [p + "o"], shapes=[(None, None)])
     g.nodes[-1]["outs"] = [dst]
     return dst
 
