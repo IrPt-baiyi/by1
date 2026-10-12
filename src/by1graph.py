@@ -29,6 +29,8 @@ by1c / by1ggml），于是这个仓库最贵的 bug 类反复出现：
   python by1graph.py <model.by1>          # 打印该模型的图 + sha
   python by1graph.py --golden [--write]   # 生成/校验 golden 快照
   python by1graph.py --selftest           # 参考实现对拍手算
+  python by1graph.py --e2e [模型...] [--mem-gb N]
+                                          # 图求值 vs by1exec（按内存预算跳过）
 """
 import os as _os
 import sys as _sys
@@ -605,9 +607,37 @@ def _mask(n, window):
     return np.where(m, 0.0, -np.inf)
 
 
-def e2e(models=None):
+def _prod(shape):
+    n = 1
+    for d in shape:
+        n *= int(d)
+    return n
+
+
+def param_gb(ir, bir=None):
+    """模型的**参数内存足迹**（float32，GB）—— 只读形状，不分配。
+
+    e2e 要给每份模型按全尺寸铺随机权重，**先算足迹再决定跑不跑**。
+    golden 里混着真实大模型（`gemma-4-31B` 单份 130.6 GB），
+    在 16 GB 的机器上直接分配会打爆页面文件、把系统冻住
+    （2026-10-12 实测：这条命令冻了两次机器）。"""
+    if bir is None:
+        import by1ir as bir
+    return sum(_prod(s) for s in bir.params_of(ir).values()) * 4 / 1e9
+
+
+# e2e 的默认内存预算（GB）。**这不是性能参数，是安全阀**：
+# 超过它就跳过并印出来，宁可不跑，不许把机器打死。
+# `--mem-gb N` 显式覆盖（换一台大内存机器时才该抬它）。
+E2E_MEM_GB = 4.0
+
+
+def e2e(models=None, mem_gb=None):
     """**图求值 vs by1exec**：同一批随机权重、同一条输入，逐位对拍。
-    这是"lowering 降对了"和"唯一语义真的是唯一"的判卷人。"""
+    这是"lowering 降对了"和"唯一语义真的是唯一"的判卷人。
+
+    **按参数足迹过预算**：超预算的模型**显式跳过**（印出需多少 GB），
+    不静默丢 —— 静默跳过在这个仓库是记过案的那一类（`ir.md 133`）。"""
     import importlib.util
     import numpy as np
     sp = importlib.util.spec_from_file_location(
@@ -617,8 +647,9 @@ def e2e(models=None):
     import by1codegen as cg
     import by1ir as bir
     ex = _load("by1exec")
+    budget = E2E_MEM_GB if mem_gb is None else float(mem_gb)
     names = models or sorted(by1io.read_json(GOLDEN).keys())
-    bad = []
+    bad, skipped, ran = [], [], []
     for f in names:
         path = _os.path.join(by1paths.MODELS, f)
         try:
@@ -629,6 +660,12 @@ def e2e(models=None):
         try:
             g = lower_model(ir, f)
         except SystemExit:
+            continue
+        gb = param_gb(ir, bir)
+        if gb > budget:
+            skipped.append((f, gb))
+            print("     - %-28s 跳过：需 %.2f GB > 预算 %.2f GB"
+                  % (f, gb, budget))
             continue
         rng = np.random.default_rng(0)
         params = {k: rng.normal(0, 0.1, s).astype(np.float32)
@@ -646,14 +683,24 @@ def e2e(models=None):
         if dd / amp >= 1e-4:
             bad.append("%s 相对差 %.3e" % (f, dd / amp))
         else:
-            print("     ✓ %-28s 相对差 %.3e" % (f, dd / amp))
+            ran.append(f)
+            print("     ✓ %-28s 相对差 %.3e（%.2f GB）"
+                  % (f, dd / amp, gb))
+    tail = ""
+    if skipped:
+        tail = "（%d 份超预算跳过，合计需 %.2f GB；`--mem-gb N` 可抬预算）" % (
+            len(skipped), sum(g for _f, g in skipped))
     if bad:
         for b in bad:
             print("  [FAIL] " + b)
-        print("  [FAIL] 图求值 vs by1exec：%d 处" % len(bad))
+        print("  [FAIL] 图求值 vs by1exec：%d 处%s" % (len(bad), tail))
         return 1
-    print("  [PASS] 图求值 vs by1exec：%d 份模型同权重同输入一致"
-          "（lowering 降对了，唯一语义是真的唯一）" % len(names))
+    if not ran:
+        print("  [FAIL] 图求值 vs by1exec：0 份跑成%s —— 预算太小，"
+              "等于没验" % tail)
+        return 1
+    print("  [PASS] 图求值 vs by1exec：%d 份模型同权重同输入一致%s"
+          "（lowering 降对了，唯一语义是真的唯一）" % (len(ran), tail))
     return 0
 
 
@@ -750,10 +797,22 @@ def main(argv=None):
     argv = argv if argv is not None else _sys.argv[1:]
     if "--selftest" in argv:
         return selftest()
-    if "--e2e" in argv:
-        return e2e()
     if "--golden" in argv:
         return golden(write="--write" in argv)
+    if "--e2e" in argv:
+        mem, rest, i = None, [], 0
+        while i < len(argv):
+            if argv[i] == "--mem-gb":
+                if i + 1 >= len(argv):
+                    print("  [FAIL] --mem-gb 缺参数")
+                    return 2
+                mem = float(argv[i + 1])
+                i += 2
+                continue
+            if argv[i] != "--e2e":
+                rest.append(argv[i])
+            i += 1
+        return e2e(models=rest or None, mem_gb=mem)
     if not argv:
         print(__doc__)
         return 0

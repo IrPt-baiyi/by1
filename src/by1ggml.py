@@ -589,7 +589,6 @@ def find_libs(build):
 def run_one(by1_path, args, run=True, expect="pass"):
     bc, cg = load("by1check"), load("by1codegen")
     ex_mod = load("by1exec")
-    c_backend = load("by1c")
     name = os.path.basename(by1_path)
 
     print(f"\n{'='*72}\n  {name}  ->  ggml  ({'数值对拍' if run else '仅编译'})\n{'='*72}")
@@ -607,9 +606,12 @@ def run_one(by1_path, args, run=True, expect="pass"):
             return "reject-ok"
         return "fail"
 
-    # w.bin 布局的唯一定义在 by1c —— 同一个 w.bin 喂两个后端
-    decls, order, total = c_backend.emit_c(ir, info, params_shapes)
-    del decls
+    # **w.bin 布局的唯一定义在 `by1ir.weight_plan`**（1.0.0-rc0 · A3-1）。
+    # 以前这里反向 import by1c 只为拿 `order`（下一行的 `del decls` 就是
+    # 那个证据）—— 布局是 **IR 的事实**，不该由某个后端代管。
+    _bir = load("by1ir")
+    order = _bir.weight_plan(ir)
+    total = sum(int(np.prod(s)) for s in _bir.params_of(ir).values())
 
     src, n_nodes, mem_tok, mem_pair = emit_model_c(ir, order, params_shapes)
     if expect == "reject":

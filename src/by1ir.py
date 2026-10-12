@@ -31,9 +31,15 @@
 `by1all` 真的跑一遍**。
 """
 import json
+import re
+
 import by1io
 import by1paths
 import by1skip
+
+# 宏名的换名规则（`wq.bias` -> `WQ_BIAS`）。**只有这一处** ——
+# `weight_plan` 生成宏名，C / ggml 两边都按它取偏移。
+_MANGLE = re.compile(r"[^0-9A-Za-z]")
 
 # **从 by1ver 来，不在这里写死。**
 # 版本号**只在此处定义** —— by1codegen / by1boot / by1extdemo
@@ -778,6 +784,178 @@ def params_of(ir):
         out["final_norm.b"] = (dg,)
     out["head.weight"] = (ir["vocab"], dg)
     return out
+
+
+def _wmacro(i, j, nm):
+    """层内参数的宏名（`L{i}_OP{j}_{名}`）—— C / ggml 两边都按它取偏移。
+
+    点和其它非字母数字一起换成下划线（`wq.bias` -> `WQ_BIAS`），
+    所以**宏名和参数键是两个名字**，别互相代替。"""
+    return "L%d_OP%d_%s" % (i, j, _MANGLE.sub("_", nm).upper())
+
+
+def weight_plan(ir):
+    """**权重布局的唯一定义**：参数键 + 顺序（1.0.0-rc0 · A3-1）。
+
+    返回 `[(宏名, 参数键), ...]`，**顺序就是 `w.bin` 的排布顺序**。
+
+    以前这张表寄生在 `by1c._emit_c_body` 里 —— 于是 `by1ggml` 为了拿
+    同一份布局，只能反过来 import by1c（`decls, order, total =
+    c_backend.emit_c(...)` 然后 `del decls`）。**布局是 IR 的事实，
+    不是某个后端的事实**，所以它搬到了这里；四个后端从同一处取。
+
+    **不变量（硬断言，不是注释）**：键集 == `params_of(ir)` 的键集，
+    且无重复。这条一破就是"形状表与布局表各说各话"——而两份事实
+    漂移过一次（gemma-4-31B 全局张量按 1152 推，见 `history/ir.md`），
+    所以宁可当场炸，不要悄悄生成错的 `w.bin`。
+
+    **不在这里做能力判断**：`head_gate` / `gptoss` / 不认识的 kind
+    是**后端**的事（`by1exec` 支持 head_gate，C 不支持）—— 那些拒绝
+    写在各后端里，见 `by1c.C_KINDS`。
+    """
+    order = [("EMBED", "embed.weight")]
+    if str(ir.get("pos_kind", "rope")).lower() == "learned":
+        order.append(("POS", "pos.weight"))
+    order.append(("FINAL_NORM", "final_norm.w"))
+    if str(ir.get("norm_kind", "rms")).lower() == "layer":
+        order.append(("FINAL_NORM_B", "final_norm.b"))
+    order.append(("HEAD", "head.weight"))
+    for L in ir["layers"]:
+        i = L["index"]
+        for j, o in enumerate(L["ops"]):
+            k, a = o["kind"], o["attrs"]
+            pre = "layers.%d.op%d." % (i, j)
+            if k == "Norm":
+                order.append((_wmacro(i, j, "w"), pre + "w"))
+                # **LayerNorm 有 bias**（见 `params_of` 同一处）。
+                if str(a.get("kind", "rms")).lower() == "layer":
+                    order.append((_wmacro(i, j, "b"), pre + "b"))
+            elif k == "Attention":
+                # **kv_tie 没有 wv**（v 复用 k 的投影）—— 和 `params_of`
+                # 同一份判断，这里不跳过就会在 `params[pname]` 那里 KeyError。
+                if a.get("qkv_fused"):
+                    # 融合 q/k/v（视觉塔）：注册 `qkv` / `proj`
+                    for nm in ("qkv", "proj"):
+                        order.append((_wmacro(i, j, nm), pre + nm))
+                    if a["bias"]:
+                        for nm in ("qkv.bias", "proj.bias"):
+                            order.append((_wmacro(i, j, nm), pre + nm))
+                else:
+                    for nm in ("wq", "wk", "wv", "wo"):
+                        if nm == "wv" and a["kv_tie"]:
+                            continue
+                        order.append((_wmacro(i, j, nm), pre + nm))
+                    if a["bias"]:
+                        for nm in ("wq.bias", "wk.bias", "wv.bias", "wo.bias"):
+                            if nm == "wv.bias" and a["kv_tie"]:
+                                continue
+                            order.append((_wmacro(i, j, nm), pre + nm))
+                if a["sink"]:
+                    order.append((_wmacro(i, j, "sink"), pre + "sink"))
+                if _qk_on(a.get("qk_norm")):
+                    for nm in ("qn.w", "kn.w"):
+                        order.append((_wmacro(i, j, nm), pre + nm))
+                # **head_gate 的 g_proj 在 `params_of` 里**（C 后端不实现
+                # head_gate，但布局表说的是"IR 声明了哪些张量"，不是
+                # "C 能算哪些"）—— 少了这一行，不变量当场就报"两份事实漂移"，
+                # 这正是它该报的。
+                if a.get("head_gate", "off") != "off":
+                    order.append((_wmacro(i, j, "g_proj"), pre + "g_proj"))
+            elif k == "FFN":
+                # **无门控的 FFN 也是 FFN**（GPT-2 正是没有门的那种）。
+                gated = a.get("gate", True)
+                for nm in (("w1", "w2", "w3") if gated else ("w1", "w2")):
+                    order.append((_wmacro(i, j, nm), pre + nm))
+                if a.get("bias"):
+                    for nm in (("w1.bias", "w2.bias", "w3.bias") if gated
+                               else ("w1.bias", "w2.bias")):
+                        order.append((_wmacro(i, j, nm), pre + nm))
+            elif k == "Linear":
+                for nm in ("in_proj_qkvz", "in_proj_ba", "conv", "dt_bias",
+                           "A_log", "norm.w", "out_proj"):
+                    order.append((_wmacro(i, j, nm), pre + nm))
+            elif k == "SSM":
+                # 选择性状态空间。8 个张量，和契约里 'Mamba' 那一组对上。
+                for nm in ("in_proj", "conv", "dt_bias", "A_log", "D",
+                           "norm.w", "out_proj"):
+                    order.append((_wmacro(i, j, nm), pre + nm))
+                if a.get("conv_bias"):
+                    order.append((_wmacro(i, j, "conv.bias"), pre + "conv.bias"))
+            elif k == "KDA":
+                for nm in ("q_proj", "k_proj", "v_proj",
+                           "q_conv1d", "k_conv1d", "v_conv1d"):
+                    order.append((_wmacro(i, j, nm), pre + nm))
+                if a.get("gate_lowrank"):
+                    for nm in ("f_a_proj", "f_b_proj", "g_a_proj", "g_b_proj"):
+                        order.append((_wmacro(i, j, nm), pre + nm))
+                    # **bias 是可选的** —— fla 有，GLM 的官方清单没有
+                    if a.get("gate_out_bias", True):
+                        order.append((_wmacro(i, j, "g_b_proj.bias"),
+                                      pre + "g_b_proj.bias"))
+                else:
+                    for nm in ("f_proj", "g_proj"):
+                        order.append((_wmacro(i, j, nm), pre + nm))
+                for nm in ("b_proj", "A_log", "dt_bias", "o_norm.w", "o_proj"):
+                    order.append((_wmacro(i, j, nm), pre + nm))
+            elif k == "MLA":
+                for nm in ("q_a_proj", "q_a_layernorm.w", "q_b_proj",
+                           "kv_a_proj_with_mqa", "kv_a_layernorm.w",
+                           "kv_b_proj", "dense"):
+                    order.append((_wmacro(i, j, nm), pre + nm))
+                if a.get("head_gate", "off") != "off":
+                    order.append((_wmacro(i, j, "g_proj"), pre + "g_proj"))
+                # DSA 稀疏索引器：名字带 `.weight` / `.bias` 全写 ——
+                # 和 `params_of` 逐个对上（不一致的话权重表会对不上）。
+                if a.get("index_heads"):
+                    for nm in ("indexer.wq_b.weight", "indexer.wk.weight",
+                               "indexer.k_norm.weight", "indexer.k_norm.bias",
+                               "indexer.weights_proj.weight"):
+                        order.append((_wmacro(i, j, nm), pre + nm))
+                    if int(a.get("index_kpool") or 1) > 1:
+                        for nm in ("indexer.index_kpool_compress_gate",
+                                   "indexer.index_kpool_compress_ape"):
+                            order.append((_wmacro(i, j, nm), pre + nm))
+            elif k == "MoE":
+                for nm in ("router", "w1", "w3", "w2"):
+                    order.append((_wmacro(i, j, nm), pre + nm))
+                if a["router_bias"]:
+                    order.append((_wmacro(i, j, "router.bias"),
+                                  pre + "router.bias"))
+                # noaux_tc / sigmoid_topk 的专家偏置：**只影响选择，不影响权重**
+                if a.get("score_bias"):
+                    order.append((_wmacro(i, j, "score_bias"), pre + "score_bias"))
+                if a["expert_bias"]:
+                    for nm in ("b1", "b3", "b2"):
+                        order.append((_wmacro(i, j, nm), pre + nm))
+                if a["shared"]:
+                    for nm in ("sw1", "sw3", "sw2"):
+                        order.append((_wmacro(i, j, nm), pre + nm))
+                    if a["shared_gate"]:
+                        order.append((_wmacro(i, j, "shared_gate"),
+                                      pre + "shared_gate"))
+            elif k == "External":
+                # 逃生舱：参数名带 `ext:` 前缀 —— `params_of` 就是这么命名的。
+                for nm in sorted(a["weights"]):
+                    order.append((_wmacro(i, j, "ext:" + nm), pre + "ext:" + nm))
+            elif k == "Add":
+                continue
+            else:
+                # 到不了这里：`validate()` 已经按 KIND_ATTRS 拒过不认识的
+                # kind。留着是为了"万一"时不悄悄跳过。
+                raise ValueError("weight_plan：不认识的 kind %r（层 %d op%d）"
+                                 % (k, i, j))
+    # ── 不变量：布局表与形状表必须是同一批键（无重复） ──────────────
+    names = [p for _m, p in order]
+    got, want = set(names), set(params_of(ir))
+    if len(names) != len(got):
+        raise ValueError("weight_plan：有重复的参数键 %s"
+                         % sorted(n for n in got if names.count(n) > 1)[:6])
+    if got != want:
+        raise ValueError(
+            "weight_plan 与 params_of 不同源（两份事实漂移）："
+            "布局多出 %s / 形状多出 %s"
+            % (sorted(got - want)[:6], sorted(want - got)[:6]))
+    return order
 
 
 def infer_widths(ir):

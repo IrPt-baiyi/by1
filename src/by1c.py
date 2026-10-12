@@ -48,6 +48,14 @@ except ImportError:                     # 兜底：和 by1ir 里那份逐字相�
 HERE = os.path.dirname(os.path.abspath(__file__))
 MANGLE = re.compile(r"[^0-9A-Za-z]")
 
+# **C 后端的支持集**（1.0.0-rc0 · A3-1）。以前这个集合是**隐式**的 ——
+# 它藏在 `_emit_c_body` 那条 if 链的最后一个 `else` 里。布局表搬去
+# `by1ir.weight_plan` 之后，它必须显式写出来：这是一条**能力声明**
+# （"这个后端会算哪些 kind"），不是布局的一部分。
+# 判据：`by1all` 的编译/数值档不退；`raw-escape.by1` 仍按承诺拒绝。
+C_KINDS = ("Norm", "Attention", "FFN", "Linear", "SSM", "KDA",
+           "MLA", "MoE", "External", "Add")
+
 
 
 def _qk_on(v):
@@ -1438,166 +1446,33 @@ def _emit_c_body(ir, params):
     def key(i, j, nm):
         return f"L{i}_OP{j}_{MANGLE.sub('_', nm).upper()}"
 
-    # 收集参数（顺序确定，C 与 Python 用同一份）
-    # **全局参数按 IR 实际有哪些来。**
-    # 学习式位置表和最终归一化的 bias 以前不在这里 ——
-    # 于是 C 那边根本不知道它们存在。
-    order = [("EMBED", "embed.weight")]
-    if str(ir.get("pos_kind", "rope")).lower() == "learned":
-        order.append(("POS", "pos.weight"))
-    order.append(("FINAL_NORM", "final_norm.w"))
-    if str(ir.get("norm_kind", "rms")).lower() == "layer":
-        order.append(("FINAL_NORM_B", "final_norm.b"))
-    order.append(("HEAD", "head.weight"))
-    body = []
+    # **能力拒绝**（布局表不管这些 —— 它只说"有哪些张量"）。
+    # 和布局分开写，理由：`by1exec` 支持 `head_gate` 而 C 不支持；
+    # 把"后端能做到哪一步"混进"有哪些张量"，会让两个后端互相绑死
+    # （`by1ggml` 有自己的 `check_support`，正是这个道理）。
+    #
+    # **顺序要紧**：预扫**在布局之前**。布局表对 `head_gate` 是照实
+    # 声明的（IR 有那个张量），所以它建得出来；而"C 不支持"必须**先**报
+    # ——否则一份 head_gate 模型会以别的方式失败，报错长得像 IR 有问题。
     for L in ir["layers"]:
-        i = L["index"]
         for j, o in enumerate(L["ops"]):
-            k, a, pre = o["kind"], o["attrs"], f"layers.{i}.op{j}."
-            if k == "Norm":
-                order.append((key(i, j, "w"), pre + "w"))
-                # **LayerNorm 有 bias。** 见 C_HEAD 里 layernorm 的注释。
-                # 少了这一行，生成出来的 C 会引用一个没有的
-                # `OFF_L0_OP0_B` 宏 —— 编译期就报，算是运气好。
-                if str(a.get("kind", "rms")).lower() == "layer":
-                    order.append((key(i, j, "b"), pre + "b"))
-            elif k == "Attention":
-                # **kv_tie 已实现**（K=V）：v 就是 k 的投影，没有单独的 wv。
-                # 见下面 `memcpy(vv, kk, ...)` 那两行 —— **必须在 qk_norm /
-                # rope 就地改写 kk 之前**分叉出去。
-                if a["head_gate"] != "off":
-                    raise SystemExit(
-                        f"  [不支持] 第 {i} 层的注意力用了 head_gate —— C 后端还没实现")
-                if a.get("qkv_fused"):
-                    # **融合 q/k/v**（视觉塔）：注册 `qkv` / `proj`，不注册
-                    # wq/wk/wv/wo —— 和 `by1exec.shapes_of` **同一份形状表**。
-                    for nm in ("qkv", "proj"):
-                        order.append((key(i, j, nm), pre + nm))
-                    if a["bias"]:
-                        for nm in ("qkv.bias", "proj.bias"):
-                            order.append((key(i, j, nm), pre + nm))
-                else:
-                    for nm in ("wq", "wk", "wv", "wo"):
-                        # **kv_tie 没有 wv**（v 复用 k 的投影）——
-                        # shapes_of 里就是这么推的，这里不跳过就会 KeyError。
-                        if nm == "wv" and a["kv_tie"]:
-                            continue
-                        order.append((key(i, j, nm), pre + nm))
-                    if a["bias"]:
-                        for nm in ("wq.bias", "wk.bias", "wv.bias", "wo.bias"):
-                            if nm == "wv.bias" and a["kv_tie"]:
-                                continue
-                            order.append((key(i, j, nm), pre + nm))
-                if a["sink"]:
-                    order.append((key(i, j, "sink"), pre + "sink"))
-                if _qk_on(a.get("qk_norm")):
-                    for nm in ("qn.w", "kn.w"):
-                        order.append((key(i, j, nm), pre + nm))
-                body.append((i, j, "Attention", a))
-            elif k == "FFN":
-                # **无门控的 FFN 也是 FFN。**
-                # 若写成 `if not gate: raise` —— 和 by1codegen 那边
-                # 一模一样的毛病：一条分支只为"有门"那一种情况写过。
-                # **而 GPT-2 正是没有门的那种**，于是 C 后端建不了它。
-                gated = a.get("gate", True)
-                for nm in (("w1", "w2", "w3") if gated else ("w1", "w2")):
-                    order.append((key(i, j, nm), pre + nm))
-                if a.get("bias"):
-                    for nm in (("w1.bias", "w2.bias", "w3.bias") if gated
-                               else ("w1.bias", "w2.bias")):
-                        order.append((key(i, j, nm), pre + nm))
-                if a.get("act") == "gptoss":
-                    raise SystemExit(f"  [不支持] 第 {i} 层的 FFN 用了 gptoss 激活")
-                body.append((i, j, "FFN", a))
-            elif k == "Linear":
-                for nm in ("in_proj_qkvz", "in_proj_ba", "conv", "dt_bias",
-                           "A_log", "norm.w", "out_proj"):
-                    order.append((key(i, j, nm), pre + nm))
-                body.append((i, j, "Linear", a))
-            elif k == "SSM":
-                # 选择性状态空间。8 个张量，和契约里 'Mamba' 那一组对上。
-                for nm in ("in_proj", "conv", "dt_bias", "A_log", "D",
-                           "norm.w", "out_proj"):
-                    order.append((key(i, j, nm), pre + nm))
-                if a.get("conv_bias"):
-                    order.append((key(i, j, "conv.bias"), pre + "conv.bias"))
-                body.append((i, j, "SSM", a))
-            elif k == "KDA":
-                # Kimi Delta Attention。13 个张量（低秩门 15 个），
-                # 和契约里那一组对上。**顺序要和下面的调用一致**。
-                for nm in ("q_proj", "k_proj", "v_proj",
-                           "q_conv1d", "k_conv1d", "v_conv1d"):
-                    order.append((key(i, j, nm), pre + nm))
-                if a.get("gate_lowrank"):
-                    for nm in ("f_a_proj", "f_b_proj",
-                               "g_a_proj", "g_b_proj"):
-                        order.append((key(i, j, nm), pre + nm))
-                    # **bias 是可选的** —— fla 有，GLM 的官方清单没有
-                    if a.get("gate_out_bias", True):
-                        order.append((key(i, j, "g_b_proj.bias"),
-                                      pre + "g_b_proj.bias"))
-                else:
-                    for nm in ("f_proj", "g_proj"):
-                        order.append((key(i, j, nm), pre + nm))
-                for nm in ("b_proj", "A_log", "dt_bias",
-                           "o_norm.w", "o_proj"):
-                    order.append((key(i, j, nm), pre + nm))
-                body.append((i, j, "KDA", a))
-            elif k == "MLA":
-                for nm in ("q_a_proj", "q_a_layernorm.w", "q_b_proj",
-                           "kv_a_proj_with_mqa", "kv_a_layernorm.w",
-                           "kv_b_proj", "dense"):
-                    order.append((key(i, j, nm), pre + nm))
-                if a.get("head_gate", "off") != "off":
-                    order.append((key(i, j, "g_proj"), pre + "g_proj"))
-                # DSA 稀疏索引器的五个张量。**名字和 by1exec.shapes_of 一致**
-                # （带 `.weight` / `.bias` 全写）—— 不一致的话权重表会对不上。
-                if a.get("index_heads"):
-                    for nm in ("indexer.wq_b.weight", "indexer.wk.weight",
-                               "indexer.k_norm.weight", "indexer.k_norm.bias",
-                               "indexer.weights_proj.weight"):
-                        order.append((key(i, j, nm), pre + nm))
-                    # k-pool 的两个张量。**职责不一样，别混**：
-                    #   _gate [hd, d]   逐 token 的门，池内加权用它
-                    #   _ape  [P, hd]   池内位置的可学嵌入
-                    if int(a.get("index_kpool") or 1) > 1:
-                        for nm in ("indexer.index_kpool_compress_gate",
-                                   "indexer.index_kpool_compress_ape"):
-                            order.append((key(i, j, nm), pre + nm))
-                body.append((i, j, "MLA", a))
-            elif k == "MoE":
-                for nm in ("router", "w1", "w3", "w2"):
-                    order.append((key(i, j, nm), pre + nm))
-                if a["router_bias"]:
-                    order.append((key(i, j, "router.bias"), pre + "router.bias"))
-                # noaux_tc / sigmoid_topk 的专家偏置：**只影响选择，不影响权重**
-                if a.get("score_bias"):
-                    order.append((key(i, j, "score_bias"), pre + "score_bias"))
-                if a["expert_bias"]:
-                    for nm in ("b1", "b3", "b2"):
-                        order.append((key(i, j, nm), pre + nm))
-                if a["shared"]:
-                    for nm in ("sw1", "sw3", "sw2"):
-                        order.append((key(i, j, nm), pre + nm))
-                    if a["shared_gate"]:
-                        order.append((key(i, j, "shared_gate"), pre + "shared_gate"))
-                body.append((i, j, "MoE", a))
-            elif k == "External":
-                # **逃生舱第二层：C 后端链接一个外部符号。**
-                # 编译器不认识这个机制 —— 只认 ABI（见 by1ext.py）。
-                # 所以加一个新机制不用动这个文件。
-                # 参数名要带 `ext:` 前缀 —— `shapes_of` 就是这么命名的，
-                # 名字对不上会在后面 `params[pname]` 那里 KeyError。
-                for nm in sorted(a["weights"]):
-                    # 第二个元素是**完整的参数键**（`pre` = `layers.N.opM.`），
-                    # 不是短名 —— 少了前缀会在后面 `params[pname]` 那里 KeyError，
-                    # 而那个报错长得像"这个张量没声明"。
-                    order.append((key(i, j, "ext:" + nm), pre + "ext:" + nm))
-                body.append((i, j, "External", a))
-            elif k == "Add":
-                body.append((i, j, "Add", a))
-            else:
+            k, a = o["kind"], o["attrs"]
+            if k == "Attention" and a["head_gate"] != "off":
+                raise SystemExit(
+                    f"  [不支持] 第 {L['index']} 层的注意力用了 head_gate"
+                    " —— C 后端还没实现")
+            if k == "FFN" and a.get("act") == "gptoss":
+                raise SystemExit(
+                    f"  [不支持] 第 {L['index']} 层的 FFN 用了 gptoss 激活")
+            if k not in C_KINDS:
                 raise SystemExit(f"  [不支持] C 后端还没有 {k}")
+
+    # **权重布局的唯一定义在 `by1ir.weight_plan`**（1.0.0-rc0 · A3-1）。
+    # 以前这张表长在这个函数里，于是 `by1ggml` 为了拿同一份 `w.bin`
+    # 布局，只能反过来 import 本模块（`emit_c(...)` 然后 `del decls`）。
+    # 布局是 **IR 的事实**，不是某个后端的事实 —— 所以它搬到了 IR 那边。
+    import by1ir as _bir
+    order = _bir.weight_plan(ir)
 
     # **外部符号的声明。** ABI 见 by1ext.py —— 编译器不认识机制，
     # 只认识这个签名。所以加一个新机制不用动这个文件。
