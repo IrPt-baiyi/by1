@@ -993,9 +993,8 @@ def _lower_attn(g, p, x, dst, w, a, d):
     if int(a["out_dim"]) != nh * hd:
         raise SystemExit("  [不支持] out_dim != q*head_dim 的注意力"
                          "（输出重排还没收编）")
-    for flag, what in (("head_gate", "head_gate"),):
-        if a.get(flag) and (flag != "head_gate" or a.get(flag) != "off"):
-            raise SystemExit("  [不支持] Attention.%s 还没有 lowering" % what)
+    # 这里原来有一条 `head_gate 还没有 lowering` 的预拒绝 —— **已收编**
+    # （见下面 attention 输出段的 head_gate 分支；非 per_head 仍然拒绝）。
     bias = bool(a.get("bias"))
     # **融合 q/k/v 只是布局**：`by1exec` 的做法是把它拆回 wq/wk/wv/wo，
     # 「后面一格不动」—— 这里同样拆，拆的是**权重叶子**（`slice` 原语）。
@@ -1134,6 +1133,29 @@ def _lower_attn(g, p, x, dst, w, a, d):
         # **门乘在注意力输出上**（合头之后、wo 之前）—— 不是乘到 q 上。
         gs = g.add("sigmoid", [qg], [p + "gs"], shapes=[(nh * hd, None)])
         att = g.add("mul", [att, gs], [p + "am"], shapes=[(nh * hd, None)])
+    if a.get("head_gate", "off") != "off":
+        # **head_gate（per_head）**：`by1exec.op_attention` 292-298 逐句 ——
+        #   g = act(g_proj @ x)         # act：sigmoid（Ling）/ softplus（Laguna）
+        #   o[b,n,h,d] *= g[b,n,h]      # **每头一个门**，乘在注意力输出上
+        # 也在 wo 之前。非 per_head（整个 o 一个门）**明确拒绝** ——
+        # 模型里还没有那一支，实现它之前不许假装算得了。
+        if a["head_gate"] != "per_head":
+            raise SystemExit("  [不支持] head_gate=%r 只实现了 per_head"
+                             % a["head_gate"])
+        _act = "sigmoid" if a.get("gate_act") == "sigmoid" else "softplus"
+        gg = g.add("matmul", [w("g_proj"), x], [p + "hg0"],
+                   shapes=[(nh, None)])
+        gg = g.add(_act, [gg], [p + "hg1"], shapes=[(nh, None)])
+        # [n, nh] -> [n, nh, 1]，和 [n, nh, hd] 的注意力输出按头相乘
+        gg = g.add("view", [gg], [p + "hg2"],
+                   attrs={"shape": [1, nh, None]}, shapes=[(1, nh, None)])
+        att3 = g.add("view", [att], [p + "hg3"],
+                     attrs={"shape": [hd, nh, None]}, shapes=[(hd, nh, None)])
+        att3 = g.add("mul", [att3, gg], [p + "hg4"],
+                     shapes=[(hd, nh, None)])
+        att = g.add("view", [att3], [p + "hg5"],
+                    attrs={"shape": [nh * hd, None]},
+                    shapes=[(nh * hd, None)])
     out = g.add("matmul", [WO, att], [p + "o0"], shapes=[(d, None)])
     if bias:
         out = g.add("add", [out, BO], [dst], shapes=[(d, None)])
