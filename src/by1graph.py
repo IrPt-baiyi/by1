@@ -83,12 +83,19 @@ def _ref_scale():
 
 
 def _ref_matmul():
-    # by1exec 的约定：x [..., n, in]，w [out, in]，out = x @ w.T [..., n, out]。
+    # by1exec 的约定：x [..., n, in]，w [out, in]，out = x @ wᵀ [..., n, out]。
     # **ref() 全部用这套约定**（样本在前、特征在最后轴）；图里节点形状标
     # (特征, n) 是 ggml 视角 —— 同一块内存的两种读法，这正是布局原语
     # 存在的原因。两种读法不许混在一条公式里（混过的人出过三次错）。
+    #
+    # ⚠ **用 `swapaxes(w, -1, -2)`，不是 `w.T`**。`w.T` 在 >2 维时反转
+    # **所有**轴：MoE 的专家权重是 (n,K,out,in)，`w.T` 给出 (in,out,K,n)，
+    # 于是 `x @ w.T` 报 "core dimension 0 mismatch (size 2 vs 128)" ——
+    # 而同一个式子对 2 维权重是对的，所以它**只在 MoE 那一支露头**。
+    # 2 维时两者完全一样（swapaxes(-1,-2) == .T），所以这个改动
+    # 对既有模型**逐位不变**。
     np = _np()
-    return lambda w, x: x @ w.T
+    return lambda w, x: x @ np.swapaxes(w, -1, -2)
 
 
 def _ref_batch_matmul():
@@ -508,7 +515,7 @@ def lower_op(g, i, j, o, d, pname, refmap):
         refmap[r] = dst
     w = lambda nm: pname(nm)
 
-    if k not in ("Embed", "Norm", "Head", "Attention", "FFN", "Add"):
+    if k not in ("Embed", "Norm", "Head", "Attention", "FFN", "Add", "MoE"):
         raise SystemExit("  [不支持] %s 还没有 lowering（原语未收编，"
                          "见 by1graph.UNLOWERED）" % k)
 
@@ -562,6 +569,120 @@ def lower_op(g, i, j, o, d, pname, refmap):
             g.nodes[-1]["outs"] = [dst]
     elif k == "Attention":
         _lower_attn(g, p, src[0], dst, w, a, d)
+    elif k == "MoE":
+        _lower_moe(g, p, src[0], dst, w, a, d)
+    return dst
+
+
+def _lower_moe(g, p, x, dst, w, a, d):
+    """MoE 的 lowering —— 语义照 `by1exec.op_moe`（e2e 的判据就是它）。
+
+    **这一刀只切 `softmax_topk`**（Mixtral / Qwen3 系 / Laguna /
+    gemma-4-26B，普查里 11 份，且全是 `act=silu`、无 `expert_bias`）。
+    另外三种选法**明确拒绝**：
+
+        sigmoid_topk        3 份（Step-3.7）—— 先打分再直接 top-k
+        sigmoid_group_topk  6 份（GLM / Ling / Nemotron）—— noaux_tc，
+                            要"每组前 2 之和排名选组"，还得加分组原语
+        topk_softmax        3 份（gpt-oss）—— 要 gptoss 激活与 expert_bias
+
+    `softmax_topk` 的三步（照 by1exec 逐句）：
+
+        sel  = logits + score_bias          # **只影响选择**
+        topi = top_k(softmax(sel))          # 先全体 softmax 再选
+        base = logits if score_bias else sel
+        tv   = gather(softmax(base), topi)  # **权重用未加偏置的 logits 重算**
+        topv = tv / max(sum(tv), 1e-9) * routed_scale
+        out  = Σ_k topv[:,k] · Expert_k(x)
+    """
+    rt = a.get("routing") or "softmax_topk"
+    if rt != "softmax_topk":
+        raise SystemExit("  [不支持] MoE.routing=%s 还没有 lowering"
+                         "（这一刀只切 softmax_topk）" % rt)
+    if a.get("expert_bias"):
+        raise SystemExit("  [不支持] MoE.expert_bias 还没有 lowering")
+    if str(a.get("act", "silu")) != "silu":
+        raise SystemExit("  [不支持] MoE.act=%r 还没有 lowering" % a.get("act"))
+    E, K, H = int(a["experts"]), int(a["top_k"]), int(a["hidden"])
+    sb_on = bool(a.get("score_bias"))
+    # ── ① 路由 logits = x @ routerᵀ（+ bias） ───────────────────────
+    lg = g.add("matmul", [w("router"), x], [p + "lg"], shapes=[(E, None)])
+    if a.get("router_bias"):
+        lg = g.add("add", [lg, w("router.bias")], [p + "lg1"],
+                   shapes=[(E, None)])
+    sel = lg
+    if sb_on:
+        sel = g.add("add", [lg, w("score_bias")], [p + "sel"],
+                    shapes=[(E, None)])
+    sm = g.add("softmax", [sel], [p + "sm"], shapes=[(E, None)])
+    topi = g.add("top_k", [sm], [p + "topi"], attrs={"k": K},
+                 shapes=[(K, None)])
+    if sb_on:
+        # **权重用未加偏置的 logits 重算**（by1exec 的 `base`）
+        sm2 = g.add("softmax", [lg], [p + "sm2"], shapes=[(E, None)])
+        tv = g.add("gather", [sm2, topi], [p + "tv"], shapes=[(K, None)])
+    else:
+        tv = g.add("gather", [sm, topi], [p + "tv"], shapes=[(K, None)])
+    den = g.add("sum", [tv], [p + "den"], attrs={"axis": 0, "keepdims": True},
+                shapes=[(1, None)])
+    den = g.add("clamp_min", [den], [p + "den1"], attrs={"min": 1e-9},
+                shapes=[(1, None)])
+    topv = g.add("div", [tv, den], [p + "topv"], shapes=[(K, None)])
+    if float(a.get("routed_scale", 1.0)) != 1.0:
+        topv = g.add("scale", [topv], [p + "topv1"],
+                     attrs={"s": float(a["routed_scale"])}, shapes=[(K, None)])
+    # ── ② 逐专家 SwiGLU ───────────────────────────────────────────
+    # 专家权重按下标**整行取**（`get_rows` 按第 0 轴）：(E,out,in) + ids(n,K)
+    # -> (n,K,out,in)。输入广播成 (n,K,1,in)，`matmul` 的 `x @ wᵀ` 于是给出
+    # (n,K,1,out) —— 再把那个 1 挤掉。**能拼出来就不加原语。**
+    # ⚠ **两个矩阵乘的收缩维不同**：w1/w3 收 `d`，w2 收 `H`
+    # （第一版把 x 直接喂给 w2，于是 (n,1,128) 去乘 (n,K,256,d) —— 当场报
+    #  "size 2 is different from 128"）。
+    # ⚠ **x 要 view 成 4 维 `(n,1,1,d)`**：numpy 的 matmul 批维**从右对齐**，
+    # (n,1,d) 的批维是 `(n,)`，和 (n,K) 对不齐（1 vs K 在错的位置上）。
+    # 4 维之后批维是 `(n,1)`，与 `(n,K)` 广播出 `(n,K)` —— 正好。
+    xr = g.add("view", [x], [p + "xr"], attrs={"shape": [d, 1, 1, None]},
+               shapes=[(d, 1, 1, None)])
+
+    def _expert(wname, inp, out_w, in_w):
+        gv = g.add("get_rows", [w(wname), topi], [p + wname + "_g"],
+                   shapes=[(in_w, out_w, K, None)])
+        mm = g.add("matmul", [gv, inp], [p + wname + "_m"])
+        return g.add("view", [mm], [p + wname + "_v"],
+                     attrs={"shape": [out_w, K, None]},
+                     shapes=[(out_w, K, None)])
+    hb = _expert("w1", xr, H, d)
+    ob = _expert("w3", xr, H, d)
+    hb = g.add("silu", [hb], [p + "hb"], shapes=[(H, K, None)])
+    acc = g.add("mul", [hb, ob], [p + "acc0"], shapes=[(H, K, None)])
+    acc4 = g.add("view", [acc], [p + "acc4"],
+                 attrs={"shape": [H, 1, K, None]}, shapes=[(H, 1, K, None)])
+    ye = _expert("w2", acc4, d, H)      # (n,K,d)
+    # 加权：topv (n,K) -> (n,K,1)，乘完沿 K 求和
+    pv = g.add("view", [topv], [p + "pv"], attrs={"shape": [1, K, None]},
+               shapes=[(1, K, None)])
+    wy = g.add("mul", [ye, pv], [p + "wy"], shapes=[(d, K, None)])
+    s = g.add("sum", [wy], [p + "s"], attrs={"axis": 1, "keepdims": True},
+              shapes=[(1, d, None)])
+    # ⚠ **残差不在这个算子里** —— `by1exec.op_moe` 返回的就是专家和
+    # （`out = zeros_like(xf)` 起手），残差是外面那个独立的 `Add` 算子。
+    # 第一版在这里 `add(x, s)`，于是残差被加了两次（实测 7.756e-01）。
+    out = g.add("view", [s], [p + "s2"], attrs={"shape": [d, None]},
+                shapes=[(d, None)])
+    # ── ③ 共享专家（Mixtral 没有，Qwen3 / GLM 有） ─────────────────
+    if a.get("shared"):
+        sh = g.add("matmul", [w("sw1"), x], [p + "sh1"], shapes=[(None, None)])
+        sh3 = g.add("matmul", [w("sw3"), x], [p + "sh3"], shapes=[(None, None)])
+        sh = g.add("silu", [sh], [p + "sh2"], shapes=[(None, None)])
+        se = g.add("mul", [sh, sh3], [p + "sh4"], shapes=[(None, None)])
+        se = g.add("matmul", [w("sw2"), se], [p + "se"], shapes=[(d, None)])
+        if a.get("shared_gate"):
+            gs = g.add("matmul", [w("shared_gate"), x], [p + "gs"],
+                       shapes=[(1, None)])
+            gs = g.add("sigmoid", [gs], [p + "gs1"], shapes=[(1, None)])
+            se = g.add("mul", [se, gs], [p + "se1"], shapes=[(d, None)])
+        out = g.add("add", [out, se], [p + "out2"], shapes=[(d, None)])
+    g.nodes[-1]["outs"] = [dst]
     return dst
 
 
