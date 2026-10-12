@@ -271,6 +271,52 @@ def _ref_score(kind):
     return f
 
 
+def _ref_top_k():
+    """每行前 k 大的**下标**（不是值）。并列取较小下标（稳定排序）——
+    和 `by1exec.op_moe._topk` 同一句：并列处取谁没有定义，两个后端会挑出
+    不同的，而那不是 bug（见 `ir.md 129`）。"""
+    np = _np()
+
+    def f(x, k):
+        return np.argsort(-x, axis=-1, kind="stable")[..., :int(k)]
+    return f
+
+
+def _ref_gather():
+    """`np.take_along_axis`：沿**最后轴**按 idx 取值。
+
+    MoE 用它从"选出来的下标"回取分数（`take_along_axis(sc, topi, -1)`）——
+    和 `get_rows` 分工不同：那个按**第 0 轴**整行取（专家权重就是它）。"""
+    np = _np()
+    return lambda x, idx: np.take_along_axis(x, np.asarray(idx).astype(np.int64),
+                                             axis=-1)
+
+
+def _ref_sum():
+    """沿 **ggml 视角**的 `axis` 求和（`keepdims` 由 attr 给）。
+
+    attr 用 ggml 视角写（和 `permute` / `slice` 同一套），ref 自己换算
+    exec 轴 —— 节点上不出现两种轴。ggml 那边对应 `ggml_sum_rows`（末轴）。"""
+    np = _np()
+
+    def f(x, axis, keepdims=True):
+        ax = x.ndim - 1 - int(axis)
+        return x.sum(axis=ax, keepdims=bool(keepdims))
+    return f
+
+
+def _ref_clamp_min():
+    """`max(x, m)`。MoE 归一化的分母要夹一下（`by1exec` 是 `max(sum,1e-9)`，
+    sigmoid 那两支是 `sum + 1e-20` —— 两种写法都在账上，别混）。"""
+    np = _np()
+    return lambda x, m: np.maximum(x, float(m))
+
+
+def _ref_div():
+    np = _np()
+    return lambda a, b: a / b
+
+
 def _ref_get_rows():
     np = _np()
     return lambda table, ids: table[ids]
@@ -342,6 +388,20 @@ PRIMS = {
     "sqrtsoftplus": {"ins": 1, "f": "√softplus(x)（DeepSeek V4 的打分函数）",
                      "ref": _ref_score("sqrtsoftplus"),
                      "src": "by1ir.moe_scores_array / ACT2FN"},
+    # **路由 / 归约那一族**（MoE 的"选专家"与"加权求和"）。
+    "top_k":     {"ins": 1, "f": "每行前 k 大的**下标**（并列取小）",
+                  "ref": _ref_top_k(),
+                  "src": "by1exec.op_moe._topk / ggml_top_k"},
+    "gather":    {"ins": 2, "f": "沿最后轴按 idx 取值（take_along_axis）",
+                  "ref": _ref_gather(),
+                  "src": "by1exec 的 np.take_along_axis"},
+    "sum":       {"ins": 1, "f": "沿 ggml 轴 axis 求和（keepdims 可关）",
+                  "ref": _ref_sum(),
+                  "src": "ggml_sum_rows / numpy .sum"},
+    "clamp_min": {"ins": 1, "f": "max(x, m)", "ref": _ref_clamp_min(),
+                  "src": "by1exec 的 np.maximum(分母, eps)"},
+    "div":       {"ins": 2, "f": "a / b（广播）", "ref": _ref_div(),
+                  "src": "ggml_div / numpy"},
     "rope":      {"ins": 2, "f": "每对维度转 θ_t = t·inv[i]（inv 见 rope_inv："
                                 "普通 / YaRN / llama3）；"
                                 "half 配对 (i,i+h)，interleaved 配对 (2i,2i+1)"
@@ -730,6 +790,17 @@ def run_graph(g, params, ids):
         elif prim in ("silu", "gelu_tanh", "gelu", "sigmoid",
                       "softmax", "softplus", "sqrtsoftplus"):
             out = PRIMS[prim]["ref"](a[0])
+        elif prim == "div":
+            out = PRIMS["div"]["ref"](a[0], a[1])
+        elif prim == "top_k":
+            out = PRIMS["top_k"]["ref"](a[0], at["k"])
+        elif prim == "gather":
+            out = PRIMS["gather"]["ref"](a[0], a[1])
+        elif prim == "sum":
+            out = PRIMS["sum"]["ref"](a[0], at["axis"],
+                                      bool(at.get("keepdims", True)))
+        elif prim == "clamp_min":
+            out = PRIMS["clamp_min"]["ref"](a[0], at["min"])
         elif prim == "rope":
             # [n, nh, hd]：位置在轴 -2 —— 转成 [..., n, hd] 再转回
             x = np.transpose(a[0], (1, 0, 2))
@@ -972,12 +1043,28 @@ def selftest():
         if not np.array_equal(PRIMS[k]["ref"](_xs),
                               moe_scores_array(k, _xs, np)):
             bad.append("打分函数 %s 与 by1ir 那份**不同源**" % k)
+    # ── 路由 / 归约那一族（MoE 的选专家与加权求和）── 手算 ──
+    _v = np.array([[1.0, 3.0, 2.0]])
+    if not np.array_equal(PRIMS["top_k"]["ref"](_v, 2), [[1, 2]]):
+        bad.append("top_k 对不上手算（[1,3,2] 的前 2 大是下标 1,2）")
+    if not np.array_equal(PRIMS["gather"]["ref"](_v, np.array([[0, 2]])),
+                          [[1.0, 2.0]]):
+        bad.append("gather 对不上手算")
+    if float(PRIMS["sum"]["ref"](_v, 0)[0][0]) != 6.0:
+        bad.append("sum（ggml 轴 0 = 最后轴）对不上手算")
+    if not np.array_equal(PRIMS["clamp_min"]["ref"](np.array([-1.0, 2.0]), 0.5),
+                          [0.5, 2.0]):
+        bad.append("clamp_min 对不上手算")
+    if not np.allclose(PRIMS["div"]["ref"](np.array([4.0, 6.0]),
+                                           np.array([2.0, 3.0])), [2.0, 2.0]):
+        bad.append("div 对不上手算")
     if bad:
         for b in bad:
             print("  [FAIL] " + b)
         return 1
-    print("  [PASS] 原语参考实现对拍手算（rms_norm / matmul / silu / rope / "
-          "softmax / softplus / sqrtsoftplus / sigmoid，并与 by1ir 同源）")
+    print("  [PASS] 原语参考实现对拍手算（rms_norm / matmul / silu / rope · "
+          "打分族 softmax/softplus/sqrtsoftplus/sigmoid 并与 by1ir 同源 · "
+          "路由归约 top_k/gather/sum/clamp_min/div）")
     return 0
 
 
