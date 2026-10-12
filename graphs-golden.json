@@ -1,6 +1,8 @@
 {
  "DeepSeek-R1-Distill-Qwen-1.5B.by1": "048672cef679eb64",
  "DeepSeek-R1-Distill-Qwen-7B.by1": "29d26b39eb378f49",
+ "Qwen3-VL-2B-Thinking.by1": "a80ba910de2af4e8",
+ "attn-fused-shaped.by1": "3f8d519b28d06e38",
  "embeddinggemma-2.by1": "4d14a5984e388803",
  "gemma-4-12B.by1": "9a2d451fa47804f7",
  "gemma-4-31B.by1": "241ac6d18ee2aa7f",

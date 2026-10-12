@@ -193,9 +193,46 @@ def _ref_soft_max():
     return f
 
 
+def _ref_soft_max_sink():
+    """`soft_max` + **一个 sink 槽**（attention sink）。
+
+    语义逐字照 `by1exec`：`concat([att, sk], -1)` -> softmax -> `[..., :-1]`。
+    也就是「在 key 维尾巴上拼一列 sink 再 softmax，然后扔掉那一列」——
+    于是注意力权重**不再和为 1**，sink 吸走一部分质量。
+    sink 是**逐头**的标量（形状 [头]），广播到 (头, query, 1)。
+    **顺序要紧**：先加 mask，再拼 sink —— sink 那一列没有 mask。
+    """
+    np = _np()
+
+    def f(a, mask, sink, scale):
+        z = a * scale + (mask if mask is not None else 0.0)
+        sk = np.broadcast_to(np.asarray(sink).reshape(-1, 1, 1),
+                             (z.shape[0], z.shape[1], 1))
+        z = np.concatenate([z, sk], axis=-1)
+        z = z - z.max(axis=-1, keepdims=True)
+        e = np.exp(z)
+        e = e / e.sum(axis=-1, keepdims=True)
+        return e[..., :-1]
+    return f
+
+
 def _ref_get_rows():
     np = _np()
     return lambda table, ids: table[ids]
+
+
+def _ref_slice():
+    """沿 **ggml 视角**的 `axis` 取 `[start, stop)`。
+
+    ggml 轴和 exec 轴是倒序的（`_exec_view` 那一课），所以 ref 自己换算：
+    `exec_axis = nd - 1 - axis`。**attr 用 ggml 视角写**，和 `permute` 的
+    `axes` 同一套约定 —— 节点上不出现两种轴。"""
+    np = _np()
+
+    def f(x, axis, start, stop):
+        ax = x.ndim - 1 - int(axis)
+        return np.take(x, np.arange(int(start), int(stop)), axis=ax)
+    return f
 
 
 #: **原语表（闭集）。**
@@ -243,6 +280,10 @@ PRIMS = {
     "soft_max":  {"ins": 2, "f": "softmax(a·scale + mask)，沿 key 轴",
                   "ref": _ref_soft_max(),
                   "src": "by1c.attention / ggml_soft_max_ext"},
+    "soft_max_sink": {"ins": 3,
+                      "f": "softmax(a·scale + mask)，但尾巴上多一个 sink 槽",
+                      "ref": _ref_soft_max_sink(),
+                      "src": "by1exec.attention 的 concat+softmax / by1c 的 sink 分支"},
     "get_rows":  {"ins": 2, "f": "out[i] = table[ids[i]]", "ref": _ref_get_rows(),
                   "src": "ggml_get_rows / torch nn.Embedding"},
     # 布局原语：语义是**数据重解释**，不是数学。
@@ -252,6 +293,11 @@ PRIMS = {
                   "src": "transpose / ggml_permute"},
     "cont":      {"ins": 1, "f": "按当前视图物化为连续内存", "ref": None,
                   "src": "ggml_cont / numpy .copy()"},
+    # **切片**：融合权重拆回分块要它（`qkv` -> wq/wk/wv）。
+    # attr 的 `axis` 按 **ggml 视角**（和 permute 同一套），ref 自己换算。
+    "slice":     {"ins": 1, "f": "沿 ggml 轴 axis 取 [start, stop)",
+                  "ref": _ref_slice(),
+                  "src": "ggml_view_* 的 offset / numpy 切片"},
 }
 
 # **还没收编的原语**（各就各位，谁也不冒充谁）：
@@ -391,28 +437,53 @@ def _lower_attn(g, p, x, dst, w, a, d):
     if int(a["out_dim"]) != nh * hd:
         raise SystemExit("  [不支持] out_dim != q*head_dim 的注意力"
                          "（输出重排还没收编）")
-    for flag, what in (("q_gate", "q_gate"), ("sink", "sink"),
-                       ("head_gate", "head_gate"), ("qkv_fused", "qkv_fused")):
+    for flag, what in (("q_gate", "q_gate"), ("head_gate", "head_gate")):
         if a.get(flag) and (flag != "head_gate" or a.get(flag) != "off"):
             raise SystemExit("  [不支持] Attention.%s 还没有 lowering" % what)
     if a.get("yarn") or float(a.get("rope_scale", 1.0)) != 1.0:
         raise SystemExit("  [不支持] yarn / rope_scale != 1 还没有 lowering")
     bias = bool(a.get("bias"))
-    q = g.add("matmul", [w("wq"), x], [p + "q0"], shapes=[(nh * hd, None)])
-    kq_ = g.add("matmul", [w("wk"), x], [p + "k0"], shapes=[(nkv * hd, None)])
+    # **融合 q/k/v 只是布局**：`by1exec` 的做法是把它拆回 wq/wk/wv/wo，
+    # 「后面一格不动」—— 这里同样拆，拆的是**权重叶子**（`slice` 原语）。
+    # 权重在 exec 视角是 (out, in)，节点 attr 按 ggml 视角写（[in, out]），
+    # 所以**输出那条轴是 axis 1**；一维的 bias 两条视角同轴，是 axis 0。
+    if a.get("qkv_fused"):
+        if a.get("kv_tie"):
+            raise SystemExit("  [不支持] qkv_fused 与 kv_tie 同时出现")
+        _qa, _kb = nh * hd, nkv * hd
+
+        def _cut(src, s0, s1, dst, ax):
+            return g.add("slice", [w(src)], [p + dst],
+                         attrs={"axis": ax, "start": s0, "stop": s1})
+        WQ = _cut("qkv", 0, _qa, "wqs", 1)
+        WK = _cut("qkv", _qa, _qa + _kb, "wks", 1)
+        WV = _cut("qkv", _qa + _kb, _qa + 2 * _kb, "wvs", 1)
+        WO = w("proj")
+        BQ = _cut("qkv.bias", 0, _qa, "wqbs", 0) if bias else None
+        BK = _cut("qkv.bias", _qa, _qa + _kb, "wkbs", 0) if bias else None
+        BV = (_cut("qkv.bias", _qa + _kb, _qa + 2 * _kb, "wvbs", 0)
+              if bias else None)
+        BO = w("proj.bias") if bias else None
+    else:
+        WQ, WK, WV, WO = w("wq"), w("wk"), w("wv"), w("wo")
+        BQ = w("wq.bias") if bias else None
+        BK = w("wk.bias") if bias else None
+        BV = w("wv.bias") if bias else None
+        BO = w("wo.bias") if bias else None
+    q = g.add("matmul", [WQ, x], [p + "q0"], shapes=[(nh * hd, None)])
+    kq_ = g.add("matmul", [WK, x], [p + "k0"], shapes=[(nkv * hd, None)])
     if bias:
-        q = g.add("add", [q, w("wq.bias")], [p + "q1"], shapes=[(nh * hd, None)])
-        kq_ = g.add("add", [kq_, w("wk.bias")], [p + "k1"],
-                    shapes=[(nkv * hd, None)])
+        q = g.add("add", [q, BQ], [p + "q1"], shapes=[(nh * hd, None)])
+        kq_ = g.add("add", [kq_, BK], [p + "k1"], shapes=[(nkv * hd, None)])
     # **kv_tie：v 是 k 的原始投影** —— 分叉在 norm/rope 之前（判卷人
     # by1exec：`v = kraw`）。
     if a.get("kv_tie"):
         v = g.add("view", [kq_], [p + "v3"],
                   attrs={"shape": [hd, nkv, None]}, shapes=[(hd, nkv, None)])
     else:
-        v = g.add("matmul", [w("wv"), x], [p + "v0"], shapes=[(nkv * hd, None)])
+        v = g.add("matmul", [WV, x], [p + "v0"], shapes=[(nkv * hd, None)])
         if bias:
-            v = g.add("add", [v, w("wv.bias")], [p + "v1"],
+            v = g.add("add", [v, BV], [p + "v1"],
                       shapes=[(nkv * hd, None)])
         v = g.add("view", [v], [p + "v3"], attrs={"shape": [hd, nkv, None]},
                   shapes=[(hd, nkv, None)])
@@ -449,8 +520,17 @@ def _lower_attn(g, p, x, dst, w, a, d):
     kq = g.add("batch_matmul", [k3, q3], [p + "kq"],
                shapes=[(None, None, nh)])
     win = int(a.get("window") or 0)
-    kq = g.add("soft_max", [kq, p + "mask_%d" % win], [p + "sm"],
-               attrs={"scale": 1.0 / (hd ** 0.5)}, shapes=[(None, None, nh)])
+    _sc = 1.0 / (hd ** 0.5)
+    if a.get("sink"):
+        # **attention sink**：softmax 的 key 维尾巴上多一个槽
+        # （by1exec 的 `concat([att, sk], -1)` -> softmax -> `[..., :-1]`）。
+        # 它让权重**不再和为 1** —— 所以不能拿普通 soft_max 冒充。
+        kq = g.add("soft_max_sink", [kq, p + "mask_%d" % win, w("sink")],
+                   [p + "sm"], attrs={"scale": _sc},
+                   shapes=[(None, None, nh)])
+    else:
+        kq = g.add("soft_max", [kq, p + "mask_%d" % win], [p + "sm"],
+                   attrs={"scale": _sc}, shapes=[(None, None, nh)])
     # v^T：[hd, 头, token] -> [token, hd, 头]
     vt = g.add("permute", [v], [p + "v3p"], attrs={"axes": [0, 2, 1]},
                shapes=[(hd, None, nkv)])
@@ -465,9 +545,9 @@ def _lower_attn(g, p, x, dst, w, a, d):
                                shapes=[(hd, nh, None)])],
                 [p + "att"], attrs={"shape": [nh * hd, None]},
                 shapes=[(nh * hd, None)])
-    out = g.add("matmul", [w("wo"), att], [p + "o0"], shapes=[(d, None)])
+    out = g.add("matmul", [WO, att], [p + "o0"], shapes=[(d, None)])
     if bias:
-        out = g.add("add", [out, w("wo.bias")], [dst], shapes=[(d, None)])
+        out = g.add("add", [out, BO], [dst], shapes=[(d, None)])
     else:
         g.nodes[-1]["outs"] = [dst]
 
@@ -586,10 +666,18 @@ def run_graph(g, params, ids):
             w = int(n["ins"][1].rsplit("_", 1)[-1])
             m = _mask(a[0].shape[1], w)
             out = PRIMS["soft_max"]["ref"](a[0], m, at["scale"])
+        elif prim == "soft_max_sink":
+            # 同 soft_max，但第三个输入是逐头的 sink 标量
+            w = int(n["ins"][1].rsplit("_", 1)[-1])
+            m = _mask(a[0].shape[1], w)
+            out = PRIMS["soft_max_sink"]["ref"](a[0], m, a[2], at["scale"])
         elif prim == "view":
             out = _exec_view(a[0], at["shape"])
         elif prim == "permute":
             out = _exec_permute(a[0], at["axes"])
+        elif prim == "slice":
+            out = PRIMS["slice"]["ref"](a[0], at["axis"], at["start"],
+                                        at["stop"])
         elif prim == "cont":
             # cont 不带 shape = 纯物化；带 shape = 物化 + 按 ggml 视角
             # 重排（合头那一步的 cont_2d 就是它）
@@ -655,17 +743,19 @@ def e2e(models=None, mem_gb=None):
     ex = _load("by1exec")
     budget = E2E_MEM_GB if mem_gb is None else float(mem_gb)
     names = models or sorted(by1io.read_json(GOLDEN).keys())
-    bad, skipped, ran = [], [], []
+    bad, skipped, ran, unlowered = [], [], [], []
     for f in names:
         path = _os.path.join(by1paths.MODELS, f)
         try:
             _r, info = bc.check(path)
             ir = cg.compile_ir(info)
-        except Exception:
+        except Exception as e:
+            unlowered.append((f, "%s: %s" % (type(e).__name__, e)))
             continue
         try:
             g = lower_model(ir, f)
-        except SystemExit:
+        except SystemExit as e:
+            unlowered.append((f, str(e).strip().splitlines()[0]))
             continue
         gb = param_gb(ir, bir)
         if gb > budget:
@@ -696,6 +786,13 @@ def e2e(models=None, mem_gb=None):
     if skipped:
         tail = "（%d 份超预算跳过，合计需 %.2f GB；`--mem-gb N` 可抬预算）" % (
             len(skipped), sum(g for _f, g in skipped))
+    # **降不动也要说，而且算失败**：golden 里列的模型降不动，说明快照
+    # 过期了；显式点名的那几个更不用说。**静默丢弃会让"我验了 A 和 B"
+    # 悄悄变成"我验了 A"** —— 和 `ir.md 133` 那个"32 个只验了 30 个"
+    # 是同一族。第一版就是这样：点名的 `gpt-oss-shaped` 被吞掉了。
+    for f, why in unlowered:
+        print("  [FAIL] %s 降不动：%s" % (f, why))
+    bad.extend(f for f, _w in unlowered)
     if bad:
         for b in bad:
             print("  [FAIL] " + b)
