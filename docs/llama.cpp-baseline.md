@@ -101,3 +101,17 @@ $IMAGE = "path/to/test-image.png"
 Set `IMAGE` to a saved test image and record its SHA-256. Run text generation, image input, and embedded MTP as separate checks. `llama-bench` does not measure tokenization or sampling, and it does not report a reliable peak-VRAM value; capture GPU memory with an external sampler during the run. The run is pending a GPU instance. These commands are the frozen recipe, not measured results.
 
 将 `IMAGE` 设为保存好的测试图片路径，并记录该图片的 SHA-256。文本生成、图像输入和内嵌 MTP 分别验收。`llama-bench` 不包含 tokenizer 和采样耗时，也不提供可靠的峰值显存；运行时需用外部工具采样显存。当前仍待 GPU 实例运行。以上命令是已固定的复现配方，不是实测结果。
+
+## 基线判卷人 / Baseline judges
+
+配方本身由 `src/checks/by1llama.py` 当判卷人（每项判据可机器复核）：
+
+- `record` —— 基线记录表：tag/commit、编译器、CUDA、GPU、OS 逐项
+  采集，**每个值带来源命令**，且与本文的 Pinned inputs 对账（不符即红）。
+- `gguf-check --dir models/qwen38-gguf` —— 三个固定 GGUF 对 sha256；
+  缺/坏/没 pin 都点名。
+- `logits-compare ref got` —— 两个 logits dump **逐位**比较（rc1 判据
+  "llama-cli logits 逐位"落在这），报告定位首个分歧值。
+- `logits-run --gguf …` —— 跑 llama.cpp 产 dump（要构建；GPU 日跑）。
+
+以上工具的输出都是报告文件 —— **命令、值、判据三样同框**，复核不用问人。

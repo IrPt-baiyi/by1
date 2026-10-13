@@ -1,6 +1,6 @@
 # 这个仓库里每个文件是干什么的
 
-> 327 个跟踪文件。按"你会想找什么"分组，不按字母表。
+> 328 个跟踪文件。按"你会想找什么"分组，不按字母表。
 >
 > **这份文档是生成的**：`python src/by1files.py --write`。
 > 文件清单、每组的个数、每个文件的一句话都从目录树和 docstring 来 ——
@@ -43,7 +43,7 @@
 
 ---
 
-## `src/` —— 83 个模块 + 1 个非 .py
+## `src/` —— 84 个模块 + 1 个非 .py
 
 ### 底座（留在 src/ 顶层）
 
@@ -147,6 +147,7 @@
 | `by1gpubench.py` | 真实权重与发布方 Transformers 模型的顺序加载、数值与性能对比 |
 | `by1gputrain.py` | 用真实 Qwen3-0.6B 权重对比 CUDA 反向传播和一次更新 |
 | `by1gpuday.py` | GPU 日单入口**：一条命令把租卡那天该跑的按序跑完 |
+| `by1llama.py` | llama.cpp 基线记录、GGUF 清单校验、logits 逐位对拍 |
 | `by1sync.py` | 推导 ↔ 契约 的同步报表**（1.0.0-rc0 的 T0.2） |
 | `by1mutate.py` | 变异反例库**（1.0.0-rc0 的 T0.3） |
 | `by1complete.py` | 完整模型验收：参数共享、bias、梯度、视觉、MTP 与严格权重加载 |
@@ -368,7 +369,7 @@
 | `ISTA-DASLab__Qwen3.8-27B-GSQ-RCO-GGUF.IQ2_S-mtp.alloc.txt` | 14 | |
 
 
-## `src/checks/` —— 30 个
+## `src/checks/` —— 31 个
 
 | 文件 | 用途 |
 |---|---|
@@ -391,6 +392,7 @@
 | `by1gputrain.py` | 用真实 Qwen3-0.6B 权重对比 CUDA 反向传播和一次更新 |
 | `by1irentry.py` | 三个后端必须能从 IR 入口跑通**，而不是只从 .by1 入口 |
 | `by1lint.py` | 只盯这个项目真正怕的那几类 |
+| `by1llama.py` | llama.cpp 基线记录、GGUF 清单校验、logits 逐位对拍 |
 | `by1mutate.py` | 变异反例库**（1.0.0-rc0 的 T0.3） |
 | `by1opdiff.py` | 逐个算子**比 NumPy 和 PyTorch |
 | `by1oracle.py` | 执行神谕：把 .by1 声明的状态策略与**真实前向的行为**对拍 |
