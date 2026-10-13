@@ -125,6 +125,13 @@ WANT = [
     ('by1stacks.py', '栈与逐层覆盖'),
     ('by1state.py', 'state 块（KV/SSM 状态声明）'),
     ('by1tens.py', '张量名与形状的推导'),
+    # **closure_missing() 的三笔账**（2026-10-14）：`by1lower` 现在模块级
+    # import `by1quant`（Q1 的量化校验）、`by1exec` 要 `by1graph.rope_inv`、
+    # 完整后端链要 `by1full` —— 传递边长出来了，清单没跟上，包打出来
+    # 就是 ModuleNotFoundError。少一个就红，靠的就是 closure_missing()。
+    ('by1full.py', '完整架构 -> Transformers 模型（视觉 / MTP / 量化装载）'),
+    ('by1graph.py', '原语图：IR -> 规范化原语（语义的唯一定义 + 图求值）'),
+    ('by1quant.py', '量化 checkpoint 的存储契约与 manifest 审计'),
     ('gpt2-tiny.by1', '上一代的缩小版（无门控 FFN + LayerNorm + 查表位置）'),
     ('ext-demo.c', '示例外部机制：两个符号，证「不用改编译器」'),
     ('raw.py', '逃生舱的示例实现（配 raw-escape.by1）'),
