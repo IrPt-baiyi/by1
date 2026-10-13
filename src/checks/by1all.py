@@ -498,8 +498,12 @@ def note_of(st, out, line, empty='（没有判定行）'):
 # 藏起来的缺口和没发现过的缺口一样糟。
 KNOWN = [
     ('tensors torch.module Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL.by1',
-     '那 25 个张量在 HF 的 model-00009 分片里，而那个分片的头是全零 —— '
-     '镜像的问题，不是 by1 的'),
+     '那 25 个张量在 model-00009 分片里读不出形状。'
+     '**2026-10-14 复查改判：不是镜像坏分片，是上游仓库没了** —— '
+     'hf-mirror 与 HF 直连都 401（连 config.json 和 API 都 401），'
+     'ModelScope 404：nerkyor/Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL '
+     '已下架或转私有。这 25 个张量的形状/dtype 只能信 .by1 声明，'
+     '除非作者恢复仓库，否则对拍永久缺口。refs 仍是 728/753'),
     # **原来这里有一条 `C gpt2-tiny.by1`**（"C 还没有 LayerNorm 和学习式
     # 位置表"）。现在实现了，所以撤掉。
     #
