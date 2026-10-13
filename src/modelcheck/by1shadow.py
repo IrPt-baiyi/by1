@@ -332,7 +332,43 @@ def smoke(dtype='float32'):
         gb = by1_model.generate(ids, do_sample=False, min_new_tokens=8, max_new_tokens=8)
     if not torch.equal(ga, gb):
         raise RuntimeError('贪心生成 token 不一致')
-    print('  logits max|Δ| = %.3e，贪心 token 一致' % difference)
+    print('  正向 OK：logits max|Δ| = %.3e，贪心 token 一致' % difference)
+
+    # ── 反向半段：篡改必须当场红 ──────────────────────────────────
+    # 「全绿」只有在「弄坏必红」成立时才算数。两个方向都试：
+    # ① checkpoint 侧的 config 被篡改 ② 声明侧被篡改。
+    def must_fail(what, fn):
+        try:
+            fn()
+        except Exception as exc:
+            print('  反向 OK：%s 被抓住 -> %s' % (what, str(exc)[:90]))
+            return
+        raise RuntimeError('反向失效：%s 篡改后竟然过了 —— 全绿是空转的' % what)
+
+    def tamper(text):
+        data = json.loads(text)
+        for key in ('layer_norm_epsilon', 'rms_norm_eps', 'rms_epsilon'):
+            if key in data:
+                return key, json.dumps({**data, key: float(data[key]) * 7 + 0.01})
+        raise RuntimeError('找不到可篡改的 eps 字段，反向半段没法做')
+
+    print('  反向半段：篡改 config / 声明，都必须当场红……')
+    key, bad_text = tamper(config_text)
+    bad_out = by1paths.root('build', 'shadow-smoke-bad')
+    build(bad_text, family, mtp, bad_out, dtype=dtype, verbose=False)
+    must_fail('篡改 checkpoint config（%s）' % key,
+              lambda: by1full.load_model(family, declared, mtp, str(bad_out),
+                                         local_files_only=True))
+    bad_declared = json.loads(json.dumps(declared))
+    for probe in ('layer_norm_epsilon', 'rms_norm_eps', 'rms_epsilon'):
+        if probe in bad_declared:
+            bad_declared[probe] = float(bad_declared[probe]) * 7 + 0.01
+            break
+    else:
+        raise RuntimeError('声明里找不到可篡改的 eps 字段，反向半段没法做')
+    must_fail('篡改声明（与 checkpoint 不一致）',
+              lambda: by1full.load_model(family, bad_declared, mtp, str(out),
+                                         local_files_only=True))
     print('  验过：%s' % '；'.join(manifest['verified']))
     print('  没验：%s' % '；'.join(manifest['not_verified']))
     return manifest
