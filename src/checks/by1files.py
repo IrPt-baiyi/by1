@@ -158,6 +158,8 @@ OVERRIDE = {
     '.gitignore': '产物、权重、缓存、临时探针',
     'models.tsv': '**手写的模型清单**：长名 / 短名 / HF id / 说明。命名规矩写在文件头',
     'ir-spec.md': '**生成物**：IR 规格（字段、必填、语义、闭集）。`by1ir.py --spec`',
+    'prims-spec.md': '**生成物**：原语数值规格（公式/形状/dtype/边界/出处）。'
+                     '`by1graph.py --spec`；键集与原语表 import 时硬断言对账',
     'models.md': '**生成物**：所有模型的架构对比表。`by1cmp.py --md`',
     'README.md': '门面。是什么、怎么跑、数据从哪来',
     'TESTING.md': '给**想验它的人**看：三档命令、每档耗时、'

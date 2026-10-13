@@ -697,7 +697,112 @@ PRIMS = {
                   "src": "ggml_view_* 的 offset / numpy 切片"},
 }
 
-# **还没收编的机制**（各就各位，谁也不冒充谁）：
+#: **B1 数值规格：形状 / dtype / 边界**（公式与状态更新在上面每条的 `f` 里）。
+#:
+#: 这三样原来只活在 ref() 的代码里 —— 代码是**给机器的规格**，人读的
+#: 规格没有，于是"eps>0 这种前提在哪儿"只能翻实现。现在每个原语都有：
+#:   shape  输出形状规则（相对输入）
+#:   dtype  dtype 传播规则
+#:   bound  数值前提 / 边界 / 不变量（写得出反例的那半句）
+#:
+#: **拼进 PRIMS，不当第二份事实** —— 拼完立刻对账（硬断言）：
+#: 键集必须逐个相等，多一个少一个都当场炸。A3-1 的先例：两份事实
+#: 的漂移只能是检查错误，不能是运行时惊讶。
+_SPEC = {
+    "add": {"shape": "out = broadcast(ins0, ins1)", "dtype": "浮点逐元，两入同 dtype",
+            "bound": "广播规则按 numpy；不接受 dtype 提升"},
+    "mul": {"shape": "out = broadcast(ins0, ins1)", "dtype": "浮点逐元，两入同 dtype",
+            "bound": "同 add"},
+    "scale": {"shape": "out = ins0", "dtype": "浮点逐元", "bound": "s 为标量属性"},
+    "matmul": {"shape": "x[..,i,k] · w[j,k]ᵀ -> out[..,i,j]；w 恒为 2-D [out,in]",
+               "dtype": "浮点；乘加语义按 ref 的 float32 累加",
+               "bound": "k 维必须相等（不等是形状错，不是数值差）"},
+    "batch_matmul": {"shape": "a[β//r,i,k]·b[β,j,k] -> out[β,i,j]，r = B/b_a",
+                     "dtype": "浮点；同 matmul",
+                     "bound": "r 必须整除；r>1 即 GQA 广播"},
+    "rms_norm": {"shape": "w = [d]；out = ins0", "dtype": "浮点逐元",
+                 "bound": "eps > 0；mean 沿最后一轴；one_plus 二选一见 f"},
+    "layer_norm": {"shape": "w = b = [d]；out = ins0", "dtype": "浮点逐元",
+                   "bound": "eps > 0；μ/var 沿最后一轴"},
+    "silu": {"shape": "out = ins0", "dtype": "浮点逐元", "bound": "无前提"},
+    "gelu_tanh": {"shape": "out = ins0", "dtype": "浮点逐元",
+                  "bound": "近似式系数是规格的一部分（0.044715, √(2/π)）"},
+    "gelu": {"shape": "out = ins0", "dtype": "浮点逐元", "bound": "erf 精确式"},
+    "sigmoid": {"shape": "out = ins0", "dtype": "浮点逐元", "bound": "无前提"},
+    "softmax": {"shape": "out = ins0（沿最后轴归一）", "dtype": "浮点逐元",
+                "bound": "减 max 保稳；Σ 规范化"},
+    "softplus": {"shape": "out = ins0", "dtype": "浮点逐元",
+                 "bound": "数值稳定式（max(x,0)+log1p(e^-|x|)）是规格的一部分"},
+    "sqrtsoftplus": {"shape": "out = ins0", "dtype": "浮点逐元",
+                     "bound": "√(softplus(x))；softplus 稳定式同上"},
+    "top_k": {"shape": "out = ins0[.., :k] 的**下标**", "dtype": "出 int 下标",
+              "bound": "1 ≤ k ≤ 尾维；**并列取小下标**（三后端同一句）"},
+    "gather": {"shape": "沿最后轴对齐 idx 形状", "dtype": "出同 ins0 的值",
+               "bound": "idx ∈ [0, 尾维)"},
+    "sum": {"shape": "沿 ggml 轴 axis 归约；keepdims 决定保不保轴",
+            "dtype": "浮点；累加语义按 ref",
+            "bound": "axis 合法；keepdims 默认开"},
+    "clamp_min": {"shape": "out = ins0", "dtype": "浮点逐元", "bound": "m 为标量属性"},
+    "clamp_max": {"shape": "out = ins0", "dtype": "浮点逐元", "bound": "m 为标量属性"},
+    "add_scalar": {"shape": "out = ins0", "dtype": "浮点逐元", "bound": "c 为标量属性"},
+    "one_hot": {"shape": "宽度 = ins1 的最后一维；ids 形状在前",
+                "dtype": "出 float（1.0 / 0.0）",
+                "bound": "ids ∈ [0, 宽度)"},
+    "masked_fill": {"shape": "out = ins0（m 广播对齐）", "dtype": "值 v 的 dtype",
+                    "bound": "m > 0 取 x，否则取 v —— **边界是 0 不是 0.5**"},
+    "le": {"shape": "out = broadcast(ins0, ins1)", "dtype": "出 float（1.0 / 0.0）",
+           "bound": "<= 是含等号的（因果比较靠它）"},
+    "div": {"shape": "out = broadcast(ins0, ins1)", "dtype": "浮点逐元",
+            "bound": "b ≠ 0；用途里配 clamp_min 护栏"},
+    "concat": {"shape": "沿 ggml 轴 axis 接；其余轴必须相等",
+               "dtype": "浮点；两入同 dtype", "bound": "轴不等是形状错"},
+    "conv1d_causal": {"shape": "核 [c,k]；out[..,t,c]，左补 k-1 后取有效段",
+                      "dtype": "浮点；逐通道一份核",
+                      "bound": "**激活不在这里**（下游原语的事）"},
+    "delta_rule": {"shape": "q/k/v [t,c]；beta/decay [t,c] 或 [t,1]；out [t,c]",
+                   "dtype": "浮点；状态 st 在 float 语义下逐 token 更新",
+                   "bound": "状态更新见 f 的逐 token 式；零初始"},
+    "ssm_scan": {"shape": "d [t,c]；A [c]；x [t,c]；B/C [t,c]；D [c]；out [t,c]",
+                 "dtype": "浮点；状态 st 逐 token 更新",
+                 "bound": "状态更新见 f 的递推式；零初始"},
+    "exp": {"shape": "out = ins0", "dtype": "浮点逐元", "bound": "无前提（溢出即真溢出）"},
+    "log1p": {"shape": "out = ins0", "dtype": "浮点逐元", "bound": "x > -1"},
+    "sqrt": {"shape": "out = ins0", "dtype": "浮点逐元", "bound": "x ≥ 0"},
+    "l2_norm": {"shape": "out = ins0（沿最后轴）", "dtype": "浮点逐元",
+                "bound": "eps > 0；**sum 不是 mean**（均值那支是现拼的）"},
+    "repeat": {"shape": "沿 ggml 轴 axis 整块重复 reps 次", "dtype": "同 ins0",
+               "bound": "reps ≥ 1；axis 合法"},
+    "rope": {"shape": "x [n, nh, hd]（exec 视角转置进出）；inv 长度 hd/2",
+             "dtype": "浮点逐元",
+             "bound": "n_dims ≤ hd；pairing ∈ {half, interleaved}；"
+                      "half=(i,i+h)、interleaved=(2i,2i+1) 且拼接输出"},
+    "soft_max": {"shape": "a [头,q,k] -> out 同形；mask [q,k]",
+                 "dtype": "浮点逐元",
+                 "bound": "scale > 0；掩码规则 j<=i 且 j>i-window（window 取自 mask 名）"},
+    "soft_max_sink": {"shape": "同 soft_max；sink 为逐头标量（多一槽）",
+                      "dtype": "浮点逐元",
+                      "bound": "同 soft_max；sink 槽参与归一"},
+    "get_rows": {"shape": "out = ids 形状 + table 行宽", "dtype": "出同 table",
+                 "bound": "ids ∈ [0, 行数)"},
+    "view": {"shape": "总数不变、元素序不变", "dtype": "同 ins0",
+             "bound": "总数必须相等（不等是形状错）"},
+    "permute": {"shape": "轴置换（带步长的视图）", "dtype": "同 ins0",
+                "bound": "axes 必须是 0..ndim-1 的排列"},
+    "cont": {"shape": "物化为连续；带 shape 时同时重解释",
+             "dtype": "同 ins0", "bound": "无前提"},
+    "slice": {"shape": "沿 ggml 轴 axis 取 [start, stop)", "dtype": "同 ins0",
+              "bound": "0 ≤ start < stop ≤ 轴长"},
+}
+for _name, _spec in _SPEC.items():
+    PRIMS[_name].update(_spec)
+_missing_spec = set(PRIMS) - set(_SPEC)
+_extra_spec = set(_SPEC) - set(PRIMS)
+# **不用 assert** —— `python -O` 会把它整条删掉，不变量就静默消失了
+# （by1lint 的 ⑤ 号规则盯的就是这个）。要炸就真炸。
+if _missing_spec or _extra_spec:
+    raise RuntimeError(
+        "B1 规格与原语表对不上账 —— 缺 %s 多 %s（两份事实漂移了，"
+        "这正是 B1 要灭的病）" % (sorted(_missing_spec), sorted(_extra_spec)))
 #   MoE   ：四种选法 + expert_bias + gptoss 激活全收编
 #   KDA   ：已收编（低秩门 / GVA / gate_lower 三支）
 #   MLA   ：已收编（非稀疏）；**SparseMLA（index_heads）拒绝** ——
@@ -2430,10 +2535,45 @@ def _load(name):
     return m
 
 
+def spec(write=False):
+    """B1 规格文档：从 PRIMS（f/shape/dtype/bound/src）生成人读的规格表。
+
+    **生成物** —— 手改会过期；改措辞改 `PRIMS` / `_SPEC`。
+    对账是硬断言（import 时），所以这份文档**不可能**比原语表少条目。
+    """
+    out = ["# by1 原语数值规格（生成物）", "",
+           "> **这份文档是生成的**：`python src/by1graph.py --spec`（`--write` 落盘）。",
+           "> 改措辞改 `src/by1graph.py` 的 `PRIMS` / `_SPEC`；键集对账是 import 时的",
+           "> 硬断言，缺一个条目整个库都跑不起来 —— 所以它不可能比原语表少。",
+           ">", "> 每条的**公式**与**状态更新**在 `f`；`ref()` 是可执行规格",
+           "> （`by1graph.py --selftest` 对手算逐条盯着）。", "",
+           "| 原语 | 入 | 公式（f） | 形状 | dtype | 边界 / 不变量 | 出处（搬家前的旧家） |",
+           "|---|---|---|---|---|---|---|"]
+    for name in PRIMS:
+        p = PRIMS[name]
+        row = [name, str(p["ins"]), p["f"], p["shape"], p["dtype"],
+               p["bound"], p["src"]]
+        out.append("| " + " | ".join(c.replace("|", "\\|") for c in row) + " |")
+    out += ["", "共 %d 个原语（闭集）。" % len(PRIMS),
+            "布局原语（view/permute/cont）的语义是**数据重解释**，不是数学。",
+            "还没收编的机制见 `UNLOWERED`（Raw / External 逃生舱按设计不收编）。", ""]
+    text = "\n".join(out)
+    if write:
+        path = by1paths.root("docs", "prims-spec.md")
+        with open(path, "w", encoding="utf-8", newline="\n") as f:
+            f.write(text)
+        print("  写了 %s（%d 个原语）" % (path, len(PRIMS)))
+        return 0
+    print(text)
+    return 0
+
+
 def main(argv=None):
     argv = argv if argv is not None else _sys.argv[1:]
     if "--selftest" in argv:
         return selftest()
+    if "--spec" in argv:
+        return spec(write="--write" in argv)
     if "--golden" in argv:
         return golden(write="--write" in argv)
     if "--e2e" in argv:
