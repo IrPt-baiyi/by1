@@ -210,8 +210,11 @@ def benchmark(filename, repo, args, torch, T, hub, work, save, row):
     reference_class = T.AutoModelForImageTextToText if family == 'qwen3_5' else T.AutoModelForCausalLM
     row['runs'] = {}
     row['phase'] = 'original-load'
+    row['load_seconds'] = {}
     save()
+    _t_load = time.monotonic()
     original, loading = reference_class.from_pretrained(checkpoint, output_loading_info=True, **kwargs)
+    row['load_seconds']['original'] = time.monotonic() - _t_load
     extra = [k for k in loading.get('unexpected_keys', []) if not (family == 'qwen3_5' and k.startswith('mtp.'))]
     require(not extra and not loading.get('missing_keys') and not loading.get('mismatched_keys'),
             'Original loading is incomplete: ' + str(loading))
@@ -249,9 +252,11 @@ def benchmark(filename, repo, args, torch, T, hub, work, save, row):
     torch.cuda.empty_cache()
     row['phase'] = 'by1-load'
     save()
+    _t_load = time.monotonic()
     model = by1full.load_model(family, cfg, mtp, checkpoint,
                                quantization=(quantization if native_quantization else None),
                                **kwargs).eval()
+    row['load_seconds']['by1'] = time.monotonic() - _t_load
     require(all(p.is_cuda for p in model.parameters()), 'by1 loader has CPU parameters')
     if native_quantization:
         row['by1_quantized_storage'] = model._by1_quantization_audit

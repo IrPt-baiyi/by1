@@ -1,6 +1,6 @@
 # 这个仓库里每个文件是干什么的
 
-> 325 个跟踪文件。按"你会想找什么"分组，不按字母表。
+> 327 个跟踪文件。按"你会想找什么"分组，不按字母表。
 >
 > **这份文档是生成的**：`python src/by1files.py --write`。
 > 文件清单、每组的个数、每个文件的一句话都从目录树和 docstring 来 ——
@@ -43,7 +43,7 @@
 
 ---
 
-## `src/` —— 82 个模块 + 1 个非 .py
+## `src/` —— 83 个模块 + 1 个非 .py
 
 ### 底座（留在 src/ 顶层）
 
@@ -171,6 +171,7 @@
 | `by1train.py` | 按 .by1 的描述搭一个模型，训练它，然后让它写字 |
 | `by1dev.py` | 设备无关性**的判卷人 |
 | `by1quant.py` | 量化 checkpoint 的存储契约与权重/scale manifest 审计 |
+| `by1q2schema.py` | Q2 报告 schema：指标与容差写死在一处，报告必须带 |
 | `by1shadow.py` | 影子 checkpoint：真格式、随机值，数值对拍不需要下载权重 |
 
 ### `data/` —— 抓数据 / 推模型
@@ -261,7 +262,7 @@
 | `deepseek-v4.1-flash.by1` | 验收 #5（最难的一个）。写它的目的就是逼出语法缺口，所以每一处当前草案 |
 | `qwen3.8-flash-next.by1` | model Qwen3.8-Flash-Next { |
 
-## `gpu/` —— 4 个
+## `gpu/` —— 5 个
 
 只有显卡上能跑的那部分。
 
@@ -269,6 +270,7 @@
 |---|---|
 | `README.md` | 门面。是什么、怎么跑、数据从哪来 |
 | `by1kda.py` | KDA（Kimi Delta Attention）的验证。它在 `by1check` 里是独立种类，不是 GDN |
+| `dl-q2.sh` | Q2 权重断点续传下载 —— 大文件只下一次，中断了重跑就续 |
 | `requirements.txt` | 依赖（和本地不同：要 CUDA 版的 torch） |
 | `run.sh` | 入口 |
 
@@ -443,7 +445,7 @@
 | `by1tens.py` | 张量契约实例化：把契约按等价类求值出形状 |
 | `by1vocab.py` | 真实数据的词汇表。模式从这里来，不从想象来 |
 
-## `src/modelcheck/` —— 16 个
+## `src/modelcheck/` —— 17 个
 
 | 文件 | 用途 |
 |---|---|
@@ -456,6 +458,7 @@
 | `by1mem.py` | 从 IR 的 state 声明推出**内存计划**，并可选地用真实模型核它 |
 | `by1mla.py` | MLA 的差分验证 |
 | `by1moe.py` | MoE 路由的差分验证：**分组选法** + **打分函数** |
+| `by1q2schema.py` | Q2 报告 schema：指标与容差写死在一处，报告必须带 |
 | `by1quant.py` | 量化 checkpoint 的存储契约与权重/scale manifest 审计 |
 | `by1real.py` | 真权重、真维度，跑一个 27B 模型的前向 |
 | `by1rope.py` | llama3 式 RoPE 缩放的差分验证 |

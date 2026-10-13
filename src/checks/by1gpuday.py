@@ -140,6 +140,7 @@ def main(argv=None):
     mode = ('shadow' if args.shadow_only else 'real' if args.real_only else 'all')
 
     OUT.mkdir(parents=True, exist_ok=True)
+    run_start_wall = time.time()
     steps = steps_for(mode, args.e2e_mem_gb)
     print('  GPU 日流水：%d 步（模式 %s）' % (len(steps), mode))
     if args.plan:
@@ -169,6 +170,26 @@ def main(argv=None):
         verdict = by1skip.verdict(proc.returncode, proc.stdout)
         results.append((name, phase, verdict, '%.0fs' % (time.monotonic() - t0)))
         print('  [%s] %s（rc=%d）' % (verdict, name, proc.returncode), flush=True)
+
+    # ── Q2 schema 校验：**本次跑出来**的报告必须合格（指标齐 · 容差一致）──
+    # 报告少了指标没人发现 = "看起来验了"。这一步替 GPU 日把这扇门。
+    # 只判本次产出的文件 —— 上次运行的陈旧报告不许污染本次判定。
+    import by1q2schema
+    for label, path, kind in (
+            ('影子 bench 报告 schema', OUT / 'gpu-benchmark-shadow.json', 'bench'),
+            ('影子训练报告 schema', OUT / 'gpu-traincheck-shadow.json', 'train'),
+            ('真权重 bench 报告 schema', OUT / 'gpu-benchmark-real.json', 'bench'),
+            ('真权重训练报告 schema', OUT / 'gpu-traincheck-real.json', 'train')):
+        if not path.exists() or path.stat().st_mtime < run_start_wall:
+            continue                      # 没产出 / 上次运行的旧文件，不重复记账
+        data = json.loads(path.read_text(encoding='utf-8'))
+        problems_q = (by1q2schema.validate_bench(data) if kind == 'bench'
+                      else by1q2schema.validate_train(data))
+        verdict = 'ok' if not problems_q else 'fail'
+        results.append((label, 'schema', verdict, str(path)))
+        print('  [%s] %s' % (verdict, label))
+        for p in problems_q[:5]:
+            print('       - ' + p)
 
     summary = {'schema': 1, 'kind': 'by1-gpuday', 'mode': mode,
                'started_at': datetime.datetime.now(datetime.timezone.utc).isoformat(),

@@ -45,3 +45,30 @@ emit torch.module {
 `by1full` 的 Q2 加载入口已接收 `.by1` 量化规格：它会把已声明的格式与 checkpoint 原生量化配置核对，要求 `dequantize=False`，并在加载后审计 FP8 或 MXFP4 存储。审计结果按文本/视觉/MTP 模块分别计数；若声明 MTP / 共享词嵌入，还会检查这些别名关系。数值内核仍由 Transformers 原生量化适配器执行，by1 尚无自研 CUDA kernel。
 
 Q2 的 GPU forward / generation / 显存对拍仍未运行。现有 GPT-OSS checkpoint 可走原生 MXFP4 benchmark。FP8 首选现已固定为官方 `Qwen/Qwen3.8-27B-FP8`：它有独立量化描述 [Qwen3.8-27B-FP8.by1](../models/Qwen3.8-27B-FP8.by1)，基准使用完整 Qwen3.8 架构描述，覆盖文本、BF16 视觉塔、量化 MTP 和共享关系。原始 safetensors 头审计会核验合同声明的 BF16 scale、E4M3 权重、块形状与 `weight_scale_inv` 配对；运行时报告再记录实际 scale dtype。GPU 实测通过前不把 Q2 标为完成。Q3 仍未开始。
+
+## 共享/附属分支检查清单（Q2 验收逐项，2026-10-14 固化）
+
+每一项都有判据和反例 —— **反例不红就不算这项验过**：
+
+| 分支 | 检查什么 | 判据 | 反例（必须红） |
+|---|---|---|---|
+| tied embeddings | 运行时共享身份（同一参数对象）+ 磁盘单份存储 | `by1quant.audit_shared_weights` 过；gpubench 的 tying 断言过 | 两个逻辑名各存一份 → 红 |
+| 视觉塔 | 契约没点名的塔保持 BF16，审计**分类计数** | `checkpoint_quantized_storage` 分类与契约一致 | 视觉塔被静默量化 → 红 |
+| MTP draft | `mtp.*` 按契约量化/不量化；embed/lm_head 与主干共享 | 同上 + `mtp.embed_tokens is get_input_embeddings()` 断言 | 共享断开或 mtp 被静默丢弃 → 红 |
+| 权重别名 | 别名不重复量化、不重复分配、不静默拆份 | `audit_shared_weights` 的别名表 | 同一底层权重被量化两次 → 红 |
+
+## Q3 前置评审（2026-10-14 记录，进 Q3 前先认这五条）
+
+1. **格式冻结**：`by1quant.FORMATS` 表就是冻结面。新格式必须有真实
+   manifest + 独立判据才能进表 —— 不因格式名相同就假定布局相同。
+2. **生成用上游实现**：量化器用发布方/社区**在维护的**实现
+   （GGUF 走 llama.cpp 的 convert；HF 格式走官方量化器），
+   by1 只管合同、参数映射与验证 —— 不重造量化 kernel。
+3. **round-trip 判据**：产物重载后逐项对 —— 权重名、dtype、块数、尺度、
+   别名、分片、总字节；再由**未修改的上游**加载并 logits 对拍。
+   少一项不算 round-trip 过。
+4. **拒绝私有扩展是默认行为**：标准格式表达不了的语义，先证明
+   "表达不了"（附格式对比证据）再议扩展；扩展未声明的输入一律拒绝，
+   不静默按最接近的格式解读。
+5. **依赖顺序不许跳**：格式（Q1 冻结）→ 运行数学（Q2）→ 产物（Q3）。
+   Q2 没过就生成的产物没有判据可依 —— "能生成"不是"生成对了"。
