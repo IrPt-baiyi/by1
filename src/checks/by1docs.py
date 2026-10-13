@@ -176,7 +176,42 @@ def measure(path, unit):
         return len(re.findall(r'^##\s', t, re.M))
     return None
 
+# ── 双语配对（发布门：关键结论/说明要中英成对）──────────────────────
+#: 发布门点名的双语文档。**照现实定阈值**：成对文档英文词 ≥823，
+#: 中文系文档 ≤180 —— 线划在 300，两头都有余量。
+BILINGUAL_DOCS = ('README.md', 'gpu/README.md', 'docs/llama.cpp-baseline.md')
+
+
+def bilingual_missing(text):
+    """缺哪一半？返回 None = 成对。**判据要能报出缺的是哪一半**（T42）。"""
+    cjk = len(re.findall(r'[\u4e00-\u9fff]', text))
+    words = len(re.findall(r'[A-Za-z]{3,}', text))
+    if cjk == 0:
+        return '缺中文一半'
+    if words < 300:
+        return '缺英文一半（英文词 %d < 300）' % words
+    return None
+
+
+def _bi_selftest():
+    """反例必红：全英文报缺中文、全中文报缺英文、成对放行。"""
+    en = 'word ' * 400
+    zh = '\u4e2d\u6587 ' * 400
+    pair = en + zh
+    if bilingual_missing(en) != '缺中文一半':
+        return 51
+    m = bilingual_missing(zh)
+    if not (m and m.startswith('缺英文一半')):
+        return 51
+    if bilingual_missing(pair) is not None:
+        return 51
+    print('  [PASS] 双语配对自检：全英文报缺中文 · 全中文报缺英文 · 成对放行')
+    return 0
+
+
 def main():
+    if '--selftest' in sys.argv:
+        return _bi_selftest()
     # **这两行原来在模块级** —— import 这个模块会先印一个横幅出来。
     # 它就是"import 即执行"最轻的一种：不 crash，但谁 import 谁脏输出。
     print()
@@ -359,15 +394,31 @@ def main():
         print('     ir-spec.md 与 `by1ir.spec_markdown()` 逐字符一致 ✓')
     print()
 
-    print('  [%s] 文档路径 %s'
-          % ('PASS' if not bad and not missing and not wrong and not stale
-             else 'FAIL',
-             '路径、链接、脚本调用、数字、生成物都在'
-             if not bad and not missing and not wrong and not stale
-             else '%d 处路径 + %d 个脚本 + %d 个数字 + %d 个生成物 有问题'
-                  % (len(bad), len(missing), len(wrong), len(stale))))
+    # ── 双语配对：发布门点名的文档必须中英成对 ─────────────────────
+    bi_bad = []
+    print('  ── 顺带：双语配对（发布门：关键说明中英成对）')
+    for rel in BILINGUAL_DOCS:
+        p = os.path.join(ROOT, rel)
+        if not os.path.exists(p):
+            bi_bad.append((rel, '文档不存在'))
+            continue
+        why = bilingual_missing(by1io.read_text(p, encoding='utf-8'))
+        if why:
+            bi_bad.append((rel, why))
+            print('     !! %s：%s' % (rel, why))
+        else:
+            print('     ok %s' % rel)
     print()
-    return 0 if not bad and not missing and not wrong and not stale else 1
+
+    clean = not bad and not missing and not wrong and not stale and not bi_bad
+    print('  [%s] 文档路径 %s'
+          % ('PASS' if clean else 'FAIL',
+             '路径、链接、脚本调用、数字、生成物、双语都在'
+             if clean
+             else '%d 处路径 + %d 个脚本 + %d 个数字 + %d 个生成物 + %d 处双语 有问题'
+                  % (len(bad), len(missing), len(wrong), len(stale), len(bi_bad))))
+    print()
+    return 0 if clean else 1
 
 
 if __name__ == "__main__":
