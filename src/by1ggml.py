@@ -302,6 +302,10 @@ def emit_model_c_graph(g, ir, order, params):
                    and "mask_" in n["ins"][1]})
     _mlines, mask_var = _mask_lines(wins)
     body += _mlines
+    # 标量组合族（log1p / softplus）要的 1 元素常量张量；wt1 挂指针，
+    # 值活过计算期（static）。
+    body.append("    static float _one_v = 1.0f;")
+    body.append("    struct ggml_tensor * t_one = wt1(ctx, &_one_v, 1, \"t_one\");")
 
     declared = set()
 
@@ -418,7 +422,53 @@ def emit_model_c_graph(g, ir, order, params):
                      _reshape("ggml_cont_%dd" % len(sh), a[0], sh))
             else:
                 _put(body, prim, node, f"ggml_cont(ctx, {a[0]})")
+        # ── T16 第一批补口（2026-10-14）：对 ggml.h 逐个摸底后接上的 ────
+        elif prim in ("exp", "sqrt", "neg", "log"):
+            _put(body, prim, node, f"ggml_{prim}(ctx, {a[0]})")
+        elif prim == "div":
+            _put(body, prim, node, f"ggml_div(ctx, {a[0]}, {a[1]})")
+        elif prim == "clamp_min":
+            # PRIMS 的 bound：`max(x, m)` —— 上界给满
+            _put(body, prim, node,
+                 f"ggml_clamp(ctx, {a[0]}, {_f(at['min'])}, 1e38f)")
+        elif prim == "clamp_max":
+            _put(body, prim, node,
+                 f"ggml_clamp(ctx, {a[0]}, -1e38f, {_f(at['max'])})")
+        elif prim == "add_scalar":
+            # a + c（c 是 attr）—— **不是 clamp**（by1c 1999 的注释记着
+            # `+1e-20` 和 `max(·, 1e-9)` 是两个公式）。c 发成 1 元素张量。
+            sv = _gvar(node["outs"][0]) + "_c"
+            body.append(f"    static float {sv} = {_f(at['c'])};")
+            _put(body, prim, node,
+                 f"ggml_add(ctx, {a[0]}, wt1(ctx, &{sv}, 1, \"{sv}\"))")
+        elif prim in ("log1p", "softplus", "sqrtsoftplus"):
+            # 标量组合族。softplus 用**数值稳定式**（PRIMS 的 f 原文）：
+            #   softplus(x) = max(x,0) + log1p(e^{-|x|})，
+            #   |x| = max(x,0) + max(-x,0)（ggml 无 abs，用 clamp+neg 拼）
+            u = _gvar(node["outs"][0])
+            if prim == "log1p":
+                _put(body, prim, node,
+                     f"ggml_log(ctx, ggml_add(ctx, {a[0]}, t_one))")
+            else:
+                body.append(f"    struct ggml_tensor * {u}_mx = "
+                            f"ggml_clamp(ctx, {a[0]}, 0.f, 1e38f);")
+                body.append(f"    struct ggml_tensor * {u}_ax = "
+                            f"ggml_add(ctx, ggml_clamp(ctx, ggml_neg(ctx, {a[0]}), 0.f, 1e38f), {u}_mx);")
+                sp = (f"ggml_add(ctx, {u}_mx, ggml_log(ctx, ggml_add(ctx, "
+                      f"ggml_exp(ctx, ggml_neg(ctx, {u}_ax)), t_one)))")
+                if prim == "softplus":
+                    _put(body, prim, node, sp)
+                else:
+                    _put(body, prim, node, f"ggml_sqrt(ctx, {sp})")
         else:
+            # **要么实现，要么拒绝** —— 这几族不是忘了，是对上游 ggml
+            # 的摸底结论（2026-10-14 对 ggml.h 逐个查过）：
+            #   top_k / gather / one_hot / masked_fill / le —— MoE 路由族：
+            #     **这版 ggml 没有 top_k 和比较算子**，要等上游或自研 kernel
+            #   conv1d_causal / delta_rule / ssm_scan —— 递推原语：
+            #     融合 C 核在管（by1c 的短卷积 / KDA / SSM 路径），图路径下一批
+            #   soft_max_sink / sum / repeat / concat / slice —— 轴约定要
+            #     配数值神谕一起接，**下一批**，不悄悄接
             raise SystemExit(
                 "  [不支持] 图的 %r 原语还没有 ggml 映射 —— "
                 "**要么实现、要么在 check_support 里拒绝**" % prim)
