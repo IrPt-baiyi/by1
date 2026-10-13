@@ -960,9 +960,35 @@ def shapes_of(ir):
     return params_of(ir)
 
 
+def forward_graph(ir, params, ids):
+    """**图路径**（A3-3 的 by1exec 吃图）：lower_model + run_graph。
+
+    语义唯一在 `by1graph.PRIMS` 的 ref() —— 这条路不带任何自己的算子，
+    所以"NumPy 后端的语义"和"图的语义"不可能再漂移（判卷人是
+    `--compare --from-graph`：图求值 vs PyTorch 官方路径逐位）。
+
+    迁移样板照 `by1c.main --from-graph`：图路径与 OPS 路径并行，
+    默认仍是 OPS（迁移期间的判卷人）。**降不动的模型明确报错**，
+    不静默回退到 OPS —— 静默回退 = "我验了图路径"其实没验。
+    """
+    import by1graph as _bg
+    g = _bg.lower_model(ir, "model")
+    a = np.asarray(ids)
+    if a.ndim == 2:
+        if a.shape[0] != 1:
+            raise ValueError("图路径只支持 batch=1（got %s）——批维还没进图约定"
+                             % (a.shape,))
+        a = a[0]
+    V = _bg.run_graph(g, {k: np.asarray(v) for k, v in params.items()}, a)
+    logits = np.asarray(next(v for k, v in V.items() if k.endswith("_logits")))
+    return logits[None, ...] if logits.ndim == 2 else logits
+
+
 class Exec:
-    def __init__(self, ir, params):
+    def __init__(self, ir, params, from_graph=False):
         self.ir = ir
+        self.from_graph = from_graph
+        self._flat = {k: np.asarray(v) for k, v in params.items()}
         self.P = {}
         for L in ir["layers"]:
             self.P[L["index"]] = {}
@@ -973,6 +999,8 @@ class Exec:
                     for k, v in params.items() if k.startswith(pre)}
 
     def __call__(self, ids):
+        if self.from_graph:
+            return forward_graph(self.ir, self._flat, ids)
         d = self.ir["d_model"]
         x = self.params_global("embed.weight")[ids]
         # **学习式位置表。** 这一段以前不存在 —— 于是 GPT-2 的
@@ -1028,11 +1056,11 @@ class Exec:
         return self.P["_g"][k]
 
 
-def exec_ir(ir, seq=48, seed=0):
+def exec_ir(ir, seq=48, seed=0, from_graph=False):
     """**只吃 IR 的入口。** 返回 (输出, 参数字典)。
 
     原来这条路埋在 `main` 里 —— 想跑 NumPy 后端就得给一个 `.by1` 路径。
-    规格说 IR 是接口，那就得有这条。
+    规格说 IR 是接口，那就得有这条。`from_graph=True` 走图路径（A3-3）。
     """
     import by1ir as _ir
     errs = _ir.validate(ir)
@@ -1049,7 +1077,7 @@ def exec_ir(ir, seq=48, seed=0):
     rng = np.random.default_rng(seed)
     params = {k: rng.normal(0, 0.1, s).astype(np.float32)
               for k, s in shapes.items()}
-    ex = Exec(ir, params)
+    ex = Exec(ir, params, from_graph=from_graph)
     # **按 shapes_of 实际给出的来** —— 硬编码三个名字的话，
     # 位置表和最终归一化的 bias 永远不会进 `_g`，
     # 而 `params_global` 会 KeyError（或者更糟：被静默跳过）。
@@ -1065,6 +1093,8 @@ def main(argv=None):
     ap.add_argument("by1")
     ap.add_argument("--seq", type=int, default=48)
     ap.add_argument("--compare", action="store_true")
+    ap.add_argument("--from-graph", action="store_true",
+                    help="走图路径（A3-3 的 PRIMS 求值）；默认还是 OPS 路径")
     args = ap.parse_args(argv)
 
     bc, cg = load("by1check"), load("by1codegen")
@@ -1103,7 +1133,9 @@ def main(argv=None):
 
     rng = np.random.default_rng(0)
     params = {k: rng.normal(0, 0.1, s).astype(np.float32) for k, s in shapes.items()}
-    ex = Exec(ir, params)
+    ex = Exec(ir, params, from_graph=args.from_graph)
+    print("  执行路径：" + ("图（PRIMS 求值，A3-3）" if args.from_graph
+                          else "OPS 逐算子（迁移期间的判卷人）"))
     # **按 shapes_of 实际给出的来** —— 硬编码三个名字的话，
     # 位置表和最终归一化的 bias 永远不会进 `_g`，
     # 而 `params_global` 会 KeyError（或者更糟：被静默跳过）。

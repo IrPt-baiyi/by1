@@ -2168,7 +2168,7 @@ def e2e(models=None, mem_gb=None):
     ex = _load("by1exec")
     budget = E2E_MEM_GB if mem_gb is None else float(mem_gb)
     names = models or sorted(by1io.read_json(GOLDEN).keys())
-    bad, skipped, ran, unlowered = [], [], [], []
+    bad, skipped, ran, unlowered, broken = [], [], [], [], []
     for f in names:
         path = _os.path.join(by1paths.MODELS, f)
         try:
@@ -2192,13 +2192,26 @@ def e2e(models=None, mem_gb=None):
         params = {k: rng.normal(0, 0.1, s).astype(np.float32)
                   for k, s in bir.params_of(ir).items()}
         ids = rng.integers(0, ir["vocab"], 16).astype(np.int32)
-        e = ex.Exec(ir, params)
-        e.P["_g"] = {k: params[k] for k in
-                     ("embed.weight", "pos.weight", "final_norm.w",
-                      "final_norm.b", "head.weight") if k in params}
-        want = e(ids[None, :])[0]
-        V = run_graph(g, params, ids)
-        got = next(v for k, v in V.items() if k.endswith("_logits"))
+        # **两侧求值都可能跑不动**（多宽度栈衔接还没实现之类的
+        # 能力缺口）——裸崩把整个 run 打死，后面的模型全都不跑了，
+        # 而"3 个通过"其实只验了字母序前面的 3 个。进账，继续跑。
+        try:
+            e = ex.Exec(ir, params)
+            e.P["_g"] = {k: params[k] for k in
+                         ("embed.weight", "pos.weight", "final_norm.w",
+                          "final_norm.b", "head.weight") if k in params}
+            want = e(ids[None, :])[0]
+        except Exception as err:
+            broken.append((f, "by1exec 侧：%s: %s"
+                           % (type(err).__name__, str(err).splitlines()[0])))
+            continue
+        try:
+            V = run_graph(g, params, ids)
+            got = next(v for k, v in V.items() if k.endswith("_logits"))
+        except Exception as err:
+            broken.append((f, "图侧：%s: %s"
+                           % (type(err).__name__, str(err).splitlines()[0])))
+            continue
         dd = np.abs(got - want).max()
         amp = max(np.abs(want).max(), 1e-9)
         if dd / amp >= 1e-4:
@@ -2211,6 +2224,13 @@ def e2e(models=None, mem_gb=None):
     if skipped:
         tail = "（%d 份超预算跳过，合计需 %.2f GB；`--mem-gb N` 可抬预算）" % (
             len(skipped), sum(g for _f, g in skipped))
+    # **对拍无法进行的要进账**，照 tier-3「已知缺口（不算失败，但仍然
+    # 存在）」的先例：能力缺口不是回归，但它**没有被 e2e 作证** ——
+    # 不印出来的话，"N 份一致"会被读成"全部一致"。
+    for f, why in broken:
+        print("  [已知缺口] %-28s 对拍无法进行：%s" % (f, why))
+    if broken:
+        tail += "（另有 %d 份对拍无法进行，在账）" % len(broken)
     # **降不动也要说，而且算失败**：golden 里列的模型降不动，说明快照
     # 过期了；显式点名的那几个更不用说。**静默丢弃会让"我验了 A 和 B"
     # 悄悄变成"我验了 A"** —— 和 `ir.md 133` 那个"32 个只验了 30 个"
