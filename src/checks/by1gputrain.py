@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""by1gputrain -- 用真实 Qwen3-0.6B 权重对比 CUDA 反向传播和一次更新。"""
+"""by1gputrain -- 用真实 Qwen3-0.6B 权重对比 CUDA 反向传播和一次更新。
+
+`--shadow`：影子权重（真格式随机值）—— 梯度与 AdamW 一步的对比是接线级的，
+不需要真值，0 权重下载；报告标 `weights=synthetic`，**不替代真权重结论**。
+"""
 import os as _os
 import sys as _sys
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
@@ -24,6 +28,20 @@ REPO = 'Qwen/Qwen3-0.6B'
 def require(condition, message):
     if not condition:
         raise RuntimeError(message)
+
+
+def resolve_shadow_config(args):
+    """影子 config **只认真品**：--shadow-config > refs/ > 只拉 config
+    一个文件（几 KB）。声明合成的 config 会让声明对拍空转（by1shadow 头注）。"""
+    if args.shadow_config:
+        return pathlib.Path(args.shadow_config).read_text(encoding='utf-8')
+    for name in (REPO.replace('/', '__') + '.config.json',
+                 REPO.replace('/', '_') + '.config.json'):
+        candidate = pathlib.Path(by1paths.REFS, name)
+        if candidate.exists():
+            return candidate.read_text(encoding='utf-8')
+    import by1shadow
+    return pathlib.Path(by1shadow.fetch_config(REPO)).read_text(encoding='utf-8')
 
 
 def snapshot_step(model, torch, ids, labels, lr):
@@ -101,6 +119,12 @@ def main(argv=None):
     parser.add_argument('--report', default='cgen/gpu-real-traincheck.json')
     parser.add_argument('--length', type=int, default=16)
     parser.add_argument('--lr', type=float, default=1e-4)
+    parser.add_argument('--shadow', action='store_true',
+                        help='影子权重（真格式随机值）：训练步对拍不需要真值，'
+                             '0 权重下载；报告标 weights=synthetic')
+    parser.add_argument('--shadow-config',
+                        help='影子用的真品 config.json（默认 refs/，再不行只拉 config）')
+    parser.add_argument('--shadow-seed', type=int, default=20261013)
     args = parser.parse_args(argv)
     target = pathlib.Path(args.report)
     report = {'schema': 1, 'status': 'running', 'started_at':
@@ -108,6 +132,7 @@ def main(argv=None):
               'repo': REPO, 'model_file': MODEL_FILE, 'dtype': 'bfloat16',
               'batch_size': 1, 'sequence_length': args.length, 'optimizer': 'AdamW',
               'learning_rate': args.lr,
+              'weights': 'synthetic' if args.shadow else 'published',
               'gradient_relative_l2_tolerance': 2e-3,
               'gradient_relative_peak_tolerance': 2e-2,
               'parameter_update_relative_l2_tolerance': 2e-3,
@@ -135,18 +160,38 @@ def main(argv=None):
                                  'gpu': torch.cuda.get_device_name(),
                                  'gpu_memory_bytes': torch.cuda.get_device_properties(0).total_memory}
 
-        benchmark_report = json.loads(pathlib.Path('cgen/gpu-benchmark.json').read_text(encoding='utf-8'))
-        row = next(item for item in benchmark_report['models'] if item.get('repo') == REPO)
-        revision = row['revision']
-        checkpoint = hub.snapshot_download(REPO, revision=revision,
-            allow_patterns=['*.json', '*.safetensors', '*.txt', '*.model', '*.jinja', '*.tiktoken'],
-            max_workers=4)
-        report.update(revision=revision, checkpoint_bytes=row['checkpoint_bytes'],
-                      download_endpoint=row['download_endpoint'])
         check, info = by1check.check(MODEL_FILE)
         require(not check.count(by1check.E), str(check.items))
         family, config, mtp = by1full.compile_config(info)
         require(family == 'qwen3' and not mtp, 'This real-weight training check expects plain Qwen3')
+        if args.shadow:
+            # **训练步对拍不需要真值** —— 梯度和 AdamW 一步的对比是接线级的，
+            # 随机值权重一样抓。0 权重下载；量化存储不适用（本模型无）。
+            import by1shadow
+            config_text = resolve_shadow_config(args)
+            shadow_dir = target.parent / 'shadow-train-qwen3-0.6B'
+            if by1shadow.reusable(shadow_dir, family, mtp, args.shadow_seed,
+                                  'bfloat16', config_text):
+                manifest = json.loads(
+                    (shadow_dir / by1shadow.MANIFEST).read_text(encoding='utf-8'))
+            else:
+                manifest = by1shadow.build(config_text, family, mtp, shadow_dir,
+                                           seed=args.shadow_seed, dtype='bfloat16')
+            checkpoint = str(shadow_dir)
+            report.update(revision='synthetic', checkpoint_bytes=manifest['bytes'],
+                          download_endpoint='none', shadow=manifest)
+        else:
+            benchmark_report = json.loads(
+                pathlib.Path('cgen/gpu-benchmark.json').read_text(encoding='utf-8'))
+            row = next(item for item in benchmark_report['models']
+                       if item.get('repo') == REPO)
+            revision = row['revision']
+            checkpoint = hub.snapshot_download(REPO, revision=revision,
+                allow_patterns=['*.json', '*.safetensors', '*.txt', '*.model',
+                                '*.jinja', '*.tiktoken'],
+                max_workers=4)
+            report.update(revision=revision, checkpoint_bytes=row['checkpoint_bytes'],
+                          download_endpoint=row['download_endpoint'])
         cfg = T.AutoConfig.from_pretrained(checkpoint, local_files_only=True)
         generator = torch.Generator().manual_seed(20261013)
         ids = torch.randint(0, min(cfg.vocab_size, 10000), (1, args.length), generator=generator,
@@ -205,8 +250,13 @@ def main(argv=None):
         print('[FAIL] Real-weight GPU train step: ' + str(exc), flush=True)
         return 1
     save()
-    print('[PASS] Qwen3-0.6B real-weight BF16 backward + AdamW step; '
-          'full gradients and updated parameters match the official model', flush=True)
+    if report.get('weights') == 'synthetic':
+        print('[PASS] Qwen3-0.6B **影子权重** BF16 backward + AdamW step; '
+              'full gradients and updated parameters match the official model'
+              '（接线对拍，非真权重结论）', flush=True)
+    else:
+        print('[PASS] Qwen3-0.6B real-weight BF16 backward + AdamW step; '
+              'full gradients and updated parameters match the official model', flush=True)
     return 0
 
 
