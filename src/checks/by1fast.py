@@ -42,6 +42,7 @@ import py_compile
 import re
 import subprocess
 import sys
+import tempfile
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -180,6 +181,46 @@ def main():
               % (len(skipped),
                  ', '.join(sorted({s[1] for s in skipped if s[1]}))))
              if skipped else ''))
+
+    # ── ②b 已支持的量化格式：正例通过、边界反例拒绝 ───────────────
+    print()
+    print('  ②b 量化格式声明 / Quantization format declarations (MXFP4 / FP8)')
+    try:
+        import by1quant
+        by1quant.selftest()
+        import by1check as quant_checker
+        import by1full
+        with open(os.path.join(by1paths.MODELS, 'gpt-oss-20b.by1'),
+                  encoding='utf-8') as f:
+            quant_source = f.read()
+        quant_cases = (
+            ('format = mxfp4', 'format = unsupported', 'quant.format'),
+            ('tensor = [gate_exps, up_exps, down_exps]',
+             'tensor = [not_a_contract_tensor]', 'quant.tensor'),
+        )
+        with tempfile.TemporaryDirectory(prefix='by1-quant-',
+                                         dir=by1paths.ROOT) as td:
+            for i, (before, after, expected) in enumerate(quant_cases):
+                probe = os.path.join(td, '%d.by1' % i)
+                with open(probe, 'w', encoding='utf-8', newline='\n') as f:
+                    f.write(quant_source.replace(before, after, 1))
+                rep, _ = quant_checker.check(probe)
+                errors = [str(item) for item in rep.items if item[0] == 'E']
+                if not any(expected in error for error in errors):
+                    raise RuntimeError('lowering did not reject ' + expected)
+        rep, quant_info = quant_checker.check(os.path.join(
+            by1paths.MODELS, 'gpt-oss-20b.by1'))
+        runtime_spec = by1full.compile_quantization(quant_info)
+        if (rep.count(quant_checker.E) or not runtime_spec
+                or runtime_spec.get('format') != 'mxfp4'
+                or runtime_spec.get('block') != 32
+                or 'gate_exps' not in runtime_spec.get('tensor', [])):
+            raise RuntimeError('validated .by1 quant declaration did not reach the runtime spec')
+        print('     数值 oracle、原生运行时规格与正例通过；格式/字段/块大小/张量引用反例被拒 / '
+              'Numeric oracles, native runtime config, and valid cases pass; invalid formats, fields, block sizes, and tensor references are rejected')
+    except Exception as e:
+        bad.append('by1quant selftest 失败：%s: %s'
+                   % (type(e).__name__, str(e)[:80]))
 
     # ── ③ 每份 .by1 都能解析 ────────────────────────────────────
     print()

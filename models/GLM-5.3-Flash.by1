@@ -415,6 +415,7 @@ model GLM-5.3-Flash {
       # `o_proj.weight`，而它没有被量化。写裸的 `o_proj` 会给 KDA 也发一份，
       # 那会当场报「契约声明了、实际不存在」。
       quant {
+        format = fp8_e4m3_block
         scale  = weight_scale_inv
         block  = 128
         tensor = [SparseMLA.q_a_proj.weight, SparseMLA.q_b_proj.weight,

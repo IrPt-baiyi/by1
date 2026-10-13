@@ -22,10 +22,8 @@ by1 verify -- 差分验证：把 .by1 的展开结果与官方产物对拍。
 并带上代表张量的形状和真名。补契约的时候要看的是完整清单 ——
 截断的那几行正好是最长尾的，而"是哪一层"只有真名里有。
 
-emit 里的 `quant { }` 有两种导出布局，用有没有 `scale` 区分：
-  没有 `scale`  ->  MXFP4：权重根本不存在，换成 <名>_blocks / <名>_scales
-  有 `scale`    ->  FP8 块量化：权重留着，另发一份 <名>.<scale>，
-                   形状 (out/block, in/block) **从权重形状推**
+emit 里的 `quant { }` 必须显式声明 `format`；布局、存储 dtype 和字段
+要求统一定义在 `by1quant` 中，验证时按格式名检查，不从 `scale` 猜格式。
 
 约定:
   .by1 层实例带 window = <n>   -> config 的 sliding_attention
@@ -50,6 +48,7 @@ import struct
 import sys
 import by1io
 import by1skip
+import by1quant
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -269,6 +268,8 @@ def load_reference(tensors_path, gguf_path):
     for k, v in raw.items():
         if isinstance(v, dict) and "shape" in v:
             out[k] = {"shape": [int(x) for x in v["shape"]]}
+            if v.get("dtype"):
+                out[k]["dtype"] = str(v["dtype"])
         elif isinstance(v, list):
             out[k] = {"shape": [int(x) for x in v]}
     return out
@@ -302,14 +303,20 @@ def check_tensors(info, real, render, rule_desc, scope_map, out,
     #   <名>_blocks / <名>_scales / <名>_bias
     q_members, q_fuse, q_block = set(), {}, 32
     q_scale = None
+    q_scale_dtype = None
+    q_format = None
+    q_spec = None
     if quant:
-        q_block = int(quant.get("block", 32))
-        # **两种导出布局，`scale` 是分水岭。**
-        #   没有 `scale`  -> MXFP4：权重**根本不存在**，换成 <名>_blocks / <名>_scales
-        #   有 `scale`    -> FP8 块量化：权重**留着**，另发一份 <名>.<scale>，
-        #                   形状是 (out/block, in/block) —— **从权重形状推**，
-        #                   不许手写第二遍（写第二遍就一定会和权重对不上）。
+        try:
+            q_block = int(quant.get("block", 32))
+        except (TypeError, ValueError):
+            q_block = 32
+        if q_block <= 0:
+            q_block = 32
+        q_format = (quant.get("format") or "").strip().strip('"')
+        q_spec = by1quant.FORMATS.get(q_format)
         q_scale = (quant.get("scale") or "").strip().strip('"') or None
+        q_scale_dtype = (quant.get("scale_dtype") or "").strip().strip('"').upper() or None
         q_members = set(re.findall(r"[A-Za-z_][\w.]*", quant.get("tensor", "")))
         for _nm, _v in (quant.get("fuse") or {}).items():
             _ms = re.findall(r"[A-Za-z_][\w.]*", _v)
@@ -329,21 +336,22 @@ def check_tensors(info, real, render, rule_desc, scope_map, out,
             or (owner + "." + lname) in q_members
 
     def q_shapes(fused, block, kind):
-        """weight 是 MXFP4 打包（blocks + scales）；bias 不量化，只是被融合。"""
+        """Return MXFP4 suffixes, shapes, and the storage dtype for each tensor."""
         if kind == "bias":
-            return [("_bias", list(fused))]
-        n = max(1, fused[-1] // block)
-        return [("_blocks", list(fused[:-1]) + [n, 16]),
-                ("_scales", list(fused[:-1]) + [n])]
+            return [("_bias", list(fused), q_spec["bias_dtype"])]
+        n = fused[-1] // block
+        return [("_blocks", list(fused[:-1]) + [n, 16], q_spec["weight_dtype"]),
+                ("_scales", list(fused[:-1]) + [n], q_spec["scale_dtype"])]
     total = mismatch = missing = absent_but_present = symbolic = 0
+    dtype_checked = dtype_unchecked = 0
     sup_total = sup_ok = unmapped = 0
     details, samples, generated = [], [], set()
     qdone = set()
 
-    def _rec(nm, exp, tag):
+    def _rec(nm, exp, tag, expected_dtype=None):
         """一个 (名字, 形状) 对拍。**这条检查只有这一份** ——
         原来量化 / 主路径 / 全局三处各写了一遍，再加 FP8 就是第四遍。"""
-        nonlocal total, mismatch, missing
+        nonlocal total, mismatch, missing, dtype_checked, dtype_unchecked
         total += 1
         if nm not in real:
             missing += 1
@@ -351,6 +359,15 @@ def check_tensors(info, real, render, rule_desc, scope_map, out,
         elif real[nm]["shape"] != exp:
             mismatch += 1
             details.append(f"{tag} {nm}\n        契约 {exp}   实际 {real[nm]['shape']}")
+        elif expected_dtype:
+            actual_dtype = real[nm].get("dtype")
+            if not actual_dtype:
+                dtype_unchecked += 1
+            else:
+                dtype_checked += 1
+                if str(actual_dtype).upper() != expected_dtype.upper():
+                    mismatch += 1
+                    details.append(f"{tag} {nm}\n        契约 dtype {expected_dtype}   实际 {actual_dtype}")
 
     def _scale_of(exp, block):
         """FP8 块量化的 scale_inv 形状：每个维度按 block 上取整。
@@ -385,7 +402,7 @@ def check_tensors(info, real, render, rule_desc, scope_map, out,
             use_e = booll(pe) and render_e is not None
             _lb = lname.rsplit(".", 1)[0] if "." in lname else lname
             _kd = lname.rsplit(".", 1)[1] if "." in lname else ""
-            if quant and not q_scale and _is_member(owner, lname, _lb):
+            if quant and q_format == "mxfp4" and _is_member(owner, lname, _lb):
                 _fn, _ms = q_fuse.get(_lb, (_lb, [_lb]))
                 if (_fn, _kd) in qdone:
                     continue
@@ -397,14 +414,32 @@ def check_tensors(info, real, render, rule_desc, scope_map, out,
                     continue
                 _f = list(_num[0])
                 if len(_num) > 1:
-                    _f[1] = sum(v[1] for v in _num)
+                    if len(_f) < 2 or any(len(v) != len(_f) for v in _num):
+                        mismatch += 1
+                        details.append(f"L{i:<3} {_fn}\n        无法融合秩不同的张量形状 {_num}")
+                        continue
+                    # Matrix weights fuse along output rows (-2); biases have
+                    # only the output axis and fuse along their final dim.
+                    _axis = len(_f) - 1 if _kd == "bias" else len(_f) - 2
+                    _other_dims_match = all(
+                        all(v[d] == _num[0][d] for d in range(len(_f)) if d != _axis)
+                        for v in _num[1:])
+                    if not _other_dims_match:
+                        mismatch += 1
+                        details.append(f"L{i:<3} {_fn}\n        除输出维外的融合形状不一致 {_num}")
+                        continue
+                    _f[_axis] = sum(v[_axis] for v in _num)
+                if _kd != "bias" and (_f[-1] <= 0 or _f[-1] % q_block):
+                    mismatch += 1
+                    details.append(f"L{i:<3} {_fn}\n        MXFP4 输入维 {_f[-1]} 不能被 block={q_block} 整除")
+                    continue
                 _base = render(_li, stack, owner, _fn)
-                for _sfx, _bs in q_shapes(_f, q_block, _kd):
+                for _sfx, _bs, _dtype in q_shapes(_f, q_block, _kd):
                     _nm = _base + _sfx
                     generated.add(_nm)
                     if len(samples) < 6:
                         samples.append(f"      L{i:<3} 量化 {_fn:<10} -> {_nm}")
-                    _rec(_nm, _bs, f"L{i:<3} ")
+                    _rec(_nm, _bs, f"L{i:<3} ", _dtype)
                 continue
             exps = range(experts_of.get(owner, 1)) if use_e else [None]
             for e in exps:
@@ -428,16 +463,22 @@ def check_tensors(info, real, render, rule_desc, scope_map, out,
                     continue
                 if use_e and len(exp) > 1:
                     exp = exp[1:]          # 逐专家存储：专家维落在名字里，不在形状里
-                _rec(nm, exp, f"L{i:<3} ")
+                _weight_dtype = (q_spec["weight_dtype"]
+                                 if q_spec and q_format == "fp8_e4m3_block"
+                                 and _is_member(owner, lname, _lb)
+                                 and _kd == "weight" else None)
+                _rec(nm, exp, f"L{i:<3} ", _weight_dtype)
                 # ── FP8 块量化的伴随张量 ──────────────────────────────
                 # 权重本身留在原处，另发一份 `<基名>.<scale>`。**形状从权重
                 # 的形状推**，所以它不可能和权重对不上。
-                if q_scale and _is_member(owner, lname, _lb) and _kd == "weight":
+                if q_format == "fp8_e4m3_block" and q_scale and q_spec \
+                        and _is_member(owner, lname, _lb) and _kd == "weight":
                     snm = nm.rsplit(".", 1)[0] + "." + q_scale
                     generated.add(snm)
                     if len(samples) < 6:
                         samples.append(f"      L{i:<3} 量化 {lname:<10} -> {snm}")
-                    _rec(snm, _scale_of(exp, q_block), f"L{i:<3} ")
+                    _rec(snm, _scale_of(exp, q_block), f"L{i:<3} ",
+                         q_scale_dtype or q_spec["scale_dtype"])
 
     # 全局张量：不属于任何层，名字里通常没有层号
     for (lname, shape_txt, note, _pe) in (global_rows or []):
@@ -468,8 +509,11 @@ def check_tensors(info, real, render, rule_desc, scope_map, out,
     out.append("  生成的名字示例:")
     out.extend(samples)
     ok = total - mismatch - missing
-    out.append(f"  契约声明存在: {total}   名字+形状一致 {ok}   "
-               f"形状不符 {mismatch}   缺失 {missing}")
+    out.append(f"  契约声明存在 / Declared tensors: {total}   "
+               f"名字+形状/dtype 一致 / name+shape+dtypes match: {ok}   "
+               f"不符 / mismatches: {mismatch}   缺失 / missing: {missing}")
+    out.append(f"  量化 dtype 对拍 / quantized dtype checks: {dtype_checked}   "
+               f"参考清单未提供 / missing from manifest: {dtype_unchecked}")
     out.append(f"  契约声明抑制: {sup_total}   确实不存在 {sup_ok}   "
                f"应无却有 {absent_but_present}   符号形状跳过 {symbolic}"
                + (f"   未映射机制跳过 {unmapped}" if unmapped else ""))
@@ -571,7 +615,14 @@ def main(argv=None):
             break
 
     bc = load_checker()
-    _, info = bc.check(by1_path)
+    parse_report, info = bc.check(by1_path)
+    quant_errors = [item for item in parse_report.items
+                    if item[0] == bc.E and len(item) > 3 and item[2] == "quant"]
+    if quant_errors:
+        print("[FAIL] quant 格式声明 / quant format declaration")
+        for item in quant_errors:
+            print("  %s:%s %s" % (by1_path, item[1], item[3]))
+        return 1
 
     out = []
     out.append("=" * 74)

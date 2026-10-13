@@ -38,7 +38,9 @@ def emit_rules(*, _mod, _):
                     "expert_name": _['be'].assigns.get("expert_name", "").strip().strip('"'),
                     "global_name": _['be'].assigns.get("global_name", "").strip().strip('"'),
                     "scope": {}, "rename": {}, "fields": {},
-                    "quant": {}, "line": _['be'].line, "head": _['be'].head.strip()}
+                    "quant": {}, "quant_declared": False,
+                    "quant_line": _['be'].line,
+                    "line": _['be'].line, "head": _['be'].head.strip()}
             # **按栈各写一份名字模板**：`name_<栈名>`。
             # 一个 checkpoint 里可以有多个栈、各套前缀
             # （Qwen3.5 主干是 model.language_model.layers.{i}.…，
@@ -51,6 +53,8 @@ def emit_rules(*, _mod, _):
             for _['sub'] in _['be'].children:
                 _['h'] = _['sub'].head.strip()
                 if _['h'] == "quant":
+                    _['rule']["quant_declared"] = True
+                    _['rule']["quant_line"] = _['sub'].line
                     for _['k'], _['v'] in _['sub'].assigns.items():
                         _['rule']["quant"][_['k']] = _['v'].strip().strip('"')
                     for _['sub2'] in _['sub'].children:
@@ -63,6 +67,25 @@ def emit_rules(*, _mod, _):
                     continue
                 for _['k'], _['v'] in _['sub'].assigns.items():
                     _['tgt'][_['k']] = _['v'].strip().strip('"')
+            if _['rule']["quant_declared"]:
+                import by1quant
+                _['qerrors'] = by1quant.validate_emit_quant(_['rule']["quant"])
+                _['qtensors'] = re.findall(
+                    r"[A-Za-z_][\w.]*", _['rule']["quant"].get("tensor", ""))
+                for _['qn'] in _['qtensors']:
+                    _['matched'] = any(
+                        _['qn'] == _['ln'] or _['qn'] == _['owner'] + "." + _['ln']
+                        or _['ln'].startswith(_['qn'] + ".")
+                        for _['owner'], _['rows'] in _['contracts'].items()
+                        for (_['ln'], _['_shape'], _['_group'], _['_layer'], _['_physical'])
+                        in _['rows'])
+                    if not _['matched']:
+                        _['qerrors'].append(
+                            "quant.tensor 引用了契约中不存在的张量：" + _['qn'])
+                for _['qerr'] in _['qerrors']:
+                    _['rep'].add(E, _['rule']["quant_line"], "quant", _['qerr'])
+            del _['rule']["quant_declared"]
+            del _['rule']["quant_line"]
             _['emit_rules'][_['key']] = _['rule']
 
             if not _['rule']["name"]:

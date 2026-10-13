@@ -1,0 +1,88 @@
+# FP8 存储合同覆盖层；完整架构以 complete-Qwen3.8-27B.by1 为准。
+# 官方权重：Qwen/Qwen3.8-27B-FP8，fine-grained E4M3 block-128。
+# 文本主干和 MTP 的 407 个投影量化；视觉塔、归一化、embedding、lm_head 保持 BF16。
+# 本文件只选定量化张量及其物理布局，不取代完整架构描述。
+# by1-model: Qwen3.8-27B-FP8
+
+model Qwen3.8-27B-FP8 {
+  arch qwen3_5
+  ctx 262144
+
+  hparams {
+    d_model = 5120
+  }
+
+  mech D : Linear {
+    k_heads = 16
+    k_dim = 128
+    v_heads = 48
+    v_dim = 128
+    conv_kernel = 4
+  }
+
+  mech A : Attention {
+    heads = { q = 24, kv = 4, head_dim = 256 }
+    q_gate = true
+    qk_norm = per_head
+    partial = 0.25
+  }
+
+  mech F : FFN {
+    hidden = 17408
+  }
+
+  stack main {
+    pattern = 16 * [3 * D + A]
+    main[:] >> F
+  }
+
+  stack mtp {
+    aux = true
+    pattern = 1 * A
+    mtp[:] >> F
+  }
+
+  # 只列出官方 FP8 checkpoint 中被量化的逻辑投影。
+  tensors {
+    D {
+      in_proj_qkv.weight : (k_heads * k_dim * 2 + v_heads * v_dim, d_model)
+      in_proj_z.weight   : (v_heads * v_dim, d_model)
+      out_proj.weight    : (d_model, v_heads * v_dim)
+    }
+    A {
+      q_proj.weight : (q * head_dim * 2, d_model)
+      k_proj.weight : (kv * head_dim, d_model)
+      v_proj.weight : (kv * head_dim, d_model)
+      o_proj.weight : (d_model, q * head_dim)
+    }
+    F {
+      gate_proj.weight : (hidden, d_model)
+      up_proj.weight   : (hidden, d_model)
+      down_proj.weight : (d_model, hidden)
+    }
+  }
+
+  mtp {
+    share_embeddings = true
+    share_head = true
+  }
+
+  emit {
+    train -> torch.module {
+      name_model = "model.language_model.layers.{i}.{scope}{physical}"
+      name_mtp = "mtp.layers.{i}.{scope}{physical}"
+      name = "{stack}.layers.{i}.{scope}{physical}"
+      global_name = "{physical}"
+      scope { D = linear_attn., A = self_attn., F = mlp., layer = "", global = "" }
+      quant {
+        format = fp8_e4m3_block
+        scale = weight_scale_inv
+        scale_dtype = BF16
+        block = 128
+        tensor = [in_proj_qkv.weight, in_proj_z.weight, out_proj.weight,
+                  q_proj.weight, k_proj.weight, v_proj.weight, o_proj.weight,
+                  gate_proj.weight, up_proj.weight, down_proj.weight]
+      }
+    }
+  }
+}

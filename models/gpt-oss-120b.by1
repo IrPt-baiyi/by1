@@ -196,6 +196,7 @@ model gpt-oss-120b {
         # 同一个模型换成 BF16 发布，这三个名字就变回正常的权重名 ——
         # 所以它是导出参数，不该写进架构描述。
         quant {
+          format = mxfp4
           block  = 32
           tensor = [gate_exps, up_exps, down_exps]
           fuse {
