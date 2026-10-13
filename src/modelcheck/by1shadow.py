@@ -437,6 +437,116 @@ def deep_scan(dtype='bfloat16', layers=64, hidden=1024, ff=3072):
             'max_abs_logit': peak, 'bytes': manifest['bytes']}
 
 
+def smoke_qwen35(dtype='float32'):
+    """qwen3_5 家族冒烟（视觉 + MTP）：**缩小配置**模式。
+
+    真 config 的 27B 在 CPU 上建不动，所以配置用 `by1complete.config_of`
+    的独立 tiny 配置（同一个意思只写一遍）；**mtp 规格取真 .by1**
+    （complete-Qwen3.8-27B.by1），不自己编。范围：
+
+        双 loader 完整装载 · 文本/图像前向 · 贪心生成 ·
+        MTP 对独立公式（by1complete.mtp_formula）· tying 断言 ·
+        mtp.* 命名对 refs 真品 · mtp 深度不符必红
+
+    **不在本模式**：声明↔config 对拍（缩小配置没有对应 .by1 声明）。
+    """
+    import torch
+    import transformers as T
+    import by1check
+    import by1full
+    import by1complete
+
+    report, info = by1check.check(by1paths.model('complete-Qwen3.8-27B.by1'))
+    if report.count(by1check.E):
+        raise RuntimeError('complete-Qwen3.8-27B.by1 没过检查：%s' % report.items[:3])
+    family, _declared, mtp = by1full.compile_config(info)
+    if family != 'qwen3_5' or not mtp:
+        raise RuntimeError('本冒烟要的是 qwen3_5 + mtp 规格，拿到 %s / %s'
+                           % (family, mtp))
+    cfg = by1complete.config_of('qwen3_5', False, T)
+    out = by1paths.root('build', 'shadow-smoke-qwen35')
+    manifest = build(cfg.to_json_string(), family, mtp, out, dtype=dtype)
+
+    def load(cls, tag):
+        model, loading = cls.from_pretrained(
+            str(out), config=T.AutoConfig.from_pretrained(str(out), local_files_only=True),
+            output_loading_info=True, local_files_only=True,
+            attn_implementation='eager')
+        extra = [k for k in (loading.get('unexpected_keys') or [])
+                 if not k.startswith('mtp.')]
+        bad = {k: v for k, v in (('missing', loading.get('missing_keys')),
+                                ('extra', extra),
+                                ('mismatched', loading.get('mismatched_keys')))
+               if v}
+        if bad:
+            raise RuntimeError('%s 对影子有意见：%s' % (tag, bad))
+        return model
+
+    reference = load(T.AutoModelForImageTextToText, '官方 loader')
+    by1_model = load(by1full._model_class(family, mtp), 'by1 loader（含 mtp）')
+
+    generator = torch.Generator().manual_seed(manifest['seed'])
+    ids = torch.randint(0, cfg.text_config.vocab_size, (1, 16), generator=generator)
+    with torch.no_grad():
+        a = reference(input_ids=ids, use_cache=False).logits
+        b = by1_model(input_ids=ids, use_cache=False).logits
+    difference = (a.float() - b.float()).abs().max().item()
+    if not torch.isfinite(a).all() or not torch.isfinite(b).all():
+        raise RuntimeError('文本前向有非有限值')
+    if not torch.allclose(a.float(), b.float(), atol=2e-3, rtol=2e-3):
+        raise RuntimeError('文本前向对不上：max|Δ|=%.3e' % difference)
+    print('  文本前向 OK：max|Δ| = %.3e' % difference)
+
+    batch = by1complete.inputs('qwen3_5', torch)   # 自带 output_hidden_states
+    with torch.no_grad():
+        ia = reference(**batch).logits
+        base = by1_model(**batch)
+        ib = base.logits
+    idiff = (ia.float() - ib.float()).abs().max().item()
+    if not torch.isfinite(ia).all() or not torch.isfinite(ib).all():
+        raise RuntimeError('图像前向有非有限值')
+    if not torch.allclose(ia.float(), ib.float(), atol=2e-3, rtol=2e-3):
+        raise RuntimeError('图像前向对不上：max|Δ|=%.3e' % idiff)
+    print('  图像前向 OK：max|Δ| = %.3e（视觉塔接线）' % idiff)
+
+    # ── MTP：对独立公式（by1complete.mtp_formula 不走 forward_mtp）──
+    if not (by1_model.mtp.embed_tokens is by1_model.get_input_embeddings()
+            and by1_model.mtp.lm_head is by1_model.get_output_embeddings()):
+        raise RuntimeError('MTP 参数共享断了（embed/lm_head 不是同一对象）')
+    mtp_ids = batch['input_ids'].roll(-1, 1)
+    positions = torch.arange(mtp_ids.shape[1], device=ids.device)[None] + 1
+    hidden = base.hidden_states[-1]
+    with torch.no_grad():
+        draft = by1_model.forward_mtp(mtp_ids, hidden, positions)['logits']
+        formula = by1complete.mtp_formula(by1_model, mtp_ids, hidden, positions, torch)
+    mdiff = (draft.float() - formula.float()).abs().max().item()
+    if not torch.allclose(draft.float(), formula.float(), atol=2e-3, rtol=2e-3):
+        raise RuntimeError('MTP 对独立公式不一致：max|Δ|=%.3e' % mdiff)
+    print('  MTP OK：对独立公式 max|Δ| = %.3e；tying 断言过' % mdiff)
+
+    # ── mtp.* 命名对 refs 真品（真权重对拍今天能过，所以必须相等）──
+    refs_path = pathlib.Path(by1paths.ref('Qwen__Qwen3.8-27B.tensors.json'))
+    if refs_path.exists():
+        real = json.loads(refs_path.read_text(encoding='utf-8'))
+        real_mtp = {k for k in real if k.startswith('mtp.')}
+        mine_mtp = {k for k in by1_model.state_dict() if k.startswith('mtp.')}
+        if real_mtp and mine_mtp != real_mtp:
+            raise RuntimeError('mtp.* 命名与 refs 真品不一致：%s'
+                               % sorted(mine_mtp ^ real_mtp)[:6])
+        print('  mtp.* 命名与 refs 真品逐个一致（%d 个）' % len(mine_mtp))
+
+    # ── 反向：mtp 深度不符必须被缺键抓住 ──────────────────────────
+    bad = dict(mtp, depth=mtp['depth'] + 1)
+    _m, lbad = by1full._model_class(family, bad).from_pretrained(
+        str(out), config=T.AutoConfig.from_pretrained(str(out), local_files_only=True),
+        output_loading_info=True, local_files_only=True, attn_implementation='eager')
+    missing = lbad.get('missing_keys') or []
+    if not any(k.startswith('mtp.layers.%d.' % mtp['depth']) for k in missing):
+        raise RuntimeError('反向失效：mtp 深度不符竟然没报缺键 —— 空转的绿')
+    print('  反向 OK：mtp 深度 +1 被缺键抓住（%d 个 missing_keys）' % len(missing))
+    return manifest
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--by1', help='.by1 完整架构声明（取家族与 mtp 规格）')
@@ -451,6 +561,8 @@ def main(argv=None):
                         help='CPU 端到端自检（默认 gpt2 离线；--by1/--config 换家族）')
     parser.add_argument('--smoke-deep', action='store_true',
                         help='bf16 深模型边界扫描（64 层合成配置）')
+    parser.add_argument('--smoke-q35', action='store_true',
+                        help='qwen3_5 家族冒烟（视觉+MTP，缩小配置模式）')
     parser.add_argument('--fetch-config', metavar='REPO',
                         help='冒烟前只拉该仓库的 config.json（几 KB）')
     args = parser.parse_args(argv)
@@ -459,6 +571,13 @@ def main(argv=None):
             deep_scan(dtype=args.dtype or 'bfloat16')
         except Exception as exc:
             return by1skip.broken('bf16 边界扫描失败：%s' % exc)
+        if not args.smoke:
+            return 0
+    if args.smoke_q35:
+        try:
+            smoke_qwen35(dtype=args.dtype or 'float32')
+        except Exception as exc:
+            return by1skip.broken('qwen3_5 家族冒烟失败：%s' % exc)
         if not args.smoke:
             return 0
     if args.smoke:

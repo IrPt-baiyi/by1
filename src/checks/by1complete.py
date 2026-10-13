@@ -88,28 +88,34 @@ def tiny(name):
     return by1full.compile_config(info)
 
 
-def reference(family, tied, torch, T):
-    """独立写出的参考配置：不使用 by1 的配置转换器。"""
+def config_of(family, tied, T):
+    """独立写出的参考**配置**：不使用 by1 的配置转换器。
+    `reference()` 用它建模型；影子冒烟（by1shadow）也用它 ——
+    同一个意思只写一遍，两处漂移会互相打脸。"""
     common = dict(vocab_size=64, hidden_size=32, num_hidden_layers=2, num_attention_heads=4,
                   num_key_value_heads=2, head_dim=8, intermediate_size=64,
                   max_position_embeddings=32, tie_word_embeddings=tied,
                   bos_token_id=54, eos_token_id=55, rms_norm_eps=1e-6, attention_dropout=0)
     if family == 'qwen3':
-        return T.Qwen3ForCausalLM(T.Qwen3Config(rope_parameters={'rope_type': 'default', 'rope_theta': 1e6}, **common))
+        return T.Qwen3Config(rope_parameters={'rope_type': 'default', 'rope_theta': 1e6}, **common)
     if family == 'qwen2':
-        return T.Qwen2ForCausalLM(T.Qwen2Config(rope_parameters={'rope_type': 'default', 'rope_theta': 1e6}, **common))
+        return T.Qwen2Config(rope_parameters={'rope_type': 'default', 'rope_theta': 1e6}, **common)
     if family == 'gpt2':
-        return T.GPT2LMHeadModel(T.GPT2Config(vocab_size=64, n_embd=32, n_layer=2, n_head=4,
-                    n_inner=64, n_positions=32, layer_norm_epsilon=1e-5, activation_function='gelu_new',
-                    tie_word_embeddings=True, attn_pdrop=0.1, resid_pdrop=0.1, embd_pdrop=0.1,
-                    bos_token_id=54, eos_token_id=55))
+        return T.GPT2Config(vocab_size=64, n_embd=32, n_layer=2, n_head=4,
+                            n_inner=64, n_positions=32, layer_norm_epsilon=1e-5,
+                            activation_function='gelu_new', tie_word_embeddings=True,
+                            attn_pdrop=0.1, resid_pdrop=0.1, embd_pdrop=0.1,
+                            bos_token_id=54, eos_token_id=55)
     if family == 'gpt_oss':
         common.update(max_position_embeddings=128, rms_norm_eps=1e-5, attention_bias=True)
-        return T.GptOssForCausalLM(T.GptOssConfig(num_local_experts=4, num_experts_per_tok=2,
-                    sliding_window=4, layer_types=['sliding_attention', 'full_attention'],
-                    rope_parameters={'rope_type': 'yarn', 'rope_theta': 150000., 'factor': 32.,
-                                     'original_max_position_embeddings': 4, 'beta_fast': 32.,
-                                     'beta_slow': 1., 'truncate': False}, **common))
+        return T.GptOssConfig(num_local_experts=4, num_experts_per_tok=2,
+                              sliding_window=4,
+                              layer_types=['sliding_attention', 'full_attention'],
+                              rope_parameters={'rope_type': 'yarn', 'rope_theta': 150000.,
+                                               'factor': 32.,
+                                               'original_max_position_embeddings': 4,
+                                               'beta_fast': 32., 'beta_slow': 1.,
+                                               'truncate': False}, **common)
     text = dict(vocab_size=64, hidden_size=32, intermediate_size=64, num_hidden_layers=4,
                 num_attention_heads=4, num_key_value_heads=2, head_dim=16, rms_norm_eps=1e-6,
                 max_position_embeddings=32, tie_word_embeddings=False, bos_token_id=54, eos_token_id=55,
@@ -121,9 +127,21 @@ def reference(family, tied, torch, T):
     vision = dict(depth=1, hidden_size=16, num_heads=2, intermediate_size=32, out_hidden_size=32,
                   patch_size=2, temporal_patch_size=2, spatial_merge_size=2, num_position_embeddings=16,
                   in_channels=3, hidden_act='gelu_pytorch_tanh')
-    cfg = T.Qwen3_5Config(text_config=text, vision_config=vision, image_token_id=60,
-                         video_token_id=61, vision_start_token_id=62, vision_end_token_id=63)
-    return T.Qwen3_5ForConditionalGeneration(cfg)
+    return T.Qwen3_5Config(text_config=text, vision_config=vision, image_token_id=60,
+                           video_token_id=61, vision_start_token_id=62, vision_end_token_id=63)
+
+
+def reference(family, tied, torch, T):
+    """独立写出的参考配置：不使用 by1 的配置转换器。"""
+    if family == 'qwen3':
+        return T.Qwen3ForCausalLM(config_of(family, tied, T))
+    if family == 'qwen2':
+        return T.Qwen2ForCausalLM(config_of(family, tied, T))
+    if family == 'gpt2':
+        return T.GPT2LMHeadModel(config_of(family, tied, T))
+    if family == 'gpt_oss':
+        return T.GptOssForCausalLM(config_of(family, tied, T))
+    return T.Qwen3_5ForConditionalGeneration(config_of(family, tied, T))
 
 
 def inputs(family, torch, video=False):
