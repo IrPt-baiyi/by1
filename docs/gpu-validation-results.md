@@ -1,44 +1,91 @@
-# GPU 验证结果
+# GPU Validation Results / GPU 验证结果
 
-这些记录来自 2026-10-13 的 NVIDIA RTX PRO 6000 Blackwell Server Edition（96 GB）实例，环境为 PyTorch 2.8.0、CUDA 12.8、Transformers 5.19.0。JSON 原始报告与摘要一同保存在本仓库的 [`gpu-results/`](gpu-results/) 目录；复现命令和判据见 [GPU 验证说明](../gpu/README.md)。
+## English
 
-## 真实 checkpoint 前向对比
+These measurements were collected on October 13, 2026, using an NVIDIA RTX PRO 6000 Blackwell Server Edition (96 GB). The environment was PyTorch 2.8.0, CUDA 12.8, and Transformers 5.19.0. Raw JSON reports are in [`gpu-results/`](gpu-results/); reproduction commands and criteria are in the [GPU validation guide](../gpu/README.md).
 
-对照组加载发布方配置，by1 组从 `.by1` 编译模型配置；两边使用相同 checkpoint、Transformers 模型实现和算子。BF16、batch 1、eager attention，输入长度 32 和 128，预热 2 次、每项计时 5 次；贪心生成 16 个新 token。六个模型的前向 logits 最大绝对误差均为 0，greedy 输出 token 均完全相同。
+### Published-checkpoint forward comparison
 
-| 模型 | by1 / 发布方前向耗时比，长度 128 | by1 前向峰值显存 | 额外检查 |
+The reference loaded the publisher's configuration; by1 compiled the configuration from each `.by1` file. Both sides used the same checkpoint, Transformers model implementation, and operators. Settings: BF16, batch size 1, eager attention, input lengths 32 and 128, 2 warmups, 5 timed runs, and greedy generation of 16 new tokens. All six models had a maximum absolute logit difference of 0, and all generated token sequences matched.
+
+| Model | by1 / reference forward latency at length 128 | by1 peak forward memory | Additional check |
 |---|---:|---:|---|
-| GPT-2 | 0.990× | 0.27 GB | 16 token 生成一致 |
-| Qwen3-0.6B | 0.996× | 1.24 GB | 16 token 生成一致；另有真实权重训练步 |
-| Qwen2.5-7B-Instruct | 0.998× | 15.28 GB | 16 token 生成一致 |
-| Qwen3-8B | 0.997× | 16.43 GB | 16 token 生成一致；另测长上下文 |
-| gpt-oss-20b | 1.054× | 41.90 GB | 发布的 MXFP4 checkpoint 在两边都解量化为 BF16；16 token 生成一致 |
-| Qwen3.8-27B | 0.991× | 55.64 GB | 16 token 生成一致；图像输入和 MTP 分支另行核验 |
+| GPT-2 | 0.990× | 0.27 GB | 16 generated tokens matched |
+| Qwen3-0.6B | 0.996× | 1.24 GB | 16 tokens matched; one real-weight training step also tested |
+| Qwen2.5-7B-Instruct | 0.998× | 15.28 GB | 16 generated tokens matched |
+| Qwen3-8B | 0.997× | 16.43 GB | 16 tokens matched; longer contexts also tested |
+| gpt-oss-20b | 1.054× | 41.90 GB | Published MXFP4 checkpoint dequantized to BF16 on both sides; 16 tokens matched |
+| Qwen3.8-27B | 0.991× | 55.64 GB | 16 tokens matched; image input and MTP checked separately |
 
-耗时比是这次单机、短序列运行的观测值，不是加速承诺。此 benchmark 复用 Transformers 算子，测的是配置转换、权重加载、计算结果和额外运行开销；它不比较 by1 自研 CUDA 内核，也不衡量模型任务能力。
+These latency ratios are observations from one machine and short sequences, not speedup claims. The benchmark reuses Transformers operators. It checks configuration conversion, weight loading, numerical behavior, and runtime overhead; it does not compare a by1 CUDA kernel or evaluate task quality.
 
-Qwen3.8 的文本、MTP 和图像输入均用真实 checkpoint 权重。图像项使用合成的 128×128 输入，经该模型 processor 处理；原始与 by1 logits 最大绝对误差为 0。MTP 输出与独立连接公式对拍，最大误差为 0。MTP 计时不是 vLLM speculative decoding 的端到端 benchmark。合成图像只验证分支计算与连接，不代表视觉能力评测。
+Qwen3.8 text, MTP, and image paths used real checkpoint weights. The image case used a synthetic 128×128 image processed by the model's processor; the maximum absolute logit difference was 0. MTP output matched an independent connection formula with maximum error 0. The MTP timing is not an end-to-end vLLM speculative-decoding benchmark. The synthetic image validates execution and wiring, not visual capability.
 
-## 长上下文和训练步
+### Longer contexts and a training step
+
+| Model | Input length | Maximum absolute logit difference | by1 peak memory | Generation comparison |
+|---|---:|---:|---:|---|
+| Qwen2.5-7B-Instruct | 2,048 | 0 | 16.52 GB | 8 tokens matched |
+| Qwen2.5-7B-Instruct | 4,096 | 0 | 20.16 GB | 8 tokens matched |
+| Qwen3-8B | 2,048 | 0 | 17.85 GB | 8 tokens matched |
+| Qwen3-8B | 4,096 | 0 | 22.01 GB | 8 tokens matched |
+| Qwen3-8B | 8,192 | 0 | 38.44 GB | 4 tokens matched |
+
+One BF16 training step used real Qwen3-0.6B weights: full-parameter backpropagation followed by one AdamW update. The official and by1 models matched elementwise across 596,049,920 gradients and the same number of updated parameter values (both maximum absolute differences were 0); peak memory was about 5.98 GB. This validates one step, not multi-step training or convergence.
+
+Small CUDA smoke tests with random weights also passed in FP32 and BF16. They cover the native model, six scaled-down architectures, vision/video branches, MTP, and optimizer updates. These tests add component coverage; they do not replace the real-checkpoint comparisons above.
+
+### Raw reports
+
+- [Six-model forward and generation comparison](gpu-results/gpu-benchmark.json)
+- [Final gpt-oss-20b report](gpu-results/gpu-benchmark-gptoss-final.json)
+- [Final Qwen3.8-27B report, including image and MTP](gpu-results/gpu-benchmark-qwen38-final.json)
+- [Qwen2.5-7B and Qwen3-8B longer contexts](gpu-results/gpu-long-context-large.json)
+- [Qwen3-8B at 8K context](gpu-results/gpu-long-context-8k.json)
+- [Qwen3-0.6B real-weight training step](gpu-results/gpu-real-traincheck.json)
+- [FP32 smoke report](gpu-results/gpu-smoke-fp32.json) · [BF16 smoke report](gpu-results/gpu-smoke-bf16.json)
+
+## 中文
+
+这些数据于 2026 年 10 月 13 日在 NVIDIA RTX PRO 6000 Blackwell Server Edition（96 GB）上采集。环境为 PyTorch 2.8.0、CUDA 12.8 和 Transformers 5.19.0。原始 JSON 报告见 [`gpu-results/`](gpu-results/)，复现命令与判据见 [GPU 验证说明](../gpu/README.md)。
+
+### 发布方真实权重前向对比
+
+对照组加载发布方配置，by1 组从 `.by1` 编译配置；两边使用相同 checkpoint、Transformers 模型实现和算子。设置为 BF16、batch 1、eager attention，输入长度 32 和 128，预热 2 次、计时 5 次，贪心生成 16 个新 token。六个模型的 logits 最大绝对误差均为 0，生成的 token 序列也都一致。
+
+| 模型 | 长度 128 时 by1 / 对照组前向耗时比 | by1 前向峰值显存 | 额外检查 |
+|---|---:|---:|---|
+| GPT-2 | 0.990× | 0.27 GB | 16 个生成 token 一致 |
+| Qwen3-0.6B | 0.996× | 1.24 GB | 16 个 token 一致；另测一次真实权重训练步 |
+| Qwen2.5-7B-Instruct | 0.998× | 15.28 GB | 16 个生成 token 一致 |
+| Qwen3-8B | 0.997× | 16.43 GB | 16 个 token 一致；另测更长上下文 |
+| gpt-oss-20b | 1.054× | 41.90 GB | 两边都将发布的 MXFP4 checkpoint 解量化为 BF16；16 个 token 一致 |
+| Qwen3.8-27B | 0.991× | 55.64 GB | 16 个 token 一致；另验图像输入和 MTP |
+
+这些耗时比只是单台机器、短序列下的观测值，不代表加速。benchmark 复用 Transformers 算子，核验配置转换、权重加载、数值行为和运行开销；它没有比较 by1 CUDA 内核，也没有评测模型任务能力。
+
+Qwen3.8 的文本、MTP 和图像分支使用真实 checkpoint 权重。图像测试使用合成的 128×128 图像并交给模型 processor 处理，logits 最大绝对误差为 0。MTP 输出与独立连接公式对拍，最大误差为 0。MTP 计时不是 vLLM speculative decoding 的端到端 benchmark。合成图像只验证执行和连接，不代表视觉能力评测。
+
+### 更长上下文与训练步
 
 | 模型 | 输入长度 | logits 最大绝对误差 | by1 峰值显存 | 生成对比 |
 |---|---:|---:|---:|---|
-| Qwen2.5-7B-Instruct | 2,048 | 0 | 16.52 GB | 8 token 一致 |
-| Qwen2.5-7B-Instruct | 4,096 | 0 | 20.16 GB | 8 token 一致 |
-| Qwen3-8B | 2,048 | 0 | 17.85 GB | 8 token 一致 |
-| Qwen3-8B | 4,096 | 0 | 22.01 GB | 8 token 一致 |
-| Qwen3-8B | 8,192 | 0 | 38.44 GB | 4 token 一致 |
+| Qwen2.5-7B-Instruct | 2,048 | 0 | 16.52 GB | 8 个 token 一致 |
+| Qwen2.5-7B-Instruct | 4,096 | 0 | 20.16 GB | 8 个 token 一致 |
+| Qwen3-8B | 2,048 | 0 | 17.85 GB | 8 个 token 一致 |
+| Qwen3-8B | 4,096 | 0 | 22.01 GB | 8 个 token 一致 |
+| Qwen3-8B | 8,192 | 0 | 38.44 GB | 4 个 token 一致 |
 
-此外，Qwen3-0.6B 的真实权重 BF16 训练步跑过一次全参数反向传播和 AdamW 更新。官方与 by1 两侧的 596,049,920 个梯度值及同数量的更新后参数逐元素一致（最大绝对误差均为 0）；峰值显存约 5.98 GB。这验证一个训练步，不等同于多步训练或收敛性评估。
+Qwen3-0.6B 真实 BF16 权重还跑过一次全参数反向传播和 AdamW 更新。官方模型和 by1 模型的 596,049,920 个梯度及同数量的更新后参数逐元素一致（两项最大绝对误差均为 0）；峰值显存约 5.98 GB。这只验证一步，不代表多步训练或收敛性。
 
-随机权重的小尺寸 CUDA smoke tests 也在 FP32 和 BF16 下通过，覆盖原生模型、六种缩小架构、视觉/视频分支、MTP 及优化器更新。它们用于补足组件覆盖，不代替上述真实 checkpoint 检查。
+随机权重的小尺寸 CUDA smoke test 也在 FP32 和 BF16 下通过，覆盖原生模型、六种缩小架构、视觉/视频分支、MTP 和优化器更新。这些测试补充组件覆盖，不代替上面的真实权重对比。
 
-## 原始报告
+### 原始报告
 
 - [六模型前向与生成对比](gpu-results/gpu-benchmark.json)
 - [gpt-oss-20b 最终报告](gpu-results/gpu-benchmark-gptoss-final.json)
 - [Qwen3.8-27B 最终报告（含图像与 MTP）](gpu-results/gpu-benchmark-qwen38-final.json)
 - [Qwen2.5-7B 与 Qwen3-8B 长上下文](gpu-results/gpu-long-context-large.json)
-- [Qwen3-8B 8K 上下文](gpu-results/gpu-long-context-8k.json)
+- [Qwen3-8B 的 8K 上下文](gpu-results/gpu-long-context-8k.json)
 - [Qwen3-0.6B 真实权重训练步](gpu-results/gpu-real-traincheck.json)
-- [FP32 smoke report](gpu-results/gpu-smoke-fp32.json) · [BF16 smoke report](gpu-results/gpu-smoke-bf16.json)
+- [FP32 smoke 报告](gpu-results/gpu-smoke-fp32.json) · [BF16 smoke 报告](gpu-results/gpu-smoke-bf16.json)

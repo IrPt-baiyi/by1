@@ -219,7 +219,7 @@
 | `complete-models.md` | 完整模型：参数共享、视觉与 MTP |
 | `criteria-review.md` | **请人重算**的任务卡：判据本身没人验过，这一份是那份活。含"refs 判 by1 不是外部判卷"那一节 |
 | `ggml-plan.md` | 接 llama.cpp：第一个外部判卷人 |
-| `gpu-validation-results.md` | GPU 验证结果 |
+| `gpu-validation-results.md` | GPU Validation Results / GPU 验证结果 |
 | `llamacpp-plan.md` | 接 llama.cpp：完整计划（执行版） |
 | `pattern-design-review.md` | 对上面那份草案的审查 —— **照做之前先读它** |
 | `pattern-design.md` | 设计草案 v0，**状态：待审**。它挡着 4 个模型 |
