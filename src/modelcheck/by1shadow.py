@@ -283,30 +283,39 @@ def reusable(out_dir, family, mtp_spec, seed, dtype, config_text):
 
 
 # ---------------------------------------------------------------------------
-# --smoke：CPU 端到端自检。gpt2，真 config（refs/），全程离线。
+# --smoke：CPU 端到端自检。默认 gpt2 + 真 config（refs/），全程离线；
+# --by1/--config 换家族（qwen3 等），--smoke-deep 扫 bf16 深模型边界。
 # ---------------------------------------------------------------------------
 
-def smoke(dtype='float32'):
-    """影子 checkpoint 的完整流程 rehearsal：造 -> 双 loader -> 对拍。"""
+def smoke(dtype='float32', by1_name='complete-gpt2.by1', config_file=None):
+    """影子 checkpoint 的完整流程 rehearsal：造 -> 双 loader -> 对拍。
+
+    config 必须是**真品**（声明对拍的一半在这里）；换家族时给
+    `--config`，或用 `fetch_config()` 只拉 config 一个文件。"""
     import torch
     import transformers as T
     import by1check
     import by1full
 
-    model_file = by1paths.model('complete-gpt2.by1')
-    config_file = by1paths.ref('openai-community__gpt2.config.json')
+    model_file = by1paths.model(by1_name)
+    config_file = config_file or by1paths.ref('openai-community__gpt2.config.json')
     report, info = by1check.check(model_file)
     if report.count(by1check.E):
-        raise RuntimeError('complete-gpt2.by1 没过检查：%s' % report.items[:3])
+        raise RuntimeError('%s 没过检查：%s' % (by1_name, report.items[:3]))
     family, declared, mtp = by1full.compile_config(info)
     config_text = pathlib.Path(config_file).read_text(encoding='utf-8')
 
-    out = by1paths.root('build', 'shadow-smoke-gpt2')
+    out = by1paths.root('build', 'shadow-smoke-' + by1_name.replace('.by1', ''))
     manifest = build(config_text, family, mtp, out, dtype=dtype)
     print('  两个 loader 从影子目录加载……')
 
+    # **两边同一套注意力算子**（照 by1gpubench 的对拍语义）——
+    # reference 不给这个参数会默认走 SDPA，而 by1 侧 load_model 强制
+    # eager：两个内核的归约序不同，qwen3 会差出 4.4e-03（实测），看起来
+    # 像接线错，其实是内核差。接线对拍不比内核。
     reference, loading = T.AutoModelForCausalLM.from_pretrained(
-        str(out), output_loading_info=True, local_files_only=True)
+        str(out), output_loading_info=True, local_files_only=True,
+        attn_implementation='eager')
     problems = {k: loading.get(k) for k in ('missing_keys', 'unexpected_keys',
                                             'mismatched_keys') if loading.get(k)}
     if problems:
@@ -374,21 +383,92 @@ def smoke(dtype='float32'):
     return manifest
 
 
+def fetch_config(repo, out_dir=None):
+    """只拉 `config.json` 一个文件（几 KB）—— 影子模式允许的唯一网络动作，
+    慢网也下得动。hf-mirror 优先、HF 直连兜底；落在 build/ 里可复用。"""
+    import urllib.request
+    out_dir = pathlib.Path(out_dir or by1paths.root('build', 'shadow-configs'))
+    out_dir.mkdir(parents=True, exist_ok=True)
+    dest = out_dir / (repo.replace('/', '__') + '.config.json')
+    if dest.exists():
+        return str(dest)
+    last = None
+    for tpl in ('https://hf-mirror.com/%s/resolve/main/config.json',
+                'https://huggingface.co/%s/resolve/main/config.json'):
+        try:
+            req = urllib.request.Request(tpl % repo, headers={'User-Agent': 'by1'})
+            with urllib.request.urlopen(req, timeout=30) as r:
+                dest.write_bytes(r.read())
+            return str(dest)
+        except Exception as ex:
+            last = ex
+    raise RuntimeError('config.json 两个源都拉不到（%s）：%s' % (repo, last))
+
+
+def deep_scan(dtype='bfloat16', layers=64, hidden=1024, ff=3072):
+    """bf16 **深模型**边界扫描：scaled init 在深度下数值必须有限。
+
+    标准 init（std=initializer_range）在 64 层深、残差流逐层累积会把
+    幅度推爆；`build()` 的 `initializer_range/sqrt(2*n_layer)` 就是压它的。
+    判据：影子前向 logits **全有限**、幅度 O(1~1e3)。越界先修 `sample()`
+    的缩放 —— **不许**放宽 isfinite，那不是修，是把爆掉藏起来。"""
+    import torch
+    import transformers as T
+
+    cfg = T.Qwen3Config(
+        vocab_size=4096, hidden_size=hidden, intermediate_size=ff,
+        num_hidden_layers=layers, num_attention_heads=8, num_key_value_heads=4,
+        head_dim=hidden // 8, rms_norm_eps=1e-6, tie_word_embeddings=False,
+        max_position_embeddings=256)
+    out = by1paths.root('build', 'shadow-smoke-deep')
+    manifest = build(cfg.to_json_string(), 'qwen3', None, out, dtype=dtype,
+                     verbose=False)
+    model = T.AutoModelForCausalLM.from_pretrained(str(out), local_files_only=True)
+    ids = torch.randint(0, cfg.vocab_size, (1, 8))
+    with torch.no_grad():
+        logits = model(ids).logits
+    peak = float(logits.abs().max())
+    if not bool(torch.isfinite(logits).all()):
+        raise RuntimeError('深模型 bf16 前向有非有限值 —— scaled init 要修')
+    print('  bf16 边界 OK：%d 层 x hidden %d（%.2f GB 影子），'
+          'logits 全有限，max|logits| = %.3e'
+          % (layers, hidden, manifest['bytes'] / 1024 ** 3, peak))
+    return {'layers': layers, 'hidden': hidden, 'dtype': dtype,
+            'max_abs_logit': peak, 'bytes': manifest['bytes']}
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--by1', help='.by1 完整架构声明（取家族与 mtp 规格）')
     parser.add_argument('--config', help='真品 config.json 的路径（refs/ 里有现成的）')
     parser.add_argument('--out', help='影子 checkpoint 输出目录')
     parser.add_argument('--seed', type=int, default=SEED)
-    parser.add_argument('--dtype', default='bfloat16',
-                        choices=['bfloat16', 'float16', 'float32'])
+    parser.add_argument('--dtype', default=None,
+                        choices=['bfloat16', 'float16', 'float32'],
+                        help='不给：构建默认 bfloat16，冒烟默认 float32')
     parser.add_argument('--max-shard-gb', type=float, default=8.0)
     parser.add_argument('--smoke', action='store_true',
-                        help='CPU 端到端自检（gpt2，离线）')
+                        help='CPU 端到端自检（默认 gpt2 离线；--by1/--config 换家族）')
+    parser.add_argument('--smoke-deep', action='store_true',
+                        help='bf16 深模型边界扫描（64 层合成配置）')
+    parser.add_argument('--fetch-config', metavar='REPO',
+                        help='冒烟前只拉该仓库的 config.json（几 KB）')
     args = parser.parse_args(argv)
-    if args.smoke:
+    if args.smoke_deep:
         try:
-            smoke(dtype=args.dtype if args.dtype != 'bfloat16' else 'float32')
+            deep_scan(dtype=args.dtype or 'bfloat16')
+        except Exception as exc:
+            return by1skip.broken('bf16 边界扫描失败：%s' % exc)
+        if not args.smoke:
+            return 0
+    if args.smoke:
+        config_file = args.config
+        try:
+            if args.fetch_config:
+                config_file = fetch_config(args.fetch_config)
+            smoke(dtype=args.dtype or 'float32',
+                  by1_name=args.by1 or 'complete-gpt2.by1',
+                  config_file=config_file)
         except Exception as exc:
             return by1skip.broken('影子自检失败：%s' % exc)
         return 0
@@ -403,7 +483,7 @@ def main(argv=None):
         family, _declared, mtp = by1full.compile_config(info)
         config_text = pathlib.Path(args.config).read_text(encoding='utf-8')
         manifest = build(config_text, family, mtp, args.out,
-                         seed=args.seed, dtype=args.dtype,
+                         seed=args.seed, dtype=args.dtype or 'bfloat16',
                          max_shard_bytes=int(args.max_shard_gb * 1024 ** 3))
     except Exception as exc:
         return by1skip.broken('影子构建失败：%s' % exc)
