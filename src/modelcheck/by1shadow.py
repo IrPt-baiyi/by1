@@ -1,0 +1,380 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""by1shadow -- **影子 checkpoint：真格式、随机值，数值对拍不需要下载权重。**
+
+## 它解决什么
+
+GPU 对拍（`checks/by1gpubench`）要 `snapshot_download` 整个 checkpoint ——
+几十 GB。租来的卡（AutoDL 之类）出口带宽就那么点，提速手段（学术加速、
+ModelScope、hf_transfer、aria2、文件存储）全用上也还是慢，**因为慢的
+是带宽本身，不是下载方式**。于是只剩一条路：把要下的字节数变成零。
+
+## 为什么随机值就够了
+
+对拍真正要比的是两个 loader 的**接线**：
+
+    张量映射完整性 · tying / 共享 · config 声明与真品一致 ·
+    前向接线（reshape/transpose/RoPE 拼接）· 贪心生成 token 一致
+
+这些**和权重值无关**。拿随机值权重，接线错了一样对不上。所以影子
+checkpoint 的配方是：
+
+    张量名/形状/dtype  = 真的（模型类 state_dict，主干命名即官方命名）
+    config.json        = 真的（refs/*.config.json，或调用方给的真品 config）
+    权重值             = 按张量名哈希确定性生成的随机数
+
+**config.json 必须用真品，不能用声明合成。** `by1full.load_model` 里的
+`_check_config`（声明 vs checkpoint）是对拍的半个主体；config 从声明生成
+就变成自己比自己，**声明写错也全绿**。真 config + 随机值：声明错一个
+字段，`_check_config` 或 logits 对拍当场抓到。
+
+## 它验什么、不验什么（说清楚，别让"绿"超过"验过的"）
+
+验：张量映射、tying、声明↔config 一致、前向接线、贪心生成 token 一致。
+**不验：**
+
+- 真权重的数值语义（这本来就不是对拍的目标）
+- **量化存储**（MXFP4/FP8 的打包格式没法"随机"——随机字节不是合法量化
+  块。量化模型走真权重，影子模式显式跳过而不是假装验过）
+- checkpoint 命名与官方发布物的一致性 —— 名字取自 by1 的完整模型类，
+  主干是官方类自带的命名，`mtp.*` 的命名靠"真权重对拍今天能过"兜着。
+  这条缺口真权重对拍补。
+
+**"藏起来的缺口和没发现过的缺口一样糟"** —— 所以上面这段不许删。
+
+## 怎么生成
+
+在 meta device 上实例化完整模型类（不占内存），拿到全部张量名/形状/dtype；
+共享（tied）参数按 `id()` 归组、组内每个名字都写、值相同 —— 和
+`save_pretrained` 的去重语义兼容，两个 loader 都不会报 missing/unexpected。
+值按名字哈希播种，**重跑逐字节可复现**；初始化缩放 `initializer_range /
+sqrt(2*n_layer)`（GPT-2 的 scaled init），保证深模型 bf16 前向数值有限。
+分片流式写，峰值内存 ≈ 一个分片。
+
+用法:
+    python src/modelcheck/by1shadow.py --by1 models/complete-gpt2.by1 \\
+        --config refs/openai-community__gpt2.config.json --out shadow-gpt2
+    python src/modelcheck/by1shadow.py --smoke     # CPU 端到端自检（gpt2）
+"""
+
+import os as _os
+import sys as _sys
+# **引导：把自己上面那一层（`src/`）放上 sys.path。**
+# 加了它，`import by1paths` 才找得到；而 `by1paths` 在 import 时
+# 会把 `src/` 和每个子目录都放上 sys.path —— 于是 `import by1check`
+# 这种裸名 import 照旧能用。**这两行是生成的，别手改**
+# （判据在 `by1paths.check_boot()`）。
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import by1paths  # noqa: E402,F401
+
+import argparse
+import hashlib
+import itertools
+import json
+import math
+import pathlib
+
+import by1skip
+
+#: 默认种子。固定值是为了"重跑逐字节复现"；换种子 = 换一套随机权重。
+SEED = 20261013
+
+#: 单分片上限（字节）。和 HF 发布物同量级，让 index/shard 布局也像真的。
+MAX_SHARD_BYTES = 8 * 1024 ** 3
+
+#: 影子产物里的旁注文件名。**不是**给 from_pretrained 看的（它只认
+#: config.json / model.safetensors*），是给人看的"这堆权重是什么"。
+MANIFEST = 'shadow-manifest.json'
+
+#: 这份产物**验过什么**。写进 manifest，也印在报告里。
+VERIFIED = [
+    '张量映射完整（missing/unexpected = 0）',
+    'tying / 共享参数（含 mtp.embed_tokens / mtp.lm_head）',
+    '声明 ↔ checkpoint config 逐字段一致（config 为真品时）',
+    '前向接线：logits 数值一致',
+    '贪心生成 token 一致',
+]
+
+#: 这份产物**没验什么**。同一份清单，永远一起出现。
+NOT_VERIFIED = [
+    '真权重的数值语义（对拍本来就不比这个）',
+    '量化存储格式（MXFP4/FP8 打包块无法随机合成，量化模型走真权重）',
+    'checkpoint 命名与官方发布物的一致性（名字取自模型类；mtp.* 由真权重对拍兜底）',
+]
+
+
+class ShadowSkip(Exception):
+    """影子模式下做不了，但不是失败 —— 调用方转成 by1skip 的"跳过"。"""
+
+
+def _seed_for(seed, name):
+    """张量名 -> 生成种子。**名字哈希，和遍历顺序无关**，所以可复现。"""
+    digest = hashlib.sha256(('%d:%s' % (seed, name)).encode('utf-8')).digest()
+    return int.from_bytes(digest[:8], 'big') % (2 ** 63 - 1)
+
+
+def _target_dtype(name, dtype):
+    """生成值的落地 dtype。整型/布尔 buffer 不是"值"，保持原样。"""
+    return dtype
+
+
+def sample(group, seed, std, torch):
+    """一个共享组的随机值。判据：确定性、数值温和、语义像初始化。"""
+    canonical = min(group['names'])
+    shape = group['shape']
+    dtype = group['dtype']
+    if not dtype.is_floating_point:
+        # 位置 id 之类的整型 buffer：零是无害值，也谈不上"随机"。
+        return torch.zeros(shape, dtype=dtype)
+    generator = torch.Generator().manual_seed(_seed_for(seed, canonical))
+    if canonical.endswith('.bias'):
+        values = torch.zeros(shape)
+    elif len(shape) == 1 and 'norm' in canonical:
+        # 归一化权重取 1 —— 随机值会让激活幅度乱飘，没必要。
+        values = torch.ones(shape)
+    else:
+        values = torch.randn(shape, generator=generator) * std
+    return values.to(dtype)
+
+
+def tensor_groups(model):
+    """模型的全部持久张量，按共享（tied）归组。
+
+    `named_parameters(remove_duplicate=False)` 对共享参数**逐次返回同一个
+    对象**，所以按 `id()` 归组就是 tying 图本身。`state_dict()` 不行：
+    它内部 `param.detach()` 每个名字造一个新对象，`id()` 对不上 ——
+    那会把 tied 对当成两个独立张量，**tying 对拍就废了**。
+    """
+    state_keys = set(model.state_dict().keys())
+    groups, order = {}, []
+    pairs = itertools.chain(model.named_parameters(remove_duplicate=False),
+                            model.named_buffers(remove_duplicate=False))
+    for name, tensor in pairs:
+        if name not in state_keys:
+            continue
+        group = groups.get(id(tensor))
+        if group is None:
+            group = {'shape': tuple(tensor.shape), 'dtype': tensor.dtype,
+                     'names': []}
+            groups[id(tensor)] = group
+            order.append(group)
+        group['names'].append(name)
+    covered = {n for g in order for n in g['names']}
+    if covered != state_keys:
+        missing, extra = sorted(state_keys - covered), sorted(covered - state_keys)
+        raise RuntimeError('影子张量清单对不齐：缺 %s 多 %s' % (missing[:5], extra[:5]))
+    return order
+
+
+def _shards(groups, max_shard_bytes):
+    """按字节上限装分片。一组的全部名字进同一分片（值是一份）。"""
+    out, current, used = [], [], 0
+    for group in groups:
+        size = math.prod(group['shape']) * group['dtype'].itemsize
+        if current and used + size > max_shard_bytes:
+            out.append(current)
+            current, used = [], 0
+        current.append(group)
+        used += size
+    if current:
+        out.append(current)
+    return out
+
+
+def build(config_text, family, mtp_spec, out_dir, seed=SEED, dtype='bfloat16',
+          max_shard_bytes=MAX_SHARD_BYTES, verbose=True):
+    """造一个影子 checkpoint 目录，返回 manifest。
+
+    `config_text` 必须是**真品 config.json 的原文**（见模块头：声明合成的
+    config 会让声明对拍空转）。目录里写的就是这份原文，一字不改。
+    """
+    import torch
+    import transformers as T
+    import by1full
+    from safetensors.torch import save_file
+
+    out = pathlib.Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    (out / 'config.json').write_text(config_text, encoding='utf-8')
+    config = T.AutoConfig.from_pretrained(str(out), local_files_only=True)
+    if config.model_type != family:
+        raise ValueError('config 的模型家族 %s 与 by1 声明的 %s 不一致'
+                         % (config.model_type, family))
+    torch_dtype = getattr(torch, dtype)
+
+    def say(text):
+        if verbose:
+            print('  ' + text)
+
+    # meta device：实例化只拿形状/名字，不占内存 —— 27B 也一样轻。
+    with torch.device('meta'):
+        model = by1full._model_class(family, mtp_spec)(config)
+    groups = tensor_groups(model)
+    n_layer = (getattr(config, 'num_hidden_layers', None)
+               or getattr(config, 'n_layer', None) or 1)
+    std = (getattr(config, 'initializer_range', None) or 0.02) / math.sqrt(2 * n_layer)
+    say('影子张量 %d 个共享组（tied 并组），初始化 std=%.5f' % (len(groups), std))
+
+    shard_plan = _shards(groups, max_shard_bytes)
+    weight_map, total, shard_names = {}, 0, []
+    for index, plan in enumerate(shard_plan):
+        tensors = {}
+        for group in plan:
+            values = sample(group, seed, std, torch)
+            if values.is_floating_point():
+                values = values.to(torch_dtype).contiguous()
+            for name in group['names']:
+                tensors[name] = values.clone() if len(group['names']) > 1 else values
+                weight_map[name] = None  # 稍后填文件名
+                total += values.numel() * values.element_size()
+        if len(shard_plan) == 1:
+            filename = 'model.safetensors'
+        else:
+            filename = 'model-%05d-of-%05d.safetensors' % (index + 1, len(shard_plan))
+        save_file(tensors, str(out / filename))
+        for name in tensors:
+            weight_map[name] = filename
+        shard_names.append(filename)
+        say('写 %s（%d 个张量）' % (filename, len(tensors)))
+    if len(shard_plan) > 1:
+        (out / 'model.safetensors.index.json').write_text(json.dumps({
+            'metadata': {'total_size': total},
+            'weight_map': weight_map}, indent=2) + '\n', encoding='utf-8')
+
+    manifest = {
+        'schema': 1,
+        'kind': 'by1-shadow',
+        'synthetic_values': True,
+        'note': '随机值、真格式。验接线，不验真值。',
+        'family': family,
+        'mtp': mtp_spec or None,
+        'seed': seed,
+        'dtype': dtype,
+        'init_std': std,
+        'config_sha256': hashlib.sha256(config_text.encode('utf-8')).hexdigest(),
+        'tensor_names': len(weight_map),
+        'shared_groups': len(groups),
+        'bytes': total,
+        'shards': shard_names,
+        'verified': list(VERIFIED),
+        'not_verified': list(NOT_VERIFIED),
+    }
+    (out / MANIFEST).write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + '\n',
+                                encoding='utf-8')
+    say('影子 checkpoint 就绪：%s（%.2f GB，%d 分片）'
+        % (out, total / 1024 ** 3, len(shard_names)))
+    return manifest
+
+
+def reusable(out_dir, family, mtp_spec, seed, dtype, config_text):
+    """已有的影子目录能直接用吗？判据全对上才复用，否则重建。"""
+    path = pathlib.Path(out_dir) / MANIFEST
+    try:
+        old = json.loads(path.read_text(encoding='utf-8'))
+    except Exception:
+        return False
+    return (old.get('kind') == 'by1-shadow'
+            and old.get('family') == family
+            and old.get('mtp') == (mtp_spec or None)
+            and old.get('seed') == seed
+            and old.get('dtype') == dtype
+            and old.get('config_sha256') == hashlib.sha256(config_text.encode('utf-8')).hexdigest()
+            and (pathlib.Path(out_dir) / 'config.json').exists())
+
+
+# ---------------------------------------------------------------------------
+# --smoke：CPU 端到端自检。gpt2，真 config（refs/），全程离线。
+# ---------------------------------------------------------------------------
+
+def smoke(dtype='float32'):
+    """影子 checkpoint 的完整流程 rehearsal：造 -> 双 loader -> 对拍。"""
+    import torch
+    import transformers as T
+    import by1check
+    import by1full
+
+    model_file = by1paths.model('complete-gpt2.by1')
+    config_file = by1paths.ref('openai-community__gpt2.config.json')
+    report, info = by1check.check(model_file)
+    if report.count(by1check.E):
+        raise RuntimeError('complete-gpt2.by1 没过检查：%s' % report.items[:3])
+    family, declared, mtp = by1full.compile_config(info)
+    config_text = pathlib.Path(config_file).read_text(encoding='utf-8')
+
+    out = by1paths.root('build', 'shadow-smoke-gpt2')
+    manifest = build(config_text, family, mtp, out, dtype=dtype)
+    print('  两个 loader 从影子目录加载……')
+
+    reference, loading = T.AutoModelForCausalLM.from_pretrained(
+        str(out), output_loading_info=True, local_files_only=True)
+    problems = {k: loading.get(k) for k in ('missing_keys', 'unexpected_keys',
+                                            'mismatched_keys') if loading.get(k)}
+    if problems:
+        raise RuntimeError('官方 loader 对影子 checkpoint 有意见：%s' % problems)
+    by1_model = by1full.load_model(family, declared, mtp, str(out),
+                                   local_files_only=True)
+
+    generator = torch.Generator().manual_seed(manifest['seed'])
+    vocab = reference.config.vocab_size
+    ids = torch.randint(0, min(vocab, 10000), (1, 16), generator=generator)
+    with torch.no_grad():
+        a = reference(ids).logits
+        b = by1_model(ids).logits
+    if a.shape != b.shape:
+        raise RuntimeError('logits 形状不一致：%s vs %s' % (tuple(a.shape), tuple(b.shape)))
+    difference = (a.float() - b.float()).abs().max().item()
+    if not torch.isfinite(a).all() or not torch.isfinite(b).all():
+        raise RuntimeError('logits 有非有限值 —— 初始化缩放要修')
+    if not torch.allclose(a.float(), b.float(), atol=2e-3, rtol=2e-3):
+        raise RuntimeError('logits 对不上：max|Δ|=%.3e' % difference)
+    with torch.no_grad():
+        ga = reference.generate(ids, do_sample=False, min_new_tokens=8, max_new_tokens=8)
+        gb = by1_model.generate(ids, do_sample=False, min_new_tokens=8, max_new_tokens=8)
+    if not torch.equal(ga, gb):
+        raise RuntimeError('贪心生成 token 不一致')
+    print('  logits max|Δ| = %.3e，贪心 token 一致' % difference)
+    print('  验过：%s' % '；'.join(manifest['verified']))
+    print('  没验：%s' % '；'.join(manifest['not_verified']))
+    return manifest
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--by1', help='.by1 完整架构声明（取家族与 mtp 规格）')
+    parser.add_argument('--config', help='真品 config.json 的路径（refs/ 里有现成的）')
+    parser.add_argument('--out', help='影子 checkpoint 输出目录')
+    parser.add_argument('--seed', type=int, default=SEED)
+    parser.add_argument('--dtype', default='bfloat16',
+                        choices=['bfloat16', 'float16', 'float32'])
+    parser.add_argument('--max-shard-gb', type=float, default=8.0)
+    parser.add_argument('--smoke', action='store_true',
+                        help='CPU 端到端自检（gpt2，离线）')
+    args = parser.parse_args(argv)
+    if args.smoke:
+        try:
+            smoke(dtype=args.dtype if args.dtype != 'bfloat16' else 'float32')
+        except Exception as exc:
+            return by1skip.broken('影子自检失败：%s' % exc)
+        return 0
+    if not (args.by1 and args.config and args.out):
+        return by1skip.caller('--by1 / --config / --out 三样都要给（或用 --smoke）')
+    try:
+        import by1check
+        import by1full
+        report, info = by1check.check(by1paths.model(args.by1))
+        if report.count(by1check.E):
+            return by1skip.caller('%s 没过检查：%s' % (args.by1, report.items[:3]))
+        family, _declared, mtp = by1full.compile_config(info)
+        config_text = pathlib.Path(args.config).read_text(encoding='utf-8')
+        manifest = build(config_text, family, mtp, args.out,
+                         seed=args.seed, dtype=args.dtype,
+                         max_shard_bytes=int(args.max_shard_gb * 1024 ** 3))
+    except Exception as exc:
+        return by1skip.broken('影子构建失败：%s' % exc)
+    print('  验过：%s' % '；'.join(manifest['verified']))
+    print('  没验：%s' % '；'.join(manifest['not_verified']))
+    return 0
+
+
+if __name__ == '__main__':
+    _sys.exit(main())
