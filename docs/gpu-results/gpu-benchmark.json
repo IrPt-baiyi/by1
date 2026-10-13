@@ -1,0 +1,878 @@
+{
+  "schema": 1,
+  "started_at": "2026-10-13T04:08:16.588900+00:00",
+  "dtype": "bfloat16",
+  "batch_size": 1,
+  "attention": "eager",
+  "warmup": 2,
+  "repeats": 5,
+  "lengths": [
+    32,
+    128
+  ],
+  "new_tokens": 16,
+  "forward_atol": 0.002,
+  "forward_rtol": 0.002,
+  "scope": "Published checkpoint; official config vs by1-compiled config, same Transformers operators. Not an independent kernel comparison.",
+  "models": [
+    {
+      "model": "complete-gpt2.by1",
+      "status": "passed",
+      "phase": "complete",
+      "repo": "openai-community/gpt2",
+      "revision": "607a30d783dfa663caf39e06633721c8d4cfcd7e",
+      "download_endpoint": "https://hf-mirror.com",
+      "checkpoint_bytes": 548105171,
+      "checkpoint_config_sha256": "0daed7749b4f02b8f76240d5444551d7b08712dab4d0adb8239c56ba823bb7b4",
+      "runs": {
+        "text-32": {
+          "input_shape": [
+            1,
+            32
+          ],
+          "original": {
+            "wall_median_ms": 3.117721527814865,
+            "wall_samples_ms": [
+              3.124374896287918,
+              3.0604973435401917,
+              3.110993653535843,
+              3.124762326478958,
+              3.117721527814865
+            ],
+            "cuda_median_ms": 3.096479892730713,
+            "tokens_per_second": 10263.905776866486,
+            "peak_allocated_bytes": 261590528,
+            "peak_reserved_bytes": 274726912
+          },
+          "numerics": {
+            "max_absolute": 0.0,
+            "relative_to_peak": 0.0,
+            "argmax_agreement": 1.0
+          },
+          "by1": {
+            "wall_median_ms": 3.0948854982852936,
+            "wall_samples_ms": [
+              3.0962154269218445,
+              3.0740611255168915,
+              3.1736716628074646,
+              3.0948854982852936,
+              3.093089908361435
+            ],
+            "cuda_median_ms": 3.0791680812835693,
+            "tokens_per_second": 10339.639388187203,
+            "peak_allocated_bytes": 261722624,
+            "peak_reserved_bytes": 337641472
+          },
+          "latency_ratio_by1_over_original": 0.9926754107684606
+        },
+        "text-128": {
+          "input_shape": [
+            1,
+            128
+          ],
+          "original": {
+            "wall_median_ms": 3.2078810036182404,
+            "wall_samples_ms": [
+              3.3024735748767853,
+              3.219485282897949,
+              3.1366273760795593,
+              3.2078810036182404,
+              3.18734347820282
+            ],
+            "cuda_median_ms": 3.193887948989868,
+            "tokens_per_second": 39901.72947675614,
+            "peak_allocated_bytes": 271388160,
+            "peak_reserved_bytes": 329252864
+          },
+          "numerics": {
+            "max_absolute": 0.0,
+            "relative_to_peak": 0.0,
+            "argmax_agreement": 1.0
+          },
+          "by1": {
+            "wall_median_ms": 3.1743235886096954,
+            "wall_samples_ms": [
+              3.276389092206955,
+              3.1734295189380646,
+              3.132198005914688,
+              3.1743235886096954,
+              3.1998753547668457
+            ],
+            "cuda_median_ms": 3.16048002243042,
+            "tokens_per_second": 40323.551278545616,
+            "peak_allocated_bytes": 271520256,
+            "peak_reserved_bytes": 341835776
+          },
+          "latency_ratio_by1_over_original": 0.9895390711280454
+        }
+      },
+      "original_ignored_mtp_keys": 0,
+      "generation": {
+        "original": {
+          "wall_median_ms": 57.12365359067917,
+          "wall_samples_ms": [
+            57.115133851766586,
+            59.80253592133522,
+            57.07443132996559,
+            57.40489438176155,
+            57.12365359067917
+          ],
+          "cuda_median_ms": 57.103614807128906,
+          "tokens_per_second": 280.0941290388805,
+          "peak_allocated_bytes": 261624832,
+          "peak_reserved_bytes": 329252864
+        },
+        "identical_tokens": true,
+        "by1": {
+          "wall_median_ms": 57.247623801231384,
+          "wall_samples_ms": [
+            57.12370201945305,
+            58.90747532248497,
+            58.098435401916504,
+            57.247623801231384,
+            57.01296776533127
+          ],
+          "cuda_median_ms": 57.2279052734375,
+          "tokens_per_second": 279.4875828480385,
+          "peak_allocated_bytes": 261755904,
+          "peak_reserved_bytes": 341835776
+        }
+      },
+      "by1_parameters": 124439808,
+      "seconds": 3.5816415399312973
+    },
+    {
+      "model": "complete-Qwen3-0.6B.by1",
+      "status": "passed",
+      "phase": "complete",
+      "repo": "Qwen/Qwen3-0.6B",
+      "revision": "c1899de289a04d12100db370d81485cdf75e47ca",
+      "download_endpoint": "https://hf-mirror.com",
+      "checkpoint_bytes": 1503300328,
+      "checkpoint_config_sha256": "660db3b73d788119c04535e48cf9be5f55bc3100841a718637ae695b442f27dd",
+      "runs": {
+        "text-32": {
+          "input_shape": [
+            1,
+            32
+          ],
+          "original": {
+            "wall_median_ms": 13.489581644535065,
+            "wall_samples_ms": [
+              13.582564890384674,
+              13.489581644535065,
+              13.487245887517929,
+              13.50177451968193,
+              13.395074754953384
+            ],
+            "cuda_median_ms": 13.474847793579102,
+            "tokens_per_second": 2372.201069183189,
+            "peak_allocated_bytes": 1210949632,
+            "peak_reserved_bytes": 1675624448
+          },
+          "numerics": {
+            "max_absolute": 0.0,
+            "relative_to_peak": 0.0,
+            "argmax_agreement": 1.0
+          },
+          "by1": {
+            "wall_median_ms": 18.612150102853775,
+            "wall_samples_ms": [
+              18.612150102853775,
+              18.62693578004837,
+              18.56844127178192,
+              18.595870584249496,
+              21.23720571398735
+            ],
+            "cuda_median_ms": 18.578655242919922,
+            "tokens_per_second": 1719.3070023163784,
+            "peak_allocated_bytes": 1210950656,
+            "peak_reserved_bytes": 1673527296
+          },
+          "latency_ratio_by1_over_original": 1.3797425741808664
+        },
+        "text-128": {
+          "input_shape": [
+            1,
+            128
+          ],
+          "original": {
+            "wall_median_ms": 13.331413269042969,
+            "wall_samples_ms": [
+              13.34359124302864,
+              13.456825166940689,
+              13.291224837303162,
+              13.331413269042969,
+              13.288803398609161
+            ],
+            "cuda_median_ms": 13.317343711853027,
+            "tokens_per_second": 9601.382645396667,
+            "peak_allocated_bytes": 1240318976,
+            "peak_reserved_bytes": 1681915904
+          },
+          "numerics": {
+            "max_absolute": 0.0,
+            "relative_to_peak": 0.0,
+            "argmax_agreement": 1.0
+          },
+          "by1": {
+            "wall_median_ms": 13.275019824504852,
+            "wall_samples_ms": [
+              13.275019824504852,
+              13.247080147266388,
+              13.262402266263962,
+              13.839960098266602,
+              13.8530433177948
+            ],
+            "cuda_median_ms": 13.248127937316895,
+            "tokens_per_second": 9642.170158097997,
+            "peak_allocated_bytes": 1240320000,
+            "peak_reserved_bytes": 1679818752
+          },
+          "latency_ratio_by1_over_original": 0.9957698825023249
+        }
+      },
+      "original_ignored_mtp_keys": 0,
+      "generation": {
+        "original": {
+          "wall_median_ms": 220.66177427768707,
+          "wall_samples_ms": [
+            222.72976487874985,
+            223.07391092181206,
+            220.4170599579811,
+            220.66177427768707,
+            220.2245444059372
+          ],
+          "cuda_median_ms": 220.64361572265625,
+          "tokens_per_second": 72.50916046684708,
+          "peak_allocated_bytes": 1212019712,
+          "peak_reserved_bytes": 1686110208
+        },
+        "identical_tokens": true,
+        "by1": {
+          "wall_median_ms": 219.47618573904037,
+          "wall_samples_ms": [
+            219.47618573904037,
+            219.2775197327137,
+            219.2695215344429,
+            222.55871072411537,
+            221.47755697369576
+          ],
+          "cuda_median_ms": 219.4457244873047,
+          "tokens_per_second": 72.90084774401984,
+          "peak_allocated_bytes": 1212019712,
+          "peak_reserved_bytes": 1684013056
+        }
+      },
+      "by1_parameters": 596049920,
+      "seconds": 5.776462275534868
+    },
+    {
+      "model": "complete-Qwen2.5-7B-Instruct.by1",
+      "status": "passed",
+      "phase": "complete",
+      "repo": "Qwen/Qwen2.5-7B-Instruct",
+      "revision": "a09a35458c702b33eeacc393d103063234e8bc28",
+      "download_endpoint": "https://hf-mirror.com",
+      "checkpoint_bytes": 15231271888,
+      "checkpoint_config_sha256": "7463bb0ea78315365e6c6b74de4e73bbcc8359dfb0c5a737584e077d42c0b03c",
+      "runs": {
+        "text-32": {
+          "input_shape": [
+            1,
+            32
+          ],
+          "original": {
+            "wall_median_ms": 16.401179134845734,
+            "wall_samples_ms": [
+              16.446154564619064,
+              16.401179134845734,
+              16.379766166210175,
+              16.35824516415596,
+              16.44347980618477
+            ],
+            "cuda_median_ms": 16.385984420776367,
+            "tokens_per_second": 1951.0792325908576,
+            "peak_allocated_bytes": 15249716224,
+            "peak_reserved_bytes": 15286140928
+          },
+          "numerics": {
+            "max_absolute": 0.0,
+            "relative_to_peak": 0.0,
+            "argmax_agreement": 1.0
+          },
+          "by1": {
+            "wall_median_ms": 16.37580618262291,
+            "wall_samples_ms": [
+              16.414567828178406,
+              16.38457551598549,
+              16.37580618262291,
+              16.358014196157455,
+              16.37360081076622
+            ],
+            "cuda_median_ms": 16.361055374145508,
+            "tokens_per_second": 1954.1022678905795,
+            "peak_allocated_bytes": 15250765824,
+            "peak_reserved_bytes": 15263072256
+          },
+          "latency_ratio_by1_over_original": 0.9984529799952665
+        },
+        "text-128": {
+          "input_shape": [
+            1,
+            128
+          ],
+          "original": {
+            "wall_median_ms": 19.78568360209465,
+            "wall_samples_ms": [
+              19.838064908981323,
+              19.78568360209465,
+              20.15124261379242,
+              19.773364067077637,
+              19.754964858293533
+            ],
+            "cuda_median_ms": 19.770015716552734,
+            "tokens_per_second": 6469.32411202861,
+            "peak_allocated_bytes": 15280519168,
+            "peak_reserved_bytes": 15414067200
+          },
+          "numerics": {
+            "max_absolute": 0.0,
+            "relative_to_peak": 0.0,
+            "argmax_agreement": 1.0
+          },
+          "by1": {
+            "wall_median_ms": 19.73673328757286,
+            "wall_samples_ms": [
+              19.75894346833229,
+              19.737068563699722,
+              19.722353667020798,
+              19.726291298866272,
+              19.73673328757286
+            ],
+            "cuda_median_ms": 19.721920013427734,
+            "tokens_per_second": 6485.369089959511,
+            "peak_allocated_bytes": 15281568768,
+            "peak_reserved_bytes": 15309209600
+          },
+          "latency_ratio_by1_over_original": 0.9975259730466626
+        }
+      },
+      "original_ignored_mtp_keys": 0,
+      "generation": {
+        "original": {
+          "wall_median_ms": 241.21195077896118,
+          "wall_samples_ms": [
+            241.25591665506363,
+            241.18300154805183,
+            244.1728711128235,
+            241.21195077896118,
+            240.92240259051323
+          ],
+          "cuda_median_ms": 241.18832397460938,
+          "tokens_per_second": 66.33170515942588,
+          "peak_allocated_bytes": 15247397888,
+          "peak_reserved_bytes": 15414067200
+        },
+        "identical_tokens": true,
+        "by1": {
+          "wall_median_ms": 240.6010404229164,
+          "wall_samples_ms": [
+            240.6010404229164,
+            241.85249581933022,
+            240.2775064110756,
+            239.99277502298355,
+            242.48073250055313
+          ],
+          "cuda_median_ms": 240.56781005859375,
+          "tokens_per_second": 66.50012806210648,
+          "peak_allocated_bytes": 15248446464,
+          "peak_reserved_bytes": 15309209600
+        }
+      },
+      "by1_parameters": 7615616512,
+      "seconds": 14.82748707383871
+    },
+    {
+      "model": "complete-Qwen3-8B.by1",
+      "status": "passed",
+      "phase": "complete",
+      "repo": "Qwen/Qwen3-8B",
+      "revision": "b968826d9c46dd6066d109eabc6255188de91218",
+      "download_endpoint": "https://hf-mirror.com",
+      "checkpoint_bytes": 16381516776,
+      "checkpoint_config_sha256": "f7c4eadfbbf522470667b797a3c89be2524832d2d599797248dc304fff447c30",
+      "runs": {
+        "text-32": {
+          "input_shape": [
+            1,
+            32
+          ],
+          "original": {
+            "wall_median_ms": 21.29645273089409,
+            "wall_samples_ms": [
+              21.246563643217087,
+              21.22311294078827,
+              21.604642271995544,
+              21.318871527910233,
+              21.29645273089409
+            ],
+            "cuda_median_ms": 21.279808044433594,
+            "tokens_per_second": 1502.5976581338643,
+            "peak_allocated_bytes": 16399996928,
+            "peak_reserved_bytes": 16439574528
+          },
+          "numerics": {
+            "max_absolute": 0.0,
+            "relative_to_peak": 0.0,
+            "argmax_agreement": 1.0
+          },
+          "by1": {
+            "wall_median_ms": 21.12521231174469,
+            "wall_samples_ms": [
+              21.15074172616005,
+              21.13112062215805,
+              21.117161959409714,
+              21.12521231174469,
+              21.10513299703598
+            ],
+            "cuda_median_ms": 21.110496520996094,
+            "tokens_per_second": 1514.777675498646,
+            "peak_allocated_bytes": 16399997952,
+            "peak_reserved_bytes": 16416505856
+          },
+          "latency_ratio_by1_over_original": 0.9919592046002579
+        },
+        "text-128": {
+          "input_shape": [
+            1,
+            128
+          ],
+          "original": {
+            "wall_median_ms": 27.129027992486954,
+            "wall_samples_ms": [
+              27.470480650663376,
+              27.129027992486954,
+              27.047283947467804,
+              27.06388384103775,
+              27.205761522054672
+            ],
+            "cuda_median_ms": 27.112991333007812,
+            "tokens_per_second": 4718.193369679445,
+            "peak_allocated_bytes": 16430906368,
+            "peak_reserved_bytes": 16567500800
+          },
+          "numerics": {
+            "max_absolute": 0.0,
+            "relative_to_peak": 0.0,
+            "argmax_agreement": 1.0
+          },
+          "by1": {
+            "wall_median_ms": 27.038954198360443,
+            "wall_samples_ms": [
+              27.47971937060356,
+              27.110856026411057,
+              27.035195380449295,
+              27.038954198360443,
+              27.026042342185974
+            ],
+            "cuda_median_ms": 27.023839950561523,
+            "tokens_per_second": 4733.910899843956,
+            "peak_allocated_bytes": 16430907392,
+            "peak_reserved_bytes": 16462643200
+          },
+          "latency_ratio_by1_over_original": 0.9966798001700815
+        }
+      },
+      "original_ignored_mtp_keys": 0,
+      "generation": {
+        "original": {
+          "wall_median_ms": 294.5733517408371,
+          "wall_samples_ms": [
+            296.54332250356674,
+            294.5915423333645,
+            294.44317519664764,
+            294.5733517408371,
+            294.2676693201065
+          ],
+          "cuda_median_ms": 294.5557861328125,
+          "tokens_per_second": 54.31584325413336,
+          "peak_allocated_bytes": 16401659904,
+          "peak_reserved_bytes": 16569597952
+        },
+        "identical_tokens": true,
+        "by1": {
+          "wall_median_ms": 294.55994442105293,
+          "wall_samples_ms": [
+            294.5770211517811,
+            294.55994442105293,
+            294.4757491350174,
+            294.4605201482773,
+            294.6198023855686
+          ],
+          "cuda_median_ms": 294.5396423339844,
+          "tokens_per_second": 54.31831551790733,
+          "peak_allocated_bytes": 16401659904,
+          "peak_reserved_bytes": 16464740352
+        }
+      },
+      "by1_parameters": 8190735360,
+      "seconds": 18.18206014111638
+    },
+    {
+      "model": "complete-gpt-oss-20b.by1",
+      "status": "passed",
+      "phase": "complete",
+      "repo": "openai/gpt-oss-20b",
+      "revision": "6cee5e81ee83917806bbde320786a8fb61efebee",
+      "download_endpoint": "https://hf-mirror.com",
+      "checkpoint_bytes": 13761316904,
+      "checkpoint_files": [
+        "model-00000-of-00002.safetensors",
+        "model-00001-of-00002.safetensors",
+        "model-00002-of-00002.safetensors"
+      ],
+      "repository_safetensors_bytes": 27522617888,
+      "checkpoint_config_sha256": "3a2a26ded679375b7928ddeca59764df7cea83220c1961035f6d6e232659e9ce",
+      "quantization": "published MXFP4 checkpoint dequantized to BF16 for both loaders",
+      "runs": {
+        "text-32": {
+          "input_shape": [
+            1,
+            32
+          ],
+          "original": {
+            "wall_median_ms": 44.86481100320816,
+            "wall_samples_ms": [
+              45.176610350608826,
+              43.85076463222504,
+              44.86481100320816,
+              45.33663019537926,
+              42.29973629117012
+            ],
+            "cuda_median_ms": 44.84883117675781,
+            "tokens_per_second": 713.253868331503,
+            "peak_allocated_bytes": 41859076096,
+            "peak_reserved_bytes": 50352619520
+          },
+          "numerics": {
+            "max_absolute": 0.0,
+            "relative_to_peak": 0.0,
+            "argmax_agreement": 1.0
+          },
+          "by1": {
+            "wall_median_ms": 42.66887903213501,
+            "wall_samples_ms": [
+              42.57441312074661,
+              42.66887903213501,
+              43.76333951950073,
+              42.653363198041916,
+              43.23526844382286
+            ],
+            "cuda_median_ms": 42.65516662597656,
+            "tokens_per_second": 749.9611127796442,
+            "peak_allocated_bytes": 41860240384,
+            "peak_reserved_bytes": 50352619520
+          },
+          "latency_ratio_by1_over_original": 0.9510544695949766
+        },
+        "text-128": {
+          "input_shape": [
+            1,
+            128
+          ],
+          "original": {
+            "wall_median_ms": 48.00745099782944,
+            "wall_samples_ms": [
+              47.99230769276619,
+              47.92458936572075,
+              48.13745245337486,
+              48.00745099782944,
+              48.19739982485771
+            ],
+            "cuda_median_ms": 47.994110107421875,
+            "tokens_per_second": 2666.2527865890497,
+            "peak_allocated_bytes": 41898238976,
+            "peak_reserved_bytes": 50354716672
+          },
+          "numerics": {
+            "max_absolute": 0.0,
+            "relative_to_peak": 0.0,
+            "argmax_agreement": 1.0
+          },
+          "by1": {
+            "wall_median_ms": 50.59816315770149,
+            "wall_samples_ms": [
+              49.880627542734146,
+              51.8646240234375,
+              50.81145837903023,
+              50.29333382844925,
+              50.59816315770149
+            ],
+            "cuda_median_ms": 50.578975677490234,
+            "tokens_per_second": 2529.7361013097816,
+            "peak_allocated_bytes": 41899403264,
+            "peak_reserved_bytes": 50354716672
+          },
+          "latency_ratio_by1_over_original": 1.053964793089914
+        }
+      },
+      "original_ignored_mtp_keys": 0,
+      "generation": {
+        "original": {
+          "wall_median_ms": 313.55031207203865,
+          "wall_samples_ms": [
+            316.4255581796169,
+            313.90712037682533,
+            311.53907626867294,
+            313.55031207203865,
+            309.10462886095047
+          ],
+          "cuda_median_ms": 313.5263977050781,
+          "tokens_per_second": 51.02849330388795,
+          "peak_allocated_bytes": 42049146880,
+          "peak_reserved_bytes": 50356813824
+        },
+        "identical_tokens": true,
+        "by1": {
+          "wall_median_ms": 310.8135722577572,
+          "wall_samples_ms": [
+            298.44946414232254,
+            317.37662106752396,
+            313.45904991030693,
+            308.785367757082,
+            310.8135722577572
+          ],
+          "cuda_median_ms": 310.7979736328125,
+          "tokens_per_second": 51.47780350702069,
+          "peak_allocated_bytes": 42050310144,
+          "peak_reserved_bytes": 50356813824
+        }
+      },
+      "by1_parameters": 20914757184,
+      "seconds": 20.401539016515017
+    },
+    {
+      "model": "complete-Qwen3.8-27B.by1",
+      "status": "passed",
+      "phase": "complete",
+      "repo": "Qwen/Qwen3.8-27B",
+      "revision": "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0",
+      "download_endpoint": "https://hf-mirror.com",
+      "checkpoint_bytes": 55563006776,
+      "checkpoint_files": [
+        "model-00001-of-00018.safetensors",
+        "model-00002-of-00018.safetensors",
+        "model-00003-of-00018.safetensors",
+        "model-00004-of-00018.safetensors",
+        "model-00005-of-00018.safetensors",
+        "model-00006-of-00018.safetensors",
+        "model-00007-of-00018.safetensors",
+        "model-00008-of-00018.safetensors",
+        "model-00009-of-00018.safetensors",
+        "model-00010-of-00018.safetensors",
+        "model-00011-of-00018.safetensors",
+        "model-00012-of-00018.safetensors",
+        "model-00013-of-00018.safetensors",
+        "model-00014-of-00018.safetensors",
+        "model-00015-of-00018.safetensors",
+        "model-00016-of-00018.safetensors",
+        "model-00017-of-00018.safetensors",
+        "model-00018-of-00018.safetensors"
+      ],
+      "repository_safetensors_bytes": 55563006776,
+      "checkpoint_config_sha256": "191e0af232104ed8b65258cf3fb2b842e288008baca7633c11b82a1ac7203aab",
+      "runs": {
+        "text-32": {
+          "input_shape": [
+            1,
+            32
+          ],
+          "original": {
+            "wall_median_ms": 70.07253915071487,
+            "wall_samples_ms": [
+              70.18158957362175,
+              70.06273791193962,
+              70.10646909475327,
+              70.04301995038986,
+              70.07253915071487
+            ],
+            "cuda_median_ms": 70.05817413330078,
+            "tokens_per_second": 456.66962247754566,
+            "peak_allocated_bytes": 54757737472,
+            "peak_reserved_bytes": 54796484608
+          },
+          "numerics": {
+            "max_absolute": 0.0,
+            "relative_to_peak": 0.0,
+            "argmax_agreement": 1.0
+          },
+          "by1": {
+            "wall_median_ms": 69.22829151153564,
+            "wall_samples_ms": [
+              69.5246048271656,
+              69.50919330120087,
+              69.22829151153564,
+              68.85994598269463,
+              68.90376657247543
+            ],
+            "cuda_median_ms": 69.21337890625,
+            "tokens_per_second": 462.2387654138161,
+            "peak_allocated_bytes": 55607137280,
+            "peak_reserved_bytes": 55624859648
+          },
+          "latency_ratio_by1_over_original": 0.987951804666827
+        },
+        "text-128": {
+          "input_shape": [
+            1,
+            128
+          ],
+          "original": {
+            "wall_median_ms": 82.26986229419708,
+            "wall_samples_ms": [
+              82.26986229419708,
+              82.26321637630463,
+              82.30110630393028,
+              82.27227255702019,
+              82.25041627883911
+            ],
+            "cuda_median_ms": 82.24988555908203,
+            "tokens_per_second": 1555.8552844329788,
+            "peak_allocated_bytes": 54786965504,
+            "peak_reserved_bytes": 54993616896
+          },
+          "numerics": {
+            "max_absolute": 0.0,
+            "relative_to_peak": 0.0,
+            "argmax_agreement": 1.0
+          },
+          "by1": {
+            "wall_median_ms": 81.50747418403625,
+            "wall_samples_ms": [
+              81.53024315834045,
+              81.50747418403625,
+              81.47946000099182,
+              81.53507485985756,
+              81.48615807294846
+            ],
+            "cuda_median_ms": 81.49327850341797,
+            "tokens_per_second": 1570.4081285967466,
+            "peak_allocated_bytes": 55636365312,
+            "peak_reserved_bytes": 55710842880
+          },
+          "latency_ratio_by1_over_original": 0.990733081484511
+        },
+        "image": {
+          "input_shape": [
+            1,
+            123
+          ],
+          "original": {
+            "wall_median_ms": 93.36923435330391,
+            "wall_samples_ms": [
+              93.95620226860046,
+              93.73804554343224,
+              93.36923435330391,
+              93.25940161943436,
+              93.1350588798523
+            ],
+            "cuda_median_ms": 93.35533142089844,
+            "tokens_per_second": 1317.3504190317653,
+            "peak_allocated_bytes": 54786233344,
+            "peak_reserved_bytes": 54993616896
+          },
+          "numerics": {
+            "max_absolute": 0.0,
+            "relative_to_peak": 0.0,
+            "argmax_agreement": 1.0
+          },
+          "by1": {
+            "wall_median_ms": 92.68911927938461,
+            "wall_samples_ms": [
+              92.82173216342926,
+              92.73578971624374,
+              92.68911927938461,
+              92.6472432911396,
+              92.59002283215523
+            ],
+            "cuda_median_ms": 92.67577362060547,
+            "tokens_per_second": 1327.0166008294025,
+            "peak_allocated_bytes": 55636614144,
+            "peak_reserved_bytes": 55710842880
+          },
+          "latency_ratio_by1_over_original": 0.9927158546535171
+        }
+      },
+      "original_ignored_mtp_keys": 0,
+      "generation": {
+        "original": {
+          "wall_median_ms": 845.0079783797264,
+          "wall_samples_ms": [
+            849.9353192746639,
+            846.1774587631226,
+            844.8545970022678,
+            844.0416157245636,
+            845.0079783797264
+          ],
+          "cuda_median_ms": 844.9981079101562,
+          "tokens_per_second": 18.93473246333064,
+          "peak_allocated_bytes": 54913729024,
+          "peak_reserved_bytes": 55002005504
+        },
+        "identical_tokens": true,
+        "by1": {
+          "wall_median_ms": 844.0086096525192,
+          "wall_samples_ms": [
+            843.7946625053883,
+            843.9012840390205,
+            844.099685549736,
+            844.6690328419209,
+            844.0086096525192
+          ],
+          "cuda_median_ms": 843.9978637695312,
+          "tokens_per_second": 18.957152589459064,
+          "peak_allocated_bytes": 55763283456,
+          "peak_reserved_bytes": 55784243200
+        }
+      },
+      "by1_parameters": 27781427952,
+      "mtp": {
+        "numerics_vs_connection_formula": {
+          "max_absolute": 0.0,
+          "relative_to_peak": 0.0,
+          "argmax_agreement": 1.0
+        },
+        "reference_scope": "independent connection formula using checkpoint MTP weights; not a vLLM benchmark",
+        "by1": {
+          "wall_median_ms": 3.392670303583145,
+          "wall_samples_ms": [
+            3.482382744550705,
+            3.4157447516918182,
+            3.3904314041137695,
+            3.392670303583145,
+            3.3892951905727386
+          ],
+          "cuda_median_ms": 3.3786239624023438,
+          "tokens_per_second": 36254.6280639455,
+          "peak_allocated_bytes": 55907756544,
+          "peak_reserved_bytes": 55981375488
+        }
+      },
+      "seconds": 66.25762310996652
+    }
+  ],
+  "environment": {
+    "torch": "2.8.0+cu128",
+    "transformers": "5.19.0",
+    "cuda": "12.8",
+    "gpu": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+    "gpu_memory_bytes": 101974081536
+  },
+  "source_sha256": {
+    "src/checks/by1gpubench.py": "f0609cab311c29f9158ad54d4bffa7610679d89f027bdb9bae8f105b5d93c308",
+    "src/by1full.py": "965498fbaa4840c09eb2906f39f433c3298bb202b8272e995b48cbf53fe796e5"
+  },
+  "status": "passed",
+  "finished_at": "2026-10-13T05:52:40.229893+00:00"
+}

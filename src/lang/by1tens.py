@@ -56,13 +56,19 @@ def instantiate(*, _mod, _):
 
     # 哪些层挂了哪些「通道混合器」—— 选择器（[:] / [0] / [1..39] / [step 4]）生效
     _['attach_rules']: List[tuple] = []
+    _['attach_calls'] = []
     for _['c'] in _['scope'].children:
         for _['sel'], _['op'], _['target'], _['ln'] in _['c'].attaches:
+            _['call'] = mech_call(_['target'])
+            if _['call'] is None:
+                _['rep'].add(E, _['ln'], "attach", f"挂载目标 '{_['target']}' 必须是一个机制调用")
+                continue
             _['base'] = _['target'].split("(")[0].strip()
             if _['base'] not in _['mechs'] or _['op'] != ">>":
                 continue
             _['sk'], _['inner'] = split_selector(_['sel'])
             _['attach_rules'].append((_['alias'].get(_['sk'], _['sk']), make_layer_pred(_['inner']), _['base']))
+            _['attach_calls'].append((_['attach_rules'][-1], _['call'].attrs, _['ln']))
 
     # **挂在栈上的机制也要拿到那个栈的宽度。**
     #
@@ -81,6 +87,23 @@ def instantiate(*, _mod, _):
         return [b for (sn, pred, b) in _['attach_rules']
                 if sn == stack_name and pred(li, attrs)]
     _['attached_at'] = attached_at    # 让 stage 也取得到它
+
+    # 调用参数跟选择器落到具体层上；显式逐层覆盖在后面执行，优先级更高。
+    for (_['sn'], _['pred'], _['base']), _['args'], _['ln'] in _['attach_calls']:
+        _['attach_hits'] = 0
+        for _['li'], _['r'] in enumerate(_['expansion'].get(_['sn'], [])):
+            _['m'] = _['mechs'].get(_['r'].name)
+            _['a'] = _['resolve_attrs'](_['m'], _['r'].attrs) if _['m'] else {}
+            _['a'].update(_['overrides'].get((_['sn'], _['li'], _['r'].name), {}))
+            if _['pred'](_['li'], _['a']):
+                _['attach_hits'] += 1
+                _['ov'] = _['overrides'].setdefault((_['sn'], _['li'], _['base']), {})
+                for _['ak'], _['av'] in _['args'].items():
+                    if _['ak'] in _['ov'] and _['ov'][_['ak']] != _['av']:
+                        _['rep'].add(E, _['ln'], "attach", f"{_['sn']}[{_['li']}] 的 {_['base']}.{_['ak']} 有冲突的挂载参数")
+                    _['ov'][_['ak']] = _['av']
+        if _['args'] and not _['attach_hits']:
+            _['rep'].add(E, _['ln'], "attach", f"挂载 {_['base']} 的选择器没有命中 {_['sn']} 的任何层")
 
     # 逐层覆盖的分配 —— 必须等 resolve_attrs 可用（它选择哪些层要按属性判断）
     for _['_sn'], _['_sel'], _['_mech'], _['_attr'], _['_items'], _['_ln'], _['_k'] in _['pending_ov']:

@@ -1069,10 +1069,18 @@ def main(argv=None):
 
     bc, cg = load("by1check"), load("by1codegen")
     name = os.path.basename(args.by1)
-    _r, info = bc.check(args.by1)
-    ir = cg.compile_ir(info)
+    rep, info = bc.check(args.by1)
+    if rep.count(bc.E):
+        return bc.run_one(args.by1)
+    try:
+        ir = cg.compile_ir(info)
+    except cg.CodegenError as ex:
+        print(f"[不支持] {name}: {ex}")
+        return 1
     shapes = shapes_of(ir)
     print(f"\n{'='*72}\n  {name}   ·   NumPy 后端\n{'='*72}")
+    n_params = sum(int(np.prod(shape)) for shape in shapes.values())
+    print(f"\n  架构：{len(ir['layers'])} 层 · {n_params:,} 个参数 · 随机权重")
     print(f"\n  从 IR 推出的参数清单（{len(shapes)} 个）—— IR 里没有形状，这是后端自己算的")
     ks = sorted(shapes)
     for k in ks[:6]:

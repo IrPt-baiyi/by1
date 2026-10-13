@@ -1,0 +1,28 @@
+# 完整 GPT-2：共享词嵌入/输出头、学习位置、LayerNorm、dropout。
+model GPT2 {
+  backend transformers
+  arch gpt2
+  ctx 1024
+
+  hparams {
+    d_model = 768
+    vocab = 50257
+    norm_kind = layer
+    ln_eps = 1e-5
+    tie_word_embeddings = true
+    attention_dropout = 0.1
+    resid_dropout = 0.1
+    embed_dropout = 0.1
+    bos_token_id = 50256
+    eos_token_id = 50256
+  }
+
+  stack main {
+    pattern = 12 * Attention(q = 12, kv = 12, head_dim = 64, bias = true)
+    main[:] >> FFN(hidden = 3072, act = gelu_new, gate = none, bias = true)
+  }
+
+  position {
+    default = learned(1024)
+  }
+}

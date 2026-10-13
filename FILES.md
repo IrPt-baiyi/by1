@@ -1,6 +1,6 @@
 # 这个仓库里每个文件是干什么的
 
-> 288 个跟踪文件。按"你会想找什么"分组，不按字母表。
+> 309 个跟踪文件。按"你会想找什么"分组，不按字母表。
 >
 > **这份文档是生成的**：`python src/by1files.py --write`。
 > 文件清单、每组的个数、每个文件的一句话都从目录树和 docstring 来 ——
@@ -43,7 +43,7 @@
 
 ---
 
-## `src/` —— 72 个模块 + 1 个非 .py
+## `src/` —— 77 个模块 + 1 个非 .py
 
 ### 底座（留在 src/ 顶层）
 
@@ -84,6 +84,7 @@
 | `by1check.py` | 不变式检查器 v0.1 |
 | `by1boot.py` | 从一个已发布的 checkpoint **反推**一份 .by1 草稿 |
 | `by1ext.py` | 逃生舱第二层：**引用一个外部符号** |
+| `by1full.py` | 从完整架构声明生成 Transformers 模型，包含视觉与独立 MTP 分支 |
 
 ### `lang/` —— 语言本身
 
@@ -142,8 +143,12 @@
 | `by1run.py` | 推送前的门，以及每四次一次数值档 |
 | `by1fast.py` | 快速检查：30 秒内告诉你有没有改坏 |
 | `by1gpu.py` | 只有显卡能做的那几件验证 |
+| `by1gpusmoke.py` | CUDA 前向、梯度、参数更新与完整视觉/MTP 分支的可复现验收 |
+| `by1gpubench.py` | 真实权重与发布方 Transformers 模型的顺序加载、数值与性能对比 |
+| `by1gputrain.py` | 用真实 Qwen3-0.6B 权重对比 CUDA 反向传播和一次更新 |
 | `by1sync.py` | 推导 ↔ 契约 的同步报表**（1.0.0-rc0 的 T0.2） |
 | `by1mutate.py` | 变异反例库**（1.0.0-rc0 的 T0.3） |
+| `by1complete.py` | 完整模型验收：参数共享、bias、梯度、视觉、MTP 与严格权重加载 |
 
 ### `modelcheck/` —— 一个模型一个判卷人
 
@@ -202,7 +207,7 @@
 |---|---|
 | `ci.yml` | 每次提交都跑档 1 —— **这是这个仓库唯一的自动门 |
 
-## `docs/` —— 9 个
+## `docs/` —— 11 个
 
 活的文档 —— 还没做完的事记在这里，做完的挪去 `history/`。
 
@@ -211,12 +216,27 @@
 | `1.0-roadmap.md` | 1.0.0 路线图（rc0 – rc9 → 1.0.0） |
 | `INVENTORY.txt` | 验证清单：每个模型验到了什么、判卷人是谁 |
 | `check-map.md` | `check()` 的结构图 |
+| `complete-models.md` | 完整模型：参数共享、视觉与 MTP |
 | `criteria-review.md` | **请人重算**的任务卡：判据本身没人验过，这一份是那份活。含"refs 判 by1 不是外部判卷"那一节 |
 | `ggml-plan.md` | 接 llama.cpp：第一个外部判卷人 |
+| `gpu-validation-results.md` | GPU 验证结果 |
 | `llamacpp-plan.md` | 接 llama.cpp：完整计划（执行版） |
 | `pattern-design-review.md` | 对上面那份草案的审查 —— **照做之前先读它** |
 | `pattern-design.md` | 设计草案 v0，**状态：待审**。它挡着 4 个模型 |
 | `which-gpu.md` | > 从 `README.md` 挪出来的。它是一次**具体的调查** —— 这台开发机上 |
+
+## `docs/gpu-results/` —— 8 个
+
+| 文件 | 用途 |
+|---|---|
+| `gpu-benchmark-gptoss-final.json` | "schema": 1, |
+| `gpu-benchmark-qwen38-final.json` | "schema": 1, |
+| `gpu-benchmark.json` | "schema": 1, |
+| `gpu-long-context-8k.json` | "schema": 1, |
+| `gpu-long-context-large.json` | "schema": 1, |
+| `gpu-real-traincheck.json` | "schema": 1, |
+| `gpu-smoke-bf16.json` | "schema": 1, |
+| `gpu-smoke-fp32.json` | "schema": 1, |
 
 ## `drafts/` —— 3 个
 
@@ -249,7 +269,7 @@
 | `ir.md` | > **同一份 IR，两个后端（PyTorch / 自建执行器）跑出同一个前向 |
 | `plan.md` | by1 · 接下来的计划 |
 
-## `models/` —— 54 个
+## `models/` —— 60 个
 
 命名规矩：**文件名 = 长名 = HF 的模型名（去掉 owner）**，
 `model` 声明 = 短名（手写的）。两列的对照见 `models.tsv`。
@@ -280,6 +300,12 @@
 | `attn-fused-shaped.by1` | 融合 q/k/v 的注意力**（视觉塔那种布局） |
 | `clef-tiny.by1` | 目的：证明"对着真 checkpoint 验过的那份描述"**同时是能跑的** |
 | `clef.by1` | 真实模型 · HF id `Cloudflare/clef` |
+| `complete-Qwen2.5-7B-Instruct.by1` | 完整 Qwen2.5-7B-Instruct：Q/K/V 有 bias，输出投影无 bias |
+| `complete-Qwen3-0.6B.by1` | 完整 Qwen3-0.6B：包含 embedding/lm_head 参数共享 |
+| `complete-Qwen3-8B.by1` | 完整 Qwen3-8B：36 层 GQA + SwiGLU，独立输出头 |
+| `complete-Qwen3.8-27B.by1` | 完整 Qwen3.8-27B：文本、视觉、MTP 三个分支，包含共享参数关系 |
+| `complete-gpt-oss-20b.by1` | 完整 gpt-oss-20b：MoE、路由/专家 bias、sink、交替滑窗、YaRN |
+| `complete-gpt2.by1` | 完整 GPT-2：共享词嵌入/输出头、学习位置、LayerNorm、dropout |
 | `embeddinggemma-2.by1` | 真实模型 · HF id `google/embeddinggemma-2` |
 | `gate-probe.by1` | 取值门的**反例**：故意写一个 codegen 没实现的取值 |
 | `gemma-4-12B.by1` | 真实模型 · HF id `google/gemma-4-12B` |
@@ -292,7 +318,7 @@
 | `gpt-oss-shaped.by1` | Block 1.2 的第二个判卷对象：GPT-OSS 的注意力 + MoE |
 | `gpt2-tiny.by1` | 由 gpt2.by1 机械缩小维度得来，结构一个字没改 |
 | `gpt2.by1` | 真实模型 · HF id `openai-community/gpt2` |
-| `hello.by1` | 一个最小的语言模型。改数字就能改大小 —— 改完重新跑一次就行 |
+| `hello.by1` | 入门小模型：CPU 随机权重前向；将 pattern 的 4 改成 2 可减少层数 |
 | `kda-gva-shaped.by1` | KDA 的 **GVA 变体**：q/k 的头数**少于** v 的头数 |
 | `kda-lowrank-shaped.by1` | KDA 的 **低秩门变体**：门是两层（`f_a`/`f_b`、`g_a`/`g_b`） |
 | `kda-shaped.by1` | KDA（Kimi Delta Attention）的最小可跑模型 |
@@ -324,7 +350,7 @@
 | `ISTA-DASLab__Qwen3.8-27B-GSQ-RCO-GGUF.IQ2_S-mtp.alloc.txt` | 14 | |
 
 
-## `src/checks/` —— 25 个
+## `src/checks/` —— 29 个
 
 | 文件 | 用途 |
 |---|---|
@@ -332,6 +358,7 @@
 | `by1all.py` | 一次跑完全部验证，失败就非零退出 |
 | `by1blind.py` | 量"看不见的东西" |
 | `by1bootir.py` | 两条路的判卷人**：从 .by1 出来的 IR，和从产物反推出来的 IR |
+| `by1complete.py` | 完整模型验收：参数共享、bias、梯度、视觉、MTP 与严格权重加载 |
 | `by1debt.py` | 没干完的事，量出来，不凭印象列 |
 | `by1diff.py` | 把 by1 生成的前向 与 transformers 的参考实现**逐位对拍** |
 | `by1docs.py` | """文档里提到的每一个路径，都还在吗？ |
@@ -340,6 +367,9 @@
 | `by1files.py` | 生成并核对 `FILES.md` |
 | `by1gate.py` | 取值门的**可证伪对照** |
 | `by1gpu.py` | 只有显卡能做的那几件验证 |
+| `by1gpubench.py` | 真实权重与发布方 Transformers 模型的顺序加载、数值与性能对比 |
+| `by1gpusmoke.py` | CUDA 前向、梯度、参数更新与完整视觉/MTP 分支的可复现验收 |
+| `by1gputrain.py` | 用真实 Qwen3-0.6B 权重对比 CUDA 反向传播和一次更新 |
 | `by1irentry.py` | 三个后端必须能从 IR 入口跑通**，而不是只从 .by1 入口 |
 | `by1lint.py` | 只盯这个项目真正怕的那几类 |
 | `by1mutate.py` | 变异反例库**（1.0.0-rc0 的 T0.3） |

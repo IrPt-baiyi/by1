@@ -1,0 +1,247 @@
+{
+  "schema": 1,
+  "started_at": "2026-10-13T04:25:15.804152+00:00",
+  "dtype": "bfloat16",
+  "batch_size": 1,
+  "attention": "eager",
+  "warmup": 1,
+  "repeats": 2,
+  "lengths": [
+    2048,
+    4096
+  ],
+  "new_tokens": 8,
+  "forward_atol": 0.002,
+  "forward_rtol": 0.002,
+  "scope": "Published checkpoint; official config vs by1-compiled config, same Transformers operators. Not an independent kernel comparison.",
+  "models": [
+    {
+      "model": "complete-Qwen2.5-7B-Instruct.by1",
+      "status": "passed",
+      "phase": "complete",
+      "repo": "Qwen/Qwen2.5-7B-Instruct",
+      "revision": "a09a35458c702b33eeacc393d103063234e8bc28",
+      "download_endpoint": "https://hf-mirror.com",
+      "checkpoint_bytes": 15231271888,
+      "checkpoint_config_sha256": "7463bb0ea78315365e6c6b74de4e73bbcc8359dfb0c5a737584e077d42c0b03c",
+      "runs": {
+        "text-2048": {
+          "input_shape": [
+            1,
+            2048
+          ],
+          "original": {
+            "wall_median_ms": 177.52627469599247,
+            "wall_samples_ms": [
+              177.51959338784218,
+              177.53295600414276
+            ],
+            "cuda_median_ms": 177.46822357177734,
+            "tokens_per_second": 11536.3204883735,
+            "peak_allocated_bytes": 16516968448,
+            "peak_reserved_bytes": 18329108480
+          },
+          "numerics": {
+            "max_absolute": 0.0,
+            "relative_to_peak": 0.0,
+            "argmax_agreement": 1.0
+          },
+          "by1": {
+            "wall_median_ms": 177.62531712651253,
+            "wall_samples_ms": [
+              177.60011553764343,
+              177.65051871538162
+            ],
+            "cuda_median_ms": 177.58179473876953,
+            "tokens_per_second": 11529.887930003382,
+            "peak_allocated_bytes": 16515952640,
+            "peak_reserved_bytes": 17391681536
+          },
+          "latency_ratio_by1_over_original": 1.0005579029396616
+        },
+        "text-4096": {
+          "input_shape": [
+            1,
+            4096
+          ],
+          "original": {
+            "wall_median_ms": 493.7359467148781,
+            "wall_samples_ms": [
+              493.73189732432365,
+              493.7399961054325
+            ],
+            "cuda_median_ms": 493.6954803466797,
+            "tokens_per_second": 8295.932324257832,
+            "peak_allocated_bytes": 20158722048,
+            "peak_reserved_bytes": 23966253056
+          },
+          "numerics": {
+            "max_absolute": 0.0,
+            "relative_to_peak": 0.0,
+            "argmax_agreement": 1.0
+          },
+          "by1": {
+            "wall_median_ms": 493.8791524618864,
+            "wall_samples_ms": [
+              493.8821271061897,
+              493.8761778175831
+            ],
+            "cuda_median_ms": 493.82713317871094,
+            "tokens_per_second": 8293.526826516729,
+            "peak_allocated_bytes": 20157706240,
+            "peak_reserved_bytes": 23028826112
+          },
+          "latency_ratio_by1_over_original": 1.0002900452113344
+        }
+      },
+      "original_ignored_mtp_keys": 0,
+      "generation": {
+        "original": {
+          "wall_median_ms": 286.15174628794193,
+          "wall_samples_ms": [
+            286.11723333597183,
+            286.18625923991203
+          ],
+          "cuda_median_ms": 286.1243133544922,
+          "tokens_per_second": 27.957194403943813,
+          "peak_allocated_bytes": 16630315520,
+          "peak_reserved_bytes": 23968350208
+        },
+        "identical_tokens": true,
+        "by1": {
+          "wall_median_ms": 286.648653447628,
+          "wall_samples_ms": [
+            286.53718531131744,
+            286.7601215839386
+          ],
+          "cuda_median_ms": 286.6210021972656,
+          "tokens_per_second": 27.908730439794777,
+          "peak_allocated_bytes": 16630184448,
+          "peak_reserved_bytes": 23030923264
+        }
+      },
+      "by1_parameters": 7615616512,
+      "seconds": 44.50877803936601
+    },
+    {
+      "model": "complete-Qwen3-8B.by1",
+      "status": "passed",
+      "phase": "complete",
+      "repo": "Qwen/Qwen3-8B",
+      "revision": "b968826d9c46dd6066d109eabc6255188de91218",
+      "download_endpoint": "https://hf-mirror.com",
+      "checkpoint_bytes": 16381516776,
+      "checkpoint_config_sha256": "f7c4eadfbbf522470667b797a3c89be2524832d2d599797248dc304fff447c30",
+      "runs": {
+        "text-2048": {
+          "input_shape": [
+            1,
+            2048
+          ],
+          "original": {
+            "wall_median_ms": 233.99385064840317,
+            "wall_samples_ms": [
+              233.96551236510277,
+              234.02218893170357
+            ],
+            "cuda_median_ms": 233.946533203125,
+            "tokens_per_second": 8752.366758036324,
+            "peak_allocated_bytes": 17850725376,
+            "peak_reserved_bytes": 19704840192
+          },
+          "numerics": {
+            "max_absolute": 0.0,
+            "relative_to_peak": 0.0,
+            "argmax_agreement": 1.0
+          },
+          "by1": {
+            "wall_median_ms": 233.9729517698288,
+            "wall_samples_ms": [
+              233.8172346353531,
+              234.1286689043045
+            ],
+            "cuda_median_ms": 233.94003295898438,
+            "tokens_per_second": 8753.148534941434,
+            "peak_allocated_bytes": 17850758144,
+            "peak_reserved_bytes": 18767413248
+          },
+          "latency_ratio_by1_over_original": 0.9999106862059988
+        },
+        "text-4096": {
+          "input_shape": [
+            1,
+            4096
+          ],
+          "original": {
+            "wall_median_ms": 665.0546565651894,
+            "wall_samples_ms": [
+              665.1200242340565,
+              664.9892888963223
+            ],
+            "cuda_median_ms": 665.0052490234375,
+            "tokens_per_second": 6158.89229488991,
+            "peak_allocated_bytes": 22012572672,
+            "peak_reserved_bytes": 26147291136
+          },
+          "numerics": {
+            "max_absolute": 0.0,
+            "relative_to_peak": 0.0,
+            "argmax_agreement": 1.0
+          },
+          "by1": {
+            "wall_median_ms": 665.9455932676792,
+            "wall_samples_ms": [
+              665.9167483448982,
+              665.9744381904602
+            ],
+            "cuda_median_ms": 665.8453674316406,
+            "tokens_per_second": 6150.652607973033,
+            "peak_allocated_bytes": 22012605440,
+            "peak_reserved_bytes": 25209864192
+          },
+          "latency_ratio_by1_over_original": 1.001339644334033
+        }
+      },
+      "original_ignored_mtp_keys": 0,
+      "generation": {
+        "original": {
+          "wall_median_ms": 378.89349460601807,
+          "wall_samples_ms": [
+            379.4187121093273,
+            378.3682771027088
+          ],
+          "cuda_median_ms": 378.8662567138672,
+          "tokens_per_second": 21.11411284144263,
+          "peak_allocated_bytes": 18144427520,
+          "peak_reserved_bytes": 26147291136
+        },
+        "identical_tokens": true,
+        "by1": {
+          "wall_median_ms": 379.8487987369299,
+          "wall_samples_ms": [
+            374.34401363134384,
+            385.35358384251595
+          ],
+          "cuda_median_ms": 379.8130340576172,
+          "tokens_per_second": 21.06101171466524,
+          "peak_allocated_bytes": 18144427520,
+          "peak_reserved_bytes": 25211961344
+        }
+      },
+      "by1_parameters": 8190735360,
+      "seconds": 40.120893612504005
+    }
+  ],
+  "environment": {
+    "torch": "2.8.0+cu128",
+    "transformers": "5.19.0",
+    "cuda": "12.8",
+    "gpu": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+    "gpu_memory_bytes": 101974081536
+  },
+  "source_sha256": {
+    "src/checks/by1gpubench.py": "cb4f8cccbda772fe56a193e31c0da33bb457afde7f3135c8b4327882f878643b",
+    "src/by1full.py": "965498fbaa4840c09eb2906f39f433c3298bb202b8272e995b48cbf53fe796e5"
+  },
+  "status": "passed"
+}

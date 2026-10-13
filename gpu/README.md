@@ -1,151 +1,83 @@
-# 云端 runbook
+# GPU 验证与真实权重 benchmark
 
-**要租卡是为了三件事**，按"现在就能做 / 必须有 CUDA"分开列。
+GPU 验证分成两轮，结果分别保存。只有实际 CUDA 执行才记为 GPU 通过。
+没有 CUDA 时返回 `[跳过]` 和退出码 30；CPU 验收器自检不会记为 GPU 通过。
+实测结果摘要与原始 JSON 报告见[验证记录](../docs/gpu-validation-results.md)。
 
----
+## 1. 小尺寸完整组件验收
 
-## 0. 先确认这一包是自洽的
-
-```bash
-pip install -r gpu/requirements.txt
-python src/by1all.py --quick      # 跳过 C 后端（要 gcc）
-```
-
-期望：**0 项失败**。跳过几项取决于这台机器上装了什么、以及加没加 `--quick`：
-
-| 情况 | 哪几项是"跳过" |
-|---|---|
-| 加了 `--quick` | C 后端（**整段不跑**） |
-| 没有 `gcc` | C 后端那 9 项 + `by1extdemo` |
-| HF 缓存里没有 `sshleifer/tiny-gpt2` | `by1e2e`（真产物 → IR → 三后端） |
-| 没有显卡 | `by1gpu` |
-
-**缺哪一样，那一项就报"跳过" —— 既不是失败，也不是通过。**
-
-这台开发机（有 gcc、**没有显卡**）跑**不带 `--quick`** 的全量：
-
-    73 项，0 项失败，1 项跳过，另有 1 项已知缺口
-    [全过（1 项没验）]
-
-> **"73"跟着机器走，别引用它。** 缺 gcc 会少 9 项、缺 HF 缓存会少 1 项。
-> 以你自己那次的最后三行为准。
->
-> ⚠️ **这台开发机不要试着跑显卡**（Intel Iris Xe，`torch` 是 `+cpu` 版）。
-> 上面那一栏"没有显卡"是**事实**，不是"还没配好" ——
-> `by1gpu.py` 每次都印 `-- [跳过] 没有可用的 CUDA 设备`，
-> 那是**正确行为**，不是要你去修的东西。
-
-租来的那张卡一到位，最后那一项也会变成真的验证 —— 那时应当看到
-`0 项失败、0 项跳过`。只有一项是永远在场的真·已知缺口：
-
-```
-已知缺口（不算失败，但仍然存在）:
-  - tensors torch.module Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL.by1
-    那 25 个张量在 HF 的 model-00009 分片里，而那个分片的头是全零 ——
-    镜像的问题，不是 by1 的
-```
-
-**如果这里就有别的失败，先停下** —— 说明这一包本身有问题，别在 GPU 上查。
-
----
-
-## 1. 不需要 GPU，但这一包里还没做的
-
-**没有了 —— `instella-3b` 的前向已经做完。**
-
-它稠密、3B，是 14 个真实模型里唯一在这台机器上也跑得动的。
-`by1instella.py` 现在是 `by1all` 的判卷人之一，对着官方仓库里的
-`modeling_instella.py` 比过：**0.000e+00**。
-
-**所以这一条不用等租卡。** 剩下的 13 个要的是显存（见 §3），
-不是这一条。（这一节原来写着"还没做" —— 那是租卡之前的说法。）
-
-（它依赖 `qk_norm = full` —— Instella 的 QK-norm 是整宽的 `[2560]`，不是按头的 `[80]`。
-by1 在此之前是**明确拒绝**它的。）
-
----
-
-## 2. 必须有 CUDA：KDA
-
-**这是租卡最主要的理由。**
-
-KDA 是 Ling-3.0-tiny 里那 18 层线性注意力。它的参考实现在
-**`fla`（flash-linear-attention）** 里：
-
-```python
-from fla.ops.kda import chunk_kda, fused_recurrent_kda
-```
-
-而 `fla` 要 **Triton** —— 没有 CUDA 就 import 不了。
+需要 CUDA 版 PyTorch、NumPy、Transformers `>=5.19,<6` 和 safetensors。
+先在 GPU 机器上确认 `torch.cuda.is_available()` 为 `True`，再安装本项目的依赖：
 
 ```bash
-python gpu/by1kda.py
+python -m pip install -e ".[full]" accelerate
+python src/checks/by1gpusmoke.py --report cgen/gpu-smoke-fp32.json
+python src/checks/by1gpusmoke.py --dtype bfloat16 --report cgen/gpu-smoke-bf16.json
 ```
 
-这个脚本做三件事：
+验收包含原生 `hello.by1` 和六种缩小尺寸的完整架构：
 
-1. 拉 `inclusionAI/Ling-3.0-tiny` 的 `modeling_bailing_moe_v3.py`
-2. 用 `fla` 把 **`BailingMoeV3KimiDeltaAttention`** 和 **by1 生成的 KDA**
-   在同样的权重下各跑一遍
-3. 比输出
+- 参数、buffer、输入和输出确实在 CUDA 上；输出和梯度没有 NaN/Inf。
+- 原生模型对 NumPy 独立算子和 CPU PyTorch；完整模型对独立构造配置的 Transformers 模型。
+- CPU/GPU 梯度对比，并检查优化器真的更新参数。
+- Qwen3.8 图像和视频前向、图像影响文本输出、MTP 独立连接公式。
+- MTP 反向经过视觉与文本主干，视觉投影、MTP 和输出头发生参数更新。
+- CUDA checkpoint 保存/加载往返及 MTP 参数对象共享。
 
-**期望**：差在 1e-6 量级。**对不上是正常的** —— 这一族从来没有在能跑的判卷人下验过，
-第一次跑大概率有出入，而**有判卷人在旁边调试**是租卡的核心价值。
+FP32 保留逐元素容差；BF16 对 FP32 CPU 梯度同时约束归一化 L2 与峰值误差，
+避免接近零的元素造成不合理的相对误差。与同精度的 GPU 参考仍做逐元素检查。
+所有判据和实际误差都在 JSON 中，不把“未崩溃”当作完整验收。
 
----
+这轮使用随机权重和缩小尺寸，证明计算与连接能在 GPU 上执行，不证明真实大模型的能力。
 
-## 3. 必须有显存：真实模型的前向
-
-按显存从小到大 —— **这张表不要手写，让工具算**：
+## 2. 发布方真实权重对比
 
 ```bash
-python src/by1gpu.py --plan 80     # 不碰显卡，只印"会挑哪些"
+python src/checks/by1gpubench.py --report cgen/gpu-benchmark.json
+python src/checks/by1gputrain.py --report cgen/gpu-real-traincheck.json
 ```
 
-它按「bf16 权重 + 2 GB 余量」挑，**每一个没被选的都带理由列出来**。
-80 GB 这一档实测（`--plan 80`，17 个跑得了）：
-
-| 模型 | 参数量 | bf16 权重 | 建议 |
-|---|---|---|---|
-| `instella-3b` | 3.11B | 7.8 GB | 其实 CPU 也能跑（见 §1） |
-| `clef` | 26.90B | 52.1 GB | 1×80G |
-| `Qwen3.8-27B` | 27.27B | 52.8 GB | 1×80G |
-| `gemma-4-31b` | 32.11B | 61.8 GB | 1×80G |
-| `laguna-xs-2.1` | 33.44B | 64.3 GB | 1×80G |
-| `Qwen3.6-35B-A3B` | 35.50B | 68.1 GB | 1×80G（这一档最紧的一个） |
-| `gpt-oss-120b` | — | **219.6 GB** | 单卡装不下 |
-| `step-3.7 文本主干` | — | **368.9 GB** | 单卡装不下 |
-| `Ling-3.0-tiny` / `GLM-5.3-Flash` / `Nemotron` | — | ? | **codegen 还不支持（KDA / SSM）** —— 先过 §2 |
-
-> 这张表以前是手写的，而且和代码对不上：`by1gpu` 里有一行
-> `if len(ir['layers']) > 8: continue`，**把这 5 个大模型静默丢掉了** ——
-> 表上写着它们装得下，代码里它们连候选都不是。见 `history/ir.md` 第 70 节。
+默认依次测试 GPT-2、Qwen3-0.6B、Qwen2.5-7B-Instruct、Qwen3-8B、gpt-oss-20b、
+Qwen3.8-27B。也可以先指定一个模型：
 
 ```bash
-python src/by1real.py --by1 models/gemma-4-31B.by1 --layers 4
+python src/checks/by1gpubench.py --model Qwen/Qwen3-0.6B --report cgen/qwen-small-benchmark.json
 ```
 
-**`--layers N` 是关键**：真实维度、真实头数、真实 FFN，只跑前 N 层。
-`by1diff.py` 对合成维度做到了这一步；这个脚本把维度换成**真实的**。
+每个模型固定发布仓库的提交版本，分别加载发布方原始配置与 by1 编译的配置，
+使用同一份完整 checkpoint。两份大模型顺序加载，避免同时占用显存。
+Qwen3.8 的原始 Transformers 类会丢弃 MTP 参数，by1 则严格加载 MTP；
+报告单独记录这个区别。gpt-oss 的发布 MXFP4 checkpoint 在两侧都解量化到 BF16。
 
-**为什么值得**：14 个真实模型现在都做到了**"config 与命名全中"**
-（`by1all` 每次都会跑这 14 个），而**数值行为只在合成维度 + `instella-3b`
-+ `gpt2` 上验过**。这一步把后半句去掉。
+默认设置是 BF16、batch 1、文本长度 32/128、预热 2 次、测量 5 次，
+贪心生成固定 16 个新 token。Qwen3.8 另有经原始 processor 处理的图像输入。
+记录完整 logits 最大误差、argmax 一致率和生成 token 是否相同，以及 wall/CUDA
+耗时、prefill/生成吞吐量与峰值显存。输出不一致时 benchmark 失败，不仅记录速度。
 
----
+**两边使用同一套 Transformers 算子。** 此对比核验配置转换、权重加载、分支连接和
+运行开销，不能证明 by1 自研算子快于官方实现，也不是 MMLU 等任务能力评测。
+MTP 与独立连接公式对比并计时，但不宣称已经对 vLLM 的完整 MTP 后端跑过 benchmark。
 
-## 4. 这包里**没有**的东西
+另有一项真实权重训练步：Qwen3-0.6B 的官方与 By1 模型分别跑 BF16 前向、全参数反向
+和一次 AdamW 更新，再比较所有梯度与更新后的参数。它补充验证真实 checkpoint 的训练路径，
+不表示已经执行大模型多步训练。
 
-- **模型权重** —— 在云端从 HF 下，下多少取决于跑哪个
-- **`drafts/`** —— 没有判卷人的草稿，故意不装
-- **llama.cpp 的参考源码** —— 可重新下载；而且 `by1emit.py` 需要的只是图，
-  它已经在 `refs/` 的 GGUF 张量表里了
+网络环境需要镜像时，可在启动前指定 `HF_ENDPOINT`；报告会记录实际 endpoint 和 revision。
+在继承较旧基础镜像的环境中，如果下载器报 `process() takes no keyword arguments`，
+请在隔离环境中升级 Brotli（本次遇到的版本是 1.0.9）：
 
----
+```bash
+python -m pip install --upgrade "brotli>=1.2"
+```
 
-## 5. 一件和 GPU 无关、但比 GPU 更缺的事
+## 3. 机器需求与边界
 
-**这个项目没有外部用户。** 上面每一行都是"和某个官方产物对上了"，
-**没有一行是"有人用它做成了什么"。**
+第一轮显存需求较小。真实 27B 的 BF16 权重约 55GB，短上下文前向建议使用
+80/96GB 显存，并为主机内存和磁盘留余量。96GB 不能保证 27B 全参数 AdamW 训练。
 
-租卡能让验证更硬，但不会让这件事发生变化。
+RTX PRO 6000 Blackwell 需要对应的 CUDA/PyTorch 支持。本次实例的 PyTorch 2.8.0
+与 CUDA 12.8 包含 `sm_120`，已通过实际 CUDA 矩阵运算；较新版本的镜像需按发布方
+支持矩阵选择，不要为统一版本盲目替换已经可用的 CUDA PyTorch。
+
+现有 `src/checks/by1gpu.py --plan 96` 是显存候选估算，不是执行记录；
+旧脚本的随机 FP32 前向也不等同于这里的真实 BF16 checkpoint benchmark。

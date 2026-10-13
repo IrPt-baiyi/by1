@@ -1,0 +1,240 @@
+{
+  "schema": 1,
+  "started_at": "2026-10-13T05:50:12.786951+00:00",
+  "dtype": "bfloat16",
+  "batch_size": 1,
+  "attention": "eager",
+  "warmup": 2,
+  "repeats": 5,
+  "lengths": [
+    32,
+    128
+  ],
+  "new_tokens": 16,
+  "forward_atol": 0.002,
+  "forward_rtol": 0.002,
+  "scope": "Published checkpoint; official config vs by1-compiled config, same Transformers operators. Not an independent kernel comparison.",
+  "models": [
+    {
+      "model": "complete-Qwen3.8-27B.by1",
+      "status": "passed",
+      "phase": "complete",
+      "repo": "Qwen/Qwen3.8-27B",
+      "revision": "1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0",
+      "download_endpoint": "https://hf-mirror.com",
+      "checkpoint_bytes": 55563006776,
+      "checkpoint_files": [
+        "model-00001-of-00018.safetensors",
+        "model-00002-of-00018.safetensors",
+        "model-00003-of-00018.safetensors",
+        "model-00004-of-00018.safetensors",
+        "model-00005-of-00018.safetensors",
+        "model-00006-of-00018.safetensors",
+        "model-00007-of-00018.safetensors",
+        "model-00008-of-00018.safetensors",
+        "model-00009-of-00018.safetensors",
+        "model-00010-of-00018.safetensors",
+        "model-00011-of-00018.safetensors",
+        "model-00012-of-00018.safetensors",
+        "model-00013-of-00018.safetensors",
+        "model-00014-of-00018.safetensors",
+        "model-00015-of-00018.safetensors",
+        "model-00016-of-00018.safetensors",
+        "model-00017-of-00018.safetensors",
+        "model-00018-of-00018.safetensors"
+      ],
+      "repository_safetensors_bytes": 55563006776,
+      "checkpoint_config_sha256": "191e0af232104ed8b65258cf3fb2b842e288008baca7633c11b82a1ac7203aab",
+      "runs": {
+        "text-32": {
+          "input_shape": [
+            1,
+            32
+          ],
+          "original": {
+            "wall_median_ms": 70.07253915071487,
+            "wall_samples_ms": [
+              70.18158957362175,
+              70.06273791193962,
+              70.10646909475327,
+              70.04301995038986,
+              70.07253915071487
+            ],
+            "cuda_median_ms": 70.05817413330078,
+            "tokens_per_second": 456.66962247754566,
+            "peak_allocated_bytes": 54757737472,
+            "peak_reserved_bytes": 54796484608
+          },
+          "numerics": {
+            "max_absolute": 0.0,
+            "relative_to_peak": 0.0,
+            "argmax_agreement": 1.0
+          },
+          "by1": {
+            "wall_median_ms": 69.22829151153564,
+            "wall_samples_ms": [
+              69.5246048271656,
+              69.50919330120087,
+              69.22829151153564,
+              68.85994598269463,
+              68.90376657247543
+            ],
+            "cuda_median_ms": 69.21337890625,
+            "tokens_per_second": 462.2387654138161,
+            "peak_allocated_bytes": 55607137280,
+            "peak_reserved_bytes": 55624859648
+          },
+          "latency_ratio_by1_over_original": 0.987951804666827
+        },
+        "text-128": {
+          "input_shape": [
+            1,
+            128
+          ],
+          "original": {
+            "wall_median_ms": 82.26986229419708,
+            "wall_samples_ms": [
+              82.26986229419708,
+              82.26321637630463,
+              82.30110630393028,
+              82.27227255702019,
+              82.25041627883911
+            ],
+            "cuda_median_ms": 82.24988555908203,
+            "tokens_per_second": 1555.8552844329788,
+            "peak_allocated_bytes": 54786965504,
+            "peak_reserved_bytes": 54993616896
+          },
+          "numerics": {
+            "max_absolute": 0.0,
+            "relative_to_peak": 0.0,
+            "argmax_agreement": 1.0
+          },
+          "by1": {
+            "wall_median_ms": 81.50747418403625,
+            "wall_samples_ms": [
+              81.53024315834045,
+              81.50747418403625,
+              81.47946000099182,
+              81.53507485985756,
+              81.48615807294846
+            ],
+            "cuda_median_ms": 81.49327850341797,
+            "tokens_per_second": 1570.4081285967466,
+            "peak_allocated_bytes": 55636365312,
+            "peak_reserved_bytes": 55710842880
+          },
+          "latency_ratio_by1_over_original": 0.990733081484511
+        },
+        "image": {
+          "input_shape": [
+            1,
+            123
+          ],
+          "original": {
+            "wall_median_ms": 93.36923435330391,
+            "wall_samples_ms": [
+              93.95620226860046,
+              93.73804554343224,
+              93.36923435330391,
+              93.25940161943436,
+              93.1350588798523
+            ],
+            "cuda_median_ms": 93.35533142089844,
+            "tokens_per_second": 1317.3504190317653,
+            "peak_allocated_bytes": 54786233344,
+            "peak_reserved_bytes": 54993616896
+          },
+          "numerics": {
+            "max_absolute": 0.0,
+            "relative_to_peak": 0.0,
+            "argmax_agreement": 1.0
+          },
+          "by1": {
+            "wall_median_ms": 92.68911927938461,
+            "wall_samples_ms": [
+              92.82173216342926,
+              92.73578971624374,
+              92.68911927938461,
+              92.6472432911396,
+              92.59002283215523
+            ],
+            "cuda_median_ms": 92.67577362060547,
+            "tokens_per_second": 1327.0166008294025,
+            "peak_allocated_bytes": 55636614144,
+            "peak_reserved_bytes": 55710842880
+          },
+          "latency_ratio_by1_over_original": 0.9927158546535171
+        }
+      },
+      "original_ignored_mtp_keys": 0,
+      "generation": {
+        "original": {
+          "wall_median_ms": 845.0079783797264,
+          "wall_samples_ms": [
+            849.9353192746639,
+            846.1774587631226,
+            844.8545970022678,
+            844.0416157245636,
+            845.0079783797264
+          ],
+          "cuda_median_ms": 844.9981079101562,
+          "tokens_per_second": 18.93473246333064,
+          "peak_allocated_bytes": 54913729024,
+          "peak_reserved_bytes": 55002005504
+        },
+        "identical_tokens": true,
+        "by1": {
+          "wall_median_ms": 844.0086096525192,
+          "wall_samples_ms": [
+            843.7946625053883,
+            843.9012840390205,
+            844.099685549736,
+            844.6690328419209,
+            844.0086096525192
+          ],
+          "cuda_median_ms": 843.9978637695312,
+          "tokens_per_second": 18.957152589459064,
+          "peak_allocated_bytes": 55763283456,
+          "peak_reserved_bytes": 55784243200
+        }
+      },
+      "by1_parameters": 27781427952,
+      "mtp": {
+        "numerics_vs_connection_formula": {
+          "max_absolute": 0.0,
+          "relative_to_peak": 0.0,
+          "argmax_agreement": 1.0
+        },
+        "reference_scope": "independent connection formula using checkpoint MTP weights; not a vLLM benchmark",
+        "by1": {
+          "wall_median_ms": 3.392670303583145,
+          "wall_samples_ms": [
+            3.482382744550705,
+            3.4157447516918182,
+            3.3904314041137695,
+            3.392670303583145,
+            3.3892951905727386
+          ],
+          "cuda_median_ms": 3.3786239624023438,
+          "tokens_per_second": 36254.6280639455,
+          "peak_allocated_bytes": 55907756544,
+          "peak_reserved_bytes": 55981375488
+        }
+      },
+      "seconds": 66.25762310996652
+    }
+  ],
+  "environment": {
+    "torch": "2.8.0+cu128",
+    "transformers": "5.19.0",
+    "cuda": "12.8",
+    "gpu": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+    "gpu_memory_bytes": 101974081536
+  },
+  "source_sha256": {
+    "src/checks/by1gpubench.py": "f0609cab311c29f9158ad54d4bffa7610679d89f027bdb9bae8f105b5d93c308",
+    "src/by1full.py": "965498fbaa4840c09eb2906f39f433c3298bb202b8272e995b48cbf53fe796e5"
+  },
+  "status": "passed"
+}

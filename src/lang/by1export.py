@@ -42,6 +42,10 @@ def make(*, _main_stack_names, hp, layer_seq, mechs, named, overrides, pb, rep, 
     返回 `名字 -> 函数` 的字典。`by1check.check()` 拿到之后把它们
     绑回本地名字 —— 于是 `check()` 里所有调用点一个字不改。
     """
+    local_indices, stack_counts = [], {}
+    for stack, *_rest in layer_seq:
+        local_indices.append(stack_counts.get(stack, 0))
+        stack_counts[stack] = local_indices[-1] + 1
     def gen_layer_types():
         # 只取主栈 —— layer_types 的长度等于 num_hidden_layers，
         # 辅助栈（MTP）不在里面。
@@ -125,7 +129,7 @@ def make(*, _main_stack_names, hp, layer_seq, mechs, named, overrides, pb, rep, 
                     if ma is not None:
                         # **先看这一层有没有逐层覆盖** —— 只看声明值的话
                         # Step-3.7 的 42 层会全报 288。
-                        v = overrides.get((_s, li, am), {}).get(
+                        v = overrides.get((_s, local_indices[li], am), {}).get(
                             sub, ma.assigns.get(sub, ""))
                         break
                 if v in ("", None):
@@ -193,14 +197,15 @@ def make(*, _main_stack_names, hp, layer_seq, mechs, named, overrides, pb, rep, 
         """per_layer(q) / per_layer(attach.layer_kind) -> 逐层一个值。
         官方 config 里那一堆逐层数组（头数、MLP 类型、gating 类型）都是这个。"""
         out = []
-        for (_s, _m, a, _k, atts) in layer_seq:
+        for li, (_s, _m, a, _k, atts) in enumerate(layer_seq):
             if key.startswith("attach."):
                 sub = key[7:]
                 v = ""
                 for am in atts:
                     ma = mechs.get(am)
                     if ma is not None:
-                        v = ma.assigns.get(sub, ma.mtype)
+                        v = overrides.get((_s, local_indices[li], am), {}).get(
+                            sub, ma.assigns.get(sub, ma.mtype))
                         break
                 out.append(_coerce(v))
             else:
@@ -221,7 +226,7 @@ def make(*, _main_stack_names, hp, layer_seq, mechs, named, overrides, pb, rep, 
                     ma = mechs.get(am)
                     if ma is not None:
                         # 逐层覆盖优先于声明值
-                        v = overrides.get((_s, li, am), {}).get(
+                        v = overrides.get((_s, local_indices[li], am), {}).get(
                             sub, ma.assigns.get(sub))
                         break
             else:

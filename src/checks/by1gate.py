@@ -155,6 +155,141 @@ def probe(bad):
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def short_probe(bad):
+    """短描述与完整声明同 IR；挂载参数、拒绝和命令入口都有反例。"""
+    import pathlib
+    import subprocess
+    import tempfile
+
+    header = "model Tiny {\n hparams { d_model = 16, vocab = 32 }\n"
+    short = header + """ stack main {
+  pattern = 2 * Attention(q = 4, kv = 2, head_dim = 4)
+  main[:] >> FFN(hidden = 32)
+ }
+}
+"""
+    full = header + """ mech Attention : Attention { heads = { q = 4, kv = 2, head_dim = 4 } }
+ mech FFN : FFN { hidden = 32 }
+ stack main { pattern = 2 * Attention, main[:] >> FFN }
+}
+"""
+    with tempfile.TemporaryDirectory(prefix='by1-short-') as tmp:
+        root = pathlib.Path(tmp).resolve()
+        if root.parent != pathlib.Path(tempfile.gettempdir()).resolve():
+            raise RuntimeError('测试目录不在临时目录内')
+        path = root / 'tiny.by1'
+
+        def require(condition, message='检查不通过'):
+            if not condition:
+                raise AssertionError(message)
+
+        def read(text):
+            path.write_text(text, encoding='utf-8')
+            return bc.check(str(path))
+
+        def compile_text(text):
+            report, info = read(text)
+            require(not report.count(bc.E), report.items)
+            return cg.compile_ir(info), info
+
+        def ffn_widths(ir):
+            return [o['attrs']['hidden'] for l in ir['layers']
+                    for o in l['ops'] if o['kind'] == 'FFN']
+
+        def case(name, fn):
+            try:
+                fn()
+                print('  ok 短描述：' + name)
+            except Exception as ex:
+                bad.append('短描述/' + name)
+                print('  !! 短描述：%s — %s' % (name, ex))
+
+        def equivalent():
+            a, _ = compile_text(short)
+            b, _ = compile_text(full)
+            require(a == b, '简写与完整声明的计算语义不一致')
+        case('完整声明与简写同 IR', equivalent)
+
+        def selected():
+            text = short.replace('main[:] >> FFN(hidden = 32)',
+                'main[0] >> FFN(hidden = 24, gate = none, act = gelu_new)\n'
+                '  main[1] >> FFN(hidden = 40)')
+            ir, _ = compile_text(text)
+            require(ffn_widths(ir) == [24, 40])
+            op = next(o for o in ir['layers'][0]['ops'] if o['kind'] == 'FFN')
+            require(op['attrs']['gate'] is False and op['attrs']['act'] == 'gelu_new')
+        case('选择器与调用参数进入计算', selected)
+
+        def declared():
+            ir, _ = compile_text(full.replace('main[:] >> FFN', 'main[:] >> FFN(hidden = 48)'))
+            require(ffn_widths(ir) == [48, 48])
+        case('显式机制支持调用覆盖', declared)
+
+        def multistack():
+            text = short.replace('2 * Attention', '1 * Attention').replace(
+                '\n}\n', '\n stack aux {\n aux = true\n'
+                ' pattern = 1 * Attention(q = 4, kv = 2, head_dim = 4)\n'
+                ' aux[:] >> FFN(hidden = 48)\n }\n'
+                ' emit {\n train -> transformers.config {\n field {\n'
+                ' widths = per_layer(attach.hidden)\n'
+                ' widths_default = per_layer(attach.hidden, 0)\n'
+                ' widths_map = by_layer(attach.hidden)\n'
+                ' }\n }\n }\n}\n')
+            ir, info = compile_text(text)
+            require(ffn_widths(ir) == [32, 48])
+            require(info['hparams']['n_layer'] == '1')
+            require(info['config']['widths'] == [32, 48], info['config'])
+            require(info['config']['widths_default'] == [32, 48], info['config'])
+            require(info['config']['widths_map'] == {'0': 32, '1': 48}, info['config'])
+        case('不同栈的挂载参数互不串层', multistack)
+
+        def override():
+            text = short.replace('main[:] >> FFN(hidden = 32)',
+                'main[:] >> FFN(hidden = 32)\n  main[1] : FFN.hidden = [48]')
+            ir, _ = compile_text(text)
+            require(ffn_widths(ir) == [32, 48])
+        case('逐层覆盖优先于调用参数', override)
+
+        for name, text in [
+            ('机制拼写错误', short.replace('Attention(', 'Attentoin(')),
+            ('选择器未命中', short.replace('main[:]', 'main[9]')),
+            ('挂载目标不是单个调用', short.replace('FFN(hidden = 32)', 'FFN(hidden = 32) + FFN(hidden = 32)')),
+            ('重叠挂载参数冲突', short.replace('main[:] >> FFN(hidden = 32)',
+                'main[:] >> FFN(hidden = 32)\n  main[0] >> FFN(hidden = 48)')),
+        ]:
+            def rejected(text=text):
+                report, _ = read(text)
+                require(report.count(bc.E), '错误描述被接受')
+            case(name + '被拒绝', rejected)
+
+        for name, text in [
+            ('缺少必要维度', short.replace(', head_dim = 4', '')),
+            ('未知激活函数', short.replace('hidden = 32)', 'hidden = 32, act = bogus)')),
+        ]:
+            def unsupported(text=text):
+                report, info = read(text)
+                try:
+                    cg.compile_ir(info)
+                except cg.CodegenError:
+                    return
+                raise AssertionError('生成器静默放行')
+            case(name + '被拒绝', unsupported)
+
+        def cli():
+            script = by1paths.tool('by1.py')
+            output = root / 'model.py'
+            read(short)
+            result = subprocess.run([sys.executable, script, 'build', str(path), '-o', str(output)],
+                                    capture_output=True, encoding='utf-8')
+            require(result.returncode == 0 and output.exists(), result.stdout + result.stderr)
+            read(short.replace('Attention(', 'Attentoin('))
+            output.write_text('sentinel', encoding='utf-8')
+            result = subprocess.run([sys.executable, script, 'build', str(path), '-o', str(output)],
+                                    capture_output=True, encoding='utf-8')
+            require(result.returncode == 1 and output.read_text() == 'sentinel')
+        case('build 可生成源码且拒绝错误输入', cli)
+
+
 def main():
     bad = []
     for f, want_ok, needle, why in CASE:
@@ -185,6 +320,8 @@ def main():
     print()
     print('  反例（**改坏一处，必须被拒**）:')
     probe(bad)
+    print('\n  几行定义架构：')
+    short_probe(bad)
 
     print()
     print('  [%s] 取值门 %s'

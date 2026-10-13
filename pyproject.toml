@@ -41,9 +41,12 @@ verify = ["numpy", "torch", "transformers", "safetensors", "einops"]
 # `import numpy` —— 于是"跑 C 后端只用标准库"这句话对不上：
 # `pip install -e '.[c]'` 什么都不会装。numpy 是那两个后端的运行时依赖。
 c = ["numpy"]
+run = ["numpy"]
+train = ["torch"]
+full = ["torch", "transformers>=5.19,<6", "safetensors"]
 
 [project.scripts]
-by1 = "by1ver:main"
+by1 = "lang.by1:main"
 "by1-spec" = "by1ir:_cli"
 # 这三个模块在 `src/checks/` 里，装出来是 **`checks.` 包内模块**，
 # 不是顶级名 —— 写成 `by1all:main` 的话，`pip install -e .` 之后
@@ -62,7 +65,7 @@ by1 = "by1ver:main"
 package-dir = {"" = "src"}
 py-modules = [
     "by1boot", "by1c", "by1check", "by1codegen",
-    "by1exec", "by1ext", "by1io", "by1ir",
+    "by1exec", "by1ext", "by1full", "by1graph", "by1io", "by1ir",
     "by1paths", "by1refs", "by1skip", "by1ver",
 ]
 
@@ -104,4 +107,4 @@ version = { file = "VERSION" }
 # 空键 = 安装前缀那一级（实测 `pip install` 之后落在 venv 根）。
 # 这是 `py-modules` 项目里唯一能让非 .py 文件进 wheel 的办法；
 # `by1extdemo._find_src()` 会把这几个布局都找一遍。
-"" = ["src/ext-demo.c"]
+"" = ["src/escape/ext-demo.c"]

@@ -58,6 +58,7 @@ hello_model.py
 # （`*.so` / `*.exe` / `cgen-*/` 都挡了，唯独漏了 pip 自己造的。）
 *.egg-info/
 build/
+.venv/
 dist/
 .eggs/
 

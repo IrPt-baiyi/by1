@@ -1,0 +1,47 @@
+# 完整 gpt-oss-20b：MoE、路由/专家 bias、sink、交替滑窗、YaRN。
+model GptOss {
+  backend transformers
+  arch gpt_oss
+  ctx 131072
+
+  hparams {
+    d_model = 2880
+    vocab = 201088
+    rms_eps = 1e-5
+    tie_word_embeddings = false
+    bos_token_id = null
+    eos_token_id = 200002
+  }
+
+  mech A : Attention {
+    heads = { q = 64, kv = 8, head_dim = 64 }
+    attn_bias = true
+    sink = true
+  }
+
+  stack main {
+    pattern = 12 * [A(window = 128) + A(window = none)]
+    main[:] >> MoE(
+      experts = 32,
+      top_k = 4,
+      hidden = 2880,
+      router_bias = true,
+      expert_bias = true,
+      routing = topk_softmax,
+      act = gptoss,
+      swiglu_limit = 7.0,
+    )
+  }
+
+  position {
+    default = yarn(
+      rope(base = 150000),
+      factor = 32,
+      original = 4096,
+      truncate = false,
+      beta_fast = 32,
+      beta_slow = 1,
+      pairing = interleaved,
+    )
+  }
+}

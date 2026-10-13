@@ -3,11 +3,15 @@
 """
 by1 -- 用一份描述，写一个语言模型。
 
-  python by1.py train hello.by1              搭模型 · 训练 · 让它写字
-  python by1.py build hello.by1 -o model.py  导出模型源码（可以直接看）
-  python by1.py check hello.by1              只检查描述写得对不对
-  python by1.py verify a.by1 b.config.json   和真实模型的 config / 权重对拍
-  python by1.py oracle a.by1                 跑出真实行为，和状态声明对拍
+  by1 check hello.by1                       检查描述
+  by1 run hello.by1 --seq 8                  随机权重前向，输出 logits 形状
+  by1 build hello.by1 -o model.py            导出可训练的 PyTorch 模型源码
+  by1 train hello.by1 --text 1.md            搭模型 · 训练 · 让它写字
+  by1 verify a.by1 b.config.json             和真实模型的 config / 权重对拍
+  by1 oracle a.by1                           跑出真实行为，和状态声明对拍
+  by1 --version                             查看版本
+
+未安装时，用 python src/lang/by1.py 替换上面的 by1。
 
 描述写在 .by1 文件里，改数字就能改模型。从 hello.by1 开始看。
 """
@@ -35,6 +39,7 @@ COMMANDS = {
     "train": ("by1train", "按描述搭模型、训练、生成"),
     "build": ("by1codegen", "按描述生成模型源码"),
     "check": ("by1check", "检查描述"),
+    "run": ("by1exec", "用随机权重执行前向（需要 numpy）"),
     "verify": ("by1verify", "和官方产物对拍"),
     "oracle": ("by1oracle", "执行神谕"),
 }
@@ -48,22 +53,48 @@ def load(name):
     return mod
 
 
-def main(argv):
-    if len(argv) < 2 or argv[1] in ("-h", "--help", "help"):
+def main(argv=None):
+    if argv is None:
+        argv = sys.argv[1:]
+    if argv and argv[0] in ("--version", "version"):
+        return load("by1ver").main()
+    if not argv or argv[0] in ("-h", "--help", "help"):
         print(__doc__)
         print("  可用命令：")
         for k, (_m, d) in COMMANDS.items():
             print(f"    {k:<8}{d}")
         print()
         return 0
-    cmd = argv[1]
+    cmd = argv[0]
     if cmd not in COMMANDS:
         print(f"不认识的命令 '{cmd}'。可用：{', '.join(COMMANDS)}")
         # 命令名不认识 -> by1skip.CALLER
         return by1skip.CALLER
-    mod = load(COMMANDS[cmd][0])
-    return mod.main(argv[2:])
+    try:
+        module_name = COMMANDS[cmd][0]
+        if cmd in ("run", "train") and len(argv) > 1 and not argv[1].startswith("-"):
+            checker = load("by1check")
+            rep, info = checker.check(argv[1])
+            if rep.count(checker.E):
+                return checker.run_one(argv[1])
+            if info.get('backend') == 'transformers':
+                module_name = 'by1full'
+        mod = load(module_name)
+        if cmd == 'train' and module_name == 'by1full':
+            return mod.train_main(argv[1:])
+        return mod.main(argv[1:])
+    except FileNotFoundError as ex:
+        print(f"找不到文件：{ex.filename}")
+        return by1skip.CALLER
+    except ModuleNotFoundError as ex:
+        if ex.name not in ("numpy", "torch", "transformers", "safetensors"):
+            raise
+        print(f"{cmd} 需要 {ex.name}：python -m pip install {ex.name}")
+        return by1skip.CALLER
+    except ValueError as ex:
+        print(f"[FAIL] {ex}")
+        return 1
 
 
 if __name__ == "__main__":
-    sys.exit(main(sys.argv))
+    sys.exit(main())

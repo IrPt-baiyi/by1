@@ -1,0 +1,24 @@
+# 完整 Qwen3-8B：36 层 GQA + SwiGLU，独立输出头。
+model Qwen3Large {
+  backend transformers
+  arch qwen3
+  ctx 40960
+
+  hparams {
+    d_model = 4096
+    vocab = 151936
+    rms_eps = 1e-6
+    tie_word_embeddings = false
+    bos_token_id = 151643
+    eos_token_id = 151645
+  }
+
+  stack main {
+    pattern = 36 * Attention(q = 32, kv = 8, head_dim = 128, qk_norm = per_head)
+    main[:] >> FFN(hidden = 12288)
+  }
+
+  position {
+    default = rope(base = 1000000, pairing = half)
+  }
+}

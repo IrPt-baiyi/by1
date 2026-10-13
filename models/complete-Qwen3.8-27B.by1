@@ -1,0 +1,96 @@
+# 完整 Qwen3.8-27B：文本、视觉、MTP 三个分支，包含共享参数关系。
+model Qwen38 {
+  backend transformers
+  arch qwen3_5
+  ctx 262144
+
+  # 模型参数与文本输出头
+  hparams {
+    d_model = 5120
+    vocab = 248320
+    rms_eps = 1e-6
+    norm = zero_centered
+    tie_word_embeddings = false
+    bos_token_id = 248044
+    eos_token_id = 248044
+  }
+
+  # 文本主干：A 为全量注意力，D 为线性注意力，F 为前馈网络
+  mech A : Attention {
+    heads = { q = 24, kv = 4, head_dim = 256 }
+    out_dim = 6144
+    q_gate = true
+    qk_norm = per_head
+    partial = 0.25
+  }
+
+  mech D : Linear {
+    k_heads = 16
+    k_dim = 128
+    v_heads = 48
+    v_dim = 128
+    conv_kernel = 4
+  }
+
+  mech F : FFN {
+    hidden = 17408
+  }
+
+  stack main {
+    pattern = 16 * [3 * D + A]
+    main[:] >> F
+  }
+
+  # MTP 预测分支：独立 decoder，复用 A / F 的架构定义
+  stack mtp {
+    aux = true
+    pattern = 1 * A
+    mtp[:] >> F
+  }
+
+  # 视觉塔：V 为视觉注意力，VF 为视觉前馈网络
+  mech V : Attention {
+    heads = { q = 16, kv = 16, head_dim = 72 }
+    bias = true
+    qkv_fused = true
+  }
+
+  mech VF : FFN {
+    hidden = 4304
+    act = gelu_new
+    gate = none
+    bias = true
+  }
+
+  stack visual {
+    aux = true
+    d_model = 1152
+    pattern = 27 * V
+    visual[:] >> VF
+  }
+
+  # 位置编码
+  position {
+    default = rope(base = 10000000, pairing = half)
+  }
+
+  # 图像 / 视频输入与多模态位置参数
+  vision {
+    patch_size = 16
+    temporal_patch_size = 2
+    spatial_merge_size = 2
+    num_position_embeddings = 2304
+    in_channels = 3
+    mrope_section = [11, 11, 10]
+    image_token_id = 248056
+    video_token_id = 248057
+    vision_start_token_id = 248053
+    vision_end_token_id = 248054
+  }
+
+  # MTP 参数共享：引用主干的 embedding 与输出头
+  mtp {
+    share_embeddings = true
+    share_head = true
+  }
+}

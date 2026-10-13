@@ -45,6 +45,8 @@ def read_stacks(*, _mod, _):
             continue
         _['expansion'][_['st'].name] = _['ex']
         _['total_layers'] += len(_['ex'])
+        for _['r'] in _['ex']:
+            register_builtin(_['r'].name, _['st'].line, _)
 
         # 逐层属性覆盖：`main[3..44] : MoE.experts = [255, 266, ...]`
         # 值按被选中的层顺序分配。逐层变化的专家数、swiglu_limit 都靠它。
@@ -97,6 +99,10 @@ def read_stacks(*, _mod, _):
             else:
                 _['m'] = _['mechs'][_['r'].name]
                 for _['a'] in _['r'].attrs:
+                    if _['scope'].assigns.get('backend') == 'transformers':
+                        from by1full import MECH_FIELDS
+                        if _['a'] in MECH_FIELDS.get(_['m'].mtype, set()):
+                            continue
                     if _['a'] not in _['m'].assigns and _['a'] not in BUILTIN_ATTRS:
                         _['rep'].add(W, _['st'].line, "attr",
                                 f"{_['r'].name}({_['a']} = ...) 的属性 '{_['a']}' 既未在 mech "
@@ -171,6 +177,8 @@ def read_stacks(*, _mod, _):
     _['_main_layers'] = sum(len(_['expansion'].get(st.name, []))
                        for st in _['stacks']
                        if not _['_is_aux'](st))
+    if "n_layer" not in _['hp'] and _['stacks']:
+        _['hp']["n_layer"] = str(_['_main_layers'])
     if _['nlayer_decl'] is not None and _['stacks']:
         if _['nlayer_decl'] != _['_main_layers']:
             _['rep'].add(E, _['hb'].line, "layers",

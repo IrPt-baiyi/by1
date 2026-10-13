@@ -78,7 +78,7 @@ GROUPS = [
 `No module named 'by1paths'`，看起来像"文件丢了"。''', [
         'by1paths', 'by1io', 'by1codegen', 'by1skip', 'by1ir', 'by1ver',
         'by1exec', 'by1c', 'by1ggml', 'by1graph', 'by1refs', 'by1check',
-        'by1boot', 'by1ext']),
+        'by1boot', 'by1ext', 'by1full']),
 
     ('`lang/` —— 语言本身', 'lang', '''把 `.by1` 变成一份能算的东西。
 
@@ -100,7 +100,7 @@ GROUPS = [
         'by1irentry', 'by1gate', 'by1docs', 'by1files', 'by1lint',
         'by1blind', 'by1debt', 'by1pat', 'by1smoke', 'by1pack',
         'by1rebuild', 'by1bootir', 'by1oracles', 'by1oracle',
-        'by1run', 'by1fast', 'by1gpu', 'by1sync', 'by1mutate']),
+        'by1run', 'by1fast', 'by1gpu', 'by1gpusmoke', 'by1gpubench', 'by1gputrain', 'by1sync', 'by1mutate', 'by1complete']),
 
     ('`modelcheck/` —— 一个模型一个判卷人', 'modelcheck', '''每个都用自己的官方产物当真相源。''', [
         'by1gpt2', 'by1instella', 'by1mla', 'by1moe', 'by1rope',
@@ -226,7 +226,7 @@ TAIL = '''\
 
 
 def tracked():
-    r = subprocess.run(['git', 'ls-files'], cwd=ROOT, capture_output=True,
+    r = subprocess.run(['git', 'ls-files', '--cached', '--others', '--exclude-standard'], cwd=ROOT, capture_output=True,
                        text=True, encoding='utf-8', errors='replace')
     # **看返回码。** 不在 git 仓库里跑时 `ls-files` 会失败，
     # 而那时 stdout 是空的 —— 空文件清单会生成一份空文档，
@@ -234,7 +234,8 @@ def tracked():
     if r.returncode != 0:
         raise SystemExit('  git ls-files 失败（rc=%d）：%s'
                          % (r.returncode, (r.stderr or '').strip()[:80]))
-    return [x for x in r.stdout.split('\n') if x.strip()]
+    # 把尚未提交的新源码/示例也纳入，忽略构建与缓存产物。
+    return sorted(set(x for x in r.stdout.split('\n') if x.strip()))
 
 
 def summary(path):

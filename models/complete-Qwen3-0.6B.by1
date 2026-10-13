@@ -1,0 +1,24 @@
+# 完整 Qwen3-0.6B：包含 embedding/lm_head 参数共享。
+model Qwen3Small {
+  backend transformers
+  arch qwen3
+  ctx 40960
+
+  hparams {
+    d_model = 1024
+    vocab = 151936
+    rms_eps = 1e-6
+    tie_word_embeddings = true
+    bos_token_id = 151643
+    eos_token_id = 151645
+  }
+
+  stack main {
+    pattern = 28 * Attention(q = 16, kv = 8, head_dim = 128, qk_norm = per_head)
+    main[:] >> FFN(hidden = 3072)
+  }
+
+  position {
+    default = rope(base = 1000000, pairing = half)
+  }
+}

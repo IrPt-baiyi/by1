@@ -150,7 +150,9 @@ def check_blocks(*, _mod, _):
             _['head_dim_of'][_['nm']] = _['hd']
 
         if _['h'] is None:
-            if _['blk'].mtype in TOKEN_MIXER and _['blk'].mtype != "Vision":
+            if (_['blk'].mtype in TOKEN_MIXER and _['blk'].mtype != "Vision"
+                    and _['nm'] not in _['implicit_mechs']
+                    and _['scope'].assigns.get('backend') != 'transformers'):
                 _['rep'].add(W, _['blk'].line, "shape",
                         f"mech {_['nm']} ({_['blk'].mtype}) 未声明 heads/head_dim —— "
                         f"依赖它的 KV cache 与状态尺寸都无法推导")

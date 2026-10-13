@@ -17,6 +17,7 @@ Block 1.1：MoE 作为**一个算子 + 一组 attrs**，不是一族特例。
   位置       position { ... rope(base=…, pairing=…) ... }
 """
 
+import argparse
 import importlib.util
 import math
 import os
@@ -24,6 +25,7 @@ import pprint
 import re
 import sys
 from typing import Any, Dict, List
+import by1paths
 
 # **版本号从 by1ver 来。** 原来这里写死 "1.0"，而 by1boot / by1extdemo
 # 也各写了一遍 —— 三份同一个字符串，谁也不认识谁。
@@ -439,6 +441,8 @@ MIXER_KINDS = ("Attention", "Linear", "MLA", "MoE", "SSM", "KDA", "Raw",
 
 
 def compile_ir(info: Dict[str, Any]) -> Dict[str, Any]:
+    if info.get("backend") == "transformers":
+        raise UnsupportedError("完整模型使用 transformers 后端；请用 by1 build，不能把多分支模型降成串行 IR")
     errs: List[str] = []
     #: **"生成器还不认"单独一个桶。** 它和"写坏了"要分开报 ——
     #: 一份文件里两样都有时，**写坏了优先**（那就是一份坏文件）。
@@ -952,13 +956,16 @@ def compile_ir(info: Dict[str, Any]) -> Dict[str, Any]:
 
     layers = []
     _ov_all = info.get("overrides") or {}
+    _stack_indices = {}
     for li, (_s, m, a, _k, atts) in enumerate(info["layer_seq"]):
+        local_i = _stack_indices.get(_s, 0)
+        _stack_indices[_s] = local_i + 1
         # **记下"报之前"的条数** —— 用来判 `one_mech` 有没有说话。
         _before = len(errs) + len(unsup)
         mixer = one_mech(m, a, li)
         _spoke = (len(errs) + len(unsup)) > _before
 
-        def _with_ov(am, _s=_s, li=li):
+        def _with_ov(am, _s=_s, li=local_i):
             """挂在层上的机制，属性要合并这一层的逐层覆盖。
             不做的话：契约按逐层算、生成的计算全用默认值 —— 一个
             **看起来对的错模型**（张量检查全过，跑起来宽度都一样）。"""
@@ -1211,9 +1218,10 @@ def apply_rope(x, cos, sin, pairing="interleaved"):
     if pairing == "half":
         h = x.shape[-1] // 2
         x1, x2 = x[..., :h], x[..., h:]
-        return torch.cat([x1 * c - x2 * s, x1 * s + x2 * c], dim=-1)
+        return torch.cat([x1 * c - x2 * s, x1 * s + x2 * c], dim=-1).to(x.dtype)
     x1, x2 = x[..., 0::2], x[..., 1::2]
-    return torch.cat([x1 * c - x2 * s, x1 * s + x2 * c], dim=-1)
+    # Phases stay FP32; rotated activations must keep the projection dtype.
+    return torch.cat([x1 * c - x2 * s, x1 * s + x2 * c], dim=-1).to(x.dtype)
 
 
 class DSAIndexer(nn.Module):
@@ -2544,6 +2552,9 @@ def render_ir(ir: Dict[str, Any], by1_name: str = "model.ir.json") -> str:
 
 
 def render(info: Dict[str, Any], by1_name: str = "model.by1") -> str:
+    if info.get("backend") == "transformers":
+        from by1full import render as render_full
+        return render_full(info, by1_name)
     ir = compile_ir(info)
     return (
         f"# {_stamp()}\n"
@@ -2572,18 +2583,23 @@ def main(argv):
         print(__doc__)
         # 没给 .by1 -> by1skip.CALLER
         return by1skip.CALLER
-    out = None
-    args = list(argv)
-    if "-o" in args:
-        i = args.index("-o")
-        out = args[i + 1]
-        args = args[:i] + args[i + 2:]
+    parser = argparse.ArgumentParser(description="从 .by1 生成可训练的 PyTorch 模型源码")
+    parser.add_argument("by1", help="架构描述文件")
+    parser.add_argument("-o", "--output", help="输出的 Python 文件")
+    args = parser.parse_args(argv)
+    out = args.output
     bc = load_checker()
-    _rep, info = bc.check(args[0])
+    rep, info = bc.check(args.by1)
+    if rep.count(bc.E):
+        return bc.run_one(args.by1)
     try:
-        src = render(info, os.path.basename(args[0]))
+        if info.get("backend") == "transformers":
+            from by1full import render as render_full
+            src = render_full(info, args.by1)
+        else:
+            src = render(info, args.by1)
     except CodegenError as ex:
-        print(f"[不支持] {os.path.basename(args[0])} 超出了 codegen 的子集：")
+        print(f"[不支持] {os.path.basename(args.by1)} 超出了 codegen 的子集：")
         print(str(ex))
         return 1
     if out:

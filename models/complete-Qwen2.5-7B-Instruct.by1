@@ -1,0 +1,24 @@
+# 完整 Qwen2.5-7B-Instruct：Q/K/V 有 bias，输出投影无 bias。
+model Qwen25 {
+  backend transformers
+  arch qwen2
+  ctx 32768
+
+  hparams {
+    d_model = 3584
+    vocab = 152064
+    rms_eps = 1e-6
+    tie_word_embeddings = false
+    bos_token_id = 151643
+    eos_token_id = 151645
+  }
+
+  stack main {
+    pattern = 28 * Attention(q = 28, kv = 4, head_dim = 128, qkv_bias = true, out_bias = false)
+    main[:] >> FFN(hidden = 18944)
+  }
+
+  position {
+    default = rope(base = 1000000, pairing = half)
+  }
+}

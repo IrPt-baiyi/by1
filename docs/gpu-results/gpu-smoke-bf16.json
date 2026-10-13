@@ -1,0 +1,326 @@
+{
+  "schema": 1,
+  "started_at": "2026-10-13T00:55:32.745710+00:00",
+  "requested_device": "cuda",
+  "dtype": "bfloat16",
+  "gpu_verified": true,
+  "scope": "random weights; native hello plus six scaled complete architectures; eager attention",
+  "cases": [
+    {
+      "name": "native-hello",
+      "status": "passed",
+      "metrics": {
+        "cpu_forward": {
+          "max_absolute": 0.01568901538848877,
+          "relative_to_peak": 0.007893308479508488
+        },
+        "numpy_forward": {
+          "max_absolute": 0.015688836574554443,
+          "relative_to_peak": 0.007893218989738741
+        },
+        "loss": {
+          "max_absolute": 0.002208709716796875,
+          "relative_to_peak": 0.0003866126521828257
+        },
+        "gradients": {
+          "compared_tensors": 39,
+          "max_absolute": 0.00523000955581665
+        },
+        "updated": [
+          "embed.weight",
+          "layers.0.op1.wq.weight",
+          "head.weight"
+        ],
+        "parameters": 1049728,
+        "output_shape": [
+          1,
+          8,
+          256
+        ]
+      },
+      "peak_allocated_bytes": 27717120,
+      "seconds": 1.2626322247087955
+    },
+    {
+      "name": "complete-Qwen3-0.6B.by1",
+      "status": "passed",
+      "metrics": {
+        "cpu_forward": {
+          "max_absolute": 0.0019095735624432564,
+          "relative_to_peak": 0.0031956685429319113
+        },
+        "reference_forward": {
+          "max_absolute": 0.0,
+          "relative_to_peak": 0.0
+        },
+        "loss": {
+          "max_absolute": 0.000354766845703125,
+          "relative_to_peak": 8.445781995976675e-05
+        },
+        "cpu_gradients": {
+          "compared_tensors": 24,
+          "max_absolute": 0.012701034545898438
+        },
+        "reference_gradients": {
+          "compared_tensors": 24,
+          "max_absolute": 0.0
+        },
+        "updated": [
+          "model.embed_tokens.weight"
+        ],
+        "parameters": 20672,
+        "output_shape": [
+          1,
+          4,
+          64
+        ]
+      },
+      "peak_allocated_bytes": 17367552,
+      "seconds": 0.6478546410799026
+    },
+    {
+      "name": "complete-Qwen3-8B.by1",
+      "status": "passed",
+      "metrics": {
+        "cpu_forward": {
+          "max_absolute": 0.0017704516649246216,
+          "relative_to_peak": 0.005937271099017549
+        },
+        "reference_forward": {
+          "max_absolute": 0.0,
+          "relative_to_peak": 0.0
+        },
+        "loss": {
+          "max_absolute": 6.151199340820312e-05,
+          "relative_to_peak": 1.4737427032599646e-05
+        },
+        "cpu_gradients": {
+          "compared_tensors": 25,
+          "max_absolute": 0.012520909309387207
+        },
+        "reference_gradients": {
+          "compared_tensors": 25,
+          "max_absolute": 0.0
+        },
+        "updated": [
+          "model.embed_tokens.weight"
+        ],
+        "parameters": 22720,
+        "output_shape": [
+          1,
+          4,
+          64
+        ]
+      },
+      "peak_allocated_bytes": 17396224,
+      "seconds": 0.043470028787851334
+    },
+    {
+      "name": "complete-Qwen2.5-7B-Instruct.by1",
+      "status": "passed",
+      "metrics": {
+        "cpu_forward": {
+          "max_absolute": 0.0022455118596553802,
+          "relative_to_peak": 0.00670939381696816
+        },
+        "reference_forward": {
+          "max_absolute": 0.0,
+          "relative_to_peak": 0.0
+        },
+        "loss": {
+          "max_absolute": 0.0011391639709472656,
+          "relative_to_peak": 0.0002675090795201812
+        },
+        "cpu_gradients": {
+          "compared_tensors": 27,
+          "max_absolute": 0.009444117546081543
+        },
+        "reference_gradients": {
+          "compared_tensors": 27,
+          "max_absolute": 0.0
+        },
+        "updated": [
+          "model.embed_tokens.weight"
+        ],
+        "parameters": 22816,
+        "output_shape": [
+          1,
+          4,
+          64
+        ]
+      },
+      "peak_allocated_bytes": 18232832,
+      "seconds": 0.04063667729496956
+    },
+    {
+      "name": "complete-gpt2.by1",
+      "status": "passed",
+      "metrics": {
+        "cpu_forward": {
+          "max_absolute": 0.0017664134502410889,
+          "relative_to_peak": 0.0035524081948424963
+        },
+        "reference_forward": {
+          "max_absolute": 0.0,
+          "relative_to_peak": 0.0
+        },
+        "loss": {
+          "max_absolute": 0.0004067420959472656,
+          "relative_to_peak": 9.790274641880247e-05
+        },
+        "cpu_gradients": {
+          "compared_tensors": 28,
+          "max_absolute": 0.008844614028930664
+        },
+        "reference_gradients": {
+          "compared_tensors": 28,
+          "max_absolute": 0.0
+        },
+        "updated": [
+          "transformer.wte.weight"
+        ],
+        "parameters": 20224,
+        "output_shape": [
+          1,
+          4,
+          64
+        ]
+      },
+      "peak_allocated_bytes": 18228736,
+      "seconds": 0.04938769340515137
+    },
+    {
+      "name": "complete-gpt-oss-20b.by1",
+      "status": "passed",
+      "metrics": {
+        "cpu_forward": {
+          "max_absolute": 0.0019626542925834656,
+          "relative_to_peak": 0.006432620157885791
+        },
+        "reference_forward": {
+          "max_absolute": 0.0,
+          "relative_to_peak": 0.0
+        },
+        "loss": {
+          "max_absolute": 0.00013446807861328125,
+          "relative_to_peak": 3.2196132445298545e-05
+        },
+        "cpu_gradients": {
+          "compared_tensors": 37,
+          "max_absolute": 0.006398260593414307
+        },
+        "reference_gradients": {
+          "compared_tensors": 37,
+          "max_absolute": 0.0
+        },
+        "updated": [
+          "model.embed_tokens.weight"
+        ],
+        "parameters": 61296,
+        "output_shape": [
+          1,
+          4,
+          64
+        ]
+      },
+      "peak_allocated_bytes": 18430464,
+      "seconds": 0.2576158791780472
+    },
+    {
+      "name": "complete-Qwen3.8-27B.by1",
+      "status": "passed",
+      "metrics": {
+        "cpu_forward": {
+          "max_absolute": 0.002202499657869339,
+          "relative_to_peak": 0.005741808806368356
+        },
+        "reference_forward": {
+          "max_absolute": 0.0,
+          "relative_to_peak": 0.0
+        },
+        "loss": {
+          "max_absolute": 0.00020456314086914062,
+          "relative_to_peak": 4.870755247500786e-05
+        },
+        "cpu_gradients": {
+          "compared_tensors": 77,
+          "max_absolute": 0.00872945785522461
+        },
+        "reference_gradients": {
+          "compared_tensors": 77,
+          "max_absolute": 0.0
+        },
+        "video_forward": {
+          "max_absolute": 0.0,
+          "relative_to_peak": 0.0
+        },
+        "mtp_formula": {
+          "max_absolute": 0.0,
+          "relative_to_peak": 0.0
+        },
+        "mtp_cpu_forward": {
+          "max_absolute": 0.0021426118910312653,
+          "relative_to_peak": 0.00641253686506572
+        },
+        "mtp_cpu_gradients": {
+          "compared_tensors": 92,
+          "max_absolute": 0.007608130574226379
+        },
+        "updated": [
+          "model.visual.patch_embed.proj.weight",
+          "mtp.fc.weight",
+          "lm_head.weight"
+        ],
+        "parameters": 81980,
+        "output_shape": [
+          1,
+          6,
+          64
+        ],
+        "checkpoint_forward": {
+          "max_absolute": 0.0,
+          "relative_to_peak": 0.0
+        },
+        "checkpoint_mtp": {
+          "max_absolute": 0.0,
+          "relative_to_peak": 0.0
+        }
+      },
+      "peak_allocated_bytes": 21734400,
+      "seconds": 0.5418967567384243
+    }
+  ],
+  "source_sha256": {
+    "src/checks/by1gpusmoke.py": "37f5d6124678489a54fdf2152eb9db82e01e9918abf6cc84d167501a21b2c175",
+    "src/checks/by1complete.py": "9c80b21469fbd33e713167727115b967ccf19755fc23f290f1752d880cae41f0",
+    "src/by1full.py": "965498fbaa4840c09eb2906f39f433c3298bb202b8272e995b48cbf53fe796e5",
+    "src/by1codegen.py": "0559f10b710383895df37cd6f6bd1bafa940ae5618c81e66ce2aa1051600af45",
+    "models/hello.by1": "59fe6a96a713c65dd7ad9d053f4d485c300d342f4703e7b2f461bac7501d5174",
+    "models/complete-Qwen3-0.6B.by1": "39b5a4688c1be03ab2857cfa1e8530715f989d9b6d8b57dba081844fe5ef87a7",
+    "models/complete-Qwen3-8B.by1": "0ea64ef76f57aea8313804f5c6b6e51976287b145e55e597c6885db37479ef96",
+    "models/complete-Qwen2.5-7B-Instruct.by1": "3a4b3055e72d43f34b74660eab400f80a0d2f046991533fe80add710c154cddf",
+    "models/complete-gpt2.by1": "44dfe53d5bffe7548110ce4e04141cd0d95bb2c911c971bcedbb0c98961e4715",
+    "models/complete-gpt-oss-20b.by1": "9dfbc1ff4e4c18578805443343851dab8e8f8fd9c50aa73f18a9e5d6cc81400a",
+    "models/complete-Qwen3.8-27B.by1": "436d7ce29cdcc63c9b03769a2f6f4ed6987bbee3326c6e299591b070e2f387d3"
+  },
+  "environment": {
+    "torch": "2.8.0+cu128",
+    "transformers": "5.19.0",
+    "safetensors": "0.8.0",
+    "cuda_runtime": "12.8",
+    "gpu": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+    "memory_bytes": 101974081536,
+    "compute_capability": [
+      12,
+      0
+    ]
+  },
+  "tolerances": {
+    "forward_atol": 0.02,
+    "forward_rtol": 0.08,
+    "gradient_atol": 0.002,
+    "gradient_rtol": 0.03,
+    "bf16_cpu_gradient_metric": "both normalized L2 and relative peak; or max absolute <= gradient_atol"
+  },
+  "status": "passed_gpu"
+}

@@ -1,0 +1,112 @@
+{
+  "schema": 1,
+  "started_at": "2026-10-13T05:09:38.118408+00:00",
+  "dtype": "bfloat16",
+  "batch_size": 1,
+  "attention": "eager",
+  "warmup": 1,
+  "repeats": 2,
+  "lengths": [
+    8192
+  ],
+  "new_tokens": 4,
+  "forward_atol": 0.002,
+  "forward_rtol": 0.002,
+  "scope": "Published checkpoint; official config vs by1-compiled config, same Transformers operators. Not an independent kernel comparison.",
+  "models": [
+    {
+      "model": "complete-Qwen3-8B.by1",
+      "status": "passed",
+      "phase": "complete",
+      "repo": "Qwen/Qwen3-8B",
+      "revision": "b968826d9c46dd6066d109eabc6255188de91218",
+      "download_endpoint": "https://hf-mirror.com",
+      "checkpoint_bytes": 16381516776,
+      "checkpoint_files": [
+        "model-00001-of-00005.safetensors",
+        "model-00002-of-00005.safetensors",
+        "model-00003-of-00005.safetensors",
+        "model-00004-of-00005.safetensors",
+        "model-00005-of-00005.safetensors"
+      ],
+      "repository_safetensors_bytes": 16381516776,
+      "checkpoint_config_sha256": "f7c4eadfbbf522470667b797a3c89be2524832d2d599797248dc304fff447c30",
+      "runs": {
+        "text-8192": {
+          "input_shape": [
+            1,
+            8192
+          ],
+          "original": {
+            "wall_median_ms": 2366.602126508951,
+            "wall_samples_ms": [
+              2366.1367259919643,
+              2367.067527025938
+            ],
+            "cuda_median_ms": 2366.4749755859375,
+            "tokens_per_second": 3461.5028475801614,
+            "peak_allocated_bytes": 38439662592,
+            "peak_reserved_bytes": 42895147008
+          },
+          "numerics": {
+            "max_absolute": 0.0,
+            "relative_to_peak": 0.0,
+            "argmax_agreement": 1.0
+          },
+          "by1": {
+            "wall_median_ms": 2369.508797302842,
+            "wall_samples_ms": [
+              2369.1721484065056,
+              2369.8454461991787
+            ],
+            "cuda_median_ms": 2369.2919921875,
+            "tokens_per_second": 3457.25663028758,
+            "peak_allocated_bytes": 38439793664,
+            "peak_reserved_bytes": 42788192256
+          },
+          "latency_ratio_by1_over_original": 1.0012282042517129
+        }
+      },
+      "original_ignored_mtp_keys": 0,
+      "generation": {
+        "original": {
+          "wall_median_ms": 2429.0781151503325,
+          "wall_samples_ms": [
+            2428.9877861738205,
+            2429.1684441268444
+          ],
+          "cuda_median_ms": 2429.0382080078125,
+          "tokens_per_second": 1.646715260020547,
+          "peak_allocated_bytes": 39614332416,
+          "peak_reserved_bytes": 51487178752
+        },
+        "identical_tokens": true,
+        "by1": {
+          "wall_median_ms": 2430.928686633706,
+          "wall_samples_ms": [
+            2430.8073855936527,
+            2431.0499876737595
+          ],
+          "cuda_median_ms": 2430.880859375,
+          "tokens_per_second": 1.6454616797250057,
+          "peak_allocated_bytes": 39614332416,
+          "peak_reserved_bytes": 51380224000
+        }
+      },
+      "by1_parameters": 8190735360,
+      "seconds": 77.40478641167283
+    }
+  ],
+  "environment": {
+    "torch": "2.8.0+cu128",
+    "transformers": "5.19.0",
+    "cuda": "12.8",
+    "gpu": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+    "gpu_memory_bytes": 101974081536
+  },
+  "source_sha256": {
+    "src/checks/by1gpubench.py": "46c08321cb3a9df86bdc5cb08e2b9f77cd5f4a903186029bf8cb275f3dc6656d",
+    "src/by1full.py": "965498fbaa4840c09eb2906f39f433c3298bb202b8272e995b48cbf53fe796e5"
+  },
+  "status": "passed"
+}

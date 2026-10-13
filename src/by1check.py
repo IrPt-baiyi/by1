@@ -437,7 +437,7 @@ def classify(head: str) -> Tuple[str, str, str, str, Optional[int]]:
     if m:
         return "model", m.group(2), "", "", None
     for kw in ("hparams", "state", "position", "tensors", "emit", "schedule",
-               "active", "interop"):
+               "active", "interop", "vision", "mtp"):
         if h == kw:
             return kw, "", "", "", None
     return "block", "", "", "", None
@@ -695,6 +695,7 @@ TOP_KEYWORDS = {
     "model", "hparams", "schedule", "stack", "position", "tensors",
     "emit", "head", "mech", "state", "optimizer", "memory",
     "residual", "interop",
+    "vision", "mtp",
 }
 
 TOKEN_MIXER = {"Attention", "Sparse", "Linear", "SSM", "Vision", "Recurrent",
@@ -723,6 +724,27 @@ BUILTIN_ATTRS = {
     # 逃生舱第二层（`mech X : External { lib = ... symbol = ... }`）
     "lib", "symbol", "weights", "io",
 }
+
+# 类型名可直接作为机制名；显式 mech 声明优先，未知名称仍报错。
+BUILTIN_MECHS = {"Attention", "FFN", "MoE", "MLA", "Linear", "KDA", "SSM"}
+
+
+def mech_call(text: str) -> Optional[Rec]:
+    """解析单个机制调用，拒绝挂载位置上的序列和不闭合的参数。"""
+    if not re.fullmatch(r"[A-Za-z_]\w*\s*(?:\(.*\))?", text.strip()):
+        return None
+    if _cont_depth(text) != 0:
+        return None
+    recs = expand_pattern(text, {})
+    return recs[0] if recs and len(recs) == 1 else None
+
+
+def register_builtin(name: str, line: int, env: dict) -> None:
+    if (name in BUILTIN_MECHS and name not in env['mechs']
+            and name not in env['memories'] and name not in env['residuals']):
+        env['mechs'][name] = Blk(head=name, line=line, kind="mech",
+                                 name=name, mtype=name)
+        env['implicit_mechs'].add(name)
 
 
 class Report:
@@ -798,7 +820,7 @@ def check(path: str) -> Tuple[Report, dict]:
             _['rep'].add(
                 E, _['i'], "顶层块",
                 "'%s' 不是这个语言认识的顶层关键字 —— **这一段不会被读**。"
-                "认识的十四个：%s。"
+                "认识的关键字：%s。"
                 "（这一类最坏的地方是它看起来生效了："
                 "实测删掉它，`check()` 的输出只有行号会变。）"
                 % (_['mb'].group(1), " / ".join(sorted(TOP_KEYWORDS))))
@@ -821,6 +843,12 @@ def check(path: str) -> Tuple[Report, dict]:
     by1hp.read_hparams(_mod=globals(), _=_)
     # ---- schedule 命名子序列：**搬去 by1sched.py 了**
     by1sched.read_schedule(_mod=globals(), _=_)
+    _['implicit_mechs'] = set()
+    for _['c'] in _['scope'].children:
+        for _['sel'], _['op'], _['target'], _['ln'] in _['c'].attaches:
+            _['call'] = mech_call(_['target'])
+            if _['call'] is not None:
+                register_builtin(_['call'].name, _['ln'], _)
     # ---- stacks：**搬去 by1stacks.py 了**
     by1stacks.read_stacks(_mod=globals(), _=_)
     # ---- 各块一致性检查：**搬去 by1blocks.py 了** ------------------
@@ -897,11 +925,14 @@ def check(path: str) -> Tuple[Report, dict]:
         _['rep'].add(I, 0, "todo", f"未填占位符 {_['nq']} 处（?）—— 文件尚未完成")
 
     _['layer_out'] = []
+    _['row_indices'] = {}
     for _['_li'], (_['s'], _['m'], _['a'], _['k'], _['atts']) in enumerate(_['layer_seq']):
+        _['local_i'] = _['row_indices'].get(_['s'], 0)
+        _['row_indices'][_['s']] = _['local_i'] + 1
         _['entry'] = [(_['m'], r) for r in _['class_rows'].get((_['m'], _['k']), [])]
         for _['am'] in _['atts']:
             _['_at'] = dict(_['resolve_attrs'](_['mechs'][_['am']], {}))
-            _['_at'].update(_['overrides'].get((_['s'], _['_li'], _['am']), {}))
+            _['_at'].update(_['overrides'].get((_['s'], _['local_i'], _['am']), {}))
             _['entry'] += [(_['am'], r) for r in _['class_rows'].get((_['am'], _['key_of'](_['am'], _['_at'])), [])]
         # **逐层的张量要按这一层所在的栈取。** 视觉栈宽 1152、
         # 主干 5376 —— 同一份 `layer` 契约要算两遍（见 `by1tens`）。
@@ -916,7 +947,7 @@ def check(path: str) -> Tuple[Report, dict]:
         _['layer_out'].append((_['s'], _['m'], _['a'], _['entry']))
 
     # ---- 汇报 -----------------------------------------------------
-    return _['rep'], {
+    _['result'] = {
         "stacks": [(s.name, s.alias, len(_['expansion'].get(s.name, []))) for s in _['stacks']],
         # **层号按栈还是按全局数。** 默认各栈从 0 起（`local`）；写了
         # `index = global` 的栈接着前面的数 —— GLM 的 MTP 就是第 45 层，
@@ -962,7 +993,24 @@ def check(path: str) -> Tuple[Report, dict]:
         "rope_by_type": _['gen_rope_parameters'](),
         "mech_attrs": {nm: _['resolve_attrs'](b, {}) for nm, b in _['mechs'].items()},
         "global_rows": _['global_rows'],
+        "backend": _['scope'].assigns.get("backend", "native"),
+        "arch": _['scope'].assigns.get("arch", ""),
+        "model_attrs": dict(_['scope'].assigns),
+        "unsupported_full_blocks": [c.kind for c in _['scope'].children if c.kind not in
+            {"hparams", "mech", "schedule", "stack", "position", "vision", "mtp"}],
+        "stack_aux": {s.name: _['_is_aux'](s) for s in _['stacks']},
+        "vision": dict(_['scope'].first("vision").assigns) if _['scope'].first("vision") else {},
+        "mtp": dict(_['scope'].first("mtp").assigns) if _['scope'].first("mtp") else {},
     }
+    if _['result']["backend"] == "transformers":
+        from by1full import compile_config
+        try:
+            compile_config(_['result'])
+        except ValueError as ex:
+            _['rep'].add(E, 0, "full", str(ex))
+    elif _['result']["backend"] != "native":
+        _['rep'].add(E, 0, "backend", "backend 只能是 native 或 transformers")
+    return _['rep'], _['result']
 
 
 # ════════════════════════════════════════════════════════════════════
