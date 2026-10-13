@@ -724,3 +724,33 @@ e2e 绿了才算「唯一语义 = 现有语义」，**别跳过它直接做 A3 �
 （by1full / by1graph / by1quant，closure_missing() 抓的）。
 
 **tag**：`v0.9.1`
+
+### 1.0.0-rc0（地基车厢）—— 2026-10-14 发
+
+**内容**（时刻表 rc0 三部件）：
+
+- **部件 A · 原语图层**：IR→规范化原语图（`by1graph`，PRIMS 41 条
+  闭集 + 图求值器）；四后端机械化翻译（by1ggml A3-2 · by1c A3-3 切片
+  1-3 · by1exec `--from-graph` 今晚收口）；w.bin 布局独立
+  （`by1ir.weight_plan`，A3-1）。
+- **部件 B · 数值规格**：PRIMS 补形状/dtype/边界 + `by1graph.py --spec`
+  生成物；精度预算表 `docs/precision-budget.md`（每个判据阈值的出处/
+  推导/实测余量，余量取自 by1blind）；criteria-review 数字重跑
+  （clef 851→1184 修正）。
+- **部件 C · 导出命名反推**：`by1revname`（refs 产物清单 → emit 命名
+  模板草案），回放判据 = 渲染集合 == refs 配对集合；C2 机器生成率
+  **基线 41%**（13/32 模型全机器生成，gemma 全家 5/5、gpt2、DeepSeek×2、
+  Qwen3-VL×3、mamba 等）—— 判据「只升不降」从此起算。
+
+**现量数字**：仓库 41,289 行（py 31,279 + .by1 9,864 + C 146）。
+
+**发版门（四项）**：by1all --tier 5 全绿（131 项 0 失败，2 跳过=档 6 无卡，
+1 已知缺口在账）✓ · golden 48 张图逐字节稳定 ✓ · 精度预算表成文 ✓ ·
+by1verify 覆盖不退（76 项契约全绿 + 1 已知缺口）✓。
+
+**已知残余在账**（不算失败，也永远不当已验）：C2 命名反推的
+MXFP4 量化命名（gpt-oss 系）、MTP 栈 scope 归属（Qwen3.5/3.6/3.8 系）；
+e2e 的 embeddinggemma-2 宽度衔接（ir.md 128）；Step-3_7 的 25 张量
+（上游下架）。
+
+**tag**：`v1.0.0-rc0`
