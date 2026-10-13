@@ -68,10 +68,12 @@ _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)
 import by1paths  # noqa: E402,F401
 
 import argparse
+import glob
 import hashlib
 import itertools
 import json
 import math
+import os
 import pathlib
 
 import by1skip
@@ -547,6 +549,249 @@ def smoke_qwen35(dtype='float32'):
     return manifest
 
 
+# ---------------------------------------------------------------------------
+# 影子源二：吃 refs/*.tensors.json（**真名真形状**）—— 命名一致性的正面关账。
+# 源一（模型类）的命名是 by1 自己说的；源二的命名是发布产物说的。
+# 两边都装载干净，"checkpoint 命名与官方一致"才算验过。
+# ---------------------------------------------------------------------------
+
+#: refs dtype -> torch。量化存储（U8 / F8_*）**不能**随机合成 ——
+#: 随机字节不是合法量化块，合成出来的是假货（manifest 的 not_verified
+#: 第二条）。碰上就显式跳过。
+_DTYPE_MAP = {'BF16': 'bfloat16', 'F16': 'float16', 'F32': 'float32',
+              'F64': 'float64', 'U8': None, 'F8_E4M3': None, 'F8_E5M2': None}
+
+
+def build_from_refs(config_text, tensors_json_text, out_dir,
+                    seed=SEED, dtype=None, max_shard_bytes=MAX_SHARD_BYTES):
+    """refs 的 (真名, 真形状, 真 dtype) + 随机值 -> 影子 checkpoint。
+
+    和 `build()` 的唯一区别：**名字清单来自 refs 而不是模型类**。
+    值照旧按名字哈希播种（可复现）；dtype 跟 refs 走。"""
+    import torch
+    from safetensors.torch import save_file
+
+    real = json.loads(tensors_json_text)
+    if not real or any(v is None for v in real.values()):
+        raise ValueError('refs 是 F3（只有名字没形状）—— 无法合成，先跑 by1shapes')
+    specs = []
+    for name in sorted(real):
+        meta = real[name]
+        src_dtype = str(meta.get('dtype', 'F32')).upper()
+        if _DTYPE_MAP.get(src_dtype) is None:
+            raise ValueError('量化存储 dtype %s 不能随机合成（%s）—— 走真权重'
+                             % (src_dtype, name))
+        shape = tuple(int(x) for x in meta.get('shape') or ())
+        specs.append((name, shape, _DTYPE_MAP.get(src_dtype, 'float32')))
+
+    out = pathlib.Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    (out / 'config.json').write_text(config_text, encoding='utf-8')
+    import transformers as T
+    config = T.AutoConfig.from_pretrained(str(out), local_files_only=True)
+    std = (getattr(config, 'initializer_range', None) or 0.02) / math.sqrt(
+        2 * (getattr(config, 'num_hidden_layers', None)
+             or getattr(config, 'n_layer', None) or 1))
+
+    groups = [{'names': [n], 'shape': s, 'dtype': getattr(torch, d)}
+              for n, s, d in specs]
+    shard_plan = _shards(groups, max_shard_bytes)
+    weight_map, total, shard_names = {}, 0, []
+    for index, plan in enumerate(shard_plan):
+        tensors = {}
+        for group in plan:
+            name = group['names'][0]
+            values = sample(group, seed, std, torch)
+            if values.is_floating_point() and dtype:
+                values = values.to(getattr(torch, dtype)).contiguous()
+            tensors[name] = values
+            weight_map[name] = None
+            total += values.numel() * values.element_size()
+        filename = ('model.safetensors' if len(shard_plan) == 1 else
+                    'model-%05d-of-%05d.safetensors' % (index + 1, len(shard_plan)))
+        save_file(tensors, str(out / filename))
+        for name in tensors:
+            weight_map[name] = filename
+        shard_names.append(filename)
+    if len(shard_plan) > 1:
+        (out / 'model.safetensors.index.json').write_text(json.dumps({
+            'metadata': {'total_size': total},
+            'weight_map': weight_map}, indent=2) + '\n', encoding='utf-8')
+    manifest = {
+        'schema': 1, 'kind': 'by1-shadow-refs',
+        'synthetic_values': True, 'real_names': True,
+        'note': '名字/形状/dtype 取自 refs 真产物；值是随机的。验命名一致性与接线。',
+        'config_sha256': hashlib.sha256(config_text.encode('utf-8')).hexdigest(),
+        'seed': seed, 'tensor_names': len(weight_map), 'bytes': total,
+        'shards': shard_names, 'verified': VERIFIED + [
+            'checkpoint 命名与官方发布物一致（名字即 refs 真名）'],
+        'not_verified': list(NOT_VERIFIED[:1]) + list(NOT_VERIFIED[2:]),
+    }
+    (out / MANIFEST).write_text(json.dumps(manifest, ensure_ascii=False, indent=2)
+                                + '\n', encoding='utf-8')
+    return manifest
+
+
+def refs_check(only=''):
+    """**元对照**：模型类的装载键（state_dict）vs refs 真名 —— 全部有
+    complete 声明 + refs 元数据的模型，逐个比名字和形状，零字节。
+
+    判据（T8）：by1 loader 的键集 == refs 真名键集（tying 容忍项除外），
+    零 missing / zero unexpected —— 这就是"命名缺口"的正面关账。"""
+    import glob
+    import torch
+    import transformers as T
+    import by1check
+    import by1full
+
+    ok_n = bad_n = 0
+    for f in sorted(glob.glob(os.path.join(by1paths.MODELS, 'complete-*.by1'))):
+        base = os.path.basename(f)[len('complete-'):-len('.by1')]
+        if only and only not in base:
+            continue
+        cands = glob.glob(by1paths.ref('*__%s.tensors.json' % base)) \
+            or glob.glob(by1paths.ref('%s.tensors.json' % base))
+        ccands = glob.glob(by1paths.ref('*__%s.config.json' % base)) \
+            or glob.glob(by1paths.ref('%s.config.json' % base))
+        if not cands or not ccands:
+            continue
+        real = {k: v for k, v in
+                json.loads(pathlib.Path(cands[0]).read_text(encoding='utf-8')).items()
+                if v}
+        if not real:
+            print('  -- %-40s refs 是 F3（无形状），名字可比形状跳过' % base)
+        # 量化存储展开（_blocks/_scales/_bias）不适用本对照 ——
+        # 模型类的键是解量化视角的基名，真文件是打包块。**走真权重**。
+        if any(k.endswith(('_blocks', '_scales')) for k in real):
+            print('  -- %-40s 量化存储展开（blocks/scales），不适用本对照，'
+                  '走真权重' % base)
+            continue
+        report, info = by1check.check(f)
+        if report.count(by1check.E):
+            print('  !! %-40s .by1 没过检查' % base)
+            bad_n += 1
+            continue
+        family, _declared, mtp = by1full.compile_config(info)
+        config_text = pathlib.Path(ccands[0]).read_text(encoding='utf-8')
+        # 直接从 config 原文建配置对象（不落盘；多余字段 transformers 会收下）
+        cfg = getattr(T, by1full.FAMILIES[family][0])(**json.loads(config_text))
+        with torch.device('meta'):
+            model = by1full._model_class(family, mtp)(cfg)
+        keys = {k: tuple(v.shape) for k, v in model.state_dict().items()}
+        tied = bool(getattr(cfg, 'tie_word_embeddings', False))
+        out_name = getattr(model, 'get_output_embeddings', lambda: None)()
+        tied_keys = set()
+        if tied and out_name is not None:
+            # remove_duplicate=False —— 默认去重会把 tied 的第二个名字
+            # 从 named_parameters 里吞掉，tied 容忍就永远查不出来。
+            # 容忍集是**该参数的全部名字**（wte/lm_head 同一对象）。
+            for k, v in model.named_parameters(remove_duplicate=False):
+                if v is out_name.weight:
+                    tied_keys.add(k)
+        # **跟加载器同一套容错**：`_keys_to_ignore_on_load_*` 是 transformers
+        # 显式声明的"这两边都别管"（gpt2 真文件里的 `h.N.attn.bias` 掩码
+        # buffer 就靠它），对照不认它就会把加载器管的事误报成命名缺口。
+        import re as _re
+        def _ignores(attr):
+            return [_re.compile(p) for p in
+                    (getattr(type(model), attr, None) or [])]
+        ign_unexp = _ignores('_keys_to_ignore_on_load_unexpected')
+        ign_miss = _ignores('_keys_to_ignore_on_load_missing')
+        # **base_model_prefix 别名**：加载器给检查点键自动补前缀
+        # （gpt2 的真文件是 `h.0.…`，模型键是 `transformer.h.0.…`）。
+        # 对照两侧都收这个别名，否则会把加载器管的事误报成命名缺口。
+        bp = (getattr(model, 'base_model_prefix', '') or '').strip('.')
+        def ref_key(k):
+            if k in real:
+                return k
+            if bp and k.startswith(bp + '.') and k[len(bp) + 1:] in real:
+                return k[len(bp) + 1:]
+            return None
+        missing, shape_bad = [], []
+        for k, shape in keys.items():
+            rk = ref_key(k)
+            if rk is None:
+                if k not in tied_keys and not any(p.search(k) for p in ign_miss):
+                    missing.append(k)
+                continue
+            if real[rk].get('shape') and tuple(int(x) for x in real[rk]['shape']) != shape:
+                shape_bad.append(k)
+        extra = [k for k in real if k not in keys
+                 and not (bp and (bp + '.' + k) in keys)
+                 and not any(p.search(k) for p in ign_unexp)]
+        if missing or extra or shape_bad:
+            bad_n += 1
+            print('  !! %-40s missing %d extra %d 形状不符 %d'
+                  % (base, len(missing), len(extra), len(shape_bad)))
+            for tag, lst in (('缺', missing), ('多', extra), ('形', shape_bad)):
+                for k in lst[:3]:
+                    print('       %s %s' % (tag, k))
+        else:
+            ok_n += 1
+            print('  ok %-40s %d 个键与 refs 真名逐个一致%s'
+                  % (base, len(keys),
+                     '（tied %s 容忍）' % '/'.join(sorted(tied_keys))
+                     if tied_keys else ''))
+    print()
+    print('  [T8 refs 元对照] %d 个模型：一致 %d · 不一致 %d' % (ok_n + bad_n, ok_n, bad_n))
+    return 0 if bad_n == 0 else 1
+
+
+def smoke_refs(by1_name='complete-gpt2.by1'):
+    """源二 e2e：refs 真名真形状合成 -> 双 loader 零 missing/unexpected +
+    前向逐位。**这是"命名与官方一致"从假设变成验证的那一步。**"""
+    import torch
+    import transformers as T
+    import by1check
+    import by1full
+
+    base = (by1_name[len('complete-'):-len('.by1')]
+            if by1_name.startswith('complete-') else by1_name[:-len('.by1')])
+    tcands = glob.glob(by1paths.ref('*__%s.tensors.json' % base)) \
+        or glob.glob(by1paths.ref('%s.tensors.json' % base))
+    ccands = glob.glob(by1paths.ref('*__%s.config.json' % base)) \
+        or glob.glob(by1paths.ref('%s.config.json' % base))
+    if not tcands or not ccands:
+        raise RuntimeError('refs 里缺 %s 的 tensors/config —— 源二要有真产物元数据' % base)
+    report, info = by1check.check(by1paths.model(by1_name))
+    if report.count(by1check.E):
+        raise RuntimeError('%s 没过检查：%s' % (by1_name, report.items[:3]))
+    family, declared, mtp = by1full.compile_config(info)
+    config_text = pathlib.Path(ccands[0]).read_text(encoding='utf-8')
+    tensors_text = pathlib.Path(tcands[0]).read_text(encoding='utf-8')
+
+    out = by1paths.root('build', 'shadow-smoke-refs-' + base)
+    manifest = build_from_refs(config_text, tensors_text, out, dtype='float32')
+    print('  源二影子 %s：%d 个真名（%.2f GB）' % (out, manifest['tensor_names'],
+                                              manifest['bytes'] / 1024 ** 3))
+
+    reference, loading = T.AutoModelForCausalLM.from_pretrained(
+        str(out), output_loading_info=True, local_files_only=True,
+        attn_implementation='eager')
+    extra = [k for k in (loading.get('unexpected_keys') or [])
+             if not k.startswith('mtp.')]
+    bad = {k: v for k, v in (('missing', loading.get('missing_keys')),
+                            ('extra', extra),
+                            ('mismatched', loading.get('mismatched_keys'))) if v}
+    if bad:
+        raise RuntimeError('官方 loader 对源二影子有意见：%s' % bad)
+    by1_model = by1full.load_model(family, declared, mtp, str(out),
+                                   local_files_only=True)
+
+    generator = torch.Generator().manual_seed(manifest['seed'])
+    ids = torch.randint(0, min(reference.config.vocab_size, 10000),
+                        (1, 16), generator=generator)
+    with torch.no_grad():
+        a = reference(ids).logits
+        b = by1_model(ids).logits
+    difference = (a.float() - b.float()).abs().max().item()
+    if not torch.allclose(a.float(), b.float(), atol=2e-3, rtol=2e-3):
+        raise RuntimeError('源二前向对不上：max|Δ|=%.3e' % difference)
+    print('  源二 e2e OK：双 loader 零 missing/unexpected，前向 max|Δ| = %.3e'
+          % difference)
+    return manifest
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--by1', help='.by1 完整架构声明（取家族与 mtp 规格）')
@@ -563,9 +808,21 @@ def main(argv=None):
                         help='bf16 深模型边界扫描（64 层合成配置）')
     parser.add_argument('--smoke-q35', action='store_true',
                         help='qwen3_5 家族冒烟（视觉+MTP，缩小配置模式）')
+    parser.add_argument('--refs-check', nargs='?', const='', metavar='ONLY',
+                        help='元对照：模型类装载键 vs refs 真名（T8 判据，零字节）')
+    parser.add_argument('--smoke-refs', action='store_true',
+                        help='源二 e2e：refs 真名合成 -> 双 loader + 前向（默认 gpt2）')
     parser.add_argument('--fetch-config', metavar='REPO',
                         help='冒烟前只拉该仓库的 config.json（几 KB）')
     args = parser.parse_args(argv)
+    if args.refs_check is not None:
+        return refs_check(args.refs_check)
+    if args.smoke_refs:
+        try:
+            smoke_refs(by1_name=args.by1 or 'complete-gpt2.by1')
+        except Exception as exc:
+            return by1skip.broken('源二 e2e 失败：%s' % exc)
+        return 0
     if args.smoke_deep:
         try:
             deep_scan(dtype=args.dtype or 'bfloat16')
