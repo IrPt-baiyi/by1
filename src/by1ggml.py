@@ -151,6 +151,61 @@ static struct ggml_tensor * wt2(struct ggml_context * ctx, const float * data,
     t->data = (void *) data;
     return t;
 }
+
+/* ── T16 第二批：轴约定族的运行时 helper ─────────────────────────────
+   逐节点发射在编译期不知道动态轴（seq 那一维是 None），所以这几个
+   走**运行时元数据**（照 wt1 的先例：结构体是公开的）。轴都是 ggml
+   视角（PRIMS 规格原文：「attr 的 axis 按 ggml 视角」）。 */
+
+/* 沿 ggml 轴 axis 整块重复 reps 次。pat 只借形状，不借数据。 */
+static struct ggml_tensor * rep_ax(struct ggml_context * ctx,
+                                   struct ggml_tensor * x, int axis, int reps) {
+    int64_t ne[GGML_MAX_DIMS];
+    int nd = ggml_n_dims(x);
+    for (int i = 0; i < nd; i++) ne[i] = x->ne[i];
+    ne[axis] = ne[axis] * reps;
+    struct ggml_tensor * pat = ggml_new_tensor(ctx, GGML_TYPE_F32, nd, ne);
+    return ggml_repeat(ctx, x, pat);
+}
+
+/* 沿 ggml 轴 axis 取 [start, stop)。**用真视图算子** ggml_view_4d ——
+   结构体诡计（view_tensor + 改 data/ne）只对叶子张量灵，对 op 输出
+   不灵（data 不指回源，实测读出零/垃圾）。 */
+static struct ggml_tensor * sl_ax(struct ggml_context * ctx,
+                                  struct ggml_tensor * x, int axis,
+                                  int64_t start, int64_t stop) {
+    int64_t ne[4];
+    for (int i = 0; i < 4; i++) ne[i] = (i < ggml_n_dims(x)) ? x->ne[i] : 1;
+    size_t off = x->nb[axis] * (size_t) start;
+    ne[axis] = stop - start;
+    struct ggml_tensor * v = ggml_view_4d(ctx, x, ne[0], ne[1], ne[2], ne[3],
+                                          x->nb[1], x->nb[2], x->nb[3], off);
+    return ggml_cont(ctx, v);
+}
+
+/* 沿 ggml 轴 axis 求和。keepdims=0 时挤掉该轴的 1（走 reshape 算子）。 */
+static struct ggml_tensor * sum_ax(struct ggml_context * ctx,
+                                   struct ggml_tensor * x, int axis,
+                                   int keepdims) {
+    int nd = ggml_n_dims(x);
+    struct ggml_tensor * r;
+    if (axis == 0) {
+        r = ggml_sum_rows(ctx, x);         /* [1, ne1, …] */
+    } else {
+        struct ggml_tensor * t = ggml_cont(ctx, ggml_transpose(ctx, x));
+        r = ggml_cont(ctx, ggml_transpose(ctx, ggml_sum_rows(ctx, t)));
+    }
+    if (!keepdims) {
+        int64_t ne[4];
+        int m = 0;
+        for (int i = 0; i < nd; i++) {
+            if (i != axis) ne[m++] = r->ne[i];
+        }
+        for (int i = m; i < 4; i++) ne[i] = 1;
+        r = ggml_reshape_4d(ctx, r, ne[0], ne[1], ne[2], ne[3]);
+    }
+    return r;
+}
 '''
 
 
@@ -460,6 +515,37 @@ def emit_model_c_graph(g, ir, order, params):
                     _put(body, prim, node, sp)
                 else:
                     _put(body, prim, node, f"ggml_sqrt(ctx, {sp})")
+        # ── T16 第二批：轴约定族（attr 的 axis 是 ggml 视角 —— PRIMS
+        #    规格原文；而 exec 尾轴 = ggml dim0，两张图在软最大处对过）──
+        elif prim == "softmax":
+            # PRIMS「沿最后轴」= ggml dim0；ggml_soft_max 正是沿 dim0
+            # 归一（自带 max-subtraction 稳定式）—— 直接映射。
+            _put(body, prim, node, f"ggml_soft_max(ctx, {a[0]})")
+        elif prim == "l2_norm":
+            # x / sqrt(Σx² + eps)，**sum 不是 mean**（PRIMS 原文），
+            # 沿最后轴 = ggml dim0 = sum_rows 的归约轴。
+            u = _gvar(node["outs"][0])
+            ev = u + "_e"
+            body.append(f"    static float {ev} = {_f(at['eps'])};")
+            body.append(f"    struct ggml_tensor * {u}_s = "
+                        f"ggml_sum_rows(ctx, ggml_mul(ctx, {a[0]}, {a[0]}));")
+            body.append(f"    struct ggml_tensor * {u}_d = ggml_sqrt(ctx, "
+                        f"ggml_add(ctx, {u}_s, wt1(ctx, &{ev}, 1, \"{ev}\")));")
+            _put(body, prim, node, f"ggml_div(ctx, {a[0]}, {u}_d)")
+        elif prim == "sum":
+            _put(body, prim, node,
+                 f"sum_ax(ctx, {a[0]}, {int(at['axis'])}, "
+                 f"{1 if at.get('keepdims', True) else 0})")
+        elif prim == "repeat":
+            _put(body, prim, node,
+                 f"rep_ax(ctx, {a[0]}, {int(at['axis'])}, {int(at['reps'])})")
+        elif prim == "concat":
+            _put(body, prim, node,
+                 f"ggml_concat(ctx, {a[0]}, {a[1]}, {int(at['axis'])})")
+        elif prim == "slice":
+            _put(body, prim, node,
+                 f"sl_ax(ctx, {a[0]}, {int(at['axis'])}, "
+                 f"{int(at['start'])}, {int(at['stop'])})")
         else:
             # **要么实现，要么拒绝** —— 这几族不是忘了，是对上游 ggml
             # 的摸底结论（2026-10-14 对 ggml.h 逐个查过）：
@@ -467,11 +553,25 @@ def emit_model_c_graph(g, ir, order, params):
             #     **这版 ggml 没有 top_k 和比较算子**，要等上游或自研 kernel
             #   conv1d_causal / delta_rule / ssm_scan —— 递推原语：
             #     融合 C 核在管（by1c 的短卷积 / KDA / SSM 路径），图路径下一批
-            #   soft_max_sink / sum / repeat / concat / slice —— 轴约定要
-            #     配数值神谕一起接，**下一批**，不悄悄接
+            #   soft_max_sink —— 拼 sink 槽的组合（concat+soft_max+slice
+            #     的杂技），**下一批**，不悄悄接
             raise SystemExit(
                 "  [不支持] 图的 %r 原语还没有 ggml 映射 —— "
                 "**要么实现、要么在 check_support 里拒绝**" % prim)
+
+    # 图预算按**实际发射的调用数**定，不按 IR kind 估 —— 复合式一个
+    # 原语顶好几个 ggml 节点（softplus 7 个），按估的数会 GGML_ASSERT
+    # `cgraph->n_nodes < cgraph->size`（mla-shaped 实测炸在这）。
+    # 宁多勿少：图句柄就是几 KB 的指针数组。
+    _calls = sum(str(line).count("ggml_") + 2 * sum(
+        str(line).count(h) for h in ("rep_ax(", "sl_ax(", "sum_ax("))
+        for line in body)
+    n_nodes = max(n_nodes, 3 * _calls + 64)
+    # N_NODES 的 define 在头段（发射初）就写死了 —— 重算后要**回写**，
+    # 否则改的是变量、跑的是旧预算（实测 define 还停在 181）。
+    for _i, _ln in enumerate(head):
+        if str(_ln).startswith("#define N_NODES "):
+            head[_i] = f"#define N_NODES {n_nodes}"
 
     logits = _gvar(g.nodes[-1]["outs"][0])
     return _assemble(head, body, logits, n_nodes, mem_tok, mem_pair)
@@ -856,7 +956,15 @@ def run_one(by1_path, args, run=True, expect="pass"):
     ir = cg.compile_ir(info)
     params_shapes = ex_mod.shapes_of(ir)
 
-    bad = check_support(ir)
+    graph_mode = not getattr(args, "from_ir", False)
+    if graph_mode:
+        # 图路径的门是**发射表自己**（要么映射、要么点名拒绝）——
+        # IR-kind 的融合门只管旧路径。让它挡在图前面的后果是：
+        # 发射表**永远测不到** MLA/MoE 这些能降成图的机制（实测
+        # mla-shaped 就这么被挡在门口）。
+        bad = []
+    else:
+        bad = check_support(ir)
     if bad:
         print("  [不支持] 这份 .by1 落在支持集外（要么实现，要么拒绝）：")
         for b in bad[:8]:
@@ -873,17 +981,25 @@ def run_one(by1_path, args, run=True, expect="pass"):
     order = _bir.weight_plan(ir)
     total = sum(int(np.prod(s)) for s in _bir.params_of(ir).values())
 
-    if not getattr(args, "from_ir", False):
-        # **A3-2：默认从图发射**（逐节点 PRIMS -> ggml）。判据是同一个
-        # `--selftest` 的数值不劣化 —— 实测与 IR 路径**逐位相同**
-        # （2.098e-07 / 1.317e-07 / 1.827e-07）。
-        _g = load("by1graph").lower_model(ir, name)
-        src, n_nodes, mem_tok, mem_pair = emit_model_c_graph(
-            _g, ir, order, params_shapes)
-    else:
-        # **旧路径（临时保留）**：按 IR kind 手写。现在唯一的用途是
-        # 当**差分对照** —— A3-3 之后删掉，别让两份发射器长期并存。
-        src, n_nodes, mem_tok, mem_pair = emit_model_c(ir, order, params_shapes)
+    try:
+        if graph_mode:
+            # **A3-2：默认从图发射**（逐节点 PRIMS -> ggml）。判据是同一个
+            # `--selftest` 的数值不劣化 —— 实测与 IR 路径**逐位相同**
+            # （2.098e-07 / 1.317e-07 / 1.827e-07）。
+            _g = load("by1graph").lower_model(ir, name)
+            src, n_nodes, mem_tok, mem_pair = emit_model_c_graph(
+                _g, ir, order, params_shapes)
+        else:
+            # **旧路径（临时保留）**：按 IR kind 手写。现在唯一的用途是
+            # 当**差分对照** —— A3-3 之后删掉，别让两份发射器长期并存。
+            src, n_nodes, mem_tok, mem_pair = emit_model_c(ir, order, params_shapes)
+    except SystemExit as e:
+        # 降不动 / 图里有原语没映射 —— **点名拒绝**，语义和融合门同款
+        print(str(e))
+        if expect == "reject":
+            print("\n  [PASS] 按承诺拒绝（图路径点名拒绝）")
+            return "reject-ok"
+        return "fail"
     if expect == "reject":
         print("\n  [FAIL] 期望拒绝，结果支持集放行了")
         return "fail"
@@ -962,8 +1078,9 @@ def selftest(args):
        ① llama-shaped     基础四算子 · pairing=half          数值对拍
        ② gpt2-tiny        layernorm / 学习位置 / gelu_new / 无门控 数值对拍
        ③ gemma 孪生        qk_norm+interleaved+window+kv_tie  数值对拍
-       ④ gemma-4-31B       真实 IR（87 层，含视觉塔）          仅编译
-       ⑤ qwen3-next-shaped  GDN/MoE 落在支持集外               必须拒绝
+       ④ mla-shaped        轴约定族（slice/repeat/sum/concat/l2_norm）数值对拍
+       ⑤ gemma-4-31B       真实 IR（87 层，含视觉塔）          仅编译
+       ⑥ qwen3-next-shaped  GDN/MoE 落在支持集外               必须拒绝
     """
     root = by1paths.root()
     twin_path = os.path.join(root, "_gemma-shaped.by1")
@@ -973,6 +1090,8 @@ def selftest(args):
         (os.path.join(root, "models", "llama-shaped.by1"), True, "pass"),
         (os.path.join(root, "models", "gpt2-tiny.by1"), True, "pass"),
         (twin_path, True, "pass"),
+        # T16 第二批的整模判卷人：MLA 图用满 slice/repeat/sum/concat/l2_norm
+        (os.path.join(root, "models", "mla-shaped.by1"), True, "pass"),
         (os.path.join(root, "models", "gemma-4-31B.by1"), False, "pass"),
         (os.path.join(root, "models", "qwen3-next-shaped.by1"), False, "reject"),
     ]

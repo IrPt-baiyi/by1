@@ -24,6 +24,65 @@
 
 static int near(float a, float b, float tol) { return fabsf(a - b) < tol; }
 
+/* ── T16 第二批的三个 helper（与 src/by1ggml.py 发射进 C 的同款）────
+   搬来这里对着**手算**打：整块重复 vs 平铺、切片偏移、归约轴 ——
+   三个都是布局高发区，光测算子组合（④-⑪）测不到它们。 */
+
+/* np.repeat 语义（整块重复）沿 ggml 轴 axis；ggml_repeat 是 tile，
+   两者判别过**不是一回事**，所以走 get_rows 扩索引。 */
+static struct ggml_tensor * rep_ax(struct ggml_context * ctx,
+                                   struct ggml_tensor * x, int axis, int reps) {
+    struct ggml_tensor * t = x;
+    if (axis == 0) {
+        t = ggml_cont(ctx, ggml_transpose(ctx, x));
+    }
+    int64_t n = t->ne[1];
+    struct ggml_tensor * idx = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, n * reps);
+    int32_t * ip = (int32_t *) idx->data;
+    for (int64_t j = 0; j < n * reps; j++) ip[j] = (int32_t) (j / reps);
+    struct ggml_tensor * r = ggml_get_rows(ctx, t, idx);
+    return axis == 0 ? ggml_cont(ctx, ggml_transpose(ctx, r)) : r;
+}
+
+/* 沿 ggml 轴 axis 取 [start, stop)。**用真视图算子** ggml_view_4d ——
+   结构体诡计（view_tensor + 改 data/ne）只对叶子张量灵，对 op 输出
+   不灵（data 不指回源，实测读出零/垃圾）。 */
+static struct ggml_tensor * sl_ax(struct ggml_context * ctx,
+                                  struct ggml_tensor * x, int axis,
+                                  int64_t start, int64_t stop) {
+    int64_t ne[4];
+    for (int i = 0; i < 4; i++) ne[i] = (i < ggml_n_dims(x)) ? x->ne[i] : 1;
+    size_t off = x->nb[axis] * (size_t) start;
+    ne[axis] = stop - start;
+    struct ggml_tensor * v = ggml_view_4d(ctx, x, ne[0], ne[1], ne[2], ne[3],
+                                          x->nb[1], x->nb[2], x->nb[3], off);
+    return ggml_cont(ctx, v);
+}
+
+/* 沿 ggml 轴 axis 求和；keepdims=0 挤掉该轴的 1（走 reshape 算子）。 */
+static struct ggml_tensor * sum_ax(struct ggml_context * ctx,
+                                   struct ggml_tensor * x, int axis,
+                                   int keepdims) {
+    int nd = ggml_n_dims(x);
+    struct ggml_tensor * r;
+    if (axis == 0) {
+        r = ggml_sum_rows(ctx, x);
+    } else {
+        struct ggml_tensor * t = ggml_cont(ctx, ggml_transpose(ctx, x));
+        r = ggml_cont(ctx, ggml_transpose(ctx, ggml_sum_rows(ctx, t)));
+    }
+    if (!keepdims) {
+        int64_t ne[4];
+        int m = 0;
+        for (int i = 0; i < nd; i++) {
+            if (i != axis) ne[m++] = r->ne[i];
+        }
+        for (int i = m; i < 4; i++) ne[i] = 1;
+        r = ggml_reshape_4d(ctx, r, ne[0], ne[1], ne[2], ne[3]);
+    }
+    return r;
+}
+
 int main(void) {
     struct ggml_init_params ip = { 16 * 1024 * 1024, NULL, false };
     struct ggml_context * ctx = ggml_init(ip);
@@ -237,9 +296,81 @@ int main(void) {
         }
     }
 
+    /* ⑫ helper 神谕：rep_ax 整块重复 vs tile */
+    {
+        struct ggml_tensor * rx = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 2, 2);
+        float rxv[4] = { 1, 2, 3, 4 };   /* ggml [2,2]：列 [1,2]、[3,4] */
+        memcpy(rx->data, rxv, sizeof(rxv));
+        struct ggml_tensor * ro = rep_ax(ctx, rx, 1, 2);
+        gf = ggml_new_graph(ctx);
+        ggml_build_forward_expand(gf, ro);
+        if (ggml_graph_compute_with_ctx(ctx, gf, 1) != GGML_STATUS_SUCCESS) { return 1; }
+        /* np.repeat 沿 ggml dim1（整块）：每列连续重复 -> [1,2, 1,2, 3,4, 3,4] */
+        float rw[8] = { 1, 2, 1, 2, 3, 4, 3, 4 };
+        for (int i = 0; i < 8; i++) {
+            if (!near(ggml_get_f32_1d(ro, i), rw[i], 1e-6f)) {
+                printf("  [FAIL] rep_ax[%d] = %.4f, 手算 %.4f\n", i,
+                       ggml_get_f32_1d(ro, i), rw[i]);
+                bad = 1;
+            }
+        }
+    }
+
+    /* ⑬ sl_ax：ggml 轴 1 取 [1, 3) */
+    {
+        struct ggml_tensor * sx = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 2, 4);
+        float sxv[8] = { 1, 2, 3, 4, 5, 6, 7, 8 };  /* 列 [1,2]..[7,8] */
+        memcpy(sx->data, sxv, sizeof(sxv));
+        /* 切的输入是 **op 输出**（scale 节点）—— 回归哨兵：视图诡计
+           只对叶子灵的那次就是这么炸的 */
+        struct ggml_tensor * so = sl_ax(ctx, ggml_scale(ctx, sx, 1.0f), 1, 1, 3);
+        gf = ggml_new_graph(ctx);
+        ggml_build_forward_expand(gf, so);
+        if (ggml_graph_compute_with_ctx(ctx, gf, 1) != GGML_STATUS_SUCCESS) { return 1; }
+        float sw[4] = { 3, 4, 5, 6 };    /* 列 [3,4]、[5,6] */
+        for (int i = 0; i < 4; i++) {
+            if (!near(ggml_get_f32_1d(so, i), sw[i], 1e-6f)) {
+                printf("  [FAIL] sl_ax[%d] = %.4f, 手算 %.4f\n", i,
+                       ggml_get_f32_1d(so, i), sw[i]);
+                bad = 1;
+            }
+        }
+    }
+
+    /* ⑭ sum_ax：轴 0 求和 keepdims=0；轴 1 求和 keepdims=1 */
+    {
+        struct ggml_tensor * ux = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 2, 3);
+        float uxv[6] = { 1, 2, 3, 4, 5, 6 };  /* 列 [1,2] [3,4] [5,6] */
+        memcpy(ux->data, uxv, sizeof(uxv));
+        struct ggml_tensor * u0 = sum_ax(ctx, ux, 0, 0);
+        struct ggml_tensor * u1 = sum_ax(ctx, ux, 1, 1);
+        gf = ggml_new_graph(ctx);
+        ggml_build_forward_expand(gf, u0);
+        ggml_build_forward_expand(gf, u1);
+        if (ggml_graph_compute_with_ctx(ctx, gf, 1) != GGML_STATUS_SUCCESS) { return 1; }
+        /* 列主序：ux 列 [1,2] [3,4] [5,6]。轴 0 归约 -> [3,7,11]；
+           轴 1 归约 -> [9,12]（0 维求和 1+3+5 / 2+4+6） */
+        float uw0[3] = { 3, 7, 11 }, uw1[2] = { 9, 12 };
+        for (int i = 0; i < 3; i++) {
+            if (!near(ggml_get_f32_1d(u0, i), uw0[i], 1e-6f)) {
+                printf("  [FAIL] sum_ax(axis0)[%d] = %.4f, 手算 %.4f\n", i,
+                       ggml_get_f32_1d(u0, i), uw0[i]);
+                bad = 1;
+            }
+        }
+        for (int i = 0; i < 2; i++) {
+            if (!near(ggml_get_f32_1d(u1, i), uw1[i], 1e-6f)) {
+                printf("  [FAIL] sum_ax(axis1)[%d] = %.4f, 手算 %.4f\n", i,
+                       ggml_get_f32_1d(u1, i), uw1[i]);
+                bad = 1;
+            }
+        }
+    }
+
     ggml_free(ctx);
     printf(bad ? "[FAIL] ggml 手算对拍不一致\n"
                : "[PASS] mul_mat / rms_norm / silu / exp / sqrt / div / "
-                 "add_scalar / clamp / log1p / softplus / sqrtsoftplus 与手算一致\n");
+                 "add_scalar / clamp / log1p / softplus / sqrtsoftplus / "
+                 "rep_ax / sl_ax / sum_ax 与手算一致\n");
     return bad;
 }
