@@ -103,3 +103,7 @@ tools/remote/*.out
 
 # 检查轮换的状态（本机的节奏，不跟仓库走）
 .by1run-state
+
+# GPU upload bundles and temporary SSH credentials
+.by1-gpu-src*.tar.gz
+.by1-gpu-temp-ed25519*

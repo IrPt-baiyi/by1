@@ -1,6 +1,6 @@
 # 这个仓库里每个文件是干什么的
 
-> 309 个跟踪文件。按"你会想找什么"分组，不按字母表。
+> 318 个跟踪文件。按"你会想找什么"分组，不按字母表。
 >
 > **这份文档是生成的**：`python src/by1files.py --write`。
 > 文件清单、每组的个数、每个文件的一句话都从目录树和 docstring 来 ——
@@ -43,7 +43,7 @@
 
 ---
 
-## `src/` —— 77 个模块 + 1 个非 .py
+## `src/` —— 79 个模块 + 1 个非 .py
 
 ### 底座（留在 src/ 顶层）
 
@@ -169,6 +169,8 @@
 | `by1mem.py` | 从 IR 的 state 声明推出**内存计划**，并可选地用真实模型核它 |
 | `by1train.py` | 按 .by1 的描述搭一个模型，训练它，然后让它写字 |
 | `by1dev.py` | 设备无关性**的判卷人 |
+| `by1quant.py` | 量化 checkpoint 的存储契约与权重/scale manifest 审计 |
+| `by1shadow.py` | 影子 checkpoint：真格式、随机值，数值对拍不需要下载权重 |
 
 ### `data/` —— 抓数据 / 推模型
 
@@ -207,25 +209,27 @@
 |---|---|
 | `ci.yml` | 每次提交都跑档 1 —— **这是这个仓库唯一的自动门 |
 
-## `docs/` —— 11 个
+## `docs/` —— 13 个
 
 活的文档 —— 还没做完的事记在这里，做完的挪去 `history/`。
 
 | 文件 | 用途 |
 |---|---|
-| `1.0-roadmap.md` | 1.0.0 路线图（rc0 – rc9 → 1.0.0） |
+| `1.0-roadmap.md` | By1 长期路线图 |
 | `INVENTORY.txt` | 验证清单：每个模型验到了什么、判卷人是谁 |
 | `check-map.md` | `check()` 的结构图 |
 | `complete-models.md` | 完整模型：参数共享、视觉与 MTP |
 | `criteria-review.md` | **请人重算**的任务卡：判据本身没人验过，这一份是那份活。含"refs 判 by1 不是外部判卷"那一节 |
-| `ggml-plan.md` | 接 llama.cpp：第一个外部判卷人 |
+| `ggml-plan.md` | ggml 数值对拍：测量与判据 |
 | `gpu-validation-results.md` | GPU Validation Results / GPU 验证结果 |
-| `llamacpp-plan.md` | 接 llama.cpp：完整计划（执行版） |
+| `llama.cpp-baseline.md` | 原版 llama.cpp 与固定 Qwen3.8 GGUF 的可复现 GPU 基线命令 |
+| `llamacpp-plan.md` | llama.cpp 集成策略 |
 | `pattern-design-review.md` | 对上面那份草案的审查 —— **照做之前先读它** |
 | `pattern-design.md` | 设计草案 v0，**状态：待审**。它挡着 4 个模型 |
+| `quantization.md` | 量化格式的存储合同、共享权重边界和 Q1–Q3 验收顺序 |
 | `which-gpu.md` | > 从 `README.md` 挪出来的。它是一次**具体的调查** —— 这台开发机上 |
 
-## `docs/gpu-results/` —— 8 个
+## `docs/gpu-results/` —— 10 个
 
 | 文件 | 用途 |
 |---|---|
@@ -235,7 +239,9 @@
 | `gpu-long-context-8k.json` | "schema": 1, |
 | `gpu-long-context-large.json` | "schema": 1, |
 | `gpu-real-traincheck.json` | "schema": 1, |
+| `gpu-smoke-bf16-20261013-2027.json` | "schema": 1, |
 | `gpu-smoke-bf16.json` | "schema": 1, |
+| `gpu-smoke-fp32-20261013-2026.json` | "schema": 1, |
 | `gpu-smoke-fp32.json` | "schema": 1, |
 
 ## `drafts/` —— 3 个
@@ -259,7 +265,7 @@
 | `requirements.txt` | 依赖（和本地不同：要 CUDA 版的 torch） |
 | `run.sh` | 入口 |
 
-## `history/` —— 3 个
+## `history/` —— 5 个
 
 以前的东西。留着的理由是：能看出当时是怎么想的。
 
@@ -267,9 +273,11 @@
 |---|---|
 | `README.md` | 门面。是什么、怎么跑、数据从哪来 |
 | `ir.md` | > **同一份 IR，两个后端（PyTorch / 自建执行器）跑出同一个前向 |
+| `llamacpp-plan-2026-10.md` | 接 llama.cpp：完整计划（执行版） |
 | `plan.md` | by1 · 接下来的计划 |
+| `roadmap-rc-2026-10.md` | 1.0.0 路线图（rc0 – rc9 → 1.0.0） |
 
-## `models/` —— 60 个
+## `models/` —— 61 个
 
 命名规矩：**文件名 = 长名 = HF 的模型名（去掉 owner）**，
 `model` 声明 = 短名（手写的）。两列的对照见 `models.tsv`。
@@ -293,6 +301,7 @@
 | `Qwen3.5-397B-A17B.by1` | 真实模型 · HF id `Qwen/Qwen3.5-397B-A17B` |
 | `Qwen3.5-9B.by1` | 真实模型 · HF id `Qwen/Qwen3.5-9B` |
 | `Qwen3.6-35B-A3B.by1` | 真实模型 · HF id `Qwen/Qwen3.6-35B-A3B` |
+| `Qwen3.8-27B-FP8.by1` | Qwen3.8 官方 FP8 checkpoint 的量化存储合同覆盖层 |
 | `Qwen3.8-27B.by1` | 真实模型 · HF id `Qwen/Qwen3.8-27B` |
 | `Qwen3.8-Flash-Next.by1` | 真实模型 · HF id `Qwen/Qwen3.8-Flash-Next` |
 | `Step-3.7-Flash.by1` | 真实模型 · HF id `stepfun-ai/Step-3.7-Flash` |
@@ -424,7 +433,7 @@
 | `by1tens.py` | 张量契约实例化：把契约按等价类求值出形状 |
 | `by1vocab.py` | 真实数据的词汇表。模式从这里来，不从想象来 |
 
-## `src/modelcheck/` —— 14 个
+## `src/modelcheck/` —— 16 个
 
 | 文件 | 用途 |
 |---|---|
@@ -437,8 +446,10 @@
 | `by1mem.py` | 从 IR 的 state 声明推出**内存计划**，并可选地用真实模型核它 |
 | `by1mla.py` | MLA 的差分验证 |
 | `by1moe.py` | MoE 路由的差分验证：**分组选法** + **打分函数** |
+| `by1quant.py` | 量化 checkpoint 的存储契约与权重/scale manifest 审计 |
 | `by1real.py` | 真权重、真维度，跑一个 27B 模型的前向 |
 | `by1rope.py` | llama3 式 RoPE 缩放的差分验证 |
+| `by1shadow.py` | 影子 checkpoint：真格式、随机值，数值对拍不需要下载权重 |
 | `by1sparse.py` | DSA 稀疏索引器的验证（对着 transformers 的 `GlmMoeDsaIndexer`）。**`index_kpool_compress_*` 那两个张量没验** —— 没有可比的官方实现 |
 | `by1ssm.py` | Mamba2 的判卷人**：by1 要生成的递推 vs 官方 mixer |
 | `by1train.py` | 按 .by1 的描述搭一个模型，训练它，然后让它写字 |

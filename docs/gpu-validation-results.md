@@ -33,7 +33,7 @@ Qwen3.8 text, MTP, and image paths used real checkpoint weights. The image case 
 
 One BF16 training step used real Qwen3-0.6B weights: full-parameter backpropagation followed by one AdamW update. The official and by1 models matched elementwise across 596,049,920 gradients and the same number of updated parameter values (both maximum absolute differences were 0); peak memory was about 5.98 GB. This validates one step, not multi-step training or convergence.
 
-Small CUDA smoke tests with random weights also passed in FP32 and BF16. They cover the native model, six scaled-down architectures, vision/video branches, MTP, and optimizer updates. These tests add component coverage; they do not replace the real-checkpoint comparisons above.
+Small CUDA smoke tests with random weights also passed in FP32 and BF16. They cover the native model, six scaled-down architectures, vision/video branches, MTP, and optimizer updates. A fresh run on 2026-10-13 at 20:26–20:27 (UTC+08) passed all seven cases in both dtypes against the current working-tree source; its source hashes match the checked-in files. These tests add component coverage; they do not replace the real-checkpoint comparisons above. The published-checkpoint measurements above were collected from earlier source hashes. A current-source real-checkpoint rerun is still pending: the Qwen3-0.6B download stalled at 50 MiB without progress, so no new pretrained-weight comparison was reported.
 
 ### Raw reports
 
@@ -44,6 +44,7 @@ Small CUDA smoke tests with random weights also passed in FP32 and BF16. They co
 - [Qwen3-8B at 8K context](gpu-results/gpu-long-context-8k.json)
 - [Qwen3-0.6B real-weight training step](gpu-results/gpu-real-traincheck.json)
 - [FP32 smoke report](gpu-results/gpu-smoke-fp32.json) · [BF16 smoke report](gpu-results/gpu-smoke-bf16.json)
+- [Current-source FP32 smoke rerun](gpu-results/gpu-smoke-fp32-20261013-2026.json) · [Current-source BF16 smoke rerun](gpu-results/gpu-smoke-bf16-20261013-2027.json)
 
 ## 中文
 
@@ -78,7 +79,7 @@ Qwen3.8 的文本、MTP 和图像分支使用真实 checkpoint 权重。图像�
 
 Qwen3-0.6B 真实 BF16 权重还跑过一次全参数反向传播和 AdamW 更新。官方模型和 by1 模型的 596,049,920 个梯度及同数量的更新后参数逐元素一致（两项最大绝对误差均为 0）；峰值显存约 5.98 GB。这只验证一步，不代表多步训练或收敛性。
 
-随机权重的小尺寸 CUDA smoke test 也在 FP32 和 BF16 下通过，覆盖原生模型、六种缩小架构、视觉/视频分支、MTP 和优化器更新。这些测试补充组件覆盖，不代替上面的真实权重对比。
+随机权重的小尺寸 CUDA smoke test 也在 FP32 和 BF16 下通过，覆盖原生模型、六种缩小架构、视觉/视频分支、MTP 和优化器更新。2026-10-13 20:26–20:27（UTC+08）用当前工作区源码重新运行时，两种精度下的 7 个用例全部通过，报告中的源码哈希与仓库文件一致。这些测试补充组件覆盖，不代替上面的真实权重对比。上方已发布 checkpoint 的性能数据来自较早的源码版本；当前源码的真实权重复跑仍待完成：Qwen3-0.6B 下载到 50 MiB 后停滞且没有进展，因此本次没有生成新的预训练权重对比结果。
 
 ### 原始报告
 
@@ -89,3 +90,4 @@ Qwen3-0.6B 真实 BF16 权重还跑过一次全参数反向传播和 AdamW 更�
 - [Qwen3-8B 的 8K 上下文](gpu-results/gpu-long-context-8k.json)
 - [Qwen3-0.6B 真实权重训练步](gpu-results/gpu-real-traincheck.json)
 - [FP32 smoke 报告](gpu-results/gpu-smoke-fp32.json) · [BF16 smoke 报告](gpu-results/gpu-smoke-bf16.json)
+- [当前源码 FP32 smoke 复跑](gpu-results/gpu-smoke-fp32-20261013-2026.json) · [当前源码 BF16 smoke 复跑](gpu-results/gpu-smoke-bf16-20261013-2027.json)

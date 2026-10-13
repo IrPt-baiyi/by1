@@ -117,17 +117,13 @@ output. If a command reports missing NumPy, rerun installation with the
 virtual environment's Python shown above. For a first trial, useful feedback
 is simply which step worked or failed, your OS, and the complete error.
 
-**The problem.** Adding one architecture to llama.cpp takes ~800 lines of
-graph-building C++ and 15 edits across 3 files. But mainstream models keep
-reusing the same mechanisms — GQA, MLA, sliding window, Mamba, Gated DeltaNet,
-MoE. What is actually new is *how they are composed*. Qwen3-Next's 48 layers
-are one line:
+**The problem.** Models reuse mechanisms, but adding support still touches converters,
+tensor loading, graph construction, and hardware paths. By1 describes architecture and
+checkpoint contracts once, then validates them against real artifacts and established
+runtimes. Its goal is to reduce repeated mapping work and expose unsupported combinations,
+not to maintain another general inference engine.
 
-```
-48 layers = 12 × (3 GatedDeltaNet + 1 GatedAttention)
-```
-
-That should not need a thousand lines of code.
+The upstream-first approach is part of the plan. llama.cpp has merged Qwen3.8-Flash-Next architecture and vision support, and its v0.6.0 release notes include Qwen4Exp MTP. By1 will use upstream support as the deployment baseline and focus on its own architecture, quantization, and validation contracts. See the [long-term roadmap](docs/1.0-roadmap.md).
 
 **What works today.**
 
@@ -149,11 +145,7 @@ pip install -e .                         # optional: the `by1` CLI
 **What does not work.**
 
 - **No external users. Zero.** No evidence anyone wants this.
-- **llama.cpp is half-wired.** `by1ggml.py` now generates ggml code from IR:
-  three models match the NumPy backend to **~1e-7**, and the real
-  gemma-4-31B IR compiles. But **not one line has been generated *into
-  llama.cpp itself*** (arch table / `build_graph`), and MoE / sink / YaRN
-  have no ggml mapping yet. Plan: [`docs/llamacpp-plan.md`](docs/llamacpp-plan.md).
+- **By1 does not generate a complete native llama.cpp adapter.** Its current plan uses upstream features and standard GGUF for deployment; generated ggml remains a validation backend. See [the integration strategy](docs/llamacpp-plan.md) and [the long-term roadmap](docs/1.0-roadmap.md).
 - **The criteria themselves are unaudited.** The `1e-4` threshold, the
   definition of "covered", the 15 chosen models — all written here.
   See [`docs/criteria-review.md`](docs/criteria-review.md).
@@ -265,16 +257,11 @@ PyTorch 模型源码；执行生成模型还需安装 PyTorch（`.[train]`）。
 请使用上面虚拟环境中的 Python 重新安装。第一次试用只需反馈：在哪一步走通或卡住、
 使用的系统，以及完整报错。
 
-**要解决的问题。** 今天给 llama.cpp 加一个新架构，要在 3 个文件里改 15 处、
-写约 800 行建图 C++。而主流模型反复用的是同一批机制 —— GQA、MLA、滑动窗口、
-Mamba、Gated DeltaNet、MoE。**真正新的只是它们怎么组合。**
-Qwen3-Next 的 48 层是一句话：
+**要解决的问题。** 主流模型会反复组合相同机制，但增加模型支持仍要改动转换器、
+张量加载、建图和硬件路径。By1 把架构与 checkpoint 合同集中描述，再对真实产物和
+成熟运行时做验证，减少重复映射并明确暴露不支持的组合。目标不是再维护一套通用推理引擎。
 
-```
-48 层 = 12 × (3 层 GatedDeltaNet + 1 层 GatedAttention)
-```
-
-这句话不该需要上千行代码才能表达。
+路线采用上游优先。llama.cpp 已合入 Qwen3.8-Flash-Next 的架构和视觉支持，v0.6.0 发布说明也列有 Qwen4Exp MTP。By1 会把上游能力作为部署基线，把精力放在架构、量化和验证合同上。详见[长期路线图](docs/1.0-roadmap.md)。
 
 **现在能做什么。**
 
@@ -296,11 +283,7 @@ pip install -e .                         # 可选：装 `by1` 命令行
 **还没做到的。**
 
 - **没有外部用户。零。** 没有任何证据表明别人想要它。
-- **llama.cpp 只接了一半。** `by1ggml.py` 已经能从 IR 生成 ggml 代码：
-  三个模型与 NumPy 后端对拍到 **1e-7 量级**，真实 gemma-4-31B 的 IR
-  编译通过。但**还没有一行生成进 llama.cpp 本体**（arch 表 /
-  `build_graph`），MoE / sink / YaRN 也还没有 ggml 映射。
-  计划见 [`docs/llamacpp-plan.md`](docs/llamacpp-plan.md)。
+- **By1 目前不生成完整的原生 llama.cpp 适配器。** 部署优先使用上游能力和标准 GGUF；生成的 ggml 路径继续作为验证后端。详见[集成策略](docs/llamacpp-plan.md)和[长期路线图](docs/1.0-roadmap.md)。
 - **判据本身没人复核。** `1e-4` 那个阈值、"覆盖"的定义、选定的这 15 个模型
   —— 全是这里写的。见 [`docs/criteria-review.md`](docs/criteria-review.md)。
 - 原生 NumPy/C/ggml 路径尚不执行视觉塔和 MTP。完整 Transformers 后端已支持

@@ -1,254 +1,45 @@
-# 接 llama.cpp：完整计划（执行版）
+# llama.cpp 集成策略
 
-> 写于 2026-10-12。**这是执行计划**；立论和测量在 [`ggml-plan.md`](ggml-plan.md)，
-> 那份是量出来的（`by1emit` 的三样产物、GGUF manifest 的三个判卷人、
-> gcc 在场），本篇不重复。
->
-> 排法沿用 [`../history/plan.md`](../history/plan.md) 的铁律：
-> **每一个做成的块都有判卷人。写不出判卷人的，不排进计划。**
+> 当前执行依据是[By1 长期路线图](1.0-roadmap.md)。旧版分阶段移植提案保存在 history/llamacpp-plan-2026-10.md，此文取代旧计划，不再以“把架构生成进 llama.cpp 本体”为发布目标。
 
----
+## 目标
 
-## 一句话：要做什么
+让 By1 的架构和权重合同在**未修改的 llama.cpp** 上接受真实运行验证；标准 GGUF 能直接使用原版 CLI。By1 生成的 ggml 代码继续承担独立数值判据，不等同于可直接合并进 llama.cpp 的完整架构适配器。
 
-```
-.by1  →  IR  →  by1ggml.py  →  ggml C  →  gcc + libggml  →  跑起来
-                                                        ↘ 和 NumPy 后端逐位对拍
-```
+## 先复用上游
 
-让 README 里那句 **「一行 ggml 都没生成过」** 成为历史，并且
-**生成的那一行是有判卷人的** —— ggml 是第二个独立实现，
-两个独立实现同时错在同一个地方的概率比一个低。
+截至 2026-10-13，llama.cpp 上游已合入 Qwen3.8-Flash-Next / qwen4exp 支持，包含转换、文本图、稀疏注意力和视觉路径；v0.6.0 发布说明列有 Qwen4Exp MTP 支持。新接模型前先核对所需功能是否已进入目标上游版本：
 
----
+- [Qwen3.8-Flash-Next 支持 PR #27742](https://github.com/ggml-org/llama.cpp/pull/27742)
+- [Qwen4Exp MTP PR #29761](https://github.com/ggml-org/llama.cpp/pull/29761)
+- [llama.cpp releases](https://github.com/ggml-org/llama.cpp/releases)
 
-## 现状（都是实测，不是设想）
+上游支持随版本变化。验证报告必须写明使用的 tag/commit、模型文件 revision、构建选项和 GPU；“支持该架构”不代表每种后端、量化类型、视觉路径和并发配置都已验证。
 
-| | |
-|---|---|
-| `by1emit.py` | 算子→原语表 · 声明式图 · GGUF manifest 双向对拍（gemma-4-31B **783=783**）|
-| `by1c.py` | 第三个后端（手写循环的 C），harness：`w.bin/ids.bin/logits.bin`，阈值 1e-4 相对 |
-| `by1exec.py` | NumPy 后端 —— 已经和 PyTorch、HF 对过，**现成的判卷人** |
-| 工具链 | gcc 16.2.0 · g++ · cmake 4.4.2 · ninja —— 全在 |
-| ggml 本体 | `llamacpp/llama.cpp/`（master，可重下）· 构建产物 `llamacpp/build-ggml/` |
-| 没有的 | ~~一行 ggml 代码都没生成过~~ **2026-10-12 已成历史** —— 见文末执行记录 |
+下一轮的执行 pin 已选为上游 `v0.6.0`（发布 commit 前缀 `d812350`），不跟随每日变化的 master。模型基线选用固定 revision 的 Qwen3.8-27B IQ3_S GGUF，同时锁定 MTP 变体和 BF16 视觉 mmproj。完整 clone、CUDA 构建、文本/图像/MTP 命令与 SHA-256 记录见[llama.cpp 基线配方](llama.cpp-baseline.md)。当前工作区忽略目录里的旧源码没有 Git 来源证明，GPU 实测时必须从该 tag 干净 clone。
 
-三个 GGUF 判卷人（`by1emit` 已 [PASS]，不许退）：
+The next execution pin is upstream `v0.6.0` (release commit prefix `d812350`), not the daily-moving master branch. The model baseline is a pinned Qwen3.8-27B IQ3_S GGUF together with its MTP variant and BF16 vision mmproj. The clean clone, CUDA build, text/image/MTP commands, and SHA-256 are recorded in the [llama.cpp baseline recipe](llama.cpp-baseline.md). The ignored source snapshot in the current workspace has no verified Git provenance; the GPU run must use a fresh clone at the fixed tag.
 
-| 模型 | 算子种类 | 原语 | manifest |
-|---|---|---|---|
-| **gemma-4-31B** | 4（Add/Attention/FFN/Norm） | 12 | 783=783 |
-| gpt-oss-120b | 4 | 16 | ✓ |
-| Laguna-XS-2_1 | 5 | 18 | ✓ |
+## 社区改版的定位
 
----
+社区实现值得先查，尤其是目标量化格式或硬件路径已有实现时，但不默认把整条分支变成依赖：
 
-## M0 · ggml 本体落地
+- [ik_llama.cpp](https://github.com/ikawrakow/ik_llama.cpp) 提供额外量化格式和 CPU/CUDA 性能改动。采用其中任何实现前，逐项确认 GGUF 类型、硬件后端、质量结果和维护范围是否符合 By1 的目标。
+- [Qwen3.8 专用 llama.cpp 分支](https://github.com/holden093/llama.cpp-qwen3.8-flash-next) 针对 DwarfStar 打包的 Qwen3.8 Q2 GGUF 加了专门加载处理。仓库自述这是面向单机的专用改版；适合研究特殊打包与 loader 的差异，不应直接作为通用 By1 后端。
 
-**做什么**：llama.cpp 源码进 `llamacpp/llama.cpp/`（`llamacpp/` 本来就是
-"可重新下载"的参照区，不进 git）；cmake 构建 CPU 版静态库到
-`llamacpp/build-ggml/`；一个十行的 ggml 自检程序。
+上游已经有该架构和 MTP 后，模型支持补丁就优先回到原版验证；如果 By1 要处理的只是特定打包布局，隔离布局适配并保留标准 GGUF 路径。
 
-**判卷人**：编译器 + 手算。自检跑一个已知小矩阵的 `ggml_mul_mat`，
-和手算逐位比 —— **判的是"ggml 在这台机器上算的是这个数学"**，
-不是"编译过了"。
+## 执行顺序
 
-**验收**：`libggml*.a` 存在；自检 [PASS]。
+1. 固定一个上游版本，提供中英双语的 PowerShell 与 Linux 构建命令。
+2. 用上游原版加载代表性标准 GGUF，跑文本生成；对含图像或 MTP 的模型分别跑对应路径。
+3. 记录同机、同权重、同量化类型的原版基准与结果；再和 Transformers 发布方参考实现对拍 logits 和生成。
+4. 将 By1 manifest、共享权重、量化 scale 与 GGUF 张量对应关系加入报告，区分可加载与数值正确。
+5. 若遇到上游缺口，先查已公开的活跃派生版并核验补丁；优先向上游提交通用修复。暂时必须使用本地补丁时，保持小范围、可单独构建，并测试原版与补丁版。
 
-**不做**：CUDA / Vulkan / SYCL / 任何加速后端。**判数学用 CPU f32 就够**，
-加速后端只会引入对拍以外的变量。
+## 验收条件
 
----
-
-## M1 · `by1ggml.py` —— 第一行 ggml
-
-**做什么**：`src/by1ggml.py`，只吃 IR（和 `by1c.emit_c_ir` 同一个入口），
-生成一份调 ggml 原语的 `model.c`，gcc 链接 libggml 编出来，跑，
-出 `logits.bin`。
-
-**判卷人**：
-1. **gcc** —— 编得过才算生成了代码；
-2. **by1c 冻结的 harness 协议** —— `w.bin` 的扁平布局一字不改
-   （它就是 ggml 的列主序视角：by1 的 `[n, d]` 行主序 ≡ ggml 的 `[d, n]`，
-   零转换直接 `ggml_set_data`）。**同一个 `w.bin` 要能喂两个后端** ——
-   这是"张量绑定一致"的判据，不是方便。
-
-**验收**：`python src/by1ggml.py models/llama-shaped.by1` 生成 + 编译 + 运行。
-
-**不做**：算子集只做 Norm / Add / FFN / Attention 的**已实现属性**。
-用不了的属性**报错拒绝**（by1c 的规矩原样搬：要么实现，要么拒绝，
-不许悄悄生成一个算错的模型）。
-
----
-
-## M2 · 数值判卷：ggml ↔ NumPy
-
-**这一步完成，「llama.cpp 没接」才变成假话。**
-
-**判卷人**：`by1exec`（NumPy 后端）。它是现成的、已经被 PyTorch 和 HF
-判过的实现 —— **ggml 只需要追平它**。
-
-**验收三条**：
-
-| # | 对象 | 判的是什么 |
-|---|---|---|
-| ① | `llama-shaped` | 基础四算子 · pairing=half · 相对差 < 1e-4 |
-| ② | gemma 机制孪生 | **qk_norm=per_head + pairing=interleaved + window** 的组合 |
-| ③ | 真实 `gemma-4-31B.by1` | 生成的 C **编译过** + manifest 783=783 不退 |
-
-**为什么要孪生**：真实 gemma-4-31B 的 vocab 262144、87 层，
-随机权重全模型是 **121.7 GB f32** —— 数值对拍跑不动。孪生**只缩维度**，
-机制组合逐项相同（`qk_norm=per_head`、`rope pairing=interleaved`、
-`window`、eps=1e-6、silu 门控 FFN）。"31B 不等于要跑 31B" ——
-判的是算得对不对，不是装不装得下。
-
-**已知的坑（写在前面，别踩第二遍）**：
-
-1. **rope 的 pairing 在两边不是同一个约定。** by1 的 `half` =
-   ggml 的 NEOX 模式，直接对应。by1 的 `interleaved` = **奇偶进、拼接着出**，
-   而 ggml 的 NORM 模式是**奇偶进、奇偶出** —— 输入配对相同、
-   输出布局差一个 q/k **共同**置换，点积不变。
-   **这条必须靠 ② 的数值对拍来证，不许当成假设**（见 history：
-   "变量名相同不代表含义相同"，rope 是重灾区）。
-2. **eps 不许写死。** 这个 bug 仓库里出过六次。gemma 是 1e-6，llama 是 1e-5。
-3. **qk_norm 的 `off` 是真值字符串。** 直接布尔判断会永远为真
-   （by1c 的 `_qk_on` 就是为此存在，照搬）。
-4. **window 的边界**：by1 的规则是 `j <= i - window` 丢掉（保留窗口
-   内 `window` 个 key），掩码要逐位一致，别用"约等于滑窗"的近似。
-5. **ggml 的 rope 是 fp32 算的，by1 的参照是 fp64。** 误差会从 1e-7 量级
-   涨到 1e-5 量级 —— 这正是阈值 1e-4 存在的意义，但**要盯着相对差的
-   实际值**，不许只看 PASS。
-
----
-
-## M3 · 补齐三个 GGUF 判卷人的算子集
-
-**做什么**：
-- **gpt-oss-120b**：MoE（两种 routing / score 函数 / expert_bias /
-  共享专家 / shared_gate）+ `sink` + YaRN + `gptoss` 激活 + 交替滑窗
-- **Laguna-XS-2_1**：第 5 种算子 + `exp_bias` 那 39 个命名缺口
-- **MLA / Raw**：给出映射或者**显式拒绝**。拒绝是合法交付 ——
-  仓库的规矩是「要么实现，要么拒绝，没有第三条路」，
-  `by1emit` 的 `GGML.get(k, ['?'])` 已经保证缺口看得见。
-
-**判卷人**：各自的 GGUF manifest 双向对拍（不许退）+ NumPy 孪生对拍。
-MoE 逐专家那段的对照是 `by1moe.py` 的现成结论。
-
-**不做**：MoE 的融合 kernel / 性能。**逐专家 `ggml_mul_mat` 慢就慢** ——
-这一阶段判的是数学。
-
----
-
-## M4 · 接进 llama.cpp 本体 —— 「800 行」变生成物
-
-**这是 README 那句话的终点**：给 llama.cpp 加一个架构不再手写
-823 行建图 + 15 处编辑，而是从 `.by1` 生成。
-
-**做什么**：从 IR 生成 llama.cpp 的接入面 ——
-`llama-arch` 的枚举与名字表 · `llama-model` 的加载与超参 ·
-`models/<arch>.cpp` 的 `build_graph`。**判物是 `qwen3next.cpp`**
-（图结构、张量绑定、状态形状与它逐行核对，这件事 3a 做过一半）。
-
-**判卷人**：
-1. **llama.cpp 自己编译过**（生成的代码是它的一部分，编不过是零分）；
-2. **有 GGUF 的模型：`llama-cli` 的输出 logits vs by1** ——
-   真权重、真格式、真运行时。这是全链条唯一的"端到端"判卷人。
-
-**验收**：演示模型 = llama.cpp **还不支持**的架构（`Instella-3B.by1`
-的材料早备好了），生成 → 编译 → 跑 GGUF → logits 对上。
-
-**不做**：量化 kernel、CUDA、批处理、KV cache 复用的性能。prefill + 逐位。
-
----
-
-## M5 · 门禁与叙事
-
-**做什么**：ggml 对拍进 `by1all` 的 gcc 档；`TESTING.md` 的档位表更新；
-README 的「llama.cpp 没接」改成事实；`FILES.md` 重生成。
-
-**判卷人**：`by1all` 全档 + `by1files` 的「覆盖不降」硬判据。
-**叙事跟着测量走** —— 做到哪写到哪，不许提前。
-
----
-
-## 一张图
-
-```
-M0  ggml 本体          ──  判卷人：手算的矩阵乘
- │
-M1  by1ggml.py 第一行  ──  判卷人：gcc + by1c 冻结的 w.bin 协议
- │
-M2  数值对拍           ──  判卷人：by1exec（NumPy，已与 PyTorch/HF 对过）
- │                        ① llama-shaped ② gemma 孪生 ③ 31B 编译 + manifest
-M3  算子补齐           ──  判卷人：三份 GGUF manifest + NumPy 孪生
- │
-M4  接 llama.cpp 本体  ──  判卷人：llama.cpp 编译 + llama-cli 逐位
- │
-M5  门禁与叙事         ──  判卷人：by1all / by1files
-```
-
-**M0–M2 是一条链，做完它，「llama.cpp 没接」这句话就死了。**
-M3–M4 是量变到质变：M4 做完，README 的立论（"800 行"变生成物）
-才有证据。M5 是纪律：**没有门禁的完成会过期**，这个仓库已经吃过
-"写进行文里的前提比行文先死"的亏。
-
----
-
-## 明确不做的（这一整个计划期间）
-
-| | 为什么 |
-|---|---|
-| GPU / 量化运行时 | 判数学用 CPU f32。加速和量化是另一条线，混进来只会让对拍的变量变多。 |
-| 性能优化 | 慢就慢。逐专家循环、无融合 —— 都允许。判的是算得对不对。 |
-| 多栈 / 跨栈投影（DeepSeek） | **依旧没有判卷人**（history/plan.md 的结论没变），不排。 |
-| 新检查器 / 新工具 | 已经 20+ 个。`by1ggml.py` 是**第四个后端**，不是检查器 —— 它进 `by1diff` 的对拍矩阵，不另立山头。 |
-
----
-
-## 执行记录（2026-10-12，M0–M2 完成）
-
-| 里程碑 | 状态 | 判卷人的裁决 |
-|---|---|---|
-| M0 ggml 本体 | ✅ | `tools/ggml-smoke.c`：mul_mat / rms_norm / silu 对**手算**，[PASS] |
-| M1 `by1ggml.py` | ✅ | gcc 编过；`w.bin` 布局复用 `by1c.emit_c`（同一份权重喂两个后端） |
-| M2 数值判卷 | ✅ | 见下表，全部 < 1e-4，实测全在 **1e-7 量级** |
-| M5（部分） | ✅ | `by1all` 档 5 新增 `ggml 后端` 段 —— ggml 不在 = 跳过（30），不算失败 |
-
-**M2 三条判据的实测值**（判卷人：by1exec NumPy，阈值 1e-4）：
-
-| # | 对象 | 相对差 | 备注 |
-|---|---|---|---|
-| ① | `llama-shaped` | **2.962e-07** | pairing=half（= ggml NEOX，逐位对应） |
-| ①b | `gpt2-tiny` | **1.379e-07** | layernorm / 学习位置 / gelu_new / 无门控 |
-| ② | gemma 孪生 | **1.390e-07** | qk_norm=per_head + interleaved + window + kv_tie + partial rope |
-| ③ | 真实 `gemma-4-31B` | 编译过 | 5914 行 C · 950 张量 · manifest **783=783** 不退 |
-| 拒绝 | `qwen3-next-shaped` | [PASS] | Linear/MoE/q_gate 落在支持集外，明确 `[不支持]` |
-
-**顺带修掉的三个 bug（都有判卷人）：**
-
-1. **最终 norm/head 发射在层之前** —— ggml 是惰性图，张量在**构建那一刻**
-   把输入钉死：norm/head 吃到的是 embed 输出，层算了等于没算
-   （定位：和"零层模型"逐位相关 0.99999）。**C 的语句顺序就是图的结构。**
-2. **三个 gelu 同名不同义，且 ggml 的 GELU 不能直接用。**
-   `gelu_new` 先被映到 `GELU_QUICK`（那是 x·σ(1.702x)，gptoss 专用，
-   差 4.041e-03）；改成 `ggml_gelu` 后还剩 1.3e-4 —— 因为 **ggml 的
-   CPU f32 GELU 走 fp16 查表**（`vec.h` 无条件 `#define GGML_GELU_FP16`）。
-   最后 tanh 近似按公式用**原语拼**，1.379e-07。
-3. **`shapes_of` 的全局宽度 bug**：多宽度模型（gemma-4-31B：60 层文本
-   5376 + 27 层视觉塔 1152）的全局张量按**尾层的 `in_dim`** 推 ——
-   `embed.weight` 推成 (262144, 1152)，而 GGUF 判卷人说 `output_norm`
-   是 [5376]。单宽度模型永远碰不到（循环变量恰好等于 d_model）。
-
-**一个被数值证明（而不是假设）的映射**：by1 的 rope `interleaved`
-（奇偶进、**拼接**着出）对上 ggml 的 NORMAL 模式（奇偶进、奇偶出）——
-输出布局差一个 q/k **共同**置换，点积不变。孪生模型的 1.390e-07
-就是这条的判据。`half` 那支是 NEOX 的逐位对应，无需论证。
-
-**M4 的第一块拦路石**（记下来，别再撞）：llama.cpp 的 `libllama`
-在 MinGW 下编译失败（`llama-model.cpp`），而 ggml 三个静态库完好 ——
-M4 开工前先解决它。另外 `git clone` 的 https 在这台机器上不通，
-拉源码走的是 codeload 的 tarball。
-
-**下一步**：M3（MoE / sink / YaRN / gptoss 激活的映射，判卷人 =
-gpt-oss-120b 与 Laguna 的 GGUF manifest + NumPy 孪生）→ M4（生成进
-llama.cpp 本体，判卷人 = llama.cpp 编译 + llama-cli 逐位）。
+- 干净 clone 可按固定版本构建 llama.cpp。
+- 标准产物能被原版加载，能完成生成；支持视觉/MTP 的模型分别通过其对应路径。
+- 原版 llama.cpp、By1 和发布方参考实现的对照配置可复现；容差、准确度、速度和显存分项报告。
+- 报告明确标注未测试的量化类型、硬件后端和多模态路径，不能把“模型能启动”写成完整支持。

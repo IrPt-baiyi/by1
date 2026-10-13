@@ -105,7 +105,7 @@ GROUPS = [
     ('`modelcheck/` —— 一个模型一个判卷人', 'modelcheck', '''每个都用自己的官方产物当真相源。''', [
         'by1gpt2', 'by1instella', 'by1mla', 'by1moe', 'by1rope',
         'by1ssm', 'by1kda', 'by1sparse', 'by1real', 'by1load', 'by1mem',
-        'by1train', 'by1dev']),
+        'by1train', 'by1dev', 'by1quant', 'by1shadow']),
 
     ('`data/` —— 抓数据 / 推模型', 'data', '''从一个已发布的 checkpoint 反推描述，以及把 `refs/` 抓回来。
 
@@ -145,6 +145,10 @@ OVERRIDE = {
     'ggml-smoke.c': '**M0 的判卷人**：ggml 的 mul_mat / rms_norm / silu 对手算。'
                     '接 llama.cpp 那一轮的构建自检（编译命令在文件头注）',
     '1.md': '立项宣言：这门语言要解决什么、不解决什么',
+    'quantization.md': '量化格式的存储合同、共享权重边界和 Q1–Q3 验收顺序',
+    'llama.cpp-baseline.md': '原版 llama.cpp 与固定 Qwen3.8 GGUF 的可复现 GPU 基线命令',
+    'by1quant.py': '量化 checkpoint 的存储契约与权重/scale manifest 审计',
+    'Qwen3.8-27B-FP8.by1': 'Qwen3.8 官方 FP8 checkpoint 的量化存储合同覆盖层',
     'FILES.md': '**这份文档本身**，由 `src/by1files.py` 生成',
     'LICENSE': 'GPL-3.0 全文（逐字，未改）。**它只覆盖本项目自己写的东西**',
     'NOTICE': '第三方元数据的归属：`refs/` 不是本项目的作品，各自适用各自许可证',
