@@ -1,6 +1,6 @@
 # 这个仓库里每个文件是干什么的
 
-> 320 个跟踪文件。按"你会想找什么"分组，不按字母表。
+> 321 个跟踪文件。按"你会想找什么"分组，不按字母表。
 >
 > **这份文档是生成的**：`python src/by1files.py --write`。
 > 文件清单、每组的个数、每个文件的一句话都从目录树和 docstring 来 ——
@@ -43,7 +43,7 @@
 
 ---
 
-## `src/` —— 79 个模块 + 1 个非 .py
+## `src/` —— 80 个模块 + 1 个非 .py
 
 ### 底座（留在 src/ 顶层）
 
@@ -188,6 +188,7 @@
 | `by1triage.py` | 把一批新 config 过一遍 by1，看谁需要新原语 |
 | `by1cmp.py` | 把所有模型的架构摆成一张表 |
 | `by1shapes.py` | 把 `{名: null}` 的 refs 补成 F1（带 dtype + shape） |
+| `by1revname.py` | 命名模板反推器（C1/C2）：refs 产物清单 → emit 命名模板草案 |
 | `by1cloud.py` | 驱动一台租来的显卡机器**（AutoDL 或任何 SSH 可达的） |
 
 ### `escape/` —— 逃生舱
@@ -395,7 +396,7 @@
 | `by1sync.py` | 推导 ↔ 契约 的同步报表**（1.0.0-rc0 的 T0.2） |
 | `by1verify.py` | 差分验证：把 .by1 的展开结果与官方产物对拍 |
 
-## `src/data/` —— 7 个
+## `src/data/` —— 8 个
 
 | 文件 | 用途 |
 |---|---|
@@ -404,6 +405,7 @@
 | `by1cmp.py` | 把所有模型的架构摆成一张表 |
 | `by1fetch.py` | 一条命令，把 refs/ 全部重抓回来 |
 | `by1index.py` | 抓张量名清单。**免费，而且这是"能不能描述"的真正判据 |
+| `by1revname.py` | 命名模板反推器（C1/C2）：refs 产物清单 → emit 命名模板草案 |
 | `by1shapes.py` | 把 `{名: null}` 的 refs 补成 F1（带 dtype + shape） |
 | `by1triage.py` | 把一批新 config 过一遍 by1，看谁需要新原语 |
 
