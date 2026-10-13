@@ -166,6 +166,10 @@ $PY = ".\.venv\Scripts\python.exe"
 
 `--shadow-seed` / `--shadow-dtype` change the synthetic weights; a local CPU self-check of the whole shadow pipeline is `python src/modelcheck/by1shadow.py --smoke`. Shadow passes are recorded as such and do not replace the real-weight reports above.
 
+### One-command GPU day
+
+For a rented-GPU session, `python src/checks/by1gpuday.py` runs the whole day in order (graph e2e full run → shadow checks → real-weight Q2 chain), writes one report file per step, and prints the recovery template. The resource checklist and template live in [the GPU day runbook](../docs/gpu-day-runbook.md); weight reuse is covered by [the file-storage sheet](../docs/autodl-file-storage.md).
+
 ## 3. Hardware requirements and limits
 
 The first round requires little VRAM. Real BF16 weights for the 27B model use about 55 GB; short-context forward comparisons are best run with 80 or 96 GB of VRAM, plus enough host memory and disk space. A 96 GB card does not guarantee that full-parameter AdamW training of a 27B model will fit.
@@ -336,6 +340,10 @@ $PY = ".\.venv\Scripts\python.exe"
 ```
 
 `--shadow-seed` / `--shadow-dtype` 换一套合成权重；整条影子流水线的 CPU 自检是 `python src/modelcheck/by1shadow.py --smoke`。影子结果按影子记录，**不替代**上面的真权重报告。
+
+### GPU 日一条命令
+
+租卡那天跑 `python src/checks/by1gpuday.py`：三相按序（图 e2e 全量 → 影子线 → 真权重 Q2 链），每步独立报告文件，跑完打印回收模板。资源核对表与模板全文见 [GPU 日 runbook](../docs/gpu-day-runbook.md)；权重复用见 [文件存储操作单](../docs/autodl-file-storage.md)。
 
 ## 3. 机器需求与边界
 

@@ -1,6 +1,6 @@
 # 这个仓库里每个文件是干什么的
 
-> 323 个跟踪文件。按"你会想找什么"分组，不按字母表。
+> 325 个跟踪文件。按"你会想找什么"分组，不按字母表。
 >
 > **这份文档是生成的**：`python src/by1files.py --write`。
 > 文件清单、每组的个数、每个文件的一句话都从目录树和 docstring 来 ——
@@ -43,7 +43,7 @@
 
 ---
 
-## `src/` —— 81 个模块 + 1 个非 .py
+## `src/` —— 82 个模块 + 1 个非 .py
 
 ### 底座（留在 src/ 顶层）
 
@@ -146,6 +146,7 @@
 | `by1gpusmoke.py` | CUDA 前向、梯度、参数更新与完整视觉/MTP 分支的可复现验收 |
 | `by1gpubench.py` | 真实权重与发布方 Transformers 模型的顺序加载、数值与性能对比 |
 | `by1gputrain.py` | 用真实 Qwen3-0.6B 权重对比 CUDA 反向传播和一次更新 |
+| `by1gpuday.py` | GPU 日单入口**：一条命令把租卡那天该跑的按序跑完 |
 | `by1sync.py` | 推导 ↔ 契约 的同步报表**（1.0.0-rc0 的 T0.2） |
 | `by1mutate.py` | 变异反例库**（1.0.0-rc0 的 T0.3） |
 | `by1complete.py` | 完整模型验收：参数共享、bias、梯度、视觉、MTP 与严格权重加载 |
@@ -211,7 +212,7 @@
 |---|---|
 | `ci.yml` | 每次提交都跑档 1 —— **这是这个仓库唯一的自动门 |
 
-## `docs/` —— 16 个
+## `docs/` —— 17 个
 
 活的文档 —— 还没做完的事记在这里，做完的挪去 `history/`。
 
@@ -224,6 +225,7 @@
 | `complete-models.md` | 完整模型：参数共享、视觉与 MTP |
 | `criteria-review.md` | **请人重算**的任务卡：判据本身没人验过，这一份是那份活。含"refs 判 by1 不是外部判卷"那一节 |
 | `ggml-plan.md` | ggml 数值对拍：测量与判据 |
+| `gpu-day-runbook.md` | GPU 日 runbook —— 租卡那天照这张纸走 |
 | `gpu-validation-results.md` | GPU Validation Results / GPU 验证结果 |
 | `llama.cpp-baseline.md` | 原版 llama.cpp 与固定 Qwen3.8 GGUF 的可复现 GPU 基线命令 |
 | `llamacpp-plan.md` | llama.cpp 集成策略 |
@@ -364,7 +366,7 @@
 | `ISTA-DASLab__Qwen3.8-27B-GSQ-RCO-GGUF.IQ2_S-mtp.alloc.txt` | 14 | |
 
 
-## `src/checks/` —— 29 个
+## `src/checks/` —— 30 个
 
 | 文件 | 用途 |
 |---|---|
@@ -382,6 +384,7 @@
 | `by1gate.py` | 取值门的**可证伪对照** |
 | `by1gpu.py` | 只有显卡能做的那几件验证 |
 | `by1gpubench.py` | 真实权重与发布方 Transformers 模型的顺序加载、数值与性能对比 |
+| `by1gpuday.py` | GPU 日单入口**：一条命令把租卡那天该跑的按序跑完 |
 | `by1gpusmoke.py` | CUDA 前向、梯度、参数更新与完整视觉/MTP 分支的可复现验收 |
 | `by1gputrain.py` | 用真实 Qwen3-0.6B 权重对比 CUDA 反向传播和一次更新 |
 | `by1irentry.py` | 三个后端必须能从 IR 入口跑通**，而不是只从 .by1 入口 |
