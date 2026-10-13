@@ -69,7 +69,7 @@ python src/by1irentry.py                    # 三个后端只从 IR 跑
 | `kind` | `enum:recurrent,conv_history,kv_cache,declared_by_impl` | 是 | recurrent / conv_history / kv_cache / declared_by_impl |
 | `bounded_by` | `int?` | 是 | 状态有没有上界。None 表示无界，不是「没有」 |
 | `shape` | `list[int]?` | 否 | 状态张量的形状 |
-| `dtype` | `str?` | 否 | 状态存什么精度（`bf16` / `fp32` …） |
+| `dtype` | `enum?:bf16,fp32,float32` | 否 | 状态精度。**闭集**（`enum?:` = 可空：None 即没声明）—— 照现实（state 块只出过 bf16/fp32/float32）；新值先进表再用。这条原来开着口子（自由 str），于是「未知 dtype」连规则都测不了 |
 | `reuse` | `enum:none,prefix,unknown` | 是 | none / prefix / unknown —— 能不能跨请求复用 |
 | `note` | `str?` | 否 | 自由说明（人看的，不参与计算） |
 

@@ -79,7 +79,8 @@ TOP = [
     ("ctx", "int", True, "上下文长度（位置能达到的最大值）"),
     ("d_model", "int", True, "残差流宽度"),
     # **闭集要写在类型里，不能只写 `enum`。**
-    # 类型必须写成 `enum:...`（带冒号），`_ty` 只认这一种 —— 裸 `"enum"`
+    # 类型必须写成 `enum:...` 或可空的 `enum?:...`（都带冒号），
+    # `_ty` 只认这两种 —— 裸 `"enum"`
     # 于是这两个字段**从来没有被校验过**：`pos_kind = BANANA` 一路通到
     # 后端，而后端判的是 `== "learned"`，非法值静默落回 rope。
     # 同一个形状的漏洞还有 STATE.kind / STATE.reuse / STATE.dtype。
@@ -132,7 +133,10 @@ STATE = [
      "recurrent / conv_history / kv_cache / declared_by_impl"),
     ("bounded_by", "int?", True, "状态有没有上界。None 表示无界，不是「没有」"),
     ("shape", "list[int]?", False, "状态张量的形状"),
-    ("dtype", "str?", False, "状态存什么精度（`bf16` / `fp32` …）"),
+    ("dtype", "enum?:bf16,fp32,float32", False,
+     "状态精度。**闭集**（`enum?:` = 可空：None 即没声明）—— 照现实"
+     "（state 块只出过 bf16/fp32/float32）；新值先进表再用。"
+     "这条原来开着口子（自由 str），于是「未知 dtype」连规则都测不了"),
     ("reuse", "enum:none,prefix,unknown", True,
      "none / prefix / unknown —— 能不能跨请求复用"),
     # **_spec 里漏了它，而生产者在写。** 4 处（mla-shaped 的压缩潜向量）。
@@ -474,8 +478,14 @@ class IRError(Exception):
 
 
 def _ty(name, t, v):
-    if t.startswith("enum:"):
-        allow = t[5:].split(",")
+    if t.startswith("enum?:") or t.startswith("enum:"):
+        # `enum?:` = **可空闭集**（值要么在集合里，要么是 None=没声明）；
+        # `enum:`  = 必须在集合里。None 混进必选 enum 必须还是红的。
+        nullable = t.startswith("enum?:")
+        allow = (t[6:] if nullable else t[5:]).split(",")
+        if v is None:
+            return None if nullable else \
+                "%s = <%r> 不在闭集 %s 里" % (name, v, allow)
         if v not in allow:
             return "%s = <%r> 不在闭集 %s 里" % (name, v, allow)
         return None

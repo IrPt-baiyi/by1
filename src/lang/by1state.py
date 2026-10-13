@@ -31,8 +31,19 @@ def state_sizes(*, _mod, _):
     if _['em']:
         for _['a'], _['b'] in _['em'].assigns.items():
             _['m'] = re.search(r"dtype\s*=\s*(\w+)", _['b'])
-            if _['m'] and _['m'].group(1) in ("fp32", "float32"):
+            if not _['m']:
+                continue
+            if _['m'].group(1) in ("fp32", "float32"):
                 _['dtype_b'] = 4
+            elif _['m'].group(1) != "bf16":
+                # **未知 dtype 不许静默当 bf16 记账** —— 五类反例里的
+                # 「未知 dtype」原来连规则都没有：状态尺寸按 bf16 算出一个
+                # 错数，报表照样绿（和"永远绿的检查"同族）。现在当场报 E。
+                # 闭集照现实：state 块只出过 bf16 / fp32 / float32；
+                # 新值**先进表再用**，不许先用后补。
+                _['rep'].add(E, _['em'].line, "state",
+                             "state dtype=%s 不在闭集（bf16 / fp32 / float32）"
+                             % _['m'].group(1))
 
     _['inst_by_mech']: Dict[str, List[Dict[str, str]]] = {}
     for (_['_s'], _['_m'], _['_a'], _['_k'], _['_t']) in _['layer_seq']:

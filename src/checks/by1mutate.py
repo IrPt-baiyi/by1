@@ -175,7 +175,32 @@ MUTATIONS = [
     ("width-globals-chain", "全局链的值引用",
      lambda b: _mut(lambda ir: ir["globals"][1].update(
          {"inputs": ["normed"]}), b), "不存在的值"),
+    # ── 五类反例补口（1.0 阶段 A 判据）──────────────────────────────
+    ("state-bad-dtype", "STATE.dtype 闭集（未知 dtype 必拒）",
+     lambda b: _mut(lambda ir: ir["layers"][0].update({"state": [
+         {"kind": "kv_cache", "bounded_by": None, "dtype": "not_a_precision",
+          "reuse": "none"}]}), b), "不在闭集"),
+    ("attn-bad-pairing", "Attention.rope_pairing 闭集（不支持的注意力模式）",
+     lambda b: _mut(lambda ir: _on_op(ir, 0, 1,
+                                      lambda o: o["attrs"].update(
+                                          {"rope_pairing": "diagonal"})), b),
+     "不在闭集"),
 ]
+
+#: 五类反例的**覆盖账**（阶段 A 判据：缺字段 / 冲突配置 / 未知 dtype /
+#: 权重别名断开 / 不支持的注意力模式 —— 都必须可测）。每类至少一个
+#: 「必红」反例；判卷人不在本库的，**点名到人**，不许含糊。
+CLASSES = {
+    "缺字段": ["by1mutate:no-version", "by1mutate:top-missing",
+               "by1mutate:attrs-missing", "by1mutate:learned-no-npos"],
+    "冲突配置": ["by1mutate:moe-score-unused", "by1mutate:moe-contradict",
+                 "by1mutate:moe-two-sources"],
+    "未知 dtype": ["by1mutate:state-bad-dtype",
+                   "by1state:state dtype 不在闭集报 E（by1check 管线）"],
+    "权重别名断开": ["by1complete:缺共享声明（tie_word_embeddings 摘掉必红）"],
+    "不支持的注意力模式": ["by1mutate:attn-bad-pairing",
+                           "by1mutate:attrs-bad-enum"],
+}
 
 
 def main():
@@ -211,6 +236,13 @@ def main():
         print("     ✓ %-20s %s" % ("gap-not-error", "换宽度进 gaps 不进 errs"))
 
     # 正例：基线必须全绿（反例全红而正例不绿 = 检查器只会报错）
+    empty = [c for c, items in CLASSES.items() if not items]
+    if empty:
+        bad.append("五类覆盖有空类：%s" % empty)
+    print()
+    print("  五类反例覆盖（阶段 A 判据）：")
+    for cls, items in CLASSES.items():
+        print("    %-12s %s" % (cls, " · ".join(items)))
     if bir.validate(copy.deepcopy(base)):
         bad.append("基线（llama-shaped 的 IR）不绿 —— 检查器只会报错")
 
