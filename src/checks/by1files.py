@@ -113,7 +113,7 @@ GROUPS = [
 `model.safetensors.index.json` 那条路时**只有名字、没有形状**（F3，读进来是空表），
 而形状只在 safetensors 头里 —— 所以它专门去读头，把 F3 补成 F1。''', [
         'by1fetch', 'by1index', 'by1boot', 'by1triage', 'by1cmp',
-        'by1shapes', 'by1revname', 'by1cloud']),
+        'by1shapes', 'by1revname', 'by1cache', 'by1cloud']),
 
     ('`escape/` —— 逃生舱', 'escape', '''语言表达不了的东西有两个出口，**两个都不是"绕过检查"**：
 张量契约、三后端对拍、取值门照旧生效。''', [
