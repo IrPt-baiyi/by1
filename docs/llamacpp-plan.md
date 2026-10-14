@@ -43,3 +43,28 @@ The next execution pin is upstream `v0.6.0` (release commit prefix `d812350`), n
 - 标准产物能被原版加载，能完成生成；支持视觉/MTP 的模型分别通过其对应路径。
 - 原版 llama.cpp、By1 和发布方参考实现的对照配置可复现；容差、准确度、速度和显存分项报告。
 - 报告明确标注未测试的量化类型、硬件后端和多模态路径，不能把“模型能启动”写成完整支持。
+
+## decode / 状态（T17 切片，2026-10-14 立判据）
+
+rc1 的另一半是 **decode/状态**：生成循环里的 KV cache 与增量解码。两条判据
+（缺一不算过）：
+
+1. **增量与全量 logits 一致** —— 同权重同输入：一次全量前向的每步 logits，
+   必须与"带 cache 逐 token 增量"的每步 logits 对得上（容差走
+   [precision-budget](precision-budget.md) 的 1e-4 一族）。**这是状态
+   正确性的唯一判据**：cache 写错一格，全量对拍照样绿，增量当场红。
+2. **状态 round-trip** —— cache 可以原样导出再导入，继续 decode 的输出
+   与不中断的 decode **逐 token 相同**（save/restore 不许改数值）。
+
+切片顺序（每片都带自己的判卷人，不整包推进）：
+
+| 切片 | 内容 | 判卷人 |
+|---|---|---|
+| S1 | `by1state` 的声明 -> KV 形状/预算核算复核（`MEM_PER_PAIR` 对照声明） | by1state 输出 vs 手算（30 秒那个任务的机器版） |
+| S2 | 生成 C 增加 **decode 模式**：per-layer K/V 缓冲 + 单步函数 | 判据 1（增量 vs 全量）在 by1ggml 自检里 |
+| S3 | cache 导出/导入（序列化 + 校验和） | 判据 2（round-trip 逐 token） |
+| S4 | 接进 llama.cpp 本体（`llamacpp/` 那批参考实现的路数） | rc1 总判据：`llama-cli` logits 逐位 |
+
+**已知边界**：S2 的 cache 维度按 `by1state` 声明走（kv_cache/recurrent/
+conv_history 三类里先做 kv_cache）；递推类（recurrent/conv_history）是
+delta_rule/ssm_scan 同族问题，归融合核路线，不在 S2 硬塞。
