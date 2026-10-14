@@ -97,7 +97,7 @@ GROUPS = [
 
 跑检查的两个入口也在这里（`by1run` · `by1fast`）。''', [
         'by1all', 'by1verify', 'by1diff', 'by1opdiff', 'by1e2e',
-        'by1irentry', 'by1gate', 'by1docs', 'by1files', 'by1lint',
+        'by1irentry', 'by1gate', 'by1docs', 'by1files', 'by1lint', 'by1langspec',
         'by1blind', 'by1debt', 'by1pat', 'by1smoke', 'by1pack',
         'by1rebuild', 'by1bootir', 'by1oracles', 'by1oracle',
         'by1run', 'by1fast', 'by1gpu', 'by1gpusmoke', 'by1gpubench', 'by1gputrain', 'by1gpuday', 'by1llama', 'by1sync', 'by1mutate', 'by1complete']),
@@ -159,6 +159,8 @@ OVERRIDE = {
     'models.tsv': '**手写的模型清单**：长名 / 短名 / HF id / 说明。命名规矩写在文件头',
     '1.0-roadmap.original.md': '**计划历史备份**：大目标版改写前的原始路线图（只读存档）',
     '1.0-roadmap.before-queue-rewrite.md': '**计划历史备份**：队列改写前一版（只读存档）',
+    'by1-language-spec.md': 'T2 语言合同（可执行规范）：语法骨架/错误模型/版本策略/最小绿红例；一致性判卷人 by1langspec.py',
+    'by1langspec.py': 'T2 判卷人：规范示例 x by1check x 错误输出三方一致（绿例绿/红例红/selftest 基线 9 错）',
     'product-definition.md': 'T1 产品定义（冻结版）：目标用户/输入输出/支持层级/不做的运行时职责/代表模型',
     'p0-model-selection.md': 'T1 选择记录：P0 代表模型（Qwen3-0.6B）、revision、许可证、'
                              '参考实现、上游运行时与不纳入分支',

@@ -1,6 +1,6 @@
 # 这个仓库里每个文件是干什么的
 
-> 344 个跟踪文件。按"你会想找什么"分组，不按字母表。
+> 346 个跟踪文件。按"你会想找什么"分组，不按字母表。
 >
 > **这份文档是生成的**：`python src/by1files.py --write`。
 > 文件清单、每组的个数、每个文件的一句话都从目录树和 docstring 来 ——
@@ -43,7 +43,7 @@
 
 ---
 
-## `src/` —— 85 个模块 + 1 个非 .py
+## `src/` —— 86 个模块 + 1 个非 .py
 
 ### 底座（留在 src/ 顶层）
 
@@ -132,6 +132,7 @@
 | `by1docs.py` | """文档里提到的每一个路径，都还在吗？ |
 | `by1files.py` | 生成并核对 `FILES.md` |
 | `by1lint.py` | 只盯这个项目真正怕的那几类 |
+| `by1langspec.py` | T2 判卷人：规范示例 x by1check x 错误输出三方一致（绿例绿/红例红/selftest 基线 9 错） |
 | `by1blind.py` | 量"看不见的东西" |
 | `by1debt.py` | 没干完的事，量出来，不凭印象列 |
 | `by1pat.py` | 哪些词是数据里的，哪些是我的想象 |
@@ -215,7 +216,7 @@
 |---|---|
 | `ci.yml` | 每次提交都跑档 1 —— **这是这个仓库唯一的自动门 |
 
-## `docs/` —— 22 个
+## `docs/` —— 23 个
 
 活的文档 —— 还没做完的事记在这里，做完的挪去 `history/`。
 
@@ -224,6 +225,7 @@
 | `1.0-roadmap.md` | By1 长期路线图 |
 | `INVENTORY.txt` | 验证清单：每个模型验到了什么、判卷人是谁 |
 | `autodl-file-storage.md` | AutoDL 文件存储操作单 —— 重租卡 0 下载 |
+| `by1-language-spec.md` | T2 语言合同（可执行规范）：语法骨架/错误模型/版本策略/最小绿红例；一致性判卷人 by1langspec.py |
 | `check-map.md` | `check()` 的结构图 |
 | `complete-models.md` | 完整模型：参数共享、视觉与 MTP |
 | `convert-diff.md` | by1 build-gguf 与上游 convert_hf_to_gguf 的结构差异（T24） |
@@ -375,7 +377,7 @@
 | `ISTA-DASLab__Qwen3.8-27B-GSQ-RCO-GGUF.IQ2_S-mtp.alloc.txt` | 14 | |
 
 
-## `src/checks/` —— 31 个
+## `src/checks/` —— 32 个
 
 | 文件 | 用途 |
 |---|---|
@@ -397,6 +399,7 @@
 | `by1gpusmoke.py` | CUDA 前向、梯度、参数更新与完整视觉/MTP 分支的可复现验收 |
 | `by1gputrain.py` | 用真实 Qwen3-0.6B 权重对比 CUDA 反向传播和一次更新 |
 | `by1irentry.py` | 三个后端必须能从 IR 入口跑通**，而不是只从 .by1 入口 |
+| `by1langspec.py` | T2 判卷人：规范示例 x by1check x 错误输出三方一致（绿例绿/红例红/selftest 基线 9 错） |
 | `by1lint.py` | 只盯这个项目真正怕的那几类 |
 | `by1llama.py` | llama.cpp 基线记录、GGUF 清单校验、logits 逐位对拍 |
 | `by1mutate.py` | 变异反例库**（1.0.0-rc0 的 T0.3） |
