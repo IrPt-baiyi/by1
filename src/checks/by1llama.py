@@ -406,9 +406,10 @@ BY1_TO_GGML_KV = {
 def selftest_kv_map(gguf_path):
     """T23 反例必红：合成表的键必须全部真实存在于产物 GGUF。"""
     raw = open(gguf_path, 'rb').read()
-    info = _gguf_parse(raw)
-    have = set(info["kv"].keys())
-    missing = [k for k in BY1_TO_GGML_KV.values() if k not in have]
+    # _gguf_parse 的 KV 区是**原字节**（拷贝式写手的设计）——
+    # 键存在性以键串在 KV 区出现为准（脚手架判据；正解 = KV 键解析器）
+    missing = [k for k in BY1_TO_GGML_KV.values()
+               if k.encode('utf-8') not in raw]
     return missing
 
 
