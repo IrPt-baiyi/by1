@@ -164,6 +164,18 @@ tinygemma3_cifar` 源孪生 + CIFAR 测试图。双侧边界已通（mtmd 探针
 - **残差定域 mtmd 侧**：预处理数值（/255 与 u8 取整序）或塔内核浮点
   差 —— 最后一格：读 mtmd-image.cpp 的 rescale/normalize 逐式对照
 
+**第 19 轮（T20-5）：判据收官 —— 漂移真凶 = 产物的 Q8_0 塔量化**
+- mmproj 张量型实测 **{F16:1, F32:46, Q8_0:24}** —— 附带 mmproj 的
+  视觉塔权重是 **Q8_0 量化**的（HF 侧 fp32）；0.2 漂移 = 量化噪声
+- 终审实验：从 HF 源重转 **F32 mmproj**（上游 converter 未改一字）
+  -> 同精度对拍 **max|d| 1.487e-03 · mean 3.194e-04 · cos 1.000000**
+  = 内核级浮点容差（1e-3 族）—— transformers / mtmd **同权重同精度
+  下等价**
+- 预处理式逐字相同（/255 -> (x-mean)/std，双侧同式）；探针越界读
+  已修（只取 64x128）
+- 判据口径入账：跨内核无位级可言，容差走 precision-budget 1e-3 族；
+  Q8_0 产物的 0.2 漂移归因到量化本身，不冒充实现差
+
 ### 社区「Olmo2 改名欺骗」配方核验（2026-10-14）：**判不忠实**
 
 AMD dev 社区帖给了 Instella-3B 的 hack：safetensors 改名 + config 换
