@@ -1,6 +1,6 @@
 # 这个仓库里每个文件是干什么的
 
-> 347 个跟踪文件。按"你会想找什么"分组，不按字母表。
+> 352 个跟踪文件。按"你会想找什么"分组，不按字母表。
 >
 > **这份文档是生成的**：`python src/by1files.py --write`。
 > 文件清单、每组的个数、每个文件的一句话都从目录树和 docstring 来 ——
@@ -295,6 +295,16 @@
 | `llamacpp-plan-2026-10.md` | 接 llama.cpp：完整计划（执行版） |
 | `plan.md` | by1 · 接下来的计划 |
 | `roadmap-rc-2026-10.md` | 1.0.0 路线图（rc0 – rc9 → 1.0.0） |
+
+## `history/_hf_probe/` —— 5 个
+
+| 文件 | 用途 |
+|---|---|
+| `dep_check.py` | import importlib |
+| `ggml-org.html` | <!doctype html> |
+| `mel_bf16_1s.err` | step: clip_init... |
+| `mel_bf16_1s.txt` | mel 128 200 |
+| `proc_probe.py` | import json, sys |
 
 ## `models/` —— 61 个
 
