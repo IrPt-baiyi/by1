@@ -159,6 +159,7 @@ OVERRIDE = {
     'models.tsv': '**手写的模型清单**：长名 / 短名 / HF id / 说明。命名规矩写在文件头',
     '1.0-roadmap.original.md': '**计划历史备份**：大目标版改写前的原始路线图（只读存档）',
     '1.0-roadmap.before-queue-rewrite.md': '**计划历史备份**：队列改写前一版（只读存档）',
+    'step5-runbook.md': 'Step-5 发布日快速反应手册：抓元数据/草稿 by1/合同审计/GGUF 产物/推销素材/风险预案',
     'by1-language-spec.md': 'T2 语言合同（可执行规范）：语法骨架/错误模型/版本策略/最小绿红例；一致性判卷人 by1langspec.py',
     'by1langspec.py': 'T2 判卷人：规范示例 x by1check x 错误输出三方一致（绿例绿/红例红/selftest 基线 9 错）',
     'product-definition.md': 'T1 产品定义（冻结版）：目标用户/输入输出/支持层级/不做的运行时职责/代表模型',
