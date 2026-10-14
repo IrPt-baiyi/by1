@@ -343,6 +343,43 @@ def selftest():
         for b in bad:
             print("  [FAIL] " + b)
         return 1
+    # T26：sampler 对拍矩阵（参数组合全网格）—— 失败项单列
+    mat_bad, cells = [], 0
+    lfile2 = os.path.join(root, "cgen", "by1sample-matrix.txt")
+    for temp in (0.5, 0.8, 1.0, 1.3):
+        for tk in (0, 3, 40, 400):
+            for tp in (0.5, 0.9, 1.0):
+                for mp in (0.0, 0.05, 0.3):
+                    cells += 1
+                    _random.seed(20261014 + cells)
+                    logits = [_random.uniform(-30, 30) for _ in range(1024)]
+                    with open(lfile2, "w", encoding="utf-8") as fh:
+                        fh.write("".join("%.9g\n" % v for v in logits))
+                    p3 = subprocess.run(
+                        [probe2, lfile2, "0", "8", str(temp), str(tk),
+                         str(tp), str(mp)],
+                        capture_output=True, text=True, encoding="utf-8",
+                        errors="replace")
+                    if p3.returncode != 0:
+                        mat_bad.append(("rc=%d" % p3.returncode,
+                                        (temp, tk, tp, mp)))
+                        continue
+                    exp = [int(ln.split()[1])
+                           for ln in p3.stdout.splitlines() if ln.strip()]
+                    got = [chain_f32(logits, s, temp, tk, tp, mp)
+                           for s in range(8)]
+                    if got != exp:
+                        mat_bad.append(("mismatch",
+                                        (temp, tk, tp, mp), got[:4], exp[:4]))
+    if mat_bad:
+        for b in mat_bad:
+            print("  [FAIL-矩阵] %r" % (b,))
+        print("  [FAIL] T26 矩阵：%d/%d 格过，失败 %d 项（单列如上）"
+              % (cells - len(mat_bad), cells, len(mat_bad)))
+        return 1
+    print("  [PASS] T26 矩阵：%d/%d 格逐 token 全对（temp x top_k x top_p "
+          "x min_p 全网格，每格 8 token）" % (cells, cells))
+
     print("  [PASS] by1sample：规格手算 + 负例必红 + RNG 三流对上 + "
           "**链级逐 token 3 配置 x 8 种子全对**（top_k/top_p/min_p/temp/"
           "dist 的 float32 浮点序复刻）")
