@@ -25,7 +25,7 @@
 
 | # | 项 | 现状 | 状态 |
 |---|---|---|---|
-| C1 | 音频 -> 塔 -> 文本端到端逐位 | 未开跑（被 A1 挡） | **半销（2026-10-14 第 23 轮）**：mel 预处理边界**数值等价** —— 同一 440Hz 正弦下 mtmd 前 100 帧 vs HF Whisper 特征 **mean 4.7e-6 / max 5.8e-3**（fp 内核容差），列 0 逐位同；差异仅分块策略（mtmd 流式 1s 块 + flush 尾块：0.5/1/2s -> 1/2/3 块 x 100 帧；HF 整段一次 30s 填充）。判卷人 tools/audio-mel-probe.cpp + tools/qwen3asr-mel-ref.py。****塔边界首数（2026-10-14 第 27 轮）**：13x1024 @ audio_tower.proj2 —— max|d| 7.13e-02 / mean 6.05e-03 / token 余弦 mean 0.912（min 0.36）；参照侧在 transformers==4.57.6 钉住 venv 下装载（thinker.* 剥前缀 612 张量 unexpected=0，351 missing 全属 visual 未用支路）。漂移与 T20 的 bf16 噪声同象（mmproj=bf16 vs 参照 fp32），F32 重转终审待做。**端到端未跑 = 未全销** |
+| C1 | 音频 -> 塔 -> 文本端到端逐位 | 未开跑（被 A1 挡） | **半销（2026-10-14 第 23 轮）**：mel 预处理边界**数值等价** —— 同一 440Hz 正弦下 mtmd 前 100 帧 vs HF Whisper 特征 **mean 4.7e-6 / max 5.8e-3**（fp 内核容差），列 0 逐位同；差异仅分块策略（mtmd 流式 1s 块 + flush 尾块：0.5/1/2s -> 1/2/3 块 x 100 帧；HF 整段一次 30s 填充）。判卷人 tools/audio-mel-probe.cpp + tools/qwen3asr-mel-ref.py。****塔边界首数（2026-10-14 第 27 轮）**：13x1024 @ audio_tower.proj2 —— max|d| 7.13e-02 / mean 6.05e-03 / token 余弦 mean 0.912（min 0.36）；参照侧在 transformers==4.57.6 钉住 venv 下装载（thinker.* 剥前缀 612 张量 unexpected=0，351 missing 全属 visual 未用支路）。漂移**同日归因翻案**：两侧权重同为 bf16（checkpoint bf16、mmproj 110 张 BF16）—— **漂移不是精度**（T20 的 bf16 故事在这里不成立）。新假设：mtmd 是一次过 200 帧出 26 token（预处理分块 + 整段编码），参照是 100 帧出 13 token —— **注意力长度不同**（26 长上下文 vs 13）。终审实验已设计：把 mtmd 的 200 帧 mel 直接喂 HF 塔（跳过 fe，mel 数学已证等价）-> 26 vs 26 同长对拍，残差即纯塔计算差。**端到端未跑 = 未全销** |
 | C2 | 视觉端到端（T20 的塔边界已验到同精度等价，但**端到端生成**没跑） | T20 ✅ 仅塔边界 | 未销 |
 | C3 | 多模态 KV cache / decode（T17 只做了文本） | 文本 ✅ 多模态 ✗ | 未销 |
 | C4 | mmproj 产物链（by1 写手出 mmproj、双产物逐位——T18 的多模态版） | 未开跑 | 未销 |
