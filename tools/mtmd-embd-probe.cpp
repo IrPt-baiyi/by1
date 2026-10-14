@@ -19,6 +19,7 @@
  *
  * Usage: mtmd-embd-probe <mmproj.gguf> <image.rgb> <nx> <ny> <marker> <n_per_token> <text.gguf>
  */
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -34,29 +35,42 @@ int main(int argc, char ** argv) {
         return 2;
     }
     const char * mmproj = argv[1];
-    const char * img_path = argv[2];
-    uint32_t nx = (uint32_t) atoi(argv[3]);
-    uint32_t ny = (uint32_t) atoi(argv[4]);
-    const char * marker = argv[5];
-
-    FILE * f = fopen(img_path, "rb");
-    if (!f) {
-        fprintf(stderr, "cannot open %s\n", img_path);
-        return 2;
+    /* audio mode: <mmproj> --sine <n_samples> <marker> <n_per> <text.gguf> */
+    bool audio_mode = (argc >= 7 && std::string(argv[2]) == "--sine");
+    const char * marker = audio_mode ? argv[4] : argv[5];
+    const char * n_per_arg = audio_mode ? argv[5] : argv[6];
+    const char * text_model_path = audio_mode ? argv[6] : argv[7];
+    std::vector<unsigned char> rgb;
+    std::vector<float> pcm;
+    uint32_t nx = 0, ny = 0;
+    if (audio_mode) {
+        int ns = atoi(argv[3]);
+        pcm.resize(ns);
+        for (int i = 0; i < ns; ++i) {
+            pcm[i] = std::sin(2.0 * 3.14159265 * 440.0 * i / 16000.0);
+        }
+    } else {
+        nx = (uint32_t) atoi(argv[3]);
+        ny = (uint32_t) atoi(argv[4]);
+        FILE * f = fopen(argv[2], "rb");
+        if (!f) {
+            fprintf(stderr, "cannot open %s\n", argv[2]);
+            return 2;
+        }
+        rgb.resize((size_t) nx * ny * 3);
+        if (fread(rgb.data(), 1, rgb.size(), f) != rgb.size()) {
+            fprintf(stderr, "short read on %s\n", argv[2]);
+            return 2;
+        }
+        fclose(f);
     }
-    std::vector<unsigned char> rgb((size_t) nx * ny * 3);
-    if (fread(rgb.data(), 1, rgb.size(), f) != rgb.size()) {
-        fprintf(stderr, "short read on %s\n", img_path);
-        return 2;
-    }
-    fclose(f);
 
     mtmd_context_params params = mtmd_context_params_default();
     params.use_gpu = false;
-    params.media_marker = argv[5];   // marker is caller-supplied (same string in text)
+    params.media_marker = marker;   // marker is caller-supplied (same string in text)
     // tokenize needs the text model's vocab (mtmd_init_from_file takes the model)
     struct llama_model * text_model =
-        llama_model_load_from_file(argv[7], llama_model_default_params());
+        llama_model_load_from_file(text_model_path, llama_model_default_params());
     if (!text_model) {
         fprintf(stderr, "llama_model_load_from_file failed\n");
         return 1;
@@ -67,7 +81,9 @@ int main(int argc, char ** argv) {
         return 1;
     }
 
-    mtmd_bitmap * bmp = mtmd_bitmap_init(nx, ny, rgb.data());
+    mtmd_bitmap * bmp = audio_mode
+        ? mtmd_bitmap_init_from_audio(pcm.size(), pcm.data())
+        : mtmd_bitmap_init(nx, ny, rgb.data());
     std::vector<const mtmd_bitmap *> bmps = { bmp };
     mtmd_input_chunks * chunks = mtmd_input_chunks_init();
     mtmd_input_text text = { marker, strlen(marker), false, true };
@@ -81,7 +97,9 @@ int main(int argc, char ** argv) {
     size_t n_tok = 0;
     for (size_t i = 0; i < mtmd_input_chunks_size(chunks); ++i) {
         const mtmd_input_chunk * ch = mtmd_input_chunks_get(chunks, i);
-        if (mtmd_input_chunk_get_type(ch) != MTMD_INPUT_CHUNK_TYPE_IMAGE) {
+        mtmd_input_chunk_type cty = mtmd_input_chunk_get_type(ch);
+        if (cty != MTMD_INPUT_CHUNK_TYPE_IMAGE &&
+            cty != MTMD_INPUT_CHUNK_TYPE_AUDIO) {
             continue;
         }
         enc_rc = mtmd_encode_chunk(ctx, (mtmd_input_chunk *) ch);
@@ -93,7 +111,7 @@ int main(int argc, char ** argv) {
         return 1;
     }
     const float * embd = mtmd_get_output_embd(ctx);
-    size_t n_per = (size_t) atoi(argv[6]);
+    size_t n_per = (size_t) atoi(n_per_arg);
     printf("embd %zu %zu\n", n_tok, n_per);
     for (size_t i = 0; i < n_tok * n_per; ++i) {
         printf("%.9g\n", (double) embd[i]);
