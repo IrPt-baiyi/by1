@@ -1,6 +1,6 @@
 # 这个仓库里每个文件是干什么的
 
-> 329 个跟踪文件。按"你会想找什么"分组，不按字母表。
+> 335 个跟踪文件。按"你会想找什么"分组，不按字母表。
 >
 > **这份文档是生成的**：`python src/by1files.py --write`。
 > 文件清单、每组的个数、每个文件的一句话都从目录树和 docstring 来 ——
@@ -43,7 +43,7 @@
 
 ---
 
-## `src/` —— 84 个模块 + 1 个非 .py
+## `src/` —— 85 个模块 + 1 个非 .py
 
 ### 底座（留在 src/ 顶层）
 
@@ -85,6 +85,7 @@
 | `by1boot.py` | 从一个已发布的 checkpoint **反推**一份 .by1 草稿 |
 | `by1ext.py` | 逃生舱第二层：**引用一个外部符号** |
 | `by1full.py` | 从完整架构声明生成 Transformers 模型，包含视觉与独立 MTP 分支 |
+| `by1sample.py` | 采样与生成闭环的**可执行规格**（T25） |
 
 ### `lang/` —— 语言本身
 
@@ -470,13 +471,18 @@
 | `by1ssm.py` | Mamba2 的判卷人**：by1 要生成的递推 vs 官方 mixer |
 | `by1train.py` | 按 .by1 的描述搭一个模型，训练它，然后让它写字 |
 
-## `tools/` —— 1 个
+## `tools/` —— 6 个
 
 一次性脚本。**没有任何代码引用它们。**
 
 | 文件 | 用途 |
 |---|---|
 | `ggml-smoke.c` | **M0 的判卷人**：ggml 的 mul_mat / rms_norm / silu 对手算。接 llama.cpp 那一轮的构建自检（编译命令在文件头注） |
+| `instella-greedy.py` | by1 side of the T25-1 greedy judge. |
+| `instella-ref-logits.py` | reference-side logits dump (T18 cross-check). |
+| `instella-spoof-olmo2.py` | 已判不忠实（2026-10-14 核验）——留档当反例，产物不许当 T18 的链** |
+| `instella-spoof-olmoe.py` | 为什么等价：olmoe.cpp 与 Instella 同型 —— |
+| `llama-eval-logits.cpp` | fixed prompt -> full logits dump (one float per line). |
 
 ## `tools/remote/` —— 34 个
 

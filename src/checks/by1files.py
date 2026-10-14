@@ -78,7 +78,7 @@ GROUPS = [
 `No module named 'by1paths'`，看起来像"文件丢了"。''', [
         'by1paths', 'by1io', 'by1codegen', 'by1skip', 'by1ir', 'by1ver',
         'by1exec', 'by1c', 'by1ggml', 'by1graph', 'by1refs', 'by1check',
-        'by1boot', 'by1ext', 'by1full']),
+        'by1boot', 'by1ext', 'by1full', 'by1sample']),
 
     ('`lang/` —— 语言本身', 'lang', '''把 `.by1` 变成一份能算的东西。
 

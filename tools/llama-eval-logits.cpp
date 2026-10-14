@@ -33,7 +33,19 @@ int main(int argc, char ** argv) {
 
     common_params params;
     common_init();
-    if (!common_params_parse(argc, argv, params, LLAMA_EXAMPLE_COMMON)) {
+
+    // strip our own --greedy N before common_params_parse (it rejects unknown args)
+    int n_gen = 0;
+    std::vector<char *> argv2;
+    for (int i = 0; i < argc; ++i) {
+        if (std::string(argv[i]) == "--greedy" && i + 1 < argc) {
+            n_gen = atoi(argv[i + 1]);
+            ++i;
+            continue;
+        }
+        argv2.push_back(argv[i]);
+    }
+    if (!common_params_parse((int) argv2.size(), argv2.data(), params, LLAMA_EXAMPLE_COMMON)) {
         return 1;
     }
     llama_backend_init();
@@ -62,6 +74,39 @@ int main(int argc, char ** argv) {
     const float * logits = llama_get_logits_ith(ctx, (int) tokens.size() - 1);
     for (int i = 0; i < n_vocab; ++i) {
         printf("%.9g\n", (double) logits[i]);
+    }
+
+    // greedy continuation: argmax -> decode one token -> repeat.
+    // "gen-ids: ..." goes to stderr; stdout stays the logits dump.
+    if (n_gen > 0) {
+        std::vector<llama_token> gen;
+        for (int step = 0; step < n_gen; ++step) {
+            int best = 0;
+            for (int i = 1; i < n_vocab; ++i) {
+                if (logits[i] > logits[best]) {
+                    best = i;
+                }
+            }
+            gen.push_back(best);
+            llama_batch b = llama_batch_init(1, 0, 1);
+            b.n_tokens = 1;
+            b.token[0] = best;
+            b.pos[0] = (int) tokens.size() + step;
+            b.n_seq_id[0] = 1;
+            b.seq_id[0][0] = 0;
+            b.logits[0] = 1;   // members are left uninitialized by llama_batch_init
+            if (llama_decode(ctx, b) != 0) {
+                fprintf(stderr, "decode step %d failed\n", step);
+                return 1;
+            }
+            llama_batch_free(b);
+            logits = llama_get_logits_ith(ctx, 0);
+        }
+        fprintf(stderr, "gen-ids:");
+        for (auto t : gen) {
+            fprintf(stderr, " %d", t);
+        }
+        fprintf(stderr, "\n");
     }
 
     llama_backend_free();
