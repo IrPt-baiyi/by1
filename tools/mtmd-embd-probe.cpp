@@ -196,10 +196,10 @@ int main(int argc, char ** argv) {
                 fprintf(stderr, "lm: decode text chunk %zu n=%d\n", i, cnt);
                 if (llama_decode(lctx, lb) != 0) { fprintf(stderr, "decode failed\n"); return 1; }
             } else {
+                /* ISOLATION: media rows as placeholder TOKENS (151676),
+                   no embd feed -- isolates the embd injection path */
                 for (int j = 0; j < cnt; ++j) {
-                    memcpy(lb.embd + (size_t) j * n_per,
-                           embd_all + (size_t) med_row * n_per,
-                           sizeof(float) * n_per);
+                    s_tok[j] = 151676;
                     med_row++;
                 }
                 /* audio media block is CAUSAL (non-causal was refuted:
