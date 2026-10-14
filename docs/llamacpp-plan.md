@@ -153,8 +153,16 @@ tinygemma3_cifar` 源孪生 + CIFAR 测试图。双侧边界已通（mtmd 探针
 - **缩放说排除**：每 token 拟合 alpha ≈ 1.00（1.007/1.000/1.004/0.980），
   纯缩放后相对残差仍 0.188。
 - **剩余归因**：同位、非缩放、非重排 -> **2x2 merge 的合并数学逐元差**
-  （子块拼接序进线性层）或内核级浮点差。下轮：取
-  multi_modal_projector 权重做 24 种拼接序的手算对照。
+  （子块拼接序进线性层）或内核级浮点差。
+
+**第 18 轮（T20-4）：参照链逐位复刻自证 + 残差定域 mtmd 侧**
+- tinygemma3 的 merge 真身 = **AvgPool2d(2) + (1+w) RMSNorm + matmul(W)**
+  （不是 space-to-depth；Gemma 系 RMSNorm 带 **(1+w)**）—— 手算链对
+  proj 输出**逐位同（max 0.00e+00）**，参照侧自证完毕
+- 六种链变体（norm/pool 序 · W/Wt · 漏 +1）对 mtmd **全部止步
+  cos 0.978**：排布与公式变体全部排除
+- **残差定域 mtmd 侧**：预处理数值（/255 与 u8 取整序）或塔内核浮点
+  差 —— 最后一格：读 mtmd-image.cpp 的 rescale/normalize 逐式对照
 
 ### 社区「Olmo2 改名欺骗」配方核验（2026-10-14）：**判不忠实**
 
