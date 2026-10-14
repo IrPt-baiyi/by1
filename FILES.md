@@ -1,6 +1,6 @@
 # 这个仓库里每个文件是干什么的
 
-> 335 个跟踪文件。按"你会想找什么"分组，不按字母表。
+> 336 个跟踪文件。按"你会想找什么"分组，不按字母表。
 >
 > **这份文档是生成的**：`python src/by1files.py --write`。
 > 文件清单、每组的个数、每个文件的一句话都从目录树和 docstring 来 ——
@@ -471,7 +471,7 @@
 | `by1ssm.py` | Mamba2 的判卷人**：by1 要生成的递推 vs 官方 mixer |
 | `by1train.py` | 按 .by1 的描述搭一个模型，训练它，然后让它写字 |
 
-## `tools/` —— 6 个
+## `tools/` —— 7 个
 
 一次性脚本。**没有任何代码引用它们。**
 
@@ -483,6 +483,7 @@
 | `instella-spoof-olmo2.py` | 已判不忠实（2026-10-14 核验）——留档当反例，产物不许当 T18 的链** |
 | `instella-spoof-olmoe.py` | 为什么等价：olmoe.cpp 与 Instella 同型 —— |
 | `llama-eval-logits.cpp` | fixed prompt -> full logits dump (one float per line). |
+| `rng-probe.cpp` | T25-2 judge: same-seed RNG parity oracle. |
 
 ## `tools/remote/` —— 34 个
 
