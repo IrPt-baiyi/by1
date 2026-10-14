@@ -11,6 +11,8 @@
 | A1 | **微型音频夹具缺失**：llama.cpp 侧有 10 种音频预处理器（whisper / conformer / d1omni / granite-speech / gemma4a / qwen3a / dots3note / mimo / qwen3tts / pockettts / parakeet，`tools/mtmd/mtmd-audio.h`），但判据需要的"小音频模型 + mmproj + HF 源孪生"三件套没有现成的：`mradermacher/tiny-audio-GGUF` 只有文本 GGUF（**无 mmproj**）；`gemma-3n-audio` 转换仓是空壳（仅 .gitattributes）；HF 搜索接口 2026-10-14 被限流（504） | 本轮实测 | **半销（同日）**：官方夹具清单在 `tools/mtmd/tests.sh` 的 `add_test_audio` 里 —— **`ggml-org/Qwen3-ASR-0.6B-GGUF`**（0.6B，Q8_0+bf16 双 mmproj）与 `ultravox-v0_5-llama-3_2-1b`（mmproj-f16）；HF 源孪生 `Qwen/Qwen3-ASR-0.6B` / `fixie-ai/ultravox-v0_5-llama-3_2-1b` 均在。夹具已入库 `model-cache/audio` + `model-cache/qwen3asr-hf`，**边界探针未跑 = 未全销** |
 | A2 | 大号候选在案但不划算：Qwen3-Omni-30B-A3B（refs 有契约，音频塔 = conv2d×3 + 32 层 Whisper 式 encoder，见 `src/checks/by1all.py` 注释）体积 60GB 级，不适合边界对拍轮 | by1all 注释 + refs 清单 | 未销 |
 
+| A3 | **HF 参照侧 Qwen3-ASR 装载映射错位**（2026-10-14 第 25 轮实测）：checkpoint 是 thinker.*（audio_tower 18 层 + proj1/proj2，d_model 896 = mmproj 的 embedding_length 一致）；transformers 侧 Qwen3ASRForConditionalGeneration 实例化出 model.*（24 层 + multi_modal_projector.linear_1/2）—— 全量 MISSING/UNEXPECTED，权重全是随机的（此前若用它的前向等于没验）。根因：真配置在嵌套的 thinker_config（audio_config 为 Whisper 式），类读的是空顶层走默认。mel 对照不受影响（只用 feature_extractor，与权重无关） | LOAD REPORT 逐条 + config 实测 | 未销（下轮：thinker_config 解包 + state_dict 映射） |
+
 ## B. by1 侧建模缺口
 
 | # | 缺口 | 证据 | 状态 |
