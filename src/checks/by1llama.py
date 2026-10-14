@@ -414,7 +414,8 @@ def _kv_arch_prefix(raw):
 
 def selftest_kv_map(gguf_path):
     """T23 反例必红：合成表的键必须全部真实存在于产物 GGUF。"""
-    raw = open(gguf_path, 'rb').read()
+    with open(gguf_path, 'rb') as fh:
+        raw = fh.read()
     arch = _kv_arch_prefix(raw)
     if arch is None:
         return ["(未知 arch 前缀)"]

@@ -1,0 +1,24 @@
+# Qwen2.5-0.5B-Instruct: real hparams (config.json measured), tie_word_embeddings=true.
+model Qwen25-0_5B {
+  backend transformers
+  arch qwen2
+  ctx 32768
+
+  hparams {
+    d_model = 896
+    vocab = 151936
+    rms_eps = 1e-6
+    tie_word_embeddings = true
+    bos_token_id = 151643
+    eos_token_id = 151645
+  }
+
+  stack main {
+    pattern = 24 * Attention(q = 14, kv = 2, head_dim = 64, qkv_bias = true, out_bias = false)
+    main[:] >> FFN(hidden = 4864)
+  }
+
+  position {
+    default = rope(base = 1000000, pairing = half)
+  }
+}
