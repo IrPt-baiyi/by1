@@ -26,7 +26,8 @@ def main(argv):
     t = np.arange(n_s, dtype=np.float32) / sample_rate
     sine = np.sin(2 * np.pi * 440.0 * t).astype(np.float32)
 
-    feats = fe(raw_speech=sine, sampling_rate=sample_rate, return_tensors="np")
+    feats = fe(raw_speech=sine, sampling_rate=sample_rate,
+               padding="longest", return_tensors="np")
     key = "input_features" if "input_features" in feats else "input_mel"
     mel = np.asarray(feats[key], dtype=np.float64)
     # HF conventions differ per family: find the (128, T) plane
