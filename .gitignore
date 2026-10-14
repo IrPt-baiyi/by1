@@ -81,6 +81,10 @@ _lh/
 # ── 大文件：不该进仓库 ────────────────────────────────────────────
 # refs/ 里的 **config** 和**张量名清单**要留（几十 KB，是描述的一部分），
 # 但那两种大文件不留 —— 它们能重新下，而且一份几十上百 MB。
+# **model-cache/ 整目录挡**：T18 拉的真权重（6GB safetensors + 6GB
+# GGUF + 转换副本）—— 顶层模式只挡了大文件，config/tokenizer 这些
+# 小 json 会漏出来让 `git status` 脏。能重新下的都不进 git。
+model-cache/
 *.safetensors
 *.bin
 *.gguf
