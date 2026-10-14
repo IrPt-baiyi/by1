@@ -546,15 +546,54 @@ def emit_model_c_graph(g, ir, order, params):
             _put(body, prim, node,
                  f"sl_ax(ctx, {a[0]}, {int(at['axis'])}, "
                  f"{int(at['start'])}, {int(at['stop'])})")
+        elif prim == "soft_max_sink":
+            # 语义逐字照 ref：z = a·scale + mask -> **尾巴拼 sink 槽** ->
+            # softmax -> 去掉最后一列。exec 尾轴（key）= ggml dim0。
+            # **顺序要紧**：先加 mask 再拼 sink —— sink 那列没有 mask。
+            u = _gvar(node["outs"][0])
+            x0 = a[0]
+            body.append(f"    struct ggml_tensor * {u}_z = "
+                        f"ggml_scale(ctx, {x0}, {_f(at['scale'])});")
+            body.append(f"    {u}_z = ggml_add(ctx, {u}_z, {a[1]});")
+            # sink [头] -> exec (头, q, 1) = ggml [1, n, 头]
+            body.append(f"    struct ggml_tensor * {u}_sk0 = "
+                        f"ggml_reshape_3d(ctx, {a[2]}, 1, 1, {x0}->ne[2]);")
+            body.append(f"    int64_t {u}_ne[3] = {{1, {x0}->ne[1], {x0}->ne[2]}};")
+            body.append(f"    struct ggml_tensor * {u}_pat = "
+                        f"ggml_new_tensor(ctx, GGML_TYPE_F32, 3, {u}_ne);")
+            body.append(f"    struct ggml_tensor * {u}_sk = "
+                        f"ggml_repeat(ctx, {u}_sk0, {u}_pat);")
+            body.append(f"    struct ggml_tensor * {u}_z2 = "
+                        f"ggml_concat(ctx, {u}_z, {u}_sk, 0);")
+            body.append(f"    struct ggml_tensor * {u}_sm = "
+                        f"ggml_soft_max(ctx, {u}_z2);")
+            body.append(f"    int64_t {u}_k = {x0}->ne[0];")
+            _put(body, prim, node, f"sl_ax(ctx, {u}_sm, 0, 0, {u}_k)")
+        elif prim == "conv1d_causal":
+            # 深度可分离因果卷积（ref 的**不翻转**公式）：左补 kernel-1，
+            # out[t] = Σ_i w[:,i] · xpad[:,t+i]。这版 ggml 的 conv_1d_dw
+            # 是 im2col 布局：**参数序 (核, 输入)**、输入 [L, IC, N]、
+            # 核 [K, 1, IC]（探针实证：非对称核 [1,10] 出 [10,21,32] =
+            # 不翻转 ✓ 与 ref 同义）。图值是 exec 倒序布局，两头各转一次。
+            u = _gvar(node["outs"][0])
+            k = int(at["kernel"])
+            body.append(f"    struct ggml_tensor * {u}_x = "
+                        f"ggml_cont(ctx, ggml_permute(ctx, {a[0]}, 1, 0, 2, 3));")
+            body.append(f"    struct ggml_tensor * {u}_w = "
+                        f"ggml_reshape_3d(ctx, {a[1]}, {k}, 1, {a[0]}->ne[0]);")
+            body.append(f"    struct ggml_tensor * {u}_c = "
+                        f"ggml_conv_1d_dw(ctx, {u}_w, {u}_x, 1, {k - 1}, 1);")
+            body.append(f"    struct ggml_tensor * {u}_b = "
+                        f"ggml_cont(ctx, ggml_permute(ctx, {u}_c, 1, 0, 2, 3));")
+            body.append(f"    int64_t {u}_s = {a[0]}->ne[1];")
+            _put(body, prim, node, f"sl_ax(ctx, {u}_b, 1, 0, {u}_s)")
         else:
             # **要么实现，要么拒绝** —— 这几族不是忘了，是对上游 ggml
             # 的摸底结论（2026-10-14 对 ggml.h 逐个查过）：
             #   top_k / gather / one_hot / masked_fill / le —— MoE 路由族：
             #     **这版 ggml 没有 top_k 和比较算子**，要等上游或自研 kernel
-            #   conv1d_causal / delta_rule / ssm_scan —— 递推原语：
-            #     融合 C 核在管（by1c 的短卷积 / KDA / SSM 路径），图路径下一批
-            #   soft_max_sink —— 拼 sink 槽的组合（concat+soft_max+slice
-            #     的杂技），**下一批**，不悄悄接
+            #   delta_rule / ssm_scan —— 递推原语：融合 C 核在管
+            #     （by1c 的 KDA / SSM 路径），图路径等递推展开方案
             raise SystemExit(
                 "  [不支持] 图的 %r 原语还没有 ggml 映射 —— "
                 "**要么实现、要么在 check_support 里拒绝**" % prim)

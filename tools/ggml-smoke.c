@@ -367,10 +367,80 @@ int main(void) {
         }
     }
 
+    /* ⑮ conv1d_causal：**非对称核** [1, 10] —— 翻转与否当场分辨。
+       这版 ggml 的 conv_1d(_dw) 是 im2col 布局：输入 [L, IC, N]、
+       核 [K, 1, IC]（dw 断言 ne1 相等），参数序 (核, 输入)。
+       x=[1,2,3]（L=3, IC=1），k=2 左补 1 个零：out[t] = 1·mp[t] + 10·mp[t+1]
+       -> [10, 21, 32]；若核被翻转首项变 1 —— 一步裁决。 */
+    {
+        struct ggml_tensor * cx = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, 3, 1, 1);
+        float cxv[3] = { 1, 2, 3 };
+        memcpy(cx->data, cxv, sizeof(cxv));
+        struct ggml_tensor * cw = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, 2, 1, 1);
+        float cwv[2] = { 1, 10 };
+        memcpy(cw->data, cwv, sizeof(cwv));
+        struct ggml_tensor * cc = ggml_conv_1d_dw(ctx, cw, cx, 1, 1, 1);
+        struct ggml_tensor * co = sl_ax(ctx, cc, 0, 0, 3);
+        gf = ggml_new_graph(ctx);
+        ggml_build_forward_expand(gf, co);
+        if (ggml_graph_compute_with_ctx(ctx, gf, 1) != GGML_STATUS_SUCCESS) { return 1; }
+        float cw_exp[3] = { 10, 21, 32 };
+        for (int i = 0; i < 3; i++) {
+            if (!near(ggml_get_f32_1d(co, i), cw_exp[i], 1e-5f)) {
+                printf("  [FAIL] conv1d_causal[%d] = %.4f, 手算 %.4f\n", i,
+                       ggml_get_f32_1d(co, i), cw_exp[i]);
+                bad = 1;
+            }
+        }
+    }
+
+    /* ⑯ soft_max_sink：z=[1,2]、sink=[0] -> 尾巴拼槽 -> softmax -> 去槽。
+       e = [e^-1, 1, e^-2] / (e^-1+1+e^-2) -> [0.24473, 0.66481]，
+       两数之和 < 1 —— **sink 吸走质量**正是语义。 */
+    {
+        struct ggml_tensor * sa = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, 2, 1, 1);
+        float sav[2] = { 1, 2 };
+        memcpy(sa->data, sav, sizeof(sav));
+        struct ggml_tensor * sn = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, 2, 1, 1);
+        float snv[2] = { 0, 0 };
+        memcpy(sn->data, snv, sizeof(snv));
+        struct ggml_tensor * ss = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, 1);
+        float ssv[1] = { 0 };
+        memcpy(ss->data, ssv, sizeof(ssv));
+        struct ggml_tensor * z = ggml_add(ctx, ggml_scale(ctx, sa, 1.0f), sn);
+        struct ggml_tensor * sk0 = ggml_reshape_3d(ctx, ss, 1, 1, 1);
+        int64_t sne[3] = { 1, 1, 1 };
+        struct ggml_tensor * spat = ggml_new_tensor(ctx, GGML_TYPE_F32, 3, sne);
+        struct ggml_tensor * sk = ggml_repeat(ctx, sk0, spat);
+        struct ggml_tensor * z2 = ggml_concat(ctx, z, sk, 0);
+        struct ggml_tensor * ssm = ggml_soft_max(ctx, z2);
+        struct ggml_tensor * so = sl_ax(ctx, ssm, 0, 0, 2);
+        gf = ggml_new_graph(ctx);
+        ggml_build_forward_expand(gf, so);
+        if (ggml_graph_compute_with_ctx(ctx, gf, 1) != GGML_STATUS_SUCCESS) { return 1; }
+        float e1 = expf(-1.0f), e2 = 1.0f, e3 = expf(-2.0f);
+        float denom = e1 + e2 + e3;
+        float sw_exp[2] = { e1 / denom, e2 / denom };
+        float ssum = 0;
+        for (int i = 0; i < 2; i++) {
+            ssum += ggml_get_f32_1d(so, i);
+            if (!near(ggml_get_f32_1d(so, i), sw_exp[i], 1e-5f)) {
+                printf("  [FAIL] soft_max_sink[%d] = %.6f, 手算 %.6f\n", i,
+                       ggml_get_f32_1d(so, i), sw_exp[i]);
+                bad = 1;
+            }
+        }
+        if (!(ssum < 0.9999f)) {
+            printf("  [FAIL] soft_max_sink 权重和 %.6f >= 1 —— sink 没吸走质量\n", ssum);
+            bad = 1;
+        }
+    }
+
     ggml_free(ctx);
     printf(bad ? "[FAIL] ggml 手算对拍不一致\n"
                : "[PASS] mul_mat / rms_norm / silu / exp / sqrt / div / "
                  "add_scalar / clamp / log1p / softplus / sqrtsoftplus / "
-                 "rep_ax / sl_ax / sum_ax 与手算一致\n");
+                 "rep_ax / sl_ax / sum_ax / conv1d_causal / soft_max_sink "
+                 "与手算一致\n");
     return bad;
 }
