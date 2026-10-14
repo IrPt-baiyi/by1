@@ -202,9 +202,11 @@ int main(int argc, char ** argv) {
                            sizeof(float) * n_per);
                     med_row++;
                 }
-                lb.token = NULL;
-                fprintf(stderr, "lm: encode media chunk %zu n=%d\n", i, cnt);
-                if (llama_encode(lctx, lb) != 0) { fprintf(stderr, "encode failed\n"); return 1; }
+                /* audio media block is CAUSAL (non-causal was refuted:
+                   cos 0.579 vs causal 0.705; scope_non_causal belongs to
+                   image chunks). Keep plain causal decode. */
+                fprintf(stderr, "lm: decode media chunk %zu n=%d (causal)\n", i, cnt);
+                if (llama_decode(lctx, lb) != 0) { fprintf(stderr, "media decode failed\n"); return 1; }
             }
             slot += cnt;
         }
