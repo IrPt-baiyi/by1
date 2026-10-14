@@ -457,11 +457,12 @@ def build_gguf(hf_dir, out_path, ref_gguf=None, arch="llama", n_blocks=24,
             continue
         arr = val.to(torch.float32).numpy() if hasattr(val, "to") else np.asarray(val)
         arr = np.ascontiguousarray(arr)
+        vshape = arr.shape
         if quantize and arr.ndim >= 2:
             q = _q8_0_encode(arr.reshape(-1))
             nblk = arr.size // 32
             arr = np.frombuffer(q, dtype=np.uint8).reshape(nblk, 34)
-        tensors.append((g, arr))
+        tensors.append((g, arr, vshape))
     if out_path and ref_gguf:
         with open(ref_gguf, 'rb') as fh:
             raw = fh.read()
@@ -480,9 +481,9 @@ def _gguf_write(kv_raw, kv_count, tensors, out_path):
     infos = b''
     blobs = []
     off = 0
-    for name, arr in tensors:
+    for name, arr, vshape in tensors:
         nb = name.encode('utf-8')
-        dims = arr.shape[::-1]
+        dims = vshape[::-1]
         if arr.ndim >= 2 and arr.dtype == np.uint8:
             # Q8_0 块（34 字节/32 值）：by1 编码器产物，T19 逐位同
             # llama-quantize；1D 张量保持 F32（llama-quantize 同款）
