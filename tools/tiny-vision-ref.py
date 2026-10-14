@@ -35,8 +35,15 @@ def main(argv):
     # last_hidden_state 再过 multi_modal_projector（=喂给 LM 的边界）
     if hasattr(feat, "last_hidden_state"):
         h = feat.last_hidden_state
+        inner = getattr(model, "model", model)
+        # Gemma3 全链：soft_emb_norm（RMSNorm）-> multi_modal_projector
+        # 少了 norm 会得到"方向对、逐元漂移"（余弦 0.98 那一族）
+        soft = getattr(inner, "mm_soft_emb_norm", None) or \
+            getattr(model, "mm_soft_emb_norm", None)
+        if soft is not None:
+            h = soft(h)
         proj = getattr(model, "multi_modal_projector", None) or \
-            getattr(getattr(model, "model", None), "multi_modal_projector", None)
+            getattr(inner, "multi_modal_projector", None)
         if proj is not None:
             h = proj(h)
         e = h[0]

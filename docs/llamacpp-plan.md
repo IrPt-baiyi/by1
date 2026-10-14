@@ -125,6 +125,24 @@ OLMOE 张量集；PowerShell 会搅 `-I` 参数（引号包住）；静态库顺
 （ggml-cpu 必须在 ggml 之后）。transformers 5.x 的 DynamicCache 缺
 `to_legacy_cache` -> 参照前向走 `use_cache=False`。
 
+## T20 视觉塔对拍现状（2026-016 轮）
+
+判据对象：`ggml-org/tinygemma3-GGUF`（官方测试件）+ `ngxson/
+tinygemma3_cifar` 源孪生 + CIFAR 测试图。双侧边界已通（mtmd 探针
+`tools/mtmd-embd-probe.cpp` · transformers 对照 `tools/tiny-vision-ref.py`）。
+
+**首个对照结果（11_truck.png，32x32）**：
+- 参照（HF Gemma3 全链）：**64 x 128**（patch2 -> 2x2 merge，
+  `mm_tokens_per_image: 64`）
+- mtmd 侧：探针报 256 x 128；对拍取前 64 token：
+  **max|Δ| 1.655 · mean|Δ| 0.208 · token 余弦 min 0.919 / mean 0.978**
+
+**未归因（不冒充）**：余弦 0.98 + 逐元漂移 13% 的组合，候选三支 ——
+(a) 2x2 merge 的排布序（space-to-depth 顺序 vs build_patch_merge_permute）
+(b) 探针越界读（n_tok=256 若真，前 8192 值只是部分输出）
+(c) 预处理/张量 dtype 细节。soft_emb_norm 已排除（补上数字纹丝不动）。
+下轮：先裁 (b)（取真实输出长度），再对 (a) 做单 token 手算对照。
+
 ### 社区「Olmo2 改名欺骗」配方核验（2026-10-14）：**判不忠实**
 
 AMD dev 社区帖给了 Instella-3B 的 hack：safetensors 改名 + config 换
