@@ -132,6 +132,89 @@ int main(int argc, char ** argv) {
     for (size_t i = 0; i < n_tok * n_per; ++i) {
         printf("%.9g\n", (double) embd[i]);
     }
+    /* T21 e2e judge: LM next-token logits over the exact input sequence.
+       Media rows enter as embd entries (token=-1), text chunks as ids. */
+    {
+        int n_all = 0;
+        for (size_t i = 0; i < mtmd_input_chunks_size(chunks); ++i) {
+            const mtmd_input_chunk * ch3 = mtmd_input_chunks_get(chunks, i);
+            if (mtmd_input_chunk_get_type(ch3) == MTMD_INPUT_CHUNK_TYPE_TEXT) {
+                size_t nt = 0;
+                mtmd_input_chunk_get_tokens_text(ch3, &nt);
+                n_all += (int) nt;
+            } else {
+                n_all += (int) mtmd_input_chunk_get_n_tokens(ch3);
+            }
+        }
+        struct llama_context_params cparams = llama_context_default_params();
+        struct llama_context * lctx = llama_new_context_with_model(text_model, cparams);
+        if (!lctx) { fprintf(stderr, "lm ctx failed\n"); return 1; }
+        /* manual batch, decoded chunk-by-chunk: llama_decode rejects
+           mixed token/embd batches (all-or-nothing embd semantics) */
+        std::vector<llama_token>   s_tok;
+        std::vector<float>         s_embd;
+        std::vector<llama_pos>     s_pos;
+        std::vector<int32_t>       s_nseq;
+        std::vector<llama_seq_id>  s_seq;
+        std::vector<llama_seq_id*> s_seqptr;
+        std::vector<int8_t>        s_log;
+        const float * embd_all = mtmd_get_output_embd(ctx);
+        int slot = 0, med_row = 0, last_local = 0;
+        for (size_t i = 0; i < mtmd_input_chunks_size(chunks); ++i) {
+            const mtmd_input_chunk * ch3 = mtmd_input_chunks_get(chunks, i);
+            int ty3 = (int) mtmd_input_chunk_get_type(ch3);
+            size_t nt = 0;
+            const llama_token * tk = NULL;
+            if (ty3 == (int) MTMD_INPUT_CHUNK_TYPE_TEXT) {
+                tk = mtmd_input_chunk_get_tokens_text(ch3, &nt);
+            } else {
+                nt = mtmd_input_chunk_get_n_tokens(ch3);
+            }
+            int cnt = (int) nt;
+            s_tok.assign(cnt, 0);
+            s_embd.assign((size_t) cnt * n_per, 0.0f);
+            s_pos.assign(cnt, 0); s_nseq.assign(cnt, 1);
+            s_seq.assign(cnt, 0); s_seqptr.assign(cnt, nullptr);
+            s_log.assign(cnt, 0);
+            for (int j = 0; j < cnt; ++j) {
+                s_seqptr[j] = &s_seq[j];
+                s_pos[j] = slot + j;
+            }
+            struct llama_batch lb;
+            lb.n_tokens = cnt;
+            lb.embd = s_embd.data();
+            lb.token = s_tok.data();
+            lb.pos = s_pos.data();
+            lb.n_seq_id = s_nseq.data();
+            lb.seq_id = s_seqptr.data();
+            lb.logits = s_log.data();
+            if (ty3 == (int) MTMD_INPUT_CHUNK_TYPE_TEXT) {
+                for (int j = 0; j < cnt; ++j) lb.token[j] = tk[j];
+            } else {
+                for (int j = 0; j < cnt; ++j) {
+                    memcpy(lb.embd + (size_t) j * n_per,
+                           embd_all + (size_t) med_row * n_per,
+                           sizeof(float) * n_per);
+                    med_row++;
+                }
+            }
+            int is_last = (i == mtmd_input_chunks_size(chunks) - 1);
+            if (is_last) { s_log[cnt - 1] = 1; last_local = cnt - 1; }
+            fprintf(stderr, "lm: decode chunk %zu type=%d n=%d last=%d\n",
+                    i, ty3, cnt, is_last);
+            if (llama_decode(lctx, lb) != 0) {
+                fprintf(stderr, "lm decode failed\n");
+                return 1;
+            }
+            slot += cnt;
+        }
+        const float * lg = llama_get_logits_ith(lctx, last_local);
+        int n_vocab = llama_vocab_n_tokens(llama_model_get_vocab(text_model));
+        printf("lm %d\n", n_vocab);
+        for (int i = 0; i < n_vocab; ++i) printf("%.9g\n", (double) lg[i]);
+        llama_free(lctx);
+    }
+
     mtmd_input_chunks_free(chunks);
     mtmd_bitmap_free(bmp);
     mtmd_free(ctx);
