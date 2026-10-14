@@ -1,6 +1,6 @@
 # 这个仓库里每个文件是干什么的
 
-> 349 个跟踪文件。按"你会想找什么"分组，不按字母表。
+> 350 个跟踪文件。按"你会想找什么"分组，不按字母表。
 >
 > **这份文档是生成的**：`python src/by1files.py --write`。
 > 文件清单、每组的个数、每个文件的一句话都从目录树和 docstring 来 ——
@@ -216,7 +216,7 @@
 |---|---|
 | `ci.yml` | 每次提交都跑档 1 —— **这是这个仓库唯一的自动门 |
 
-## `docs/` —— 25 个
+## `docs/` —— 26 个
 
 活的文档 —— 还没做完的事记在这里，做完的挪去 `history/`。
 
@@ -230,6 +230,7 @@
 | `complete-models.md` | 完整模型：参数共享、视觉与 MTP |
 | `convert-diff.md` | by1 build-gguf 与上游 convert_hf_to_gguf 的结构差异（T24） |
 | `criteria-review.md` | **请人重算**的任务卡：判据本身没人验过，这一份是那份活。含"refs 判 by1 不是外部判卷"那一节 |
+| `gap-analysis.md` | 缺口盘点（rc1 后）：真 bug / 证据缺口 / 范围缺口 / 环境缺口 / 计划缺口 五类分账，每条带证据与收口路径 |
 | `ggml-plan.md` | ggml 数值对拍：测量与判据 |
 | `gpu-day-runbook.md` | GPU 日 runbook —— 租卡那天照这张纸走 |
 | `gpu-validation-results.md` | GPU Validation Results / GPU 验证结果 |

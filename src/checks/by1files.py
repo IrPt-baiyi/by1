@@ -159,6 +159,7 @@ OVERRIDE = {
     'models.tsv': '**手写的模型清单**：长名 / 短名 / HF id / 说明。命名规矩写在文件头',
     '1.0-roadmap.original.md': '**计划历史备份**：大目标版改写前的原始路线图（只读存档）',
     '1.0-roadmap.before-queue-rewrite.md': '**计划历史备份**：队列改写前一版（只读存档）',
+    'gap-analysis.md': '缺口盘点（rc1 后）：真 bug / 证据缺口 / 范围缺口 / 环境缺口 / 计划缺口 五类分账，每条带证据与收口路径',
     'qwen3asr-silent-load-report.md': 'T21 取证报告：transformers 对 Qwen3-ASR-0.6B 静默装载错误模型（版本错配实录，A3 缺口的证据本体）',
     'step5-runbook.md': 'Step-5 发布日快速反应手册：抓元数据/草稿 by1/合同审计/GGUF 产物/推销素材/风险预案',
     'by1-language-spec.md': 'T2 语言合同（可执行规范）：语法骨架/错误模型/版本策略/最小绿红例；一致性判卷人 by1langspec.py',
