@@ -1,6 +1,6 @@
 # 这个仓库里每个文件是干什么的
 
-> 365 个跟踪文件。按"你会想找什么"分组，不按字母表。
+> 349 个跟踪文件。按"你会想找什么"分组，不按字母表。
 >
 > **这份文档是生成的**：`python src/by1files.py --write`。
 > 文件清单、每组的个数、每个文件的一句话都从目录树和 docstring 来 ——
@@ -216,7 +216,7 @@
 |---|---|
 | `ci.yml` | 每次提交都跑档 1 —— **这是这个仓库唯一的自动门 |
 
-## `docs/` —— 24 个
+## `docs/` —— 25 个
 
 活的文档 —— 还没做完的事记在这里，做完的挪去 `history/`。
 
@@ -224,6 +224,7 @@
 |---|---|
 | `1.0-roadmap.md` | By1 长期路线图 |
 | `INVENTORY.txt` | 验证清单：每个模型验到了什么、判卷人是谁 |
+| `audio-mel-boundary-report.md` | Qwen3-ASR-0.6B-GGUF 音频前处理边界实测 |
 | `autodl-file-storage.md` | AutoDL 文件存储操作单 —— 重租卡 0 下载 |
 | `by1-language-spec.md` | T2 语言合同（可执行规范）：语法骨架/错误模型/版本策略/最小绿红例；一致性判卷人 by1langspec.py |
 | `check-map.md` | `check()` 的结构图 |
@@ -295,28 +296,6 @@
 | `llamacpp-plan-2026-10.md` | 接 llama.cpp：完整计划（执行版） |
 | `plan.md` | by1 · 接下来的计划 |
 | `roadmap-rc-2026-10.md` | 1.0.0 路线图（rc0 – rc9 → 1.0.0） |
-
-## `history/_hf_probe/` —— 17 个
-
-| 文件 | 用途 |
-|---|---|
-| `cmp_mel.py` | numeric comparison of the two mel boundaries. |
-| `dep_check.py` | import importlib |
-| `ggml-org.html` | <!doctype html> |
-| `mel_bf16_16000.err` | step: clip_init... |
-| `mel_bf16_16000.txt` | mel 128 200 |
-| `mel_bf16_1s.err` | step: clip_init... |
-| `mel_bf16_1s.txt` | mel 128 200 |
-| `mel_bf16_32000.err` | step: clip_init... |
-| `mel_bf16_32000.txt` | mel 128 300 |
-| `mel_bf16_480000.err` | step: clip_init... |
-| `mel_bf16_480000.txt` | mel 128 3100 |
-| `mel_hf_1s.txt` | mel 128 3000 |
-| `norm_hypothesis.py` | is the mel drift a normalization-scope difference? |
-| `per_frame_diff.py` | where exactly does the mtmd/HF mel drift start? |
-| `proc_probe.py` | import json, sys |
-| `t_mmproj-Qwen3-ASR-0.6B-Q8_0.err` | step: clip_init... |
-| `t_mmproj-Qwen3-ASR-0.6B-bf16.err` | step: clip_init... |
 
 ## `models/` —— 61 个
 

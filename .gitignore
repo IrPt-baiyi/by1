@@ -111,3 +111,6 @@ tools/remote/*.out
 # GPU upload bundles and temporary SSH credentials
 .by1-gpu-src*.tar.gz
 .by1-gpu-temp-ed25519*
+
+# 门禁跑出来的探针日志（机器产物，每次重生成）
+history/_hf_probe/
