@@ -326,6 +326,126 @@ def _q8_0_encode(vals):
     return out.tobytes()
 
 
+_GGUF_VT_SIZE = {0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1,
+                 10: 8, 11: 8, 12: 8}   # 8=STRING 9=ARRAY 另算
+
+
+def _gguf_skip_val(raw, pos, vt):
+    """跳过一个 GGUF 值，返回新位置。vt=8 字符串 / 9 数组。"""
+    import struct
+    if vt == 8:
+        (ln,) = struct.unpack_from('<Q', raw, pos)
+        return pos + 8 + ln
+    if vt == 9:
+        (et,) = struct.unpack_from('<I', raw, pos)
+        (cnt,) = struct.unpack_from('<Q', raw, pos + 4)
+        pos += 12
+        for _ in range(cnt):
+            pos = _gguf_skip_val(raw, pos, et)
+        return pos
+    return pos + _GGUF_VT_SIZE[vt]
+
+
+def _gguf_parse(raw):
+    """GGUF 容器（v3）解析：KV **原字节**、张量信息、数据起点、对齐。"""
+    import struct
+    if raw[:4] != b'GGUF':
+        raise ValueError('不是 GGUF 文件')
+    # 头序 = magic(4) + ver(4) + **tensor_count(8) + kv_count(8)**
+    ver, n_ti, n_kv = struct.unpack_from('<IQQ', raw, 4)
+    if ver != 3:
+        raise ValueError('只认 GGUF v3，实际 %d' % ver)
+    pos = 24                       # magic(4) + ver(4) + n_ti(8) + n_kv(8)
+
+    def _str(p):
+        (ln,) = struct.unpack_from('<Q', raw, p)
+        return raw[p + 8:p + 8 + ln], p + 8 + ln
+
+    align = 32
+    kv_start = pos
+    for _ in range(n_kv):
+        key, pos = _str(pos)
+        (vt,) = struct.unpack_from('<I', raw, pos)
+        pos = _gguf_skip_val(raw, pos + 4, vt)
+        if key == b'general.alignment':
+            (align,) = struct.unpack_from('<I', raw, pos - 4)
+    kv_bytes = raw[kv_start:pos]
+    tensors = []
+    for _ in range(n_ti):
+        name, pos = _str(pos)
+        (nd,) = struct.unpack_from('<I', raw, pos)
+        pos += 4
+        dims = struct.unpack_from('<' + 'Q' * nd, raw, pos)
+        pos += 8 * nd
+        ty, off = struct.unpack_from('<IQ', raw, pos)
+        pos += 12
+        tensors.append({'name': name.decode('utf-8'), 'dims': dims,
+                        'type': int(ty), 'off': int(off)})
+    pad = (-pos) % align
+    data_start = pos + pad
+    return ver, kv_bytes, tensors, data_start, align, n_kv
+
+
+def rewrite_gguf(src_path, out_path, quant_q8_0=False):
+    """by1 的 GGUF 容器写手：**KV 原字节整拷**、张量区重算。
+
+    `quant_q8_0=False` 是保真自检模式：重写必须与源**逐字节同**
+    （解析器+写手自身的判据）。`=True`：2D+ 张量用 by1 的 Q8_0 编码器
+    量化（1D/带 1 的形状保持原样 —— 策略对齐 llama-quantize 的实测），
+    产出第二份产物给 T18 的双产物逐位判据。"""
+    import struct
+    import numpy as np
+    raw = pathlib.Path(src_path).read_bytes()
+    ver, kv_bytes, tensors, data_start, align, n_kv = _gguf_parse(raw)
+    # 数据区重建
+    blobs, out_infos = [], []
+    off = 0
+    for t in tensors:
+        n_el = 1
+        for d in t['dims']:
+            n_el *= d
+        tsize = {1: n_el * 2, 0: n_el * 4, 8: (n_el + 31) // 32 * 34}.get(
+            t['type'])
+        if tsize is None:
+            raise ValueError('%s 的型 %d 没账' % (t['name'], t['type']))
+        data = raw[data_start + t['off']: data_start + t['off'] + tsize]
+        new_type = t['type']
+        rows = 1
+        for d in t['dims'][1:]:
+            rows *= d
+        # 量化策略对齐 llama-quantize 实测：**行数 >1 的 2D+** 量化，
+        # 1D 与单行（gate_inp [2560,1] 这类）保持。专家张量 (.,.,1) 有
+        # 多行，要量化（min(dims[1:]) 判 1 会把 108 个专家全跳过）。
+        if quant_q8_0 and len(t['dims']) >= 2 and rows > 1 \
+                and t['type'] in (0, 1):
+            vals = (np.frombuffer(data, dtype='<f4') if t['type'] == 0
+                    else np.frombuffer(data, dtype='<f2').astype(np.float32))
+            data = _q8_0_encode(vals)
+            new_type = 8
+        pad = (-off) % align
+        blobs.append(b'\x00' * pad + data)
+        off += pad + len(data)
+        out_infos.append((t['name'], t['dims'], new_type, off - len(data)))
+    # 容器重建
+    import io
+    buf = io.BytesIO()
+    buf.write(b'GGUF')
+    buf.write(struct.pack('<I', ver))
+    buf.write(struct.pack('<QQ', len(out_infos), n_kv))
+    buf.write(kv_bytes)
+    for name, dims, ty, o in out_infos:
+        nb = name.encode('utf-8')
+        buf.write(struct.pack('<Q', len(nb)) + nb)
+        buf.write(struct.pack('<I', len(dims)))
+        buf.write(struct.pack('<' + 'Q' * len(dims), *dims))
+        buf.write(struct.pack('<IQ', ty, o))
+    head_end = buf.tell()
+    buf.write(b'\x00' * ((-head_end) % align))
+    buf.write(b''.join(blobs))
+    pathlib.Path(out_path).write_bytes(buf.getvalue())
+    return len(out_infos), off
+
+
 def block_audit(src_gguf, quant_gguf):
     """T19-2：**打包与尺度逐位** —— by1 的 Q8_0 编码器对拍真量化产物。
 
@@ -436,6 +556,10 @@ def main(argv=None):
     b = sub.add_parser('block-audit', help='量化打包与尺度逐位（T19-2）')
     b.add_argument('--src', required=True)
     b.add_argument('--quant', required=True)
+    w = sub.add_parser('rewrite-gguf', help='by1 写手（保真自检/Q8_0 二产物）')
+    w.add_argument('--src', required=True)
+    w.add_argument('--out', required=True)
+    w.add_argument('--q8-0', action='store_true')
     args = ap.parse_args(argv)
     if args.cmd == 'record':
         return record(args.out)
@@ -447,6 +571,10 @@ def main(argv=None):
         return manifest_audit(args.gguf, args.manifest, args.spoof_olmoe)
     if args.cmd == 'block-audit':
         return block_audit(args.src, args.quant)
+    if args.cmd == 'rewrite-gguf':
+        n, size = rewrite_gguf(args.src, args.out, quant_q8_0=args.q8_0)
+        print('  写了 %s：%d 个张量 %.1f GB' % (args.out, n, size / 1e9))
+        return 0
     return logits_run(args.gguf, args.prompt, args.out, args.llama_cli)
 
 
