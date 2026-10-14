@@ -139,6 +139,77 @@ class MT19937:
         return len(cum) - 1
 
 
+def chain_f32(logits, seed, temp=0.8, top_k=40, top_p=0.95, min_p=0.05):
+    """T25-3：llama.cpp 链级逐 token 复刻 —— **float32 浮点序照抄
+    各 apply() 真身**（llama-sampler.cpp 读出来的，不是猜的）：
+
+      top_k  ：降序排 -> 截 k（等值序 = std::sort 实现定义，随机 logits
+               无并列；并列场景单列）
+      top_p  ：softmax_impl(false)：max 全扫、p=expf(x-max) f32、cum_sum
+               **f32 按数组序**累加、p/=cum_sum f32；再降序排、f32 累计
+               截到 cum>=p 且个数>=min_keep
+      min_p  ：排序路径 —— min_logit = f32(x[0]+logf(p))；保第一个；
+               首个 x[i]<min_logit 且 i>=min_keep 处截断
+      temp   ：x = f32(x/temp)
+      dist   ：max_l=data[0]；p=expf(x-max_l) f32；sum_cum **double** 累加；
+               rnd=uniform01；sum_tgt=sum_cum*rnd；sum_run **double** 累加，
+               `sum_run >= sum_tgt` 处选中；兜底最后一个
+
+    判卷人 tools/sampler-probe.cpp（同编译器 oracle）。"""
+    import numpy as np
+    x = np.asarray(logits, dtype=np.float32).copy()
+    ids = np.arange(len(x))
+    f32 = np.float32
+
+    if top_k > 0:
+        k = min(int(top_k), len(x))
+        order = np.argsort(-x, kind="stable")[:k]
+        ids, x = ids[order], x[order]
+
+    if top_p < 1.0:
+        max_l = f32(np.max(x))
+        p = np.exp(x - max_l).astype(f32)
+        cum = f32(0)
+        for i in range(len(p)):
+            cum = f32(cum + p[i])
+        p = (p / cum).astype(f32)
+        order = np.argsort(-x, kind="stable")
+        x, p, ids = x[order], p[order], ids[order]
+        c, keep = f32(0), len(x)
+        for i in range(len(x)):
+            c = f32(c + p[i])
+            if c >= f32(top_p):
+                keep = i + 1
+                break
+        x, ids = x[:keep], ids[:keep]
+
+    if min_p > 0 and len(x):
+        min_logit = f32(x[0] + f32(np.log(f32(min_p))))
+        keep = len(x)
+        for i in range(1, len(x)):
+            if x[i] < min_logit and i >= 1:
+                keep = i
+                break
+        x, ids = x[:keep], ids[:keep]
+
+    x = (x / f32(temp)).astype(f32)
+
+    max_l = f32(x[0])
+    ps = np.exp(x - max_l).astype(f32)
+    sum_cum = 0.0
+    for i in range(len(ps)):
+        sum_cum += float(ps[i])
+    rnd = MT19937(seed).uniform01()
+    tgt = sum_cum * rnd
+    run, sel = 0.0, len(ps) - 1
+    for i in range(len(ps)):
+        run += float(ps[i])
+        if run >= tgt:
+            sel = i
+            break
+    return int(ids[sel])
+
+
 def sample_mt(logits, seed, temp=1.0, top_k=0, top_p=1.0, min_p=0.0,
               history=(), rep=1.0, presence=0.0, freq=0.0):
     """T25-2：随机族采样。链 = penalties -> temperature -> top-k ->
@@ -240,8 +311,41 @@ def selftest():
         for b in bad:
             print("  [FAIL] " + b)
         return 1
-    print("  [PASS] by1sample：规格手算 + 负例必红 + **RNG 对齐 3 组种子"
-          "逐流对上**（mt19937 原始流 / uniform01 / discrete 索引）")
+
+    # T25-3：链级逐 token 对拍 tools/sampler-probe.cpp（多配置 x 8 种子）
+    import random as _random
+    probe2 = os.path.join(root, "tools", "sampler-probe.exe")
+    if not os.path.exists(probe2):
+        print("  [PASS] by1sample：规格 + RNG 三流对上；[跳过] "
+              "sampler-probe.exe 不在 —— 链级逐 token 没验")
+        return 30
+    configs = [(0.8, 40, 0.95, 0.05), (1.2, 0, 1.0, 0.0), (0.5, 5, 0.5, 0.3)]
+    lfile = os.path.join(root, "cgen", "by1sample-chain.txt")
+    os.makedirs(os.path.dirname(lfile), exist_ok=True)
+    for temp, tk, tp, mp in configs:
+        _random.seed(20261014)
+        logits = [_random.uniform(-30, 30) for _ in range(1024)]
+        with open(lfile, "w", encoding="utf-8") as fh:
+            fh.write("".join("%.9g\n" % v for v in logits))
+        p2 = subprocess.run(
+            [probe2, lfile, "0", "8", str(temp), str(tk), str(tp), str(mp)],
+            capture_output=True, text=True, encoding="utf-8", errors="replace")
+        if p2.returncode != 0:
+            bad.append("sampler-probe 退出码 %d（cfg=%r）"
+                       % (p2.returncode, (temp, tk, tp, mp)))
+            continue
+        exp = [int(ln.split()[1]) for ln in p2.stdout.splitlines() if ln.strip()]
+        got = [chain_f32(logits, s, temp, tk, tp, mp) for s in range(8)]
+        if got != exp:
+            bad.append("链级对不上 cfg=%r：%r vs %r"
+                       % ((temp, tk, tp, mp), got[:4], exp[:4]))
+    if bad:
+        for b in bad:
+            print("  [FAIL] " + b)
+        return 1
+    print("  [PASS] by1sample：规格手算 + 负例必红 + RNG 三流对上 + "
+          "**链级逐 token 3 配置 x 8 种子全对**（top_k/top_p/min_p/temp/"
+          "dist 的 float32 浮点序复刻）")
     return 0
 
 
