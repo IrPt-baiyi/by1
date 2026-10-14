@@ -34,6 +34,7 @@ import datetime
 import hashlib
 import json
 import pathlib
+import re
 import shutil
 import subprocess
 
@@ -219,6 +220,88 @@ def logits_compare(ref_path, got_path, out_path=None):
     return 1
 
 
+def manifest_audit(gguf_path, manifest_path, spoof_olmoe=False):
+    """T19-1：**真 GGUF manifest 不退** —— by1 契约与真 GGUF 逐名逐形对账。
+
+    映射走上游 gguf-py 自己的 `TensorNameMap`（converter 用的**同一份**）
+    —— 手抄名单就是第二个真相源，迟早漂。`--spoof-olmoe` 把 Instella
+    单专家改写的两条规则放进回路（tools/instella-spoof-olmoe.py 同款）。
+
+    判据**双向都有账**：manifest 每条落到 GGUF 的一个同形张量上；
+    GGUF 每个张量都有出处（manifest 条目或注明的合成 router）。"""
+    import sys as _sys2
+    root = pathlib.Path(__file__).resolve().parents[2]
+    _sys2.path.insert(0, str(root / 'llamacpp' / 'llama.cpp' / 'gguf-py'))
+    from gguf import GGUFReader
+    from gguf.tensor_mapping import TensorNameMap
+    from gguf.constants import MODEL_ARCH
+
+    man = json.loads(pathlib.Path(manifest_path).read_text(encoding='utf-8'))
+    reader = GGUFReader(str(gguf_path))
+    gguf_shapes = {}
+    for t in reader.tensors:
+        # GGUF 的 shape 是 ggml 序（ne）—— 倒回来才是 torch 序
+        gguf_shapes[t.name] = tuple(int(x) for x in reversed(t.shape))
+    n_blocks = max((int(k.split('.')[2]) for k in man
+                    if k.startswith('model.layers.')), default=0) + 1
+    mapper = TensorNameMap(MODEL_ARCH.OLMOE, n_blocks)
+
+    problems, matched, synth = [], 0, []
+    want_names = {}
+    for name, meta in man.items():
+        nm = name
+        exp_shape = tuple(meta['shape'])
+        if spoof_olmoe:
+            nm = nm.replace('pre_feedforward_layernorm',
+                            'post_attention_layernorm')
+            if re.search(r'\.mlp\.(gate_proj|up_proj|down_proj)\.weight$', nm):
+                nm = re.sub(r'\.mlp\.(gate_proj|up_proj|down_proj)\.weight$',
+                            r'.mlp.experts.0.\1.weight', nm)
+                # converter 的合并步把 per-expert 并成 3D：[1, 行, 列]
+                exp_shape = (1,) + exp_shape
+        # converter 的合并步：per-expert 名先并成 merged 名再映射
+        nm = re.sub(r'\.mlp\.experts\.\d+\.(gate_proj|up_proj|down_proj)',
+                    r'.mlp.experts.\1', nm)
+        gg = mapper.get_name(nm, try_suffixes=('.weight',))
+        if gg is None:
+            problems.append('%s -> 映射不上（TensorNameMap 无此名）' % name)
+            continue
+        want_names[gg] = (name, exp_shape)
+    if spoof_olmoe:
+        for i in range(n_blocks):
+            gg = mapper.get_name('model.layers.%d.mlp.gate.weight' % i,
+                                 try_suffixes=('.weight',))
+            if gg:
+                want_names[gg] = ('<synthetic router zeros>',
+                                  (1, man['model.embed_tokens.weight']['shape'][1]))
+                synth.append(gg)
+
+    for gg, (src, shape) in want_names.items():
+        if gg not in gguf_shapes:
+            problems.append('%s（来自 %s）不在 GGUF 里' % (gg, src))
+            continue
+        if gguf_shapes[gg] != tuple(shape):
+            problems.append('%s 形状不符：manifest %r vs GGUF %r'
+                            % (gg, tuple(shape), gguf_shapes[gg]))
+        else:
+            matched += 1
+    for gg in gguf_shapes:
+        if gg not in want_names:
+            problems.append('GGUF 多出 %s —— 没有出处' % gg)
+
+    print('  %s  vs  %s' % (pathlib.Path(gguf_path).name,
+                            pathlib.Path(manifest_path).name))
+    print('  对上 %d（其中合成 %d）· GGUF 张量 %d · manifest %d'
+          % (matched, len(synth), len(gguf_shapes), len(man)))
+    if problems:
+        for p in problems[:10]:
+            print('    !! ' + p)
+        print('  [FAIL] manifest 对账 %d 处' % len(problems))
+        return 1
+    print('  [PASS] manifest 不退：逐名逐形双向有账')
+    return 0
+
+
 def logits_run(gguf, prompt, out_path, llama_cli=None):
     """跑 llama.cpp 产 logits dump（要本机构建）。命令本身进报告 ——
     "每项可从报告追溯到命令"。"""
@@ -255,6 +338,10 @@ def main(argv=None):
     n.add_argument('--prompt', default='The capital of France is')
     n.add_argument('-o', '--out', default='cgen/llama-logits.txt')
     n.add_argument('--llama-cli')
+    m = sub.add_parser('manifest-audit', help='真 GGUF manifest 对账（T19-1）')
+    m.add_argument('--gguf', required=True)
+    m.add_argument('--manifest', required=True)
+    m.add_argument('--spoof-olmoe', action='store_true')
     args = ap.parse_args(argv)
     if args.cmd == 'record':
         return record(args.out)
@@ -262,6 +349,8 @@ def main(argv=None):
         return gguf_check(args.dir)
     if args.cmd == 'logits-compare':
         return logits_compare(args.ref, args.got, args.out)
+    if args.cmd == 'manifest-audit':
+        return manifest_audit(args.gguf, args.manifest, args.spoof_olmoe)
     return logits_run(args.gguf, args.prompt, args.out, args.llama_cli)
 
 
