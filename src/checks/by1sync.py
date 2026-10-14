@@ -140,6 +140,70 @@ def sync_one(path, bc, cg, bir, quiet=False):
     return bad, rows
 
 
+def audit_rows(rows, kv, hd, layers):
+    """纯对账核心（自检用它做红注入）：行表 vs config 手算值。"""
+    import re as _re
+    problems, checked, skipped = [], 0, 0
+    for tag, size_s, layer_s, total_s in rows:
+        m = _re.search(r"([\d,]+)\s*B/token", str(size_s))
+        ml = _re.search(r"(\d+)\s*层", str(layer_s))
+        if not m or not ml:
+            problems.append("%s：状态行解析不出来：%r %r" % (tag, size_s, layer_s))
+            continue
+        per_tok = int(m.group(1).replace(",", ""))
+        n = int(ml.group(1))
+        if n != layers:
+            # 多栈 / 选择器子集（MTP、窗口层）—— 对照前提不成立，不硬判
+            skipped += 1
+            continue
+        hit = None
+        for dtype_b in (2, 4):
+            if per_tok == kv * hd * 2 * dtype_b:
+                hit = dtype_b
+                break
+        if hit is None:
+            problems.append(
+                "%s：声明 %d B/token，config 手算 kv·hd·2·dtype = %d(×2) / %d(×4)"
+                % (tag, per_tok, kv * hd * 2 * 2, kv * hd * 2 * 4))
+        else:
+            checked += 1
+    return problems, checked, skipped
+
+
+def state_audit(path, bc, quiet=False):
+    """**KV 状态尺寸的两份事实对账**（criteria-review 任务 B 的机器版）。
+
+    refs config 的 (kv_heads, head_dim, layers) **手算** per-token KV 字节数
+    （`kv·hd·2·dtype`），对照 `by1state` 声明的表。两边独立算 —— IR 侧
+    kv/hd 与 config 漂移、或者状态尺寸公式写错，都是当场红。
+
+    返回 (状态, 问题列表)：状态 'ok' / 'bad' / None（无状态声明，不适用）。
+    行里的层数和 config 对不上 = 多栈/子集，**标"对照不适用"不硬判**。"""
+    import re as _re
+    import glob as _glob
+    import json as _json
+    _r, info = bc.check(path)
+    rows = [r for r in (info.get("states") or []) if "kv_cache" in str(r[0])]
+    if not rows:
+        return None, []
+    base = _os.path.basename(path)[:-4]
+    cands = _glob.glob(by1paths.ref("*__%s.config.json" % base)) \
+        or _glob.glob(by1paths.ref("%s.config.json" % base))
+    if not cands:
+        return None, []
+    cfg = _json.loads(by1io.read_text(cands[0], encoding="utf-8"))
+    heads = cfg.get("num_attention_heads")
+    kv = cfg.get("num_key_value_heads") or heads
+    hd = cfg.get("head_dim") or (cfg.get("hidden_size") // heads)
+    layers = cfg.get("num_hidden_layers")
+    problems, checked, skipped = audit_rows(rows, kv, hd, layers)
+    if not quiet:
+        mark = "✓" if not problems else "✗"
+        print("    %s %-40s 对照 %d 行 · 不适用 %d 行"
+              % (mark, _os.path.basename(path), checked, skipped))
+    return ("bad" if problems else "ok"), problems
+
+
 def selftest():
     """反例必红：**把 shapes_of 那个 bug 注回去**，报表必须响。"""
     bc, cg = load("by1check"), load("by1codegen")
@@ -171,8 +235,20 @@ def selftest():
         # 契约里没有全局行 = 这个自检没法判（说明面还没接上）
         print("  [跳过] 契约没有全局行可比 —— 这一条没验")
         return 30
+    # ③ 状态尺寸对账：一致必须绿、kv 漂移必须红（audit_rows 双极性）
+    row = [("state.kv_cache kv_cache", "2,048 B/token", "2 层",
+            "4,096 B/token (全模型)")]
+    ok_p, _c, _s = audit_rows(row, kv=8, hd=64, layers=2)      # 8*64*2*2 = 2048
+    bad_p, _c, _s = audit_rows(row, kv=9, hd=64, layers=2)     # 漂移 -> 必须红
+    if ok_p:
+        print("  [FAIL] 状态对账把一致的手算报红了：%s" % ok_p[:1])
+        return 1
+    if not bad_p:
+        print("  [FAIL] kv 漂移没被状态对账抓住 —— 对账瞎了")
+        return 1
     print("  [PASS] 同步报表：现状全同源；注入 1152 bug 被抓住"
-          "（推导 %s，契约 %s）" % ((ir["vocab"], leaked), want))
+          "（推导 %s，契约 %s）；状态对账双极性过（一致绿 · kv 漂移红）"
+          % ((ir["vocab"], leaked), want))
     return 0
 
 
@@ -198,6 +274,32 @@ def main(argv=None):
                   f"{str(e)[:60]}")
     print(f"\n  {tot_models} 份里 {tot_bad} 份还有未编码的布局差"
           f"（fuse / transpose / quant-block 逐个编码后这里归零，才配进门禁）")
+
+    # ── KV 状态尺寸对账（criteria-review 任务 B 的机器版）──────────
+    # 两边独立算：refs config 的 (kv_heads, head_dim, layers) 手算
+    # per-token KV 字节数 vs by1state 声明的表。**漂移当场红** ——
+    # 状态尺寸算错，MEM 预算和 cache 全跟着错，而报表可能还是绿的。
+    print("\n  ── KV 状态尺寸：refs config 手算 vs by1state 声明")
+    state_bad, state_ok = [], 0
+    for f in files:
+        if f.endswith("selftest.by1"):
+            continue
+        try:
+            status, problems = state_audit(f, bc)
+        except Exception as e:
+            print("    %s [跳过] %s: %s" % (_os.path.basename(f),
+                                           type(e).__name__, str(e)[:50]))
+            continue
+        if status == "ok":
+            state_ok += 1
+        elif status == "bad":
+            state_bad.extend(problems)
+            for p in problems:
+                print("    !! " + p)
+    print("    对账通过 %d 份（多栈/子集行按「对照不适用」记，不硬判）" % state_ok)
+    if state_bad:
+        print("  [FAIL] 状态尺寸对账 %d 处不一致" % len(state_bad))
+        return 1
     return 0
 
 
