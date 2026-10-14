@@ -18,6 +18,12 @@
   · top-k：只留 k 个最大，其余 -inf
   · top-p：softmax 降序累计，超过 p 的截掉（**保住第一个**）
   · min-p：概率 < p * max_prob 的截掉
+
+**T25-2 已对齐**（RNG 三条流 vs tools/rng-probe.cpp 同编译器 oracle）：
+mt19937 原始流 · uniform01 = (g0+g1·2^32)/2^64 · discrete 索引。
+**仍欠链级逐 token**：filters 的 float32 浮点序（llama 的 filter 全是
+float 运算，本文件是 Python float）——要逐位就得 np.float32 按同操作
+序复刻 top_k 排序序 / top_p 累计 / dist 内的 softmax。单列不冒充。
 """
 import math
 
@@ -82,11 +88,74 @@ def greedy(logits):
     return max(range(len(logits)), key=lambda i: logits[i])
 
 
-def sample_mt(logits, seed):
-    """T25-2 的占位：mt19937 + libstdc++ generate_canonical 的均匀映射。
-    **现在不实现** —— 没对齐 llama.cpp 的实现定义映射之前，写出来
-    就是假的"同种子"。返回 None = 未实现（不冒充）。"""
-    return None
+class MT19937:
+    """libstdc++ 同款 mt19937 核（标准 624 状态 + tempering，标准即规格）。
+
+    T25-2 的地基。上层两个映射也是 libstdc++ 的实现定义：
+      · uniform01 = generate_canonical<double,53> = (g0 + g1·2^32)/2^64
+      · discrete  = std::discrete_distribution：double 累计 + lower_bound
+    判卷人：tools/rng-probe.cpp（同编译器 = 同 libstdc++ = oracle）。"""
+
+    def __init__(self, seed):
+        self.mt = [0] * 624
+        self.mt[0] = seed & 0xFFFFFFFF
+        for i in range(1, 624):
+            x = self.mt[i - 1]
+            self.mt[i] = (1812433253 * (x ^ (x >> 30)) + i) & 0xFFFFFFFF
+        self.idx = 624
+
+    def genrand(self):
+        if self.idx >= 624:
+            for i in range(624):
+                y = (self.mt[i] & 0x80000000) | (self.mt[(i + 1) % 624] & 0x7FFFFFFF)
+                self.mt[i] = self.mt[(i + 397) % 624] ^ (y >> 1)
+                if y & 1:
+                    self.mt[i] ^= 0x9908B0DF
+            self.idx = 0
+        y = self.mt[self.idx]
+        self.idx += 1
+        y ^= y >> 11
+        y ^= (y << 7) & 0x9D2C5680
+        y ^= (y << 15) & 0xEFC60000
+        y ^= y >> 18
+        return y & 0xFFFFFFFF
+
+    def uniform01(self):
+        g0 = self.genrand()
+        g1 = self.genrand()
+        return (g0 + g1 * 4294967296.0) / 18446744073709551616.0
+
+    def discrete(self, probs):
+        cum, s = [], 0.0
+        for p in probs:
+            s += float(p)
+            cum.append(s)
+        if s <= 0:
+            return 0
+        t = self.uniform01() * s
+        for i, c in enumerate(cum):
+            if c >= t:
+                return i
+        return len(cum) - 1
+
+
+def sample_mt(logits, seed, temp=1.0, top_k=0, top_p=1.0, min_p=0.0,
+              history=(), rep=1.0, presence=0.0, freq=0.0):
+    """T25-2：随机族采样。链 = penalties -> temperature -> top-k ->
+    top-p -> min-p -> softmax -> discrete（照 common_sampler 的顺序）。
+    RNG 与 libstdc++ 对齐；判卷人 tools/rng-probe.cpp。"""
+    v = apply_penalties(logits, history, rep, presence, freq)
+    if temp <= 0:
+        raise ValueError("temp<=0 走 greedy")
+    v = apply_temperature(v, temp)
+    v = apply_top_k(v, top_k)
+    v = apply_top_p(v, top_p)
+    v = apply_min_p(v, min_p)
+    mx = max(x for x in v if x != -math.inf)
+    zs = [math.exp(x - mx) if x != -math.inf else 0.0 for x in v]
+    s = sum(zs)
+    probs = [z / s for z in zs]
+    return MT19937(seed).discrete(probs)
 
 
 def selftest():
@@ -125,8 +194,54 @@ def selftest():
         for b in bad:
             print("  [FAIL] " + b)
         return 1
-    print("  [PASS] by1sample：greedy / penalties / top-k / top-p / min-p "
-          "手算对拍 + 负例必红（随机族 RNG 对齐 = T25-2 未实现不冒充）")
+
+    # T25-2：RNG 对齐对拍 tools/rng-probe.cpp（同编译器 = 同 libstdc++
+    # = oracle）。探针不在就走 30 —— 没验的东西不报绿。
+    import os
+    import subprocess
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    probe = os.path.join(root, "tools", "rng-probe.exe")
+    if not os.path.exists(probe):
+        print("  [PASS] by1sample 规格自检过；[跳过] rng-probe.exe 不在"
+              " —— RNG 对齐没验（先 g++ tools/rng-probe.cpp）")
+        return 30
+    cases = [(42, 12, [0.5, 0.3, 0.2]),
+             (7, 8, [0.1, 0.2, 0.3, 0.4]),
+             (20261014, 10, [1.0, 1.0, 1.0, 1.0, 1.0])]
+    for seed, n, probs in cases:
+        p = subprocess.run(
+            [probe, str(seed), str(n),
+             ",".join(str(x) for x in probs)],
+            capture_output=True, text=True, encoding="utf-8",
+            errors="replace")
+        if p.returncode != 0:
+            bad.append("rng-probe 退出码 %d" % p.returncode)
+            continue
+        lines = {}
+        for ln in p.stdout.splitlines():
+            k, _, rest = ln.partition(":")
+            lines[k.strip()] = rest.split()
+        raw_exp = [int(x) for x in lines["raw-1"]]
+        canon_exp = [float(x) for x in lines["canon"]]
+        idx_exp = [int(x) for x in lines["idx"]]
+        g = MT19937(seed)
+        if [g.genrand() for _ in range(16)] != raw_exp:
+            bad.append("mt19937 原始流对不上（seed=%d）" % seed)
+        g2 = MT19937(seed)
+        canon = [g2.uniform01() for _ in range(8)]
+        if any(a != b for a, b in zip(canon, canon_exp)):
+            bad.append("uniform01 映射对不上（seed=%d）" % seed)
+        g3 = MT19937(seed)
+        idx = [g3.discrete(probs) for _ in range(n)]
+        if idx != idx_exp:
+            bad.append("discrete 对不上（seed=%d）：%r vs %r"
+                       % (seed, idx[:6], idx_exp[:6]))
+    if bad:
+        for b in bad:
+            print("  [FAIL] " + b)
+        return 1
+    print("  [PASS] by1sample：规格手算 + 负例必红 + **RNG 对齐 3 组种子"
+          "逐流对上**（mt19937 原始流 / uniform01 / discrete 索引）")
     return 0
 
 
