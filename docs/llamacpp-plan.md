@@ -99,7 +99,31 @@ delta_rule/ssm_scan 同族问题，归融合核路线，不在 S2 硬塞。
 **已核验**（2026-10-14）：ROCmFPX 的 instella 面 = MoE-16B（非 dense）；
 社区 Olmo2 改名配方 = 结构不忠实（见下节）；convert 已跑（公开版命名
 被 `Can not map` 当场拒）。
-**仍未验**：忠实宿主/补丁未落地、可用 GGUF 未产出、logits dump 未产。
+
+### T18 全链现状（2026-10-14 收账）
+
+**打通**：真权重（amd/Instella-3B 399 张量）-> **OlmoE 单专家等价改写**
+（softmax 单专家恒 1.0；olmoe 与 Instella 同型 = 前置 norm + 拆头前
+全宽 q/k norm）-> **上游 converter 未改一字** -> GGUF（435 张量 6.2GB
+F16）-> `llamacpp/llama-eval-logits.exe`（全量 logits 产者，树外
+`tools/llama-eval-logits.cpp` 归档）。
+
+**对照结果**：
+- `llama-cli` 双跑 `logits-compare`：**逐位相同**（50304 值）——
+  by1llama 判卷人绿，链自身确定性成立。
+- llama 侧 vs **AMD 自家参照**（modeling_instella.py + 真权重 bf16）：
+  argmax **全同**（都出 ` Paris`，"The capital of France is" 续写）、
+  top5 交集 5/5、max|Δ| 1.2e-1 / 相对 **8.0e-3**（bf16 计算 vs fp32
+  的累加序噪声族；噪声下界归因待 fp32 参照补测）。
+
+**仍欠**（判据的最终形）：**双产物逐位** —— by1 的 GGUF writer（rc2
+产物线）出第二份 GGUF，双产物各跑 llama-cli 对 logits 逐位。当前的
+逐位是链自身确定性，不冒充产物对照。
+
+**工具坑三只入账**：`pre_feedforward_layernorm` 要换同位异名才进
+OLMOE 张量集；PowerShell 会搅 `-I` 参数（引号包住）；静态库顺序
+（ggml-cpu 必须在 ggml 之后）。transformers 5.x 的 DynamicCache 缺
+`to_legacy_cache` -> 参照前向走 `use_cache=False`。
 
 ### 社区「Olmo2 改名欺骗」配方核验（2026-10-14）：**判不忠实**
 
