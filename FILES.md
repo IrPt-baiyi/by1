@@ -222,7 +222,6 @@
 | 文件 | 用途 |
 |---|---|
 | `1.0-roadmap.md` | By1 长期路线图 |
-| `1.0-roadmap.original.md` | By1 长期路线图 |
 | `INVENTORY.txt` | 验证清单：每个模型验到了什么、判卷人是谁 |
 | `autodl-file-storage.md` | AutoDL 文件存储操作单 —— 重租卡 0 下载 |
 | `check-map.md` | `check()` 的结构图 |
@@ -235,6 +234,7 @@
 | `llama.cpp-baseline.md` | 原版 llama.cpp 与固定 Qwen3.8 GGUF 的可复现 GPU 基线命令 |
 | `llamacpp-plan.md` | llama.cpp 集成策略 |
 | `multimodal-gaps.md` | 多模态缺口单（T21 判据之一）/ Multimodal gap list |
+| `p0-model-selection.md` | T1 选择记录：P0 代表模型（Qwen3-0.6B）、revision、许可证、参考实现、上游运行时与不纳入分支 |
 | `pattern-design-review.md` | 对上面那份草案的审查 —— **照做之前先读它** |
 | `pattern-design.md` | 设计草案 v0，**状态：待审**。它挡着 4 个模型 |
 | `precision-budget.md` | 精度预算表（B2）：每个判据阈值的出处/推导/实测余量。守卫 eps 与判据阈值是两回事，规矩在文档里 |

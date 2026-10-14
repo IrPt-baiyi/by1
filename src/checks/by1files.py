@@ -157,6 +157,10 @@ OVERRIDE = {
     '.gitattributes': '行尾一律 LF。没有它的后果见文件里的注释',
     '.gitignore': '产物、权重、缓存、临时探针',
     'models.tsv': '**手写的模型清单**：长名 / 短名 / HF id / 说明。命名规矩写在文件头',
+    '1.0-roadmap.original.md': '**计划历史备份**：大目标版改写前的原始路线图（只读存档）',
+    '1.0-roadmap.before-queue-rewrite.md': '**计划历史备份**：队列改写前一版（只读存档）',
+    'p0-model-selection.md': 'T1 选择记录：P0 代表模型（Qwen3-0.6B）、revision、许可证、'
+                             '参考实现、上游运行时与不纳入分支',
     'ir-spec.md': '**生成物**：IR 规格（字段、必填、语义、闭集）。`by1ir.py --spec`',
     'prims-spec.md': '**生成物**：原语数值规格（公式/形状/dtype/边界/出处）。'
                      '`by1graph.py --spec`；键集与原语表 import 时硬断言对账',
