@@ -427,7 +427,8 @@ def selftest_kv_map(gguf_path):
     return missing
 
 
-def build_gguf(hf_dir, out_path, ref_gguf=None, arch="llama", n_blocks=24):
+def build_gguf(hf_dir, out_path, ref_gguf=None, arch="llama", n_blocks=24,
+               quantize=False):
     """T23 产物线：HF 权重 -> 真 .gguf（F32），by1 表驱动 KV。
 
     范围记档：tokenizer KV 从 ref_gguf（上游转换产物）整拷 —— 分词器
@@ -455,7 +456,12 @@ def build_gguf(hf_dir, out_path, ref_gguf=None, arch="llama", n_blocks=24):
         if g is None:
             continue
         arr = val.to(torch.float32).numpy() if hasattr(val, "to") else np.asarray(val)
-        tensors.append((g, np.ascontiguousarray(arr)))
+        arr = np.ascontiguousarray(arr)
+        if quantize and arr.ndim >= 2:
+            q = _q8_0_encode(arr.reshape(-1))
+            nblk = arr.size // 32
+            arr = np.frombuffer(q, dtype=np.uint8).reshape(nblk, 34)
+        tensors.append((g, arr))
     if out_path and ref_gguf:
         with open(ref_gguf, 'rb') as fh:
             raw = fh.read()
@@ -466,6 +472,7 @@ def build_gguf(hf_dir, out_path, ref_gguf=None, arch="llama", n_blocks=24):
 
 
 def _gguf_write(kv_raw, kv_count, tensors, out_path):
+    import numpy as np
     """GGUF 容器写手（F32）：KV 原字节整拷 + 张量区重排。
     头序 = magic(4) + ver(4) + tensor_count(8) + kv_count(8)；对齐 32。"""
     import struct
@@ -474,14 +481,21 @@ def _gguf_write(kv_raw, kv_count, tensors, out_path):
     blobs = []
     off = 0
     for name, arr in tensors:
-        raw = arr.tobytes()
         nb = name.encode('utf-8')
-        infos += struct.pack('<Q', len(nb)) + nb
         dims = arr.shape[::-1]
+        if arr.ndim >= 2 and arr.dtype == np.uint8:
+            # Q8_0 块（34 字节/32 值）：by1 编码器产物，T19 逐位同
+            # llama-quantize；1D 张量保持 F32（llama-quantize 同款）
+            raw = arr.tobytes()
+            vt = 8
+        else:
+            raw = arr.tobytes()
+            vt = 0
+        infos += struct.pack('<Q', len(nb)) + nb
         infos += struct.pack('<I', len(dims))
         for d in dims:
             infos += struct.pack('<Q', d)
-        infos += struct.pack('<I', 0)          # F32
+        infos += struct.pack('<I', vt)
         infos += struct.pack('<Q', off)
         blobs.append(raw)
         off += len(raw)
