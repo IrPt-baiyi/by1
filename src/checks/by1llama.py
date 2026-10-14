@@ -456,7 +456,49 @@ def build_gguf(hf_dir, out_path, ref_gguf=None, arch="llama", n_blocks=24):
             continue
         arr = val.to(torch.float32).numpy() if hasattr(val, "to") else np.asarray(val)
         tensors.append((g, np.ascontiguousarray(arr)))
+    if out_path and ref_gguf:
+        with open(ref_gguf, 'rb') as fh:
+            raw = fh.read()
+        _ver, kv_raw, _ts, _off, _al, kv_count = _gguf_parse(raw)
+        tensors.sort(key=lambda kv: kv[0])
+        _gguf_write(kv_raw, kv_count, tensors, out_path)
     return tensors
+
+
+def _gguf_write(kv_raw, kv_count, tensors, out_path):
+    """GGUF 容器写手（F32）：KV 原字节整拷 + 张量区重排。
+    头序 = magic(4) + ver(4) + tensor_count(8) + kv_count(8)；对齐 32。"""
+    import struct
+    align = 32
+    infos = b''
+    blobs = []
+    off = 0
+    for name, arr in tensors:
+        raw = arr.tobytes()
+        nb = name.encode('utf-8')
+        infos += struct.pack('<Q', len(nb)) + nb
+        dims = arr.shape[::-1]
+        infos += struct.pack('<I', len(dims))
+        for d in dims:
+            infos += struct.pack('<Q', d)
+        infos += struct.pack('<I', 0)          # F32
+        infos += struct.pack('<Q', off)
+        blobs.append(raw)
+        off += len(raw)
+        pad = (-off) % align
+        if pad:
+            blobs.append(b'\x00' * pad)
+            off += pad
+    head = b'GGUF' + struct.pack('<I', 3)
+    head += struct.pack('<Q', len(tensors)) + struct.pack('<Q', kv_count)
+    body = head + kv_raw + infos
+    pad = (-len(body)) % align
+    body += b'\x00' * pad
+    with open(out_path, 'wb') as fh:
+        fh.write(body)
+        for b in blobs:
+            fh.write(b)
+    return out_path
 
 
 def rewrite_gguf(src_path, out_path, quant_q8_0=False):
