@@ -13,10 +13,16 @@ from pathlib import Path
 
 
 def main(argv):
-    if len(argv) != 3:
+    if len(argv) not in (3, 4, 5):
         print(__doc__)
         return 2
-    hf_dir, n_s, out_path = argv[0], int(argv[1]), argv[2]
+    mel_mode = argv[1] == "--mel"
+    hf_dir = argv[0]
+    if mel_mode:
+        mel_path, n_tok, out_path = argv[2], int(argv[3]), argv[4]
+        n_s = 0
+    else:
+        hf_dir, n_s, out_path = argv[0], int(argv[1]), argv[2]
     import glob
     import numpy as np
     import torch
@@ -66,25 +72,36 @@ def main(argv):
         print("  [FAIL] 映射不干净 —— 后面的数字不许引用")
         return 1
 
-    t = np.arange(n_s, dtype=np.float32) / 16000.0
-    sine = np.sin(2 * np.pi * 440.0 * t).astype(np.float32)
+    if not mel_mode:
+        t = np.arange(n_s, dtype=np.float32) / 16000.0
+        sine = np.sin(2 * np.pi * 440.0 * t).astype(np.float32)
 
-    from transformers import WhisperFeatureExtractor
-    fe = WhisperFeatureExtractor.from_pretrained(hf_dir)
-    # 手造 input_ids：占位检查数的是 config.audio_token_id（151676）——
-    # 给字符串会被处理器改写，id 直给才稳
-    n_ph = 13 if n_s >= 16000 else max(1, n_s * 13 // 16000)
-    from transformers import WhisperFeatureExtractor
-    fe = WhisperFeatureExtractor.from_pretrained(hf_dir)
-    bf = fe(raw_speech=sine, sampling_rate=16000, padding="longest",
-            return_tensors="pt")
-    inputs = {
-        "input_ids": torch.tensor([[int(model.config.audio_token_id)] * n_ph]),
-        "input_features": bf["input_features"],
-        "input_features_mask": torch.ones(
-            bf["input_features"].shape[0], bf["input_features"].shape[-1],
-            dtype=torch.long),
-    }
+    # 占位检查数的是 config.audio_token_id —— id 直给才稳（字符串会被改写）
+    if mel_mode:
+        # 同长终审（T21-9）：mtmd 的 mel 直喂塔 —— 输入与 mtmd 侧逐帧
+        # 相同（mel 数学已证 4.7e-6 等价），残差即纯塔计算差
+        mel = np.loadtxt(mel_path, skiprows=1).reshape(128, -1)
+        inputs = {
+            "input_ids": torch.tensor(
+                [[int(model.config.audio_token_id)] * n_tok]),
+            "input_features": torch.tensor(mel, dtype=torch.float32)[None],
+            "input_features_mask": torch.ones(1, mel.shape[1],
+                                              dtype=torch.long),
+        }
+    else:
+        from transformers import WhisperFeatureExtractor
+        fe = WhisperFeatureExtractor.from_pretrained(hf_dir)
+        n_ph = 13 if n_s >= 16000 else max(1, n_s * 13 // 16000)
+        bf = fe(raw_speech=sine, sampling_rate=16000, padding="longest",
+                return_tensors="pt")
+        inputs = {
+            "input_ids": torch.tensor(
+                [[int(model.config.audio_token_id)] * n_ph]),
+            "input_features": bf["input_features"],
+            "input_features_mask": torch.ones(
+                bf["input_features"].shape[0], bf["input_features"].shape[-1],
+                dtype=torch.long),
+        }
 
     cap = {}
 
