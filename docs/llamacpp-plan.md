@@ -68,3 +68,34 @@ rc1 的另一半是 **decode/状态**：生成循环里的 KV cache 与增量解
 **已知边界**：S2 的 cache 维度按 `by1state` 声明走（kv_cache/recurrent/
 conv_history 三类里先做 kv_cache）；递推类（recurrent/conv_history）是
 delta_rule/ssm_scan 同族问题，归融合核路线，不在 S2 硬塞。
+
+## T18 地形判定（2026-10-14 实测）
+
+`Instella 真 GGUF 全链`（判据：`llama-cli` logits 逐位）的**前置事实**：
+
+1. **上游 v0.6.0 不认识 instella 架构** —— `convert_hf_to_gguf.py` 与
+   `src/` 全文无 `instella`（本地 grep 证据）。`amd/Instella-3B` 是
+   `InstellaForCausalLM` / `model_type=instella`（32 头 MHA、head_dim=80、
+   vocab 50304、bf16），**原版 llama-cli 连 load 都过不去**。
+2. 因此全链 = **补丁版 llama.cpp**（本文件"社区改版的定位"一节的路）：
+   查公开派生版 -> 核验补丁 -> 本地小补丁可单独构建 -> **原版与补丁版
+   都测**。线索：AMD dev 社区「Hacking AMD's Instella-3B into llama.cpp」
+   一帖；派生版 `kingjones30/ROCmFPX`。
+   **补丁面核验（2026-10-14，克隆 `llamacpp/ROCmFPX` @ dfeacaf）**：
+   它的 `LLM_ARCH_INSTELLA` 是 **Instella-MoE-16B**（DeepSeek-V3 MLA +
+   sigmoid MoE + FarSkip，converter 注册的是 `InstellaMoEForCausalLM`），
+   **不是 T18 的 dense Instella-3B**（`InstellaForCausalLM`）—— dense 3B
+   在这个派生版里同样无支持。它点名 oracle 为
+   `csabakecskemeti/llama.cpp@instella-moe`（下一步查它 + AMD 帖）。
+   两支 Instella 是**两个模型**，不许混记成一个。
+3. 工具链已就位：`llamacpp/build-cli/bin/` 三件（`llama-cli` ·
+   `llama-eval-callback`（logits dump 的产者）· `llama-gguf`）。
+   构建补记：MinGW 下 cpp-httplib 要 `-D_WIN32_WINNT=0x0A00`
+   （`CreateFile2` 未声明）。
+4. **判据形态**：`logits-run` 产两份 dump（同 GGUF 同参）逐位比 =
+   基线自比对；真正的全链对照是 **补丁版产物 vs 官方产物** 的 logits
+   逐位（同权重同实现下 bitwise 是可达的）。原版/补丁版差异单独记账。
+
+**未验**（不吹）：补丁内容未核验、convert 未跑、logits dump 未产。
+下一步顺序：核验 ROCmFPX 的 instella 面 -> 本地小补丁 -> 原版/补丁版
+双构建 -> convert（上游工具）-> 双 dump 逐位。
