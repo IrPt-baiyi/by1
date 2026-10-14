@@ -302,6 +302,97 @@ def manifest_audit(gguf_path, manifest_path, spoof_olmoe=False):
     return 0
 
 
+def _q8_0_encode(vals):
+    """Q8_0 块编码 —— 照 `quantize_row_q8_0_ref` 逐字（ggml-quants.c 276）。
+
+    每 32 值一块：amax=max|x|（f32）；d=amax/127（f32 除）；d 存 fp16
+    （IEEE 就近舍入）；id=d?1/d:0（f32）；qs=roundf(x*id) ——
+    **roundf 是半数远离零**，numpy 的 round 是银行家舍入，不是一回事。
+    向量化版（94M 块跑纯 Python 循环要几小时）；f32 运算序逐条同 C。"""
+    import numpy as np
+    f32 = np.float32
+    n = len(vals) // 32
+    x = np.asarray(vals[:n * 32], dtype=f32).reshape(n, 32)
+    amax = np.max(np.abs(x), axis=1).astype(f32)
+    d = (amax / f32(127)).astype(f32)
+    with np.errstate(divide='ignore'):
+        id_ = np.where(d != 0, f32(1.0) / d, f32(0)).astype(f32)
+    x0 = (x * id_[:, None]).astype(f32)
+    q = (np.floor(np.abs(x0) + f32(0.5)) *
+         np.where(x0 >= 0, f32(1), f32(-1))).astype(np.int8)
+    out = np.empty((n, 34), dtype=np.uint8)
+    out[:, :2] = d.astype(np.float16).view(np.uint8).reshape(n, 2)
+    out[:, 2:] = q.view(np.uint8).reshape(n, 32)
+    return out.tobytes()
+
+
+def block_audit(src_gguf, quant_gguf):
+    """T19-2：**打包与尺度逐位** —— by1 的 Q8_0 编码器对拍真量化产物。
+
+    逐张量、**文件序裸字节**：F16 源值 -> by1 编码 -> 与 llama-quantize
+    产出的块字节**逐位比**（尺度 fp16 + 32 个 int8 全含在内）。未被量化
+    的张量（norm 这类小张量保持 F16）也得有账：字节必须与源逐位同。"""
+    root = pathlib.Path(__file__).resolve().parents[2]
+    _sys.path.insert(0, str(root / 'llamacpp' / 'llama.cpp' / 'gguf-py'))
+    import numpy as np
+    from gguf import GGUFReader
+    from gguf.constants import GGMLQuantizationType as QType
+
+    src = GGUFReader(str(src_gguf))
+    q8 = GGUFReader(str(quant_gguf))
+    src_t = {t.name: t for t in src.tensors}
+    q8_t = {t.name: t for t in q8.tensors}
+    problems, bit_ok, kept = [], 0, 0
+    for name, t in sorted(src_t.items()):
+        if name not in q8_t:
+            problems.append('%s 量化后不见了' % name)
+            continue
+        qt = q8_t[name]
+        raw_src = bytes(t.data.tobytes())
+        raw_q = bytes(qt.data.tobytes())
+        qt_type, src_type = int(qt.tensor_type), int(t.tensor_type)
+        # 按**源侧类型**取值（converter 的 1D 本来就存 F32，别当 F16 读）
+        if src_type == int(QType.F32):
+            vals = np.frombuffer(raw_src, dtype='<f4')
+        else:
+            vals = np.frombuffer(raw_src, dtype='<f2').astype(np.float32)
+        if qt_type in (int(QType.F16), int(QType.F32)):
+            # 未量化路径（1D 小张量）：F32 原样 / F16->F32 精确升位 —— 逐位同
+            if qt_type == src_type:
+                mine = raw_src
+            elif qt_type == int(QType.F32):
+                mine = vals.astype(np.float32).tobytes()
+            else:
+                mine = vals.astype(np.float16).tobytes()
+            if mine != raw_q:
+                problems.append('%s 未量化但值变了（升位/保持不逐位）' % name)
+            else:
+                kept += 1
+            continue
+        mine = _q8_0_encode(vals)
+        vals = np.asarray(vals, dtype=np.float32)
+        mine = _q8_0_encode(vals)
+        if mine == raw_q:
+            bit_ok += 1
+        else:
+            first = next((i for i, (a, b) in enumerate(zip(mine, raw_q))
+                          if a != b), None)
+            problems.append('%s 块字节不符（首个分歧 @ %s，长 %d/%d）'
+                            % (name, first, len(mine), len(raw_q)))
+    print('  %s  ->  %s' % (pathlib.Path(src_gguf).name,
+                            pathlib.Path(quant_gguf).name))
+    print('  逐位同 %d · 保 F16 %d · 问题 %d（源张量 %d）'
+          % (bit_ok, kept, len(problems), len(src_t)))
+    if problems:
+        for p in problems[:10]:
+            print('    !! ' + p)
+        print('  [FAIL] 打包与尺度对账 %d 处' % len(problems))
+        return 1
+    print('  [PASS] 打包与尺度逐位：by1 Q8_0 编码器与 llama-quantize '
+          '比特级一致')
+    return 0
+
+
 def logits_run(gguf, prompt, out_path, llama_cli=None):
     """跑 llama.cpp 产 logits dump（要本机构建）。命令本身进报告 ——
     "每项可从报告追溯到命令"。"""
@@ -342,6 +433,9 @@ def main(argv=None):
     m.add_argument('--gguf', required=True)
     m.add_argument('--manifest', required=True)
     m.add_argument('--spoof-olmoe', action='store_true')
+    b = sub.add_parser('block-audit', help='量化打包与尺度逐位（T19-2）')
+    b.add_argument('--src', required=True)
+    b.add_argument('--quant', required=True)
     args = ap.parse_args(argv)
     if args.cmd == 'record':
         return record(args.out)
@@ -351,6 +445,8 @@ def main(argv=None):
         return logits_compare(args.ref, args.got, args.out)
     if args.cmd == 'manifest-audit':
         return manifest_audit(args.gguf, args.manifest, args.spoof_olmoe)
+    if args.cmd == 'block-audit':
+        return block_audit(args.src, args.quant)
     return logits_run(args.gguf, args.prompt, args.out, args.llama_cli)
 
 
