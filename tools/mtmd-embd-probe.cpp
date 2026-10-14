@@ -149,8 +149,9 @@ int main(int argc, char ** argv) {
         struct llama_context_params cparams = llama_context_default_params();
         struct llama_context * lctx = llama_new_context_with_model(text_model, cparams);
         if (!lctx) { fprintf(stderr, "lm ctx failed\n"); return 1; }
-        /* manual batch, decoded chunk-by-chunk: llama_decode rejects
-           mixed token/embd batches (all-or-nothing embd semantics) */
+        /* T21 final: per-chunk API-correct calls -- text chunks go through
+           llama_decode, the media (embd) chunk through llama_encode, which
+           is exactly what mtmd_helper does (LLM-P / LLM-D split). */
         std::vector<llama_token>   s_tok;
         std::vector<float>         s_embd;
         std::vector<llama_pos>     s_pos;
@@ -182,14 +183,18 @@ int main(int argc, char ** argv) {
             }
             struct llama_batch lb;
             lb.n_tokens = cnt;
-            lb.embd = s_embd.data();
             lb.token = s_tok.data();
+            lb.embd = s_embd.data();
             lb.pos = s_pos.data();
             lb.n_seq_id = s_nseq.data();
             lb.seq_id = s_seqptr.data();
             lb.logits = s_log.data();
+            int is_last = (i == mtmd_input_chunks_size(chunks) - 1);
+            if (is_last) { s_log[cnt - 1] = 1; last_local = cnt - 1; }
             if (ty3 == (int) MTMD_INPUT_CHUNK_TYPE_TEXT) {
                 for (int j = 0; j < cnt; ++j) lb.token[j] = tk[j];
+                fprintf(stderr, "lm: decode text chunk %zu n=%d\n", i, cnt);
+                if (llama_decode(lctx, lb) != 0) { fprintf(stderr, "decode failed\n"); return 1; }
             } else {
                 for (int j = 0; j < cnt; ++j) {
                     memcpy(lb.embd + (size_t) j * n_per,
@@ -197,17 +202,9 @@ int main(int argc, char ** argv) {
                            sizeof(float) * n_per);
                     med_row++;
                 }
-            }
-            int is_last = (i == mtmd_input_chunks_size(chunks) - 1);
-            if (is_last) { s_log[cnt - 1] = 1; last_local = cnt - 1; }
-            fprintf(stderr, "lm: n_embd_inp=%d n_embd=%d\n",
-                (int) llama_model_n_embd_inp(text_model),
-                (int) llama_model_n_embd(text_model));
-        fprintf(stderr, "lm: decode chunk %zu type=%d n=%d last=%d\n",
-                    i, ty3, cnt, is_last);
-            if (llama_decode(lctx, lb) != 0) {
-                fprintf(stderr, "lm decode failed\n");
-                return 1;
+                lb.token = NULL;
+                fprintf(stderr, "lm: encode media chunk %zu n=%d\n", i, cnt);
+                if (llama_encode(lctx, lb) != 0) { fprintf(stderr, "encode failed\n"); return 1; }
             }
             slot += cnt;
         }
