@@ -159,6 +159,7 @@ OVERRIDE = {
     'models.tsv': '**手写的模型清单**：长名 / 短名 / HF id / 说明。命名规矩写在文件头',
     '1.0-roadmap.original.md': '**计划历史备份**：大目标版改写前的原始路线图（只读存档）',
     '1.0-roadmap.before-queue-rewrite.md': '**计划历史备份**：队列改写前一版（只读存档）',
+    'product-definition.md': 'T1 产品定义（冻结版）：目标用户/输入输出/支持层级/不做的运行时职责/代表模型',
     'p0-model-selection.md': 'T1 选择记录：P0 代表模型（Qwen3-0.6B）、revision、许可证、'
                              '参考实现、上游运行时与不纳入分支',
     'ir-spec.md': '**生成物**：IR 规格（字段、必填、语义、闭集）。`by1ir.py --spec`',
