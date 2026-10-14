@@ -1,6 +1,6 @@
 # 这个仓库里每个文件是干什么的
 
-> 345 个跟踪文件。按"你会想找什么"分组，不按字母表。
+> 343 个跟踪文件。按"你会想找什么"分组，不按字母表。
 >
 > **这份文档是生成的**：`python src/by1files.py --write`。
 > 文件清单、每组的个数、每个文件的一句话都从目录树和 docstring 来 ——
@@ -215,13 +215,14 @@
 |---|---|
 | `ci.yml` | 每次提交都跑档 1 —— **这是这个仓库唯一的自动门 |
 
-## `docs/` —— 20 个
+## `docs/` —— 21 个
 
 活的文档 —— 还没做完的事记在这里，做完的挪去 `history/`。
 
 | 文件 | 用途 |
 |---|---|
 | `1.0-roadmap.md` | By1 长期路线图 |
+| `1.0-roadmap.original.md` | By1 长期路线图 |
 | `INVENTORY.txt` | 验证清单：每个模型验到了什么、判卷人是谁 |
 | `autodl-file-storage.md` | AutoDL 文件存储操作单 —— 重租卡 0 下载 |
 | `check-map.md` | `check()` 的结构图 |
@@ -291,7 +292,7 @@
 | `plan.md` | by1 · 接下来的计划 |
 | `roadmap-rc-2026-10.md` | 1.0.0 路线图（rc0 – rc9 → 1.0.0） |
 
-## `models/` —— 62 个
+## `models/` —— 61 个
 
 命名规矩：**文件名 = 长名 = HF 的模型名（去掉 owner）**，
 `model` 声明 = 短名（手写的）。两列的对照见 `models.tsv`。
@@ -320,7 +321,6 @@
 | `Qwen3.8-27B.by1` | 真实模型 · HF id `Qwen/Qwen3.8-27B` |
 | `Qwen3.8-Flash-Next.by1` | 真实模型 · HF id `Qwen/Qwen3.8-Flash-Next` |
 | `Step-3.7-Flash.by1` | 真实模型 · HF id `stepfun-ai/Step-3.7-Flash` |
-| `Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL.by1` | 真实模型 · HF id `nerkyor/Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL` |
 | `attn-fused-shaped.by1` | 融合 q/k/v 的注意力**（视觉塔那种布局） |
 | `clef-tiny.by1` | 目的：证明"对着真 checkpoint 验过的那份描述"**同时是能跑的** |
 | `clef.by1` | 真实模型 · HF id `Cloudflare/clef` |
@@ -361,16 +361,16 @@
 | `selftest.by1` | 检查器自检。这个文件里每一处都是故意的错，用来证明检查不是空过 |
 | `ssm-shaped.by1` | SSM（选择性状态空间 / Mamba2）的最小可跑模型 |
 
-## `refs/` —— 86 个
+## `refs/` —— 84 个
 
 从 HuggingFace / ModelScope 抓的**模型元数据**（配置 + 张量名/形状清单），
 **不是权重**。版权属各发布方，各自适用各自的许可证。
 
 | 种类 | 个数 | 是什么 |
 |---|---|---|
-| `*.config.json` | 35 | |
+| `*.config.json` | 34 | |
 | `*.gguf.json` | 3 | |
-| `*.tensors.json` | 34 | |
+| `*.tensors.json` | 33 | |
 | `ISTA-DASLab__Qwen3.8-27B-GSQ-RCO-GGUF.IQ2_S-mtp.alloc.txt` | 14 | |
 
 

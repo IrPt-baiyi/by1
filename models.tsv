@@ -51,7 +51,6 @@ gpt-oss-120b	gpt-oss-120b	openai/gpt-oss-120b	交替 SWA + learned sink；MXFP4
 gemma-4-31B	gemma-4-31B	google/gemma-4-31B	一个模型内两种 head_dim + K=V
 Laguna-XS-2_1	Laguna-XS-2_1	poolside/Laguna-XS-2_1	每层头数不同 + 每头门控 + 双 RoPE
 Instella-3B	Instella-3B	amd/Instella-3B	训练中途的 checkpoint（qk_norm=full）
-Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL	nerkyor/Step-3_7-Flash	nerkyor/Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL	**剪枝微调版**：逐层专家数不同（动态）。和官方**同名不同源**，所以短名带 owner
 Step-3.7-Flash	Step-3.7-Flash	stepfun-ai/Step-3.7-Flash	官方未剪枝。正主，短名不加前缀
 Ling-3.0-tiny	Ling-3.0-tiny	inclusionAI/Ling-3.0-tiny	KDA（不是 GDN）
 minimind-3	minimind-3	jingyaogong/minimind-3	收敛判卷人：最普通的那种

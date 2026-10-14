@@ -78,7 +78,6 @@ CASE = [
     ('NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16.by1', True, '',
      'SSM（选择性状态空间）实现了 —— 判卷人 src/modelcheck/by1ssm.py'),
     ('clef-tiny.by1', True, '', '取值全都实现过'),
-    ('Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL.by1', True, '', 'sigmoid_topk 已实现'),
     ('gpt2.by1', True, '',
      'gelu / LayerNorm / 学习式位置 / 无门控 MLP 现在都实现了'),
 ]

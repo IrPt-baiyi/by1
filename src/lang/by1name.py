@@ -7,8 +7,8 @@
     长名   = HF 的**模型名**（不带 owner）   -> **文件名**
     短名   = **手动起的**                    -> model 声明、表格、显示
 
-    文件名     Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL.by1
-    model 声明 step37-pruned
+    文件名     Qwen3.8-27B.by1
+    model 声明 qwen38
 
 ## 四条规矩
 
@@ -69,8 +69,6 @@ CURRENT = {
     'gemma-4-31b.by1': 'gemma-4-31B',
     'laguna-xs-2.1.by1': 'Laguna-XS-2_1',
     'instella-3b.by1': 'Instella-3B',
-    'nerkyor_Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL.by1':
-        'Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL',
     'stepfun-ai__Step-3.7-Flash.by1': 'Step-3.7-Flash',
     'ling-3.0-tiny.by1': 'Ling-3.0-tiny',
     'nemotron-h.by1': 'NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16',

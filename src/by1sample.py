@@ -165,6 +165,8 @@ def chain_f32(logits, seed, temp=0.8, top_k=40, top_p=0.95, min_p=0.05):
         k = min(int(top_k), len(x))
         order = np.argsort(-x, kind="stable")[:k]
         ids, x = ids[order], x[order]
+    # 无过滤时**保原序**（dist 的 fp 求和序敏感，T25 配置实证）；
+    # 排序只由过滤器触发（top_k 截断 / top_p 内部 / min_p 下面）
 
     if top_p < 1.0:
         max_l = f32(np.max(x))
@@ -184,6 +186,11 @@ def chain_f32(logits, seed, temp=0.8, top_k=40, top_p=0.95, min_p=0.05):
         x, ids = x[:keep], ids[:keep]
 
     if min_p > 0 and len(x):
+        # min_p 依赖 x[0]=max —— 前面若没过滤过（top_k=0 且 top_p=1）
+        # 数组未排序，先排（T26 矩阵 7 红的真相）
+        if top_k == 0 and top_p >= 1.0:
+            order = np.argsort(-x, kind="stable")
+            ids, x = ids[order], x[order]
         min_logit = f32(x[0] + f32(np.log(f32(min_p))))
         keep = len(x)
         for i in range(1, len(x)):

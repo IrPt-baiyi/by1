@@ -97,9 +97,6 @@ REAL = [
     ('gemma-4-31B.by1', None, 'torch.module', []),
     ('Laguna-XS-2_1.by1', None, 'torch.module', []),
     ('Instella-3B.by1', None, 'torch.module', []),
-    # 剪枝版。和官方**同名不同源**，所以短名带 owner（见 models.tsv）。
-    ('Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL.by1',
-     None, 'torch.module', []),
     ('Ling-3.0-tiny.by1', None, 'torch.module', []),
     # **收敛的判卷人**：最普通的那种模型（标准 Qwen3 形状）。
     # 前面几个都是特意挑来压东西的，如果连这一个都要新属性，就是没收敛。
@@ -497,13 +494,6 @@ def note_of(st, out, line, empty='（没有判定行）'):
 # 已知缺口：(那一项的名字前缀, 为什么)。**仍然打印出来**，只是不算失败 ——
 # 藏起来的缺口和没发现过的缺口一样糟。
 KNOWN = [
-    ('tensors torch.module Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL.by1',
-     '那 25 个张量在 model-00009 分片里读不出形状。'
-     '**2026-10-14 复查改判：不是镜像坏分片，是上游仓库没了** —— '
-     'hf-mirror 与 HF 直连都 401（连 config.json 和 API 都 401），'
-     'ModelScope 404：nerkyor/Step-3_7-Flash-180B-LynnStyle-GLM52-SFT-GPT55-RL '
-     '已下架或转私有。这 25 个张量的形状/dtype 只能信 .by1 声明，'
-     '除非作者恢复仓库，否则对拍永久缺口。refs 仍是 728/753'),
     # **原来这里有一条 `C gpt2-tiny.by1`**（"C 还没有 LayerNorm 和学习式
     # 位置表"）。现在实现了，所以撤掉。
     #
