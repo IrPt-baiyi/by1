@@ -93,6 +93,22 @@ int main(int argc, char ** argv) {
         return 1;
     }
 
+    /* T21-11: dump the exact input token sequence (text chunks as ids,
+       media chunk as M*n) so the HF side can replicate it 1:1. */
+    fprintf(stderr, "tokens:");
+    for (size_t i = 0; i < mtmd_input_chunks_size(chunks); ++i) {
+        const mtmd_input_chunk * ch2 = mtmd_input_chunks_get(chunks, i);
+        if (mtmd_input_chunk_get_type(ch2) == MTMD_INPUT_CHUNK_TYPE_TEXT) {
+            size_t nt = 0;
+            const llama_token * toks = mtmd_input_chunk_get_tokens_text(ch2, &nt);
+            for (size_t j = 0; j < nt; ++j) fprintf(stderr, " %d", toks[j]);
+        } else {
+            size_t nt = mtmd_input_chunk_get_n_tokens(ch2);
+            fprintf(stderr, " M*%zu", nt);
+        }
+    }
+    fprintf(stderr, "\n");
+
     int32_t enc_rc = -1;
     size_t n_tok = 0;
     for (size_t i = 0; i < mtmd_input_chunks_size(chunks); ++i) {
