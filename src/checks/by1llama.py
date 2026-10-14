@@ -386,6 +386,32 @@ def _gguf_parse(raw):
     return ver, kv_bytes, tensors, data_start, align, n_kv
 
 
+# T23: by1 声明 -> ggml 元数据键（KV 合成表）。
+# 判据：对真实 GGUF（tinyqwen3）反查 —— 表里每键都必须在产物里出现，
+# 且取值与 by1 声明一致（selftest_kv_map 跑这条）。
+BY1_TO_GGML_KV = {
+    "n_vocab": "llama.vocab_size",
+    "n_embd": "llama.embedding_length",
+    "n_layer": "llama.block_count",
+    "n_head": "llama.attention.head_count",
+    "n_head_kv": "llama.attention.head_count_kv",
+    "n_ff": "llama.feed_forward_length",
+    "n_ctx": "llama.context_length",
+    "rope_theta": "llama.rope.freq_base",
+    "eps": "llama.attention.layer_norm_rms_epsilon",
+    "arch": "general.architecture",
+}
+
+
+def selftest_kv_map(gguf_path):
+    """T23 反例必红：合成表的键必须全部真实存在于产物 GGUF。"""
+    raw = open(gguf_path, 'rb').read()
+    info = _gguf_parse(raw)
+    have = set(info["kv"].keys())
+    missing = [k for k in BY1_TO_GGML_KV.values() if k not in have]
+    return missing
+
+
 def rewrite_gguf(src_path, out_path, quant_q8_0=False):
     """by1 的 GGUF 容器写手：**KV 原字节整拷**、张量区重算。
 
