@@ -200,7 +200,10 @@ int main(int argc, char ** argv) {
             }
             int is_last = (i == mtmd_input_chunks_size(chunks) - 1);
             if (is_last) { s_log[cnt - 1] = 1; last_local = cnt - 1; }
-            fprintf(stderr, "lm: decode chunk %zu type=%d n=%d last=%d\n",
+            fprintf(stderr, "lm: n_embd_inp=%d n_embd=%d\n",
+                (int) llama_model_n_embd_inp(text_model),
+                (int) llama_model_n_embd(text_model));
+        fprintf(stderr, "lm: decode chunk %zu type=%d n=%d last=%d\n",
                     i, ty3, cnt, is_last);
             if (llama_decode(lctx, lb) != 0) {
                 fprintf(stderr, "lm decode failed\n");
