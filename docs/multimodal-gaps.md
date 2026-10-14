@@ -30,6 +30,8 @@
 | C3 | 多模态 KV cache / decode（T17 只做了文本） | 文本 ✅ 多模态 ✗ | 未销 |
 | C4 | mmproj 产物链（by1 写手出 mmproj、双产物逐位——T18 的多模态版） | 未开跑 | 未销 |
 
+| D1 | **llama.cpp embd 注入路径语义**（token=-1 批）与 HF 占位+swap 通路同值不等价（cos 0.58-0.7）；token 路径同输入等价（cos 0.99993） | tools/mtmd-embd-probe（token/embd 双路径）+ qwen3asr-embd-ref | 立案（上游语义，非本仓缺陷；数字在案） |
+
 ## 销账规则
 
 销一条 = 补上判卷人与数字（例："A1 销：夹具 X 入库，边界对拍 max|Δ| …，判卷人 tools/audio-*-probe"）。
