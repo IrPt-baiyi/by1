@@ -262,7 +262,7 @@ def manifest_audit(gguf_path, manifest_path, spoof_olmoe=False):
         # converter 的合并步：per-expert 名先并成 merged 名再映射
         nm = re.sub(r'\.mlp\.experts\.\d+\.(gate_proj|up_proj|down_proj)',
                     r'.mlp.experts.\1', nm)
-        gg = mapper.get_name(nm, try_suffixes=('.weight',))
+        gg = mapper.get_name(nm, try_suffixes=('.weight', '.bias'))
         if gg is None:
             problems.append('%s -> 映射不上（TensorNameMap 无此名）' % name)
             continue
@@ -270,7 +270,7 @@ def manifest_audit(gguf_path, manifest_path, spoof_olmoe=False):
     if spoof_olmoe:
         for i in range(n_blocks):
             gg = mapper.get_name('model.layers.%d.mlp.gate.weight' % i,
-                                 try_suffixes=('.weight',))
+                                 try_suffixes=('.weight', '.bias'))
             if gg:
                 want_names[gg] = ('<synthetic router zeros>',
                                   (1, man['model.embed_tokens.weight']['shape'][1]))
@@ -425,6 +425,38 @@ def selftest_kv_map(gguf_path):
     # vocab_size 非必需（qwen2 产物不带此键）—— 归可选，不进判据
     optional = (arch + ".vocab_size",)
     return missing
+
+
+def build_gguf(hf_dir, out_path, ref_gguf=None, arch="llama", n_blocks=24):
+    """T23 产物线：HF 权重 -> 真 .gguf（F32），by1 表驱动 KV。
+
+    范围记档：tokenizer KV 从 ref_gguf（上游转换产物）整拷 —— 分词器
+    组装是另一条生产线，本函数只负责 **模型** 侧（KV + 张量）。
+    判据：llama-cli 直接加载，logits 与 ref_gguf 逐位。
+    """
+    import struct
+    from pathlib import Path
+    import numpy as np
+    import torch
+    from safetensors.torch import load_file
+    from gguf.tensor_mapping import TensorNameMap
+    from gguf import MODEL_ARCH
+
+    sd = {}
+    import glob
+    for f in sorted(glob.glob(str(Path(hf_dir) / "*.safetensors"))):
+        sd.update(load_file(f))
+    mapper = TensorNameMap(MODEL_ARCH.LLAMA, n_blocks)
+    # mapping 方向 = HF 名 -> (MODEL_TENSOR, ggml 名)，直查（我第一版
+    # 当成反方向建索引，命中 0 —— 坑账）
+    tensors = []
+    for name, val in sd.items():
+        g = mapper.get_name(name, try_suffixes=('.weight', '.bias'))
+        if g is None:
+            continue
+        arr = val.to(torch.float32).numpy() if hasattr(val, "to") else np.asarray(val)
+        tensors.append((g, np.ascontiguousarray(arr)))
+    return tensors
 
 
 def rewrite_gguf(src_path, out_path, quant_q8_0=False):
