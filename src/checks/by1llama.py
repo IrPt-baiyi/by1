@@ -390,26 +390,39 @@ def _gguf_parse(raw):
 # 判据：对真实 GGUF（tinyqwen3）反查 —— 表里每键都必须在产物里出现，
 # 且取值与 by1 声明一致（selftest_kv_map 跑这条）。
 BY1_TO_GGML_KV = {
-    "n_vocab": "llama.vocab_size",
-    "n_embd": "llama.embedding_length",
-    "n_layer": "llama.block_count",
-    "n_head": "llama.attention.head_count",
-    "n_head_kv": "llama.attention.head_count_kv",
-    "n_ff": "llama.feed_forward_length",
-    "n_ctx": "llama.context_length",
-    "rope_theta": "llama.rope.freq_base",
-    "eps": "llama.attention.layer_norm_rms_epsilon",
-    "arch": "general.architecture",
+    "n_embd": "embedding_length",
+    "n_layer": "block_count",
+    "n_head": "attention.head_count",
+    "n_head_kv": "attention.head_count_kv",
+    "n_ff": "feed_forward_length",
+    "n_ctx": "context_length",
+    "rope_theta": "rope.freq_base",
+    "eps": "attention.layer_norm_rms_epsilon",
 }
+_ARCH_CANDIDATES = ("llama", "qwen2", "qwen3", "qwen3vl", "gemma3", "olmoe",
+                    "qwen2moe", "llama4")
+
+
+def _kv_arch_prefix(raw):
+    """键前缀 = general.architecture 的取值（现代 llama.cpp 按 arch 分前缀，
+    qwen2 有自己的 qwen2.* —— 表必须参数化，硬编 llama.* 是我第一版的坑）。"""
+    for a in _ARCH_CANDIDATES:
+        if (a + ".block_count").encode("utf-8") in raw:
+            return a
+    return None
 
 
 def selftest_kv_map(gguf_path):
     """T23 反例必红：合成表的键必须全部真实存在于产物 GGUF。"""
     raw = open(gguf_path, 'rb').read()
-    # _gguf_parse 的 KV 区是**原字节**（拷贝式写手的设计）——
+    arch = _kv_arch_prefix(raw)
+    if arch is None:
+        return ["(未知 arch 前缀)"]
     # 键存在性以键串在 KV 区出现为准（脚手架判据；正解 = KV 键解析器）
-    missing = [k for k in BY1_TO_GGML_KV.values()
-               if k.encode('utf-8') not in raw]
+    missing = ["%s.%s" % (arch, s) for s in BY1_TO_GGML_KV.values()
+               if ("%s.%s" % (arch, s)).encode('utf-8') not in raw]
+    # vocab_size 非必需（qwen2 产物不带此键）—— 归可选，不进判据
+    optional = (arch + ".vocab_size",)
     return missing
 
 
