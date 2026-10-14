@@ -13,10 +13,12 @@ from pathlib import Path
 
 
 def main(argv):
-    if len(argv) != 3:
+    if len(argv) not in (3, 4):
         print(__doc__)
         return 2
-    hf_dir, img_path, out_path = argv
+    hf_dir, img_path, out_path = argv[0], argv[1], argv[2]
+    # stage: projected（喂 LM 的边界，默认）| tower（merge 前的塔输出）
+    stage = argv[3] if len(argv) == 4 else "projected"
 
     import torch
     from PIL import Image
@@ -29,24 +31,32 @@ def main(argv):
     im = Image.open(img_path).convert("RGB")
     inputs = proc(images=im, return_tensors="pt")
     with torch.no_grad():
-        feat = model.get_image_features(
-            pixel_values=inputs["pixel_values"].to(torch.float32))
+        if stage == "tower":
+            # vision tower 的原始输出（merge 前）：256 patch x 128
+            inner = getattr(model, "model", model)
+            vt = getattr(inner, "vision_tower", None) or model.vision_tower
+            feat = vt(inputs["pixel_values"].to(torch.float32))
+        else:
+            feat = model.get_image_features(
+                pixel_values=inputs["pixel_values"].to(torch.float32))
     # transformers 5.x 返回 BaseModelOutputWithPooling —— 取
     # last_hidden_state 再过 multi_modal_projector（=喂给 LM 的边界）
     if hasattr(feat, "last_hidden_state"):
         h = feat.last_hidden_state
-        inner = getattr(model, "model", model)
-        # Gemma3 全链：soft_emb_norm（RMSNorm）-> multi_modal_projector
-        # 少了 norm 会得到"方向对、逐元漂移"（余弦 0.98 那一族）
-        soft = getattr(inner, "mm_soft_emb_norm", None) or \
-            getattr(model, "mm_soft_emb_norm", None)
-        if soft is not None:
-            h = soft(h)
-        proj = getattr(model, "multi_modal_projector", None) or \
-            getattr(inner, "multi_modal_projector", None)
-        if proj is not None:
-            h = proj(h)
-        e = h[0]
+        if stage == "tower":
+            e = h[0]
+        else:
+            inner = getattr(model, "model", model)
+            # Gemma3 全链：soft_emb_norm（RMSNorm）-> multi_modal_projector
+            soft = getattr(inner, "mm_soft_emb_norm", None) or \
+                getattr(model, "mm_soft_emb_norm", None)
+            if soft is not None:
+                h = soft(h)
+            proj = getattr(model, "multi_modal_projector", None) or \
+                getattr(inner, "multi_modal_projector", None)
+            if proj is not None:
+                h = proj(h)
+            e = h[0]
     else:
         e = feat[0] if feat.dim() == 3 else feat
     vals = e.reshape(-1).to(torch.float32).tolist()
