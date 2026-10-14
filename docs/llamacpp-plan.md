@@ -125,7 +125,7 @@ OLMOE 张量集；PowerShell 会搅 `-I` 参数（引号包住）；静态库顺
 （ggml-cpu 必须在 ggml 之后）。transformers 5.x 的 DynamicCache 缺
 `to_legacy_cache` -> 参照前向走 `use_cache=False`。
 
-## T20 视觉塔对拍现状（2026-016 轮）
+## T20 视觉塔对拍现状（第 16 轮，2026-10-14）
 
 判据对象：`ggml-org/tinygemma3-GGUF`（官方测试件）+ `ngxson/
 tinygemma3_cifar` 源孪生 + CIFAR 测试图。双侧边界已通（mtmd 探针
