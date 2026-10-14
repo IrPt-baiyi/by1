@@ -2686,6 +2686,109 @@ def decode_check(path):
     return 0 if diff < tol else 1
 
 
+def cache_dump(caches):
+    """decode cache 状态 -> bytes（T17-S3）：JSON 头（名字/形状/dtype）+
+    原始小端字节 + **sha256 尾校验**。改一字节必须报红 —— cache 损坏要
+    当场死，不许静默算错数（by1cache 清单同一族的纪律）。"""
+    import json as _json
+    import hashlib as _h
+    np = _np()
+    names = sorted(caches)
+    hdr = {n: [list(np.asarray(caches[n]).shape),
+               str(np.asarray(caches[n]).dtype)] for n in names}
+    hb = _json.dumps(hdr, sort_keys=True).encode("utf-8")
+    payload = b"".join(np.ascontiguousarray(caches[n]).tobytes()
+                       for n in names)
+    body = b"BY1CACH1" + len(hb).to_bytes(4, "little") + hb + payload
+    return body + _h.sha256(body).digest()
+
+
+def cache_load(blob):
+    """cache_dump 的逆。**校验和不过 = 当场死**（直接 raise —— 不给
+    静默出错的机会：坏 cache 喂进 decode 的后果是错数，不是报错）。"""
+    import json as _json
+    import hashlib as _h
+    np = _np()
+    if not isinstance(blob, (bytes, bytearray)) or blob[:8] != b"BY1CACH1":
+        raise ValueError("cache blob 不是 BY1CACH1 格式")
+    body, digest = bytes(blob[:-32]), bytes(blob[-32:])
+    if _h.sha256(body).digest() != digest:
+        raise ValueError("cache 校验和不符 —— **改过一个字节就该在这死**")
+    hlen = int.from_bytes(body[8:12], "little")
+    hdr = _json.loads(body[12:12 + hlen].decode("utf-8"))
+    out, off = {}, 12 + hlen
+    for n in sorted(hdr):
+        shape, dt = hdr[n]
+        n_el = 1
+        for s in shape:
+            n_el *= int(s)
+        sz = n_el * np.dtype(dt).itemsize
+        out[n] = np.frombuffer(body[off:off + sz], dtype=dt).reshape(
+            tuple(shape)).copy()
+        off += sz
+    return out
+
+
+def roundtrip_check(path):
+    """T17-S3 判据：**状态 round-trip** —— cache 导出再导入，续 decode
+    的输出与不中断的 decode **逐 token 相同**（bit 级）；dump 翻一个
+    字节必须报红。"""
+    import numpy as np
+    bc, cg = _load("by1check"), _load("by1codegen")
+    _r, info = bc.check(path)
+    ir = cg.compile_ir(info)
+    shapes = _load("by1exec").shapes_of(ir)
+    rng = np.random.default_rng(20261014)
+    params = {k: rng.standard_normal(s).astype(np.float32)
+              for k, s in shapes.items()}
+    ids = np.asarray([5, 3, 9, 1, 7])
+    name = _os.path.basename(path)
+    g_dec = lower_model(ir, name, decode=True)
+    dims = [(int(o["attrs"]["kv"]), int(o["attrs"]["head_dim"]))
+            for L in ir["layers"] for o in L["ops"] if o["kind"] == "Attention"]
+
+    def _zero():
+        c = {("cache_L%d_k" % ci): np.zeros((0, nkv, hd), np.float32)
+             for ci, (nkv, hd) in enumerate(dims)}
+        c.update({("cache_L%d_v" % ci): np.zeros((0, nkv, hd), np.float32)
+                  for ci, (nkv, hd) in enumerate(dims)})
+        return c
+
+    def _run(drop_roundtrip_at=None):
+        caches, out = _zero(), []
+        for t in range(int(ids.shape[0])):
+            if t == drop_roundtrip_at:
+                caches = cache_load(cache_dump(caches))   # 导出再导入
+            V = run_graph(g_dec, params, ids[t:t + 1],
+                          pos=np.asarray([t]), extra=caches)
+            out.append(np.asarray(next(v for k, v in V.items()
+                                       if k.endswith("_logits"))).copy())
+            caches = {}
+            for lay in g_dec.decode_layers:
+                for kind in ("k", "v"):
+                    caches[lay["%s_in" % kind].replace(".", "_")] = \
+                        np.asarray(V[lay["%s_out" % kind].replace(".", "_")])
+        return out
+
+    straight = _run()                 # 对照组：不中断
+    broken = _run(drop_roundtrip_at=2)  # 实验组：第 2 步前 dump/load
+    same = all(np.array_equal(a, b) for a, b in zip(straight, broken))
+    print("  状态 round-trip：%d 步逐 token %s"
+          % (len(straight), "bit 级相同  [PASS]" if same else "不一致  [FAIL]"))
+
+    # **负样必红**：dump 翻一个字节 -> load 必须报红
+    blob = bytearray(cache_dump(_zero()))
+    blob[20] ^= 0xFF
+    try:
+        cache_load(bytes(blob))
+        red = False
+    except ValueError:
+        red = True
+    print("  负样（dump 翻一字节）：%s" % ("当场报红  [红 ✓]" if red
+                                          else "[FAIL] 坏 cache 蒙混过关"))
+    return 0 if (same and red) else 1
+
+
 def main(argv=None):
     argv = argv if argv is not None else _sys.argv[1:]
     if "--selftest" in argv:
@@ -2696,6 +2799,12 @@ def main(argv=None):
             print("  [FAIL] --decode-check 要一份 .by1")
             return 2
         return decode_check(rest[0])
+    if "--roundtrip-check" in argv:
+        rest = [a for a in argv if a != "--roundtrip-check"]
+        if not rest:
+            print("  [FAIL] --roundtrip-check 要一份 .by1")
+            return 2
+        return roundtrip_check(rest[0])
     if "--spec" in argv:
         return spec(write="--write" in argv)
     if "--golden" in argv:

@@ -1153,6 +1153,18 @@ def selftest(args):
         print(str(e)[:120])
         results.append(("decode-equivalence (T17-S2)", "fail"))
 
+    # T17-S3 判据：**状态 round-trip**（cache 导出/导入逐 token bit 级
+    # 相同 + 翻一字节必红）
+    try:
+        _bg2 = load("by1graph")
+        _rc2 = _bg2.roundtrip_check(os.path.join(root, "models",
+                                                 "llama-shaped.by1"))
+        results.append(("state-roundtrip (T17-S3)",
+                        "ok" if _rc2 == 0 else "fail"))
+    except Exception as e:
+        print(str(e)[:120])
+        results.append(("state-roundtrip (T17-S3)", "fail"))
+
     print(f"\n{'='*72}\n  by1ggml 自检汇总\n{'='*72}")
     ok, any_fail, any_skip = True, False, False
     for nm, res in results:
