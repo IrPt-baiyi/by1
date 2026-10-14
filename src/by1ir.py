@@ -71,10 +71,30 @@ except ImportError:                     # 单独拷一个文件出去时兜底
 # 于是"哪一处漏了传参"永远只有出事之后才知道。现在它是一个名字。
 EPS_DEFAULT = 1e-5
 
+# ── STACKS（by1-ir 1.1）：栈/塔登记表 ───────────────────────────────
+# (名字, 类型, 必填, 说明)
+# 为什么要有它：源语言里 `stack vision { }`、MODAL 闭集早就有，但
+# **编译成 IR 后栈信息全丢**（by1ir 里 stack/modal 原本零命中）——
+# 于是护栏没法对塔说话。可缺省 = 单栈文本，**旧描述一个字不改照样
+# 合法**（T22 判据：旧描述继续有效）。
+STACKS = (
+    ("name", "str", True, "栈名（`text` 是主栈的缺省名）"),
+    ("modality", "enum:default,text,vision,audio,video", True,
+     "模态。**和 by1blocks.MODAL 同一闭集** —— 两处各写一份迟早漂"),
+    ("width", "int", True,
+     "该栈的残差流宽度。等于 `d_model` 的可以不登记；**不等的必须登记**"
+     "（视觉塔宽 1152 / d_model 5376 那种）"),
+    ("first_layer", "int", True, "该栈从第几层开始（0-based，按 layers 序）"),
+    ("n_layers", "int", True, "该栈占几层"),
+)
+
 # ── 顶层字段 ────────────────────────────────────────────────────────
 # (名字, 类型, 必填, 说明)
 TOP = [
     ("by1-ir", "str", True, "IR 版本。**读的一方必须拒绝不认识的大版本。**"),
+    ("stacks", "list?", False,
+     "栈/塔登记表（1.1 新增，缺省 = 单栈文本）。每条见 STACKS 表；"
+     "非 `text` 栈的层必须给 `in_dim` 且必须等于栈宽（跨栈漂移当报红）"),
     ("vocab", "int", True, "词表大小"),
     ("ctx", "int", True, "上下文长度（位置能达到的最大值）"),
     ("d_model", "int", True, "残差流宽度"),
@@ -1109,6 +1129,40 @@ def validate(ir):
             sts = item.get("state")
             for k, st in enumerate(sts if isinstance(sts, list) else []):
                 _check_fields("%s.state[%d]" % (w, k), STATE, st, errs)
+
+    # ── STACKS（1.1）：栈/塔登记表 + 跨栈宽度一致性 ──────────────────
+    stk = ir.get("stacks")
+    if stk is not None:
+        if not isinstance(stk, list):
+            errs.append("stacks 必须是列表")
+        n_l = len(ir["layers"]) if isinstance(ir.get("layers"), list) else 0
+        _seen = set()
+        for s_i, s in enumerate(stk if isinstance(stk, list) else []):
+            sw = "stacks[%d]" % s_i
+            _check_fields(sw, STACKS, s, errs)
+            if not isinstance(s, dict):
+                continue
+            if s.get("name") in _seen:
+                errs.append("%s：栈名 %r 重复" % (sw, s.get("name")))
+            _seen.add(s.get("name"))
+            fl, nl = s.get("first_layer"), s.get("n_layers")
+            if isinstance(fl, int) and isinstance(nl, int) and \
+                    (fl < 0 or nl <= 0 or fl + nl > n_l):
+                errs.append("%s：%r 占层 [%d, %d) 越界（共 %d 层）"
+                            % (sw, s.get("name"), fl, fl + nl, n_l))
+                continue
+            # **跨栈宽度一致性**：非 text 栈的层必须给 in_dim 且 = 栈宽
+            # （视觉塔宽 1152 而 d_model 5376 那种 —— 编译期丢掉栈信息
+            #  之后，这层一致性就没人管了）。
+            if isinstance(fl, int) and isinstance(nl, int) and \
+                    s.get("modality") != "text":
+                for li in range(fl, fl + nl):
+                    L = ir["layers"][li] if li < n_l else None
+                    got = L.get("in_dim") if isinstance(L, dict) else None
+                    if got != s.get("width"):
+                        errs.append(
+                            "%s：第 %d 层 in_dim=%r 与栈宽 %r 不符"
+                            "（跨栈漂移当报红）" % (sw, li, got, s.get("width")))
 
     # ── 值引用与宽度的静态推导（T0.1）────────────────────────────────
     # **换宽度的 `gaps` 不进 errs** —— 那是"没实现"不是"错了"，

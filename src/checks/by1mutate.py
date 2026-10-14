@@ -185,6 +185,19 @@ MUTATIONS = [
                                       lambda o: o["attrs"].update(
                                           {"rope_pairing": "diagonal"})), b),
      "不在闭集"),
+    # ── T22（by1-ir 1.1 STACKS：栈/塔登记表）────────────────────────
+    ("stacks-bad-modal", "栈 modality 闭集（未知模态必拒）",
+     lambda b: _mut(lambda ir: ir.update({"stacks": [
+         {"name": "vision", "modality": "television", "width": 8,
+          "first_layer": 0, "n_layers": 1}]}), b), "不在闭集"),
+    ("stacks-width-drift", "跨栈宽度一致性（层 in_dim 与栈宽不符当红）",
+     lambda b: _mut(lambda ir: ir.update({"stacks": [
+         {"name": "vision", "modality": "vision", "width": 128,
+          "first_layer": 0, "n_layers": 1}]}), b), "不符"),
+    ("stacks-range-overflow", "栈层范围越界必拒",
+     lambda b: _mut(lambda ir: ir.update({"stacks": [
+         {"name": "vision", "modality": "vision", "width": 8,
+          "first_layer": 9, "n_layers": 9}]}), b), "越界"),
 ]
 
 #: 五类反例的**覆盖账**（阶段 A 判据：缺字段 / 冲突配置 / 未知 dtype /
