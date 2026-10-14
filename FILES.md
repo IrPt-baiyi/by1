@@ -224,7 +224,6 @@
 |---|---|
 | `1.0-roadmap.md` | By1 长期路线图 |
 | `INVENTORY.txt` | 验证清单：每个模型验到了什么、判卷人是谁 |
-| `audio-mel-boundary-report.md` | Qwen3-ASR-0.6B-GGUF 音频前处理边界实测 |
 | `autodl-file-storage.md` | AutoDL 文件存储操作单 —— 重租卡 0 下载 |
 | `by1-language-spec.md` | T2 语言合同（可执行规范）：语法骨架/错误模型/版本策略/最小绿红例；一致性判卷人 by1langspec.py |
 | `check-map.md` | `check()` 的结构图 |
@@ -244,6 +243,7 @@
 | `prims-spec.md` | **生成物**：原语数值规格（公式/形状/dtype/边界/出处）。`by1graph.py --spec`；键集与原语表 import 时硬断言对账 |
 | `product-definition.md` | T1 产品定义（冻结版）：目标用户/输入输出/支持层级/不做的运行时职责/代表模型 |
 | `quantization.md` | 量化格式的存储合同、共享权重边界和 Q1–Q3 验收顺序 |
+| `qwen3asr-silent-load-report.md` | T21 取证报告：transformers 对 Qwen3-ASR-0.6B 静默装载错误模型（版本错配实录，A3 缺口的证据本体） |
 | `step5-runbook.md` | Step-5 发布日快速反应手册：抓元数据/草稿 by1/合同审计/GGUF 产物/推销素材/风险预案 |
 | `support-matrix.md` | 支持矩阵（四态）/ Support matrix (four states) |
 | `which-gpu.md` | > 从 `README.md` 挪出来的。它是一次**具体的调查** —— 这台开发机上 |
