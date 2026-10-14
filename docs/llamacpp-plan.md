@@ -96,6 +96,32 @@ delta_rule/ssm_scan 同族问题，归融合核路线，不在 S2 硬塞。
    基线自比对；真正的全链对照是 **补丁版产物 vs 官方产物** 的 logits
    逐位（同权重同实现下 bitwise 是可达的）。原版/补丁版差异单独记账。
 
-**未验**（不吹）：补丁内容未核验、convert 未跑、logits dump 未产。
-下一步顺序：核验 ROCmFPX 的 instella 面 -> 本地小补丁 -> 原版/补丁版
-双构建 -> convert（上游工具）-> 双 dump 逐位。
+**已核验**（2026-10-14）：ROCmFPX 的 instella 面 = MoE-16B（非 dense）；
+社区 Olmo2 改名配方 = 结构不忠实（见下节）；convert 已跑（公开版命名
+被 `Can not map` 当场拒）。
+**仍未验**：忠实宿主/补丁未落地、可用 GGUF 未产出、logits dump 未产。
+
+### 社区「Olmo2 改名欺骗」配方核验（2026-10-14）：**判不忠实**
+
+AMD dev 社区帖给了 Instella-3B 的 hack：safetensors 改名 + config 换
+`Olmo2ForCausalLM` -> converter 399 张量过 -> q8_0 3.31GB。**只测了
+速度（42→180 t/s），没测数值。** 核验：
+
+- Instella = **前置 norm**：`llamacpp/modeling_instella.py` 698-721
+  （AMD 自己的参照代码，夹心 norm 两行是**注释掉的**）。
+- llama.cpp 的 olmo2 = **夹心 norm**：`olmo2.cpp` 157-179（norm 打在
+  支路上再加残差）。
+- 结论：改名把前置 norm 的权重塞进夹心槽 = **另一个函数**。能跑不等于
+  是它。这条路的产物**不进 T18 的链**（工具留档在
+  `tools/instella-spoof-olmo2.py` 当反例）。
+- 附带实测：Instella 原名 `pre_attention_layernorm`/`pre_feedforward_
+  layernorm` **本来就是 tensor_mapping 的合法名**（映射到正确的 norm
+  类型）；OLMO2 的张量集不含这两类类型，converter 当场
+  `Can not map tensor` —— 帖主配方和他的 checkpoint 命名都和公开版
+  对不上（他的是 "Instella-3B-Fused" 自改版）。
+
+**宿主候选（下一步）**：`olmoe.cpp` 75-149 = 前置 norm + 全宽 q/k
+norm，**结构与 Instella 同型**；差别只剩 dense vs MoE。走法二选一：
+(a) 找 OlmoE 式 dense 宿主 / (b) 本地小补丁按 `modeling_instella.py`
+写忠实实现（llamacpp/ 参照副本 + ROCmFPX 的 instella.cpp 当注册模板）。
+判据不变：`llama-cli` logits 逐位 + 与 by1 HF 参照前向的独立对拍。
