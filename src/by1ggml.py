@@ -1142,6 +1142,17 @@ def selftest(args):
             print(str(e))
             results.append((os.path.basename(path), "fail"))
 
+    # T17-S2 判据：**增量与全量 logits 一致**（by1graph 的 decode 判卷人，
+    # 带"cache 丢老 token"负样必红）
+    try:
+        _bg = load("by1graph")
+        _rc = _bg.decode_check(os.path.join(root, "models", "llama-shaped.by1"))
+        results.append(("decode-equivalence (T17-S2)",
+                        "ok" if _rc == 0 else "fail"))
+    except Exception as e:
+        print(str(e)[:120])
+        results.append(("decode-equivalence (T17-S2)", "fail"))
+
     print(f"\n{'='*72}\n  by1ggml 自检汇总\n{'='*72}")
     ok, any_fail, any_skip = True, False, False
     for nm, res in results:

@@ -857,7 +857,7 @@ def _qk_on(v):
 # lowering：IR op -> 原语图。**降不动就报错**（拒绝纪律）。
 # ════════════════════════════════════════════════════════════════════
 
-def lower_op(g, i, j, o, d, pname, refmap):
+def lower_op(g, i, j, o, d, pname, refmap, cache=None):
     """把 IR 的一个算子降成原语节点，追加进 g。
 
     `pname`：短名 -> **真参数键**（`layers.0.op1.wq` 这种）。图里的权重
@@ -934,7 +934,7 @@ def lower_op(g, i, j, o, d, pname, refmap):
         else:
             g.nodes[-1]["outs"] = [dst]
     elif k == "Attention":
-        _lower_attn(g, p, src[0], dst, w, a, d)
+        _lower_attn(g, p, src[0], dst, w, a, d, cache=cache)
     elif k == "KDA":
         _lower_kda(g, p, src[0], dst, w, a, d)
     elif k == "MLA":
@@ -1851,7 +1851,7 @@ def _b4ish(g, p, t, nm, d0, h1, two):
                  shapes=[tuple(shp[:2]) + (h1, shp[-1])])
 
 
-def _lower_attn(g, p, x, dst, w, a, d):
+def _lower_attn(g, p, x, dst, w, a, d, cache=None):
     hd, nh, nkv = int(a["head_dim"]), int(a["q"]), int(a["kv"])
     if int(a["out_dim"]) != nh * hd:
         raise SystemExit("  [不支持] out_dim != q*head_dim 的注意力"
@@ -1972,6 +1972,19 @@ def _lower_attn(g, p, x, dst, w, a, d):
                    shapes=[(hd, nh, None)])
         k3 = g.add("rope", [k3, "pos"], [p + "k3r"], attrs=rp,
                    shapes=[(hd, nkv, None)])
+    # ── T17-S2 的 cache 挂点：**post-rope 的 k 与 v**（写进 cache 就是
+    # 这两个 —— rope 依赖位置，每个 token 只能做一次）。decode 图把
+    # cache 里过去的 k/v 和这一步新的 concat 起来再进注意力。attr 的
+    # axis=2 是 ggml 视角的 token 轴（ref 自己换算到 exec 轴 0）。
+    if cache is not None:
+        k3 = g.add("concat", [cache["k_in"], k3], [p + "k3x"],
+                   attrs={"axis": 2}, shapes=[(hd, nkv, None)])
+        v = g.add("concat", [cache["v_in"], v], [p + "vx"],
+                  attrs={"axis": 2}, shapes=[(hd, nkv, None)])
+        # cache 出去的 = **全量 cache 状态**（过去 + 这一步）——
+        # 就是 concat 的输出。第一版存的是这一步的新 k/v，于是累加器
+        # 永远只有最后一个 token 的 KV，t>=2 当场对不上（实测差 30）。
+        cache["k_out"], cache["v_out"] = k3, v
     # 进 mul_mat 前换轴：[hd, 头, token] -> [hd, token, 头]
     q3 = g.add("permute", [q3], [p + "q3p"], attrs={"axes": [0, 2, 1]},
                shapes=[(hd, None, nh)])
@@ -2039,11 +2052,17 @@ def _lower_attn(g, p, x, dst, w, a, d):
         g.nodes[-1]["outs"] = [dst]
 
 
-def lower_model(ir, name="model"):
+def lower_model(ir, name="model", decode=False):
     """整份 IR -> 一张图。globals 在层前后各一截（ggml 惰性图那一课：
-    最终 norm/head **必须在层之后**接线）。"""
+    最终 norm/head **必须在层之后**接线）。
+
+    `decode=True`（T17-S2）：**增量解码图** —— 每层 Attention 的 k/v 从
+    cache 输入接（`cache.L{i}.k/v`），新 k/v 作为 `cache["k_out/v_out"]`
+    出去；注意力看到的是 cache+当前一步。只接 Attention；带递推/自带
+    KV 的机制（Linear/KDA/MLA/SSM）**点名拒绝**，归 S4 前不接。"""
     d = ir["d_model"]
     g = Graph(name)
+    g.decode_layers = []          # T17-S2：decode 图的 cache 挂点登记簿
     g.vals["tok"] = (None,)
     g.vals["pos"] = (None,)
     g.vals["x"] = (d, None)
@@ -2071,7 +2090,21 @@ def lower_model(ir, name="model"):
             # 层内值名重绑定：hidden -> x；权重叶子用真参数键
             pname = (lambda nm, i=i, j=j:
                      "layers.%d.op%d.%s" % (i, j, nm))
-            dst = lower_op(g, i, j, o, din, pname, refmap)
+            cache = None
+            if decode:
+                if o["kind"] == "Attention":
+                    ci = len(g.decode_layers)
+                    cache = {"k_in": "cache.L%d.k" % ci,
+                             "v_in": "cache.L%d.v" % ci}
+                elif o["kind"] in ("Linear", "KDA", "MLA", "SSM"):
+                    raise SystemExit(
+                        "  [不支持] decode 模式：%s（递推/自带 KV）归 S4 前不接"
+                        % o["kind"])
+            dst = lower_op(g, i, j, o, din, pname, refmap, cache=cache)
+            if cache is not None:
+                g.decode_layers.append(
+                    {"k_in": cache["k_in"], "v_in": cache["v_in"],
+                     "k_out": cache["k_out"], "v_out": cache["v_out"]})
             prev = dst
         # 层输出 -> 下一层的 hidden
         g.add("cont", [prev], ["x"], shapes=[(din, None)])
@@ -2116,14 +2149,19 @@ def _exec_permute(x, axes):
     return np.transpose(x, tp)
 
 
-def run_graph(g, params, ids):
-    """按图求值（by1exec 约定：x [n, d]）。判卷人是 by1exec 自己。"""
+def run_graph(g, params, ids, pos=None, extra=None):
+    """按图求值（by1exec 约定：x [n, d]）。判卷人是 by1exec 自己。
+
+    `pos` / `extra`（T17-S2）：decode 图要给绝对位置和 cache 输入 ——
+    `pos=[t]`、`extra={"cache_L0_k": 数组, ...}`。默认行为不变。"""
     import numpy as np
     V = {}
     for k, v in params.items():
         V[k.replace(".", "_")] = v
     V["tok"] = np.asarray(ids)
-    V["pos"] = np.arange(len(ids))
+    V["pos"] = np.asarray(pos) if pos is not None else np.arange(len(ids))
+    if extra:
+        V.update(extra)
     for n in g.nodes:
         prim, ins, outs, at = n["prim"], n["ins"], n["outs"], n["attrs"]
         # mask_* 是**叶子**：值表里没有，soft_max 分支按名字里的
@@ -2194,12 +2232,12 @@ def run_graph(g, params, ids):
         elif prim == "soft_max":
             # a: [头, query, key]（exec 约定），mask [query, key]
             w = int(n["ins"][1].rsplit("_", 1)[-1])
-            m = _mask(a[0].shape[1], w)
+            m = _mask(a[0].shape[2], w)[-a[0].shape[1]:]
             out = PRIMS["soft_max"]["ref"](a[0], m, at["scale"])
         elif prim == "soft_max_sink":
             # 同 soft_max，但第三个输入是逐头的 sink 标量
             w = int(n["ins"][1].rsplit("_", 1)[-1])
-            m = _mask(a[0].shape[1], w)
+            m = _mask(a[0].shape[2], w)[-a[0].shape[1]:]
             out = PRIMS["soft_max_sink"]["ref"](a[0], m, a[2], at["scale"])
         elif prim == "view":
             out = _exec_view(a[0], at["shape"])
@@ -2568,10 +2606,96 @@ def spec(write=False):
     return 0
 
 
+def decode_check(path):
+    """T17-S2 判据：**增量与全量 logits 一致**。
+
+    同权重同输入：全量前向的每步 logits，对照"带 cache 逐 token 增量"
+    的每步 logits。cache 写错一格，全量对拍照样绿、增量当场红 ——
+    这是状态正确性的**唯一判据**（llamacpp-plan 的 decode/状态一节）。"""
+    import numpy as np
+    bc, cg = _load("by1check"), _load("by1codegen")
+    _r, info = bc.check(path)
+    ir = cg.compile_ir(info)
+    shapes = _load("by1exec").shapes_of(ir)
+    rng = np.random.default_rng(20261014)
+    params = {k: rng.standard_normal(s).astype(np.float32)
+              for k, s in shapes.items()}
+    ids = np.asarray([5, 3, 9, 1])       # run_graph 的约定：ids 一维
+    name = _os.path.basename(path)
+
+    # 全量：一次前向
+    g_full = lower_model(ir, name)
+    Vf = run_graph(g_full, params, ids)
+    lf = np.asarray(next(v for k, v in Vf.items() if k.endswith("_logits")))
+
+    # 增量：逐 token，k/v 进 cache、下一步接回来
+    g_dec = lower_model(ir, name, decode=True)
+    dims = [(int(o["attrs"]["kv"]), int(o["attrs"]["head_dim"]))
+            for L in ir["layers"] for o in L["ops"] if o["kind"] == "Attention"]
+    caches = {("cache_L%d_k" % ci): np.zeros((0, nkv, hd), np.float32)
+              for ci, (nkv, hd) in enumerate(dims)}
+    caches.update({("cache_L%d_v" % ci): np.zeros((0, nkv, hd), np.float32)
+                   for ci, (nkv, hd) in enumerate(dims)})
+    steps = []
+    for t in range(int(ids.shape[0])):
+        V = run_graph(g_dec, params, ids[t:t + 1],
+                      pos=np.asarray([t]), extra=caches)
+        steps.append(np.asarray(next(v for k, v in V.items()
+                                     if k.endswith("_logits"))))
+        caches = {}
+        for lay in g_dec.decode_layers:
+            caches[lay["k_in"].replace(".", "_")] = \
+                np.asarray(V[lay["k_out"].replace(".", "_")])
+            caches[lay["v_in"].replace(".", "_")] = \
+                np.asarray(V[lay["v_out"].replace(".", "_")])
+    # token 轴：全量是 n、单步是 1 的那一根 —— 不写死轴号
+    tok_axis = next(i for i, (a, b) in enumerate(zip(lf.shape, steps[0].shape))
+                    if a == int(ids.shape[0]) and b == 1)
+    li = np.concatenate(steps, axis=tok_axis)
+    diff = float(np.max(np.abs(lf - li)))
+    tol = 1e-4
+    print("  增量 vs 全量 logits：最大绝对差 %.3e（容差 %g）%s"
+          % (diff, tol, "  [PASS]" if diff < tol else "  [FAIL]"))
+
+    # **负样必红**：cache 每步丢掉最老的一个 token（ring buffer 溢出
+    # 那一族的病）—— 必须超出容差，否则这个判据是瞎的。
+    caches = {("cache_L%d_k" % ci): np.zeros((0, nkv, hd), np.float32)
+              for ci, (nkv, hd) in enumerate(dims)}
+    caches.update({("cache_L%d_v" % ci): np.zeros((0, nkv, hd), np.float32)
+                   for ci, (nkv, hd) in enumerate(dims)})
+    steps = []
+    for t in range(int(ids.shape[0])):
+        V = run_graph(g_dec, params, ids[t:t + 1],
+                      pos=np.asarray([t]), extra=caches)
+        s = np.asarray(next(v for k, v in V.items() if k.endswith("_logits")))
+        steps.append(s)
+        caches = {}
+        for lay in g_dec.decode_layers:
+            for kind in ("k", "v"):
+                inn = lay["%s_in" % kind].replace(".", "_")
+                outn = lay["%s_out" % kind].replace(".", "_")
+                arr = np.asarray(V[outn])
+                caches[inn] = arr[1:] if arr.shape[0] > 1 else arr
+    li_bad = np.concatenate(steps, axis=tok_axis)
+    diff_bad = float(np.max(np.abs(lf - li_bad)))
+    if diff_bad < tol:
+        print("  [FAIL] 丢老 token 的坏 cache 没被抓住（差 %.3e）—— 判据瞎了"
+              % diff_bad)
+        return 1
+    print("  负样（cache 丢最老一步）：最大绝对差 %.3e > 容差  [红 ✓]" % diff_bad)
+    return 0 if diff < tol else 1
+
+
 def main(argv=None):
     argv = argv if argv is not None else _sys.argv[1:]
     if "--selftest" in argv:
         return selftest()
+    if "--decode-check" in argv:
+        rest = [a for a in argv if a != "--decode-check"]
+        if not rest:
+            print("  [FAIL] --decode-check 要一份 .by1")
+            return 2
+        return decode_check(rest[0])
     if "--spec" in argv:
         return spec(write="--write" in argv)
     if "--golden" in argv:
