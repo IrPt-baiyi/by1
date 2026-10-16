@@ -168,6 +168,9 @@ OVERRIDE = {
     'step5-contract-plan.md': 'A 线工作单：把 Step-5 反推草稿升格成 models/ 合同'
                               '（① 95 层调度证据已就位 · ⑤ 六个语义未知项收缩到 1 个 · '
                               '③ 后端选择是方向题）',
+    't26-plan.md': 'T26 第二架构毕业选型：mamba-130m-hf（130M，递归状态）——'
+                   '判卷人实测表（transformers Mamba v1 走 AutoModel / llama.cpp mamba）、'
+                   '缺什么、四件事、完成定义',
     'step5-preview-draft.by1': 'by1boot 从 Step-5-Preview-BF16 产物反推的草稿合同（drafts/，没有判卷人，不算数）',
     '2026q3-open-model-war.md': 'Q3 开源模型大战图文发布稿：24 款阵容、★/●/○ 三级数据标注、张量级深挖',
     'fig0-roster.png': 'article/ 配图：Q3 24 款阵容全景（★张量级实测 / ●配置实测 / ○未验）',

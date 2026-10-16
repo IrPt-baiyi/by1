@@ -59,6 +59,11 @@ hello_model.py
 *.egg-info/
 build/
 .venv/
+# **`.venv/` 只匹配这一个名字。** 实测（2026-10-16）：为了跑不同版本我在仓里
+# 建了 `.venv519/`、`.venv-full/`、`.venv-ci/` —— 它们**没被挡**，于是
+# 259 个 site-packages 文件进了 `by1files` 的目录树，FILES.md 判"过期"。
+# 本地的虚拟环境一个都不该进库。
+.venv*/
 dist/
 .eggs/
 
