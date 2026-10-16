@@ -190,12 +190,13 @@ Python 版本      ：
 
 ## 七、想让"我跑过了"变成"每次提交都跑过了"
 
-**仓库里已经有了**：`.github/workflows/ci.yml`，两道门、4 路矩阵
-（`ubuntu-latest` / `windows-latest` × Python `3.9` / `3.12`）：
+**仓库里已经有了**：`.github/workflows/ci.yml`，三道门（前两道 4 路矩阵
+`ubuntu-latest` / `windows-latest` × Python `3.9` / `3.12`；第三道只看 3.12）：
 
 ```yaml
-tier1: 什么都不装        -> python src/checks/by1all.py --tier 1
-tier3: 只装 numpy        -> python src/checks/by1all.py --tier 3   # 档是累积的：1+2+3
+tier1: 什么都不装  -> python src/checks/by1all.py --tier 1   # 同时是"档 1 只要标准库"的证明
+tier3: 只装 numpy  -> python src/checks/by1all.py --tier 3   # 档是累积的：1+2+3
+pack : 打包 -> 解到仓外 -> 在包里跑档 1                        # 递出去的那一包站得住吗
 ```
 
 - **档 1 那条腿同时是"档 1 只要标准库"这句话的证明** —— 装了依赖再跑就证明不了它；

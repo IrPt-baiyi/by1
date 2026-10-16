@@ -1,4 +1,4 @@
-# 每次提交都跑两道门 —— **这是这个仓库唯一的自动门。**
+# 每次提交都跑三道门 —— **这是这个仓库唯一的自动门。**
 #
 # ## 为什么需要它
 #
@@ -12,7 +12,7 @@
 # `by1files.py`"生成的，而那个改动漏在提交外 —— 于是**每一次推送都是红的**，
 # 直到按 CI 的条件（干净 clone + 零依赖）复现出来。这就是这条门存在的意义。
 #
-# ## 两道门各管什么
+# ## 三道门各管什么
 #
 #   **档 1（纯标准库，什么都不装）** —— 它同时是"档 1 只要标准库"这句话的证明。
 #       装了依赖再跑，就证明不了它。
@@ -20,6 +20,9 @@
 #       26 份 .by1 检查器 · 模式分类 · lint 十类静默写法 · **变异反例库**
 #       （每条规则一个必红反例）· 取值门 · by1sample 采样链 ·
 #       refs 的 config 逐字段与张量名/形状。
+#   **发布包（`pack`）** —— 打包 → 解到**仓库外** → 在包里跑档 1。
+#       它守的不是"仓库里跑得通"，而是"**递出去的那一包**站得住"：
+#       `by1pack` 打完包会把 `by1docs` 放进产物里跑，缺文件就打包失败。
 #
 # ## 不跑什么（**不假装覆盖**）
 #
@@ -113,4 +116,55 @@ jobs:
       # 它是"改规则必须配反例"这条纪律在 CI 里的执行者：
       # 一条新规则没有反例，档 2 的 by1mutate 不会红 —— 但**规则本身跑错**
       # 会在档 3 的 refs 契约里红出来。
+
+  pack:
+    name: 发布包（打包 -> 解到仓外 -> 在包里跑档 1）
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # 只跑 3.12：这一条要验的是**包**，不是解释器版本。
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      # **包自己会自检**：`by1pack` 把 `by1docs` 放进刚打出来的产物里跑，
+      # 文档指向的东西缺一个就失败并列出缺什么。所以这一步红 =
+      # "这一包递给别人就是坏的"。
+      #
+      # 输出目录故意写在**仓库外**（`../pack-out`）：拿到包的人不在我们的
+      # 工作树里，验的就得是那种情形。
+      #
+      # **先清掉旧的包。** 下一句按通配找 `../by1-upload-*.tar.gz`，
+      # 而本机（或复用的 runner 目录）里可能躺着**上一次**的包 ——
+      # 实测就这样解错了包（解出来的是 `by1-upload/`，不是 `pack-out/`），
+      # 于是"验的是哪一包"变成不确定的。
+      - name: 清掉旧的包
+        run: python -c "import glob, os; [os.remove(p) for p in glob.glob('../by1-upload-*.tar.gz')]"
+
+      - name: 打包
+        run: python src/checks/by1pack.py ../pack-out
+
+      # **解包用 python，不用 bash。**
+      # 两个平台的默认 shell 不同（ubuntu 是 bash、windows 是 pwsh），
+      # 而 `tar xzf ../by1-upload-*.tar.gz` 里的通配展开只有 bash 会做
+      # （pwsh 不替外部命令展开，`tar.exe` 自己也不做）。
+      # 用 python 一行，两个平台同一条命令、同一个行为。
+      - name: 解到仓外
+        run: python -c "import glob, os, tarfile; os.makedirs('../unpacked', exist_ok=True); tarfile.open(glob.glob('../by1-upload-*.tar.gz')[0]).extractall('../unpacked')"
+
+      # `working-directory` 指到解出来的包里 —— 这就是"收包的人"的起点。
+      - name: 在包里跑档 1
+        working-directory: ../unpacked/pack-out
+        run: python src/checks/by1all.py --tier 1
+
+      # **这一条要证明的是**：包不是"仓库的子集"那么简单，它得自己站得住。
+      # 2026-10-16 实测（本机按同样步骤）：修之前那一包少 17 个判卷人、
+      # 少 13 份文档 + LICENSE/NOTICE、少 `graphs-golden.json`，
+      # 而打包脚本照样印"打包完成"。
 
