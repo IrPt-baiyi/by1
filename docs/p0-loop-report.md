@@ -19,9 +19,11 @@
 ## 结论（一句话）
 
 `.by1 声明 → 真实产物对账 → 真权重独立数值对拍 → 标准 GGUF → 未修改的上游
-llama.cpp 加载与生成` 五段，在 Qwen3-0.6B 上都有可重跑证据：**311/311 张量命中**、
+llama.cpp 加载与生成` 五段，加上**增量状态**（T14）与 **tie 语义**两笔结案，
+在 Qwen3-0.6B 上都有可重跑证据：**311/311 张量命中**、
 **真权重前向 max|Δ| = 0.000e+00（CPU，两个独立 loader）**、
-**上游 logits 逐位相同（106949 个值）**、**生成文本完全相同**。
+**上游 logits 逐位相同（106949 个值）**、**生成文本完全相同**、
+**增量 == 全量（2.289e-05，判据 2e-3）**。
 
 ## 一、输入（每项可核对）
 
@@ -38,7 +40,7 @@ llama.cpp 加载与生成` 五段，在 Qwen3-0.6B 上都有可重跑证据：**
 config 与声明的关键字段逐项吻合：`qwen3` · 28 层 · 16:8 头 · `head_dim` 128 ·
 `tie_word_embeddings=true` · `rope_theta` 1e6 · `max_position_embeddings` 40960。
 
-## 二、五段证据
+## 二、证据（逐段）
 
 ### ① 声明 ↔ 发布方产物（T12）
 
@@ -128,7 +130,26 @@ python src/modelcheck/by1shadow.py --smoke-refs \
 判据一个字没改 —— 只是把权重来源从"按 refs 合成"换成"发布方原样"
 （`--weights-dir`，2026-10-16 新增）。**无需显卡**：0.6B fp32 两份约 4.8 GB。
 
-### ⑥ tie 语义（原悬案，已结）
+### ⑥ 增量状态（T14 的另一半）—— cache 与全量重算
+
+```bash
+python src/modelcheck/by1shadow.py --smoke-state --by1 complete-Qwen3-0.6B.by1 \
+    --weights-dir model-cache/qwen3-0.6b
+```
+
+```
+真权重 …：增量 vs 全量（长 16，prefill 8）
+官方 loader：max|Δ| = 2.289e-05
+by1 模型   ：max|Δ| = 2.289e-05
+[PASS] 增量 == 全量（两个 loader 都在 2e-3 内）
+```
+
+判据 2e-3，实测余量约 87 倍（差值来自 fp32 累加序，不是接线）。
+**为什么单列**：cache 那条路读 `position_ids` / `attention_mask` / rope 三样接线
+—— 接错了**全量那一遍仍然是对的**，只有增量会歪。两个 loader 给出**同一个**
+2.289e-05，说明这条路的接线两边一致。
+
+### ⑦ tie 语义（原悬案，已结）
 
 发布方的张量清单里 `lm_head.weight` 与 `model.embed_tokens.weight` **同时存在**，
 而 config 说 `tie_word_embeddings=true` —— 到底是绑的还是不绑的？
@@ -156,7 +177,6 @@ python src/modelcheck/by1shadow.py --smoke-refs \
 
 | 项 | 状态 | 原因 / 收口路径 |
 |---|---|---|
-| **T14 增量状态**（cache 增量 vs 全量重算） | **未跑** | 生成侧已同文（④），但"增量 == 全量"要有新判据；且 `by1instella` 记过 transformers `DynamicCache` API 随版本漂移（走缓存那条路会 AttributeError），要么钉版本要么绕开 —— 不是随手能加的 |
 | **T39 真权重训练步**（梯度 + AdamW 一步） | **未跑** | `by1gputrain.py` 硬要 CUDA；即便加 CPU 路径，本机可用内存 10.3 GB < 全参数 fp32 训练步需要的约 10–12 GB（params 2.4 + grads 2.4 + 两个优化器状态 4.8）。留租卡日，或换更小模型/梯度检查点 |
 | **S1 tokenizer 组装线** | 仍未实现 | 本次 GGUF 的 tokenizer KV 从上游 ref 整拷 —— 按记档，非缺陷伪装 |
 | **T15 干净克隆（剩余腿）** | **部分** | 安装 + README 入门 + 档 1 已在干净克隆里跑通；真权重对拍也在克隆里用 `transformers==5.19.0` 补验过（第七节）。仍缺：在克隆里**从零装** `.[full]`（torch 约 2 GB）重跑产物线 —— 现在那次是 `--system-site-packages` 借的系统 torch，环境干净度打了折 |
@@ -170,6 +190,8 @@ python src/data/by1fetch.py --only Qwen3-0.6B          # refs 语料
 python src/modelcheck/by1shadow.py --smoke-refs --by1 complete-Qwen3-0.6B.by1
 python src/modelcheck/by1shadow.py --smoke-refs --by1 complete-Qwen3-0.6B.by1 \
     --weights-dir <真 checkpoint 目录>          # T13：真权重双 loader 逐位（CPU 可跑）
+python src/modelcheck/by1shadow.py --smoke-state --by1 complete-Qwen3-0.6B.by1 \
+    --weights-dir <真 checkpoint 目录>          # T14：增量 vs 全量（CPU 可跑）
 python llamacpp/llama.cpp/convert_hf_to_gguf.py <hf-dir> --outfile ref-f32.gguf --outtype f32
 python src/checks/by1llama.py build-gguf <hf-dir> by1-f32.gguf --ref ref-f32.gguf \
     --arch qwen3 --n-blocks 28

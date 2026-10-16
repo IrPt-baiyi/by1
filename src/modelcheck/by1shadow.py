@@ -811,6 +811,79 @@ def smoke_refs(by1_name='complete-gpt2.by1', weights_dir=None, seed=None):
     return manifest
 
 
+def smoke_state(by1_name='complete-Qwen3-0.6B.by1', weights_dir=None,
+                length=16, prefill=8, seed=20261016):
+    """T14：**增量（带 cache）与全量重算的逐位对照**（真权重，CPU 可跑）。
+
+    两个 loader 各跑两遍：一遍 `use_cache=False` 全量、一遍
+    prefill + 逐 token 增量（带 `past_key_values`）。判据 = 同一模型两条路
+    logits 一致（2e-3，与仓库其他对拍的尺子同一把）。
+
+    **为什么值得单列**：cache 那条路读的是 `position_ids` / `attention_mask` /
+    rope 三样的接线 —— 接线错了**全量那一遍仍然是对的**，只有增量会歪。
+    这也是路线图 T14「增量状态」那一格的判据。
+
+    需要 `--weights-dir`（真 checkpoint 目录）：合成权重上验 cache 语义没有意义。
+    """
+    import gc
+    import torch
+    import transformers as T
+    import by1check
+    import by1full
+
+    if not weights_dir:
+        raise RuntimeError('--smoke-state 需要 --weights-dir（真 checkpoint 目录）')
+    report, info = by1check.check(by1paths.model(by1_name))
+    if report.count(by1check.E):
+        raise RuntimeError('%s 没过检查：%s' % (by1_name, report.items[:3]))
+    family, declared, mtp = by1full.compile_config(info)
+
+    generator = torch.Generator().manual_seed(seed)
+    ids = torch.randint(0, 10000, (1, length), generator=generator)
+    mask = torch.ones_like(ids)
+
+    def run(model):
+        with torch.no_grad():
+            full = model(input_ids=ids, attention_mask=mask,
+                         use_cache=False).logits
+            pre = model(input_ids=ids[:, :prefill],
+                        attention_mask=mask[:, :prefill], use_cache=True)
+            cache = pre.past_key_values
+            parts = [pre.logits]
+            for t in range(prefill, length):
+                step = model(input_ids=ids[:, t:t + 1],
+                             attention_mask=mask[:, :t + 1],
+                             past_key_values=cache, use_cache=True)
+                parts.append(step.logits)
+        inc = torch.cat(parts, dim=1)
+        if inc.shape != full.shape:
+            raise RuntimeError('增量与全量的形状不一致：%s vs %s'
+                               % (tuple(inc.shape), tuple(full.shape)))
+        return (inc.float() - full.float()).abs().max().item()
+
+    kwargs = {'dtype': torch.float32, 'attn_implementation': 'eager',
+              'local_files_only': True}
+    out = str(weights_dir)
+    print('  真权重 %s：增量 vs 全量（长 %d，prefill %d）'
+          % (out, length, prefill))
+    reference = T.AutoModelForCausalLM.from_pretrained(out, **kwargs).eval()
+    d_ref = run(reference)
+    del reference
+    gc.collect()
+    candidate = by1full.load_model(family, declared, mtp, out, **kwargs).eval()
+    d_by1 = run(candidate)
+    del candidate
+    gc.collect()
+    print('  官方 loader：max|Δ| = %.3e' % d_ref)
+    print('  by1 模型   ：max|Δ| = %.3e' % d_by1)
+    if not (d_ref <= 2e-3 and d_by1 <= 2e-3):
+        raise RuntimeError('增量与全量对不上（判据 2e-3）：官方 %.3e · by1 %.3e'
+                           % (d_ref, d_by1))
+    print('  [PASS] 增量 == 全量（两个 loader 都在 2e-3 内）')
+    return {'official_max_abs': d_ref, 'by1_max_abs': d_by1,
+            'length': length, 'prefill': prefill}
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--by1', help='.by1 完整架构声明（取家族与 mtp 规格）')
@@ -834,11 +907,21 @@ def main(argv=None):
     parser.add_argument('--weights-dir',
                         help='配 --smoke-refs：用**真 checkpoint 目录**代替合成影子 '
                              '（T13 真权重对拍；CPU 可跑，0.6B fp32 约 4.8 GB）')
+    parser.add_argument('--smoke-state', action='store_true',
+                        help='T14：真权重下「增量（cache）vs 全量重算」逐位对照 '
+                             '（要 --weights-dir）')
     parser.add_argument('--fetch-config', metavar='REPO',
                         help='冒烟前只拉该仓库的 config.json（几 KB）')
     args = parser.parse_args(argv)
     if args.refs_check is not None:
         return refs_check(args.refs_check)
+    if args.smoke_state:
+        try:
+            smoke_state(by1_name=args.by1 or 'complete-Qwen3-0.6B.by1',
+                        weights_dir=args.weights_dir)
+        except Exception as exc:
+            return by1skip.broken('T14 增量对拍失败：%s' % exc)
+        return 0
     if args.smoke_refs:
         try:
             smoke_refs(by1_name=args.by1 or 'complete-gpt2.by1',
