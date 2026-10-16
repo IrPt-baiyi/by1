@@ -65,4 +65,39 @@
 
 **一个都没有。** 这不奇怪：`full` 是**另一扇门**（吃 `arch = qwen3 / granitemoehybrid / …` 的官方家族），而上面那些 shaped 探针走的是串行 IR 门。**但对外措辞要照实**：不存在"一份声明五后端通吃"，"多后端已支持"这句话现在不成立。
 
+## 四、剩余缺口的**三档分类**
+
+> 每个 ✗ 格都要归档（判据会红出未分类的拒绝）：
+> **可补** = 我们的工程活；**卡上游** = 缺 ggml/上游原语；
+> **设计如此** = 边界而非缺口。
+
+### 可补（3 格）
+
+- `raw-escape.by1` × `c` —— raw.py 的工厂现在是 **PyTorch 专用**（返回 nn.Module）；多后端要先扩这个契约 —— 工程活，不是上游问题
+- `raw-escape.by1` × `ggml` —— raw.py 的工厂现在是 **PyTorch 专用**（返回 nn.Module）；多后端要先扩这个契约 —— 工程活，不是上游问题
+- `raw-escape.by1` × `exec` —— raw.py 的工厂现在是 **PyTorch 专用**（返回 nn.Module）；多后端要先扩这个契约 —— 工程活，不是上游问题
+
+### 卡上游（5 格）
+
+- `mla-sparse-shaped.by1` × `ggml` —— 要 top-k/比较算子 —— 这版 ggml 没有（等上游或自研 kernel）
+- `moe-routing-shaped.by1` × `ggml` —— 缺的是 ggml 原语（MoE 路由要 top-k、KDA 要 delta_rule），不是我们这边的活
+- `kda-shaped.by1` × `ggml` —— 缺的是 ggml 原语（MoE 路由要 top-k、KDA 要 delta_rule），不是我们这边的活
+- `kda-gva-shaped.by1` × `ggml` —— 缺的是 ggml 原语（MoE 路由要 top-k、KDA 要 delta_rule），不是我们这边的活
+- `kda-lowrank-shaped.by1` × `ggml` —— 缺的是 ggml 原语（MoE 路由要 top-k、KDA 要 delta_rule），不是我们这边的活
+
+### 设计如此（12 格）
+
+- `hello.by1` × `full` —— 两扇门：`full` 吃官方家族的 arch，串行 IR 后端吃机制组合 —— 不是缺口
+- `attn-fused-shaped.by1` × `full` —— 两扇门：`full` 吃官方家族的 arch，串行 IR 后端吃机制组合 —— 不是缺口
+- `mla-shaped.by1` × `full` —— 两扇门：`full` 吃官方家族的 arch，串行 IR 后端吃机制组合 —— 不是缺口
+- `mla-sparse-shaped.by1` × `full` —— 两扇门：`full` 吃官方家族的 arch，串行 IR 后端吃机制组合 —— 不是缺口
+- `moe-routing-shaped.by1` × `full` —— 两扇门：`full` 吃官方家族的 arch，串行 IR 后端吃机制组合 —— 不是缺口
+- `kda-shaped.by1` × `full` —— 两扇门：`full` 吃官方家族的 arch，串行 IR 后端吃机制组合 —— 不是缺口
+- `kda-gva-shaped.by1` × `full` —— 两扇门：`full` 吃官方家族的 arch，串行 IR 后端吃机制组合 —— 不是缺口
+- `kda-lowrank-shaped.by1` × `full` —— 两扇门：`full` 吃官方家族的 arch，串行 IR 后端吃机制组合 —— 不是缺口
+- `ssm-shaped.by1` × `full` —— 两扇门：`full` 吃官方家族的 arch，串行 IR 后端吃机制组合 —— 不是缺口
+- `raw-escape.by1` × `full` —— 两扇门：`full` 吃官方家族的 arch，串行 IR 后端吃机制组合 —— 不是缺口
+- `complete-granite-4.0-h-350m.by1` × `codegen` —— 两扇门：`full` 吃官方家族的 arch，串行 IR 后端吃机制组合 —— 不是缺口
+- `complete-Falcon-H1-0.5B-Instruct.by1` × `codegen` —— 两扇门：`full` 吃官方家族的 arch，串行 IR 后端吃机制组合 —— 不是缺口
+
 生成时间：2026-10-17（仅作记录，判据不看它）

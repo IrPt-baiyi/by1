@@ -200,6 +200,14 @@ def measure(verbose=True):
             if ok is False and str(msg).strip() and len(str(msg).strip()) < 8:
                 problems.append('%s × %s：拒绝消息太短，等于没说（%r）'
                                 % (name, backend, str(msg)[:40]))
+            # **拒绝必须归档**（三档之一）：可补 / 卡上游 / 设计如此。
+            # 归不了档 = 缺口没想清 —— 红出来补分类，矩阵才不会
+            # 退化成"红了一片没人管"。
+            if ok is False:
+                bucket, _why = classify(name, backend, str(msg))
+                if bucket is None:
+                    problems.append('%s × %s：拒绝**没分类**（可补/卡上游/设计如此）：'
+                                    '%r' % (name, backend, str(msg)[:60]))
             result[backend] = (ok, str(msg).strip())
         rows.append((name, label, result))
         if verbose:
@@ -285,9 +293,60 @@ def render(rows, problems):
                    '**但对外措辞要照实**：不存在"一份声明五后端通吃"，'
                    '"多后端已支持"这句话现在不成立。')
     out.append('')
+    out.append('## 四、剩余缺口的**三档分类**')
+    out.append('')
+    out.append('> 每个 ✗ 格都要归档（判据会红出未分类的拒绝）：')
+    out.append('> **可补** = 我们的工程活；**卡上游** = 缺 ggml/上游原语；')
+    out.append('> **设计如此** = 边界而非缺口。')
+    out.append('')
+    groups = {b: [] for b in BUCKETS}
+    for name, _label, result in rows:
+        for b in BACKEND_NAMES:
+            ok, msg = result.get(b, (None, ''))
+            if ok is False:
+                bucket, why = classify(name, b, str(msg))
+                if bucket:
+                    groups[bucket].append((name, b, why))
+    for bucket in BUCKETS:
+        items = groups[bucket]
+        out.append('### %s（%d 格）' % (bucket, len(items)))
+        out.append('')
+        if not items:
+            out.append('**没有。**')
+        for name, b, why in items:
+            out.append('- `%s` × `%s` —— %s' % (name, b, why))
+        out.append('')
     out.append('生成时间：%s（仅作记录，判据不看它）' % datetime.date.today().isoformat())
     out.append('')
     return '\n'.join(out)
+
+
+#: 每个 ✗ 格必须归到**三档**之一 —— 不许有未分类的拒绝
+#: （新增缺口时判据会要求补分类，矩阵才不会退化成"红了一片没人管"）：
+#:   **可补**     我们的工程活：判据现成、只差实现；
+#:   **卡上游**   缺 ggml/上游原语（top-k / 比较 / delta_rule 递推）；
+#:   **设计如此** 边界而非缺口（两扇门 / 语义没定义就不猜）。
+BUCKETS = ("可补", "卡上游", "设计如此")
+
+
+def classify(probe, backend, msg):
+    """给一个拒绝格归档。返回 (档, 一句理由)；归不了返回 (None, '')。"""
+    if ("完整后端的 arch 必须是" in msg
+            or "完整模型使用 transformers 后端" in msg):
+        return "设计如此", ("两扇门：`full` 吃官方家族的 arch，"
+                          "串行 IR 后端吃机制组合 —— 不是缺口")
+    if ("top-k" in msg or "top_k" in msg or "比较算子" in msg):
+        return "卡上游", "要 top-k/比较算子 —— 这版 ggml 没有（等上游或自研 kernel）"
+    if "delta_rule" in msg or ("递推" in msg and backend == "ggml"):
+        return "卡上游", "要 delta_rule 递推原语 —— 这版 ggml 没有"
+    if ("算子 MoE 还没有 ggml 映射" in msg
+            or "算子 KDA 还没有 ggml 映射" in msg):
+        return "卡上游", ("缺的是 ggml 原语（MoE 路由要 top-k、"
+                        "KDA 要 delta_rule），不是我们这边的活")
+    if "Raw" in msg and backend != "codegen":
+        return "可补", ("raw.py 的工厂现在是 **PyTorch 专用**（返回 nn.Module）；"
+                      "多后端要先扩这个契约 —— 工程活，不是上游问题")
+    return None, ""
 
 
 def _doc_cells(text):
