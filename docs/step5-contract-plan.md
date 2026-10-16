@@ -13,7 +13,40 @@
 
 ---
 
-## ① 95 层调度 —— **证据已就位**（config 逐字段，可重跑）
+## ① 95 层调度 —— **证据已就位 + 已落笔验证**
+
+> 落笔产物：`drafts/step5-schedule-probe.by1`（2.2 KB，**只验调度、不碰契约**）。
+
+```bash
+python src/checks/by1check.py drafts/step5-schedule-probe.by1
+#   展开层表：main 92 层 = 23 x [ 3 x Attn(window=512) + Attn(window=none) ]
+#             mtp   3 层
+#   合计 95 层，d_model = 4096，vocab = 128896（0 错误 / 1 警告）
+
+python src/checks/by1verify.py drafts/step5-schedule-probe.by1 \
+    refs/stepfun-ai__Step-5-Preview-BF16.config.json --sub text_config --config
+#   [2] layer_types：层数 by1 = 92 · config = 95（多出 3 项，是周期的延续）
+#       [PASS] 92 层类型逐项一致
+#       等价类：window=512 → 72 层 · window=none → 23 层
+```
+
+**探针里真正声明的东西**（每条都有 config 出处）：
+
+| 声明 | 出处 |
+|---|---|
+| `schedule { full = 1 * Attn(window=none); slide = 3 * Attn(window=512); block = slide + full }` | `layer_types`：full 落在 3,7,…,91（**周期 4、相位 3**） |
+| `pattern = 23 * block` | 23 × 4 = 92 = `num_hidden_layers` |
+| `main[0..2] >> Dense` · `main[91] >> Dense` | `moe_layer_list` 的补集（主干稠密 0/1/2/91） |
+| `main[3..90] >> MoE` | `moe_layer_list` = 88 层（3…90） |
+| `stack mtp { aux = true; index = global; pattern = 3 * Attn(window=512) }` | `num_nextn_predict_layers = 3`，且那三层是 sliding + 稠密 |
+
+> ⚠ **别把这次 PASS 读成全绿**：`by1verify` 的 [1] config 逐字段与 [3] emit
+> 仍是 **[跳过]**（探针没有张量契约、也没有 field 映射），所以它整体 exit 1。
+> 过的是 **[2] layer_types** —— 判卷人就是 config 自己的逐层数组。
+
+**副产品**：`schedule` / `main[a..b] >>` / `stack mtp { index = global }`
+这套写法在同族的 `models/Step-3.7-Flash.by1` 上已验过，在 Step-5 上
+**直接成立** —— 也就是说这族的调度**不需要新语言特性**。
 
 | config 字段 | 值 | 用途 |
 |---|---|---|
@@ -120,13 +153,13 @@ Step-5 要走哪条，决定了 ③④ 是"补两个表"还是"补一个家族"�
 
 ## 顺序与判据
 
-| 步 | 做什么 | 判据 |
-|---|---|---|
-| 1 | ① 写成 `stack` / `pattern` | `by1check` 展开层表（95 层、23 full/72 sliding）+ `by1verify --layer_types` |
-| 2 | ⑤ 里"产物可判"的两项 | 直接对 `refs/stepfun-ai__Step-5-Preview-BF16.tensors.json` 判（名字与形状） |
-| 3 | ② 符号化 | `by1check` 换算；换不动的登记为未知 |
-| 4 | ③ 后端选择 | 人定；然后再排 ④ |
-| 5 | 升格 `models/` + 过档 3 | `by1all --tier 3` |
+| 步 | 做什么 | 判据 | 状态 |
+|---|---|---|---|
+| 1 | ① 写成 `stack` / `pattern` | `by1check` 展开层表（95 层）+ `by1verify --layer_types` | **✅ 已落笔并 PASS**（`drafts/step5-schedule-probe.by1`） |
+| 2 | ⑤ 里"产物可判"的两项 | 直接对 `refs/stepfun-ai__Step-5-Preview-BF16.tensors.json` 判（名字与形状） | 待做 |
+| 3 | ② 符号化 | `by1check` 换算；换不动的登记为未知 | 待做 |
+| 4 | ③ 后端选择 | 人定；然后再排 ④ | **等决定** |
+| 5 | 升格 `models/` + 过档 3 | `by1all --tier 3` | 待做 |
 
 **不许做的**：把 `drafts/` 那份直接复制进 `models/` —— 它没有判卷人，
 `by1check` 0/0/0 只是因为它是"形状清单"而不是"架构声明"（`.by1` 里没有层）。

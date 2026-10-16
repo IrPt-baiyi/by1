@@ -1,0 +1,75 @@
+# Step-5 调度探针（**只验调度**，不验契约）
+#
+# 目的：把 config 实测出来的调度写成 .by1，看 by1check 展开的层表是不是
+#       95 层 / 23 full / 72 sliding / MoE 覆盖 3..90 / 稠密 0..2+91+MTP 3 层。
+#
+# 这是一次性探针（`_` 开头，被 .gitignore 挡着）：**它不声称 Step-5 的契约已成立** ——
+# 那 703 条张量形状与 6 个语义未知项仍是 drafts/step5-preview-draft.by1 里的事。
+#
+# 出处：refs/stepfun-ai__Step-5-Preview-BF16.config.json（逐字段实测，2026-10-15）
+
+model Step5ScheduleProbe {
+  arch    step5
+  ctx     1048576
+
+  hparams {
+    d_model = 4096
+    n_layer = 92
+    vocab   = 128896
+    rms_eps = 1e-05
+  }
+
+  # 全量层与滑窗层：头数同为 64、head_dim 同为 192，差别在 window 与 rope_theta
+  mech Attn : Attention {
+    heads      = { kv = 4, head_dim = 192 }
+    qk_norm    = true
+    head_gate  = per_head
+    structural = [ q, head_dim, qk_norm, head_gate, out_dim ]
+  }
+
+  # 稠密 FFN：intermediate_size = 13824
+  mech Dense : FFN {
+    hidden     = 13824
+    layer_kind = dense
+  }
+
+  # MoE：352 专家选 8、moe_intermediate_size = 1536、共享专家 1536、路由带 bias
+  mech MoE : MoE {
+    experts       = 352
+    top_k         = 8
+    hidden        = 1536
+    shared        = 1
+    shared_hidden = 1536
+    router_bias   = true
+    routing       = sigmoid_topk
+    routed_scale  = 3.0
+    layer_kind    = sparse
+    structural    = [ experts, hidden, shared_hidden ]
+  }
+
+  # 主干每 4 层：3 滑窗 + 1 全量 → full 落在 3, 7, 11, …, 91
+  schedule {
+    full  = 1 * Attn(q = 64, window = none, out_dim = 12288)
+    slide = 3 * Attn(q = 64, window = 512,  out_dim = 12288)
+    block = slide + full
+  }
+
+  stack main {
+    pattern = 23 * block
+    main[0..2]  >> Dense
+    main[3..90] >> MoE
+    main[91]    >> Dense
+  }
+
+  # MTP 3 层：接着主干数层号（92/93/94），全滑窗 + 稠密、不挂索引器
+  stack mtp {
+    aux     = true
+    index   = global
+    pattern = 3 * Attn(q = 64, window = 512, out_dim = 12288)
+    mtp[:]  >> Dense
+  }
+
+  position {
+    default = rope(base = 10000, pairing = half)
+  }
+}
