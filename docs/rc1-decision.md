@@ -35,10 +35,10 @@
 
 | # | 扩什么 | 依据 | 优先级 |
 |---|---|---|---|
-| E1 | **混合栈家族**：Zamba2-1.2B（共享注意力）· Nemotron-H（同类不同图案） | 逐层类型表已证明对**一类**成立（350m → 1b **零改动**）；llama.cpp/transformers 判卷人都在 | 中 |
-| E2 | **层内并行家族**：Bamba（上游 `conversion/granite.py` 里与 granite hybrid 注册在一起） | T29 的 `Parallel` 机制 + Mamba2 那一代改写可直接复用 | 中 |
+| E1 | **混合栈家族**：Zamba2-1.2B（共享注意力 + memory block）· Nemotron-H（同类不同图案） | 逐层类型表已证明对**一类**成立（350m → 1b **零改动**）；llama.cpp/transformers 判卷人都在 | 中（**Zamba2 两侧判卷人只齐一半**：transformers `Zamba2ForCausalLM` ✅，llama.cpp 没有 `ZAMBA2` → 产物腿做不了；且下载 4.53 GB） |
+| E2 | **层内并行家族**：Bamba | T29 的 `Parallel` 机制 + Mamba2 那一代改写可直接复用 | **低**（2026-10-16 调查：`ibm-ai-platform/Bamba-9B-v2` 是 **18.23 GB**，CPU fp32 放不下；没有更小的 Bamba。**真正的检验要等有卡**） |
 | E3 | **产物线"改写表"化**：把三类八条改写从 `if/elif` 提成**可枚举的表** | 八条都是"照着上游某一行"写的；表化之后每条自带出处，新增家族就是加一行 | **✅ 已做（2026-10-16）**：`CONVERT_RULES` **16 条**（含九个折标量），每条带 `cite`/`probe`/`check`；判卷人 `by1rules.py` **已进档 3 门禁**（102 项 0 失败）；重构后五个模型对拍**逐位一致** |
-| E4 | **CI 加"档 4"腿**（装 torch/transformers，跑完整模型） | 档 4 现在只在本地跑；它保护的正是 T26–T29 那批判据 | 中（要下 2.5 GB 依赖，需权衡） |
+| E4 | **CI 加"完整模型"腿**（装 torch/transformers，跑 `by1complete` + `by1rules`） | 档 4 现在只在本地跑；它保护的正是 T26–T29 那批判据 | **✅ 已做（2026-10-16）**：CI job `complete`（ubuntu · 3.12）；本机按 CI 条件验过（干净 clone + 仅 `[full]`）；**CI #143 = 11/11 job 全绿** |
 | E5 | **外部复现从"报告级"升到"审计级"** | 现有 1 次是入门示例、非审计；[复现指南](repro-guide.md) 已备好（含六条真权重判据与预期输出） | 高（判据在别人手里，不占本机时间） |
 
 ## 三、决定三：**删减 / 延期**（明确不做、或先不做）
