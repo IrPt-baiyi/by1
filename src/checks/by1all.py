@@ -353,7 +353,8 @@ JUDGES = [
     ('by1rules.py', 3),
     # 后端 × 机制矩阵：**承诺的公共子集到底有多大**（T30 那条"未定"）。
     # 12 个探针 × 5 个后端；拒绝必须带理由；docs/backend-matrix.md 是生成物。
-    # 实测（2026-10-16）：IR 路公共子集 = 1/12（Attention + FFN），
+    # 实测（2026-10-16）：IR 路公共子集 = **2/12**（hello：Attention + FFN；
+    # attn-fused：融合 q/k/v 的 Attention —— 当天补上 ggml 侧实现），
     # 五后端交集 = 0 —— 这些数字是量出来的，不是宣传出来的。
     ('by1backends.py', 3),
 

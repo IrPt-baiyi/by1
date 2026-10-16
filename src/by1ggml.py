@@ -90,8 +90,12 @@ def check_support(ir):
                     bad.append(f"{where}：head_gate 还没实现")
                 if a.get("sink"):
                     bad.append(f"{where}：sink 还没实现（M3）")
-                if a.get("qkv_fused"):
-                    bad.append(f"{where}：qkv_fused（融合 q/k/v）还没实现")
+                if a.get("qkv_fused") and a.get("kv_tie"):
+                    # 融合布局里 v 是独立的一截 —— `kv_tie` 却要求 v 复用 k 的
+                    # 投影，"那一截怎么处理"没定义。**要么实现，要么拒绝**，
+                    # 不猜一个语义出来。
+                    bad.append(f"{where}：qkv_fused + kv_tie 组合还没实现"
+                               "（融合布局里 v 那截怎么处理没定义）")
                 _y = a.get("yarn")
                 if _y:
                     bad.append(f"{where}：yarn={_y!r} 还没实现（M3）")
@@ -669,25 +673,52 @@ def emit_model_c(ir, order, params):
         elif k == "Attention":
             hd, nh, nkv = int(a["head_dim"]), int(a["q"]), int(a["kv"])
             qw = nh * hd
+            kvw = nkv * hd
             eps = _f(a.get("norm_eps", _DEFAULT_EPS))
             one = 1 if a.get("norm_one_plus") else 0
             bias = bool(a.get("bias"))
+            # **权重名在这分岔**：融合 q/k/v（视觉塔那种布局）与分开三张。
+            # 融合时 `qkv` 一张装三截（q | k | v，`by1ir.params_of` 的顺序），
+            # 形状 `(q*hd + 2*kv*hd, in_dim)`；ggml 侧这张是 `(in_dim, rows_total)`
+            # （`_weight_lines` 的 `wt2` 把 ne0/ne1 反过来）。
+            # 所以**按 ne1 切三截，偏移必须乘行宽 `nb[1]`** ——
+            # C 后端当年就是这里少乘了行宽，5.6e-01 的差一直看不见
+            # （见 by1all 的 SHAPED 里 attn-fused 那条注释）。
+            if a.get("qkv_fused"):
+                _qkv = W_('qkv')
+                Wq = (f"ggml_view_2d(ctx, {_qkv}, {_qkv}->ne[0], {qw}, "
+                      f"{_qkv}->nb[1], 0)")
+                Wk = (f"ggml_view_2d(ctx, {_qkv}, {_qkv}->ne[0], {kvw}, "
+                      f"{_qkv}->nb[1], (size_t) {qw} * {_qkv}->nb[1])")
+                Wv = (f"ggml_view_2d(ctx, {_qkv}, {_qkv}->ne[0], {kvw}, "
+                      f"{_qkv}->nb[1], (size_t) {qw + kvw} * {_qkv}->nb[1])")
+                Wo, Wo_bias = W_('proj'), W_('proj.bias')
+                if bias:
+                    _qb = W_('qkv.bias')
+                    Bq = f"ggml_view_1d(ctx, {_qb}, {qw}, 0)"
+                    Bk = f"ggml_view_1d(ctx, {_qb}, {kvw}, (size_t) {qw})"
+                    Bv = (f"ggml_view_1d(ctx, {_qb}, {kvw}, "
+                          f"(size_t) {qw + kvw})")
+            else:
+                Wq, Wk, Wv = W_('wq'), W_('wk'), W_('wv')
+                Wo, Wo_bias = W_('wo'), W_('wo.bias')
+                Bq, Bk, Bv = W_('wq.bias'), W_('wk.bias'), W_('wv.bias')
             lines.append(f"{indent}struct ggml_tensor * {p}aq = ggml_mul_mat(ctx, "
-                         f"{W_('wq')}, {src[0]});")
+                         f"{Wq}, {src[0]});")
             lines.append(f"{indent}struct ggml_tensor * {p}ak = ggml_mul_mat(ctx, "
-                         f"{W_('wk')}, {src[0]});")
+                         f"{Wk}, {src[0]});")
             if bias:
-                lines.append(f"{indent}{p}aq = ggml_add(ctx, {p}aq, {W_('wq.bias')});")
-                lines.append(f"{indent}{p}ak = ggml_add(ctx, {p}ak, {W_('wk.bias')});")
+                lines.append(f"{indent}{p}aq = ggml_add(ctx, {p}aq, {Bq});")
+                lines.append(f"{indent}{p}ak = ggml_add(ctx, {p}ak, {Bk});")
             # **kv_tie：v 是 k 的原始投影** —— 必须在 qk_norm / rope 之前分叉
             if a.get("kv_tie"):
                 lines.append(f"{indent}struct ggml_tensor * {p}v3 = "
                              f"ggml_reshape_3d(ctx, {p}ak, {hd}, {nkv}, n);")
             else:
                 lines.append(f"{indent}struct ggml_tensor * {p}av = ggml_mul_mat(ctx, "
-                             f"{W_('wv')}, {src[0]});")
+                             f"{Wv}, {src[0]});")
                 if bias:
-                    lines.append(f"{indent}{p}av = ggml_add(ctx, {p}av, {W_('wv.bias')});")
+                    lines.append(f"{indent}{p}av = ggml_add(ctx, {p}av, {Bv});")
                 lines.append(f"{indent}struct ggml_tensor * {p}v3 = "
                              f"ggml_reshape_3d(ctx, {p}av, {hd}, {nkv}, n);")
             lines.append(f"{indent}struct ggml_tensor * {p}q3 = "
@@ -737,9 +768,9 @@ def emit_model_c(ir, order, params):
             lines.append(f"{indent}struct ggml_tensor * {p}att = ggml_cont_2d(ctx, "
                          f"ggml_permute(ctx, {p}kqv, 0, 2, 1, 3), {qw}, n);")
             lines.append(f"{indent}struct ggml_tensor * {dst} = ggml_mul_mat(ctx, "
-                         f"{W_('wo')}, {p}att);")
+                         f"{Wo}, {p}att);")
             if bias:
-                lines.append(f"{indent}{dst} = ggml_add(ctx, {dst}, {W_('wo.bias')});")
+                lines.append(f"{indent}{dst} = ggml_add(ctx, {dst}, {Wo_bias});")
         elif k == "FFN":
             hid = int(a["hidden"])
             bias = bool(a.get("bias"))
