@@ -148,10 +148,13 @@ def chain_f32(logits, seed, temp=0.8, top_k=40, top_p=0.95, min_p=0.05):
       top_p  ：softmax_impl(false)：max 全扫、p=expf(x-max) f32、cum_sum
                **f32 按数组序**累加、p/=cum_sum f32；再降序排、f32 累计
                截到 cum>=p 且个数>=min_keep
-      min_p  ：排序路径 —— min_logit = f32(x[0]+logf(p))；保第一个；
-               首个 x[i]<min_logit 且 i>=min_keep 处截断
+      min_p  ：两条路径 —— 未排序：max 全扫、min_logit=f32(max+logf(p))、
+               **按当前存储序**保 x>=min_logit（不排序！）；已排序或上路
+               不适用：min_logit=f32(x[0]+logf(p))、保第一个、首个
+               x[i]<min_logit 处截断（min_keep=1）
       temp   ：x = f32(x/temp)
-      dist   ：max_l=data[0]；p=expf(x-max_l) f32；sum_cum **double** 累加；
+      dist   ：max_l=data[0]（未排序则 max 全扫）；p=expf(x-max_l) f32；
+               sum_cum **double** 累加；
                rnd=uniform01；sum_tgt=sum_cum*rnd；sum_run **double** 累加，
                `sum_run >= sum_tgt` 处选中；兜底最后一个
 
@@ -161,22 +164,27 @@ def chain_f32(logits, seed, temp=0.8, top_k=40, top_p=0.95, min_p=0.05):
     ids = np.arange(len(x))
     f32 = np.float32
 
+    sorted_flag = False   # llama cur_p->sorted 的忠实复刻
+
     if top_k > 0:
         k = min(int(top_k), len(x))
         order = np.argsort(-x, kind="stable")[:k]
         ids, x = ids[order], x[order]
-    # 无过滤时**保原序**（dist 的 fp 求和序敏感，T25 配置实证）；
-    # 排序只由过滤器触发（top_k 截断 / top_p 内部 / min_p 下面）
+        sorted_flag = True   # partial_sort_inplace 连 k < size 也置 sorted
+    # top_k=0 = 空采样器（no-op），top_p=1.0 直接 return ——
+    # 数组**保持原始存储序**；dist 的 fp 求和序敏感，不许擅自排序（B1）
 
     if top_p < 1.0:
-        max_l = f32(np.max(x))
+        max_l = f32(x[0]) if sorted_flag else f32(np.max(x))
         p = np.exp(x - max_l).astype(f32)
         cum = f32(0)
         for i in range(len(p)):
             cum = f32(cum + p[i])
         p = (p / cum).astype(f32)
-        order = np.argsort(-x, kind="stable")
-        x, p, ids = x[order], p[order], ids[order]
+        if not sorted_flag:
+            order = np.argsort(-x, kind="stable")
+            x, p, ids = x[order], p[order], ids[order]
+        sorted_flag = True
         c, keep = f32(0), len(x)
         for i in range(len(x)):
             c = f32(c + p[i])
@@ -186,22 +194,35 @@ def chain_f32(logits, seed, temp=0.8, top_k=40, top_p=0.95, min_p=0.05):
         x, ids = x[:keep], ids[:keep]
 
     if min_p > 0 and len(x):
-        # min_p 依赖 x[0]=max —— 前面若没过滤过（top_k=0 且 top_p=1）
-        # 数组未排序，先排（T26 矩阵 7 红的真相）
-        if top_k == 0 and top_p >= 1.0:
-            order = np.argsort(-x, kind="stable")
-            ids, x = ids[order], x[order]
-        min_logit = f32(x[0] + f32(np.log(f32(min_p))))
-        keep = len(x)
-        for i in range(1, len(x)):
-            if x[i] < min_logit and i >= 1:
-                keep = i
-                break
-        x, ids = x[:keep], ids[:keep]
+        # min_p 两条路径（llama_sampler_min_p_apply）：
+        # 未排序 -> max 全扫 + min_logit = max+logf(p)，按**当前存储序**保
+        # x >= min_logit（不排序！dist 求和序敏感）；已排序/未排序路径
+        # 不适用 -> 排序路径：min_logit = x[0]+logf(p)，保第一个，首个
+        # x[i] < min_logit 处截断。min_keep = 1。
+        applied = False
+        if not sorted_flag:
+            max_logit = f32(np.max(x))
+            min_logit = f32(max_logit + f32(np.log(f32(min_p))))
+            mask = x >= min_logit
+            if int(np.count_nonzero(mask)) >= 1:
+                x, ids = x[mask], ids[mask]
+                applied = True
+        if not applied:
+            if not sorted_flag:
+                order = np.argsort(-x, kind="stable")
+                ids, x = ids[order], x[order]
+                sorted_flag = True
+            min_logit = f32(x[0] + f32(np.log(f32(min_p))))
+            keep = len(x)
+            for i in range(1, len(x)):
+                if x[i] < min_logit:
+                    keep = i
+                    break
+            x, ids = x[:keep], ids[:keep]
 
     x = (x / f32(temp)).astype(f32)
 
-    max_l = f32(x[0])
+    max_l = f32(x[0]) if sorted_flag else f32(np.max(x))
     ps = np.exp(x - max_l).astype(f32)
     sum_cum = 0.0
     for i in range(len(ps)):
