@@ -1,0 +1,21 @@
+{
+  "_comment": [
+    "run-audit.py --check 的比对基线（维护方的实测，2026-10-17）。",
+    "只比**稳定项**：退出码 + 判定行的模式。不比'没验'的数量（随环境变），",
+    "也不比项数（加检查会变）。改判据时这里跟着改 —— 改完请重跑 --check。"
+  ],
+  "stages": {
+    "tier1": {
+      "exit": 0,
+      "expect_in_verdicts": ["\\[全过", "0 项失败"]
+    },
+    "tier3": {
+      "exit": 0,
+      "expect_in_verdicts": ["0 项失败"]
+    },
+    "complete": {
+      "exit": 0,
+      "expect_in_verdicts": ["\\[PASS\\] 完整模型"]
+    }
+  }
+}

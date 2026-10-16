@@ -1,6 +1,6 @@
 # 这个仓库里每个文件是干什么的
 
-> 414 个跟踪文件。按"你会想找什么"分组，不按字母表。
+> 416 个跟踪文件。按"你会想找什么"分组，不按字母表。
 >
 > **这份文档是生成的**：`python src/by1files.py --write`。
 > 文件清单、每组的个数、每个文件的一句话都从目录树和 docstring 来 ——
@@ -332,6 +332,13 @@
 | 文件 | 用途 |
 |---|---|
 | `2026-10-16-colab-hello.md` | 外部复现 #1 —— Colab CPU quickstart（John6666） |
+
+## `history/external-repro/audit/` —— 2 个
+
+| 文件 | 用途 |
+|---|---|
+| `expected.json` | "_comment": [ |
+| `run-audit.py` | 把外部复现从"报告级"升到"审计级" |
 
 ## `models/` —— 65 个
 

@@ -134,3 +134,7 @@ _*.py
 _gemma-shaped.by1
 .by1run-state
 *.exe
+
+# 外部复现审计包的**产出物**（run-audit.py 生成；入库的是脚本与
+# expected.json 基线，报告每次重生成 —— 写进仓库树会让 by1files 变红）
+history/external-repro/audit/audit-report*.json
