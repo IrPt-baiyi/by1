@@ -410,7 +410,7 @@ def _shp(shape, n_expr="n"):
     return [n_expr if s is None else str(int(s)) for s in shape]
 
 
-def emit_model_c_graph(g, ir, order, params):
+def emit_model_c_graph(g, ir, order, params, dump=()):
     """**从图发射**：逐节点把 PRIMS 翻成 ggml 调用（1.0.0-rc0 · A3-2）。
 
     和 `emit_model_c`（按 IR kind 手写）**等价** —— 判据是同一个
@@ -705,10 +705,10 @@ def emit_model_c_graph(g, ir, order, params):
             head[_i] = f"#define N_NODES {n_nodes}"
 
     logits = _gvar(g.nodes[-1]["outs"][0])
-    return _assemble(head, body, logits, n_nodes, mem_tok, mem_pair)
+    return _assemble(head, body, logits, n_nodes, mem_tok, mem_pair, dump)
 
 
-def emit_model_c(ir, order, params):
+def emit_model_c(ir, order, params, dump=()):
     """把 IR 展开成一份调 ggml 的 model.c。返回 (源码, N_NODES, MEM_PER_TOKEN,
     MEM_PER_PAIR)。**不支持的东西在 check_support 里就拦掉了** ——
     这里只管已经承诺的那部分，一格都不许糊。"""
@@ -1339,12 +1339,56 @@ def emit_model_c(ir, order, params):
         if str(_ln).startswith("#define N_NODES "):
             head[_i] = f"#define N_NODES {n_nodes}"
 
-    return _assemble(head, body, logits, n_nodes, mem_tok, mem_pair)
+    return _assemble(head, body, logits, n_nodes, mem_tok, mem_pair, dump)
 
 
-def _assemble(head, body, logits, n_nodes, mem_tok, mem_pair):
+def _assemble(head, body, logits, n_nodes, mem_tok, mem_pair, dump=()):
     """骨架：`GGML_HEAD` + 常量表 + body + `main`。**两条发射路径共用**
-    （IR 路径 / 图路径）—— 骨架一样，对拍才是同条件。"""
+    （IR 路径 / 图路径）—— 骨架一样，对拍才是同条件。
+
+    `dump`：要打印的中间节点名（`--dump`）。**打印按张量的逻辑步长读**
+    （`nb`）—— 视图张量的 `->data + 扁平下标` 不等于逻辑位置，这是
+    调试 Linear 时连踩五个假象换来的教训。
+    """
+    dump_c = f"""
+static struct ggml_tensor * dbg_nodes[64];
+static const char * dbg_names[64];
+static int dbg_count = 0;
+static void dbg_reg(const char * nm, struct ggml_tensor * t) {{
+    if (dbg_count < 64) {{ dbg_names[dbg_count] = nm; dbg_nodes[dbg_count] = t; dbg_count++; }}
+}}
+static void dbg_show(int nshow) {{
+    for (int k = 0; k < dbg_count; k++) {{
+        struct ggml_tensor * t = dbg_nodes[k];
+        printf("[dump] %s (%lld,%lld,%lld,%lld):", dbg_names[k],
+               (long long) t->ne[0], (long long) t->ne[1], (long long) t->ne[2], (long long) t->ne[3]);
+        int64_t tot = t->ne[0] * t->ne[1] * t->ne[2] * t->ne[3];
+        int64_t show = nshow < tot ? nshow : tot;
+        for (int64_t i = 0; i < show; i++) {{
+            int64_t i0 = i % t->ne[0];
+            int64_t i1 = (i / t->ne[0]) % t->ne[1];
+            int64_t i2 = (i / (t->ne[0] * t->ne[1])) % t->ne[2];
+            int64_t i3 = i / (t->ne[0] * t->ne[1] * t->ne[2]);
+            float v = *(float *) ((char *) t->data + i0 * t->nb[0] + i1 * t->nb[1]
+                                               + i2 * t->nb[2] + i3 * t->nb[3]);
+            printf(" %.8f", v);
+        }}
+        printf("\\n");
+    }}
+}}
+"""
+    # 在**声明点**注册（层循环里的变量只在那层作用域内）。
+    import re as _re
+    body = list(body)
+    if dump:
+        out = []
+        for ln in body:
+            out.append(ln)
+            m = _re.search(r"struct ggml_tensor \* (\w+) =", ln)
+            if m and any(pat in m.group(1) for pat in dump):
+                ind = ln[:len(ln) - len(ln.lstrip())]
+                out.append('%sdbg_reg("%s", %s);' % (ind, m.group(1), m.group(1)))
+        body = out
     main = f"""
 int main(int argc, char **argv) {{
     if (argc < 5) {{
@@ -1390,6 +1434,7 @@ int main(int argc, char **argv) {{
     if (ggml_graph_compute_with_ctx(ctx, gf, 1) != GGML_STATUS_SUCCESS) {{
         fprintf(stderr, "graph compute failed\\n"); return 1;
     }}
+    dbg_show(16);
     f = fopen(argv[4], "wb");
     fwrite({logits}->data, sizeof(float), (size_t) n * VOCAB, f);
     fclose(f);
@@ -1405,7 +1450,7 @@ int main(int argc, char **argv) {{
         # **不能 `except: pass`** —— by1lint 的十类静默写法之一：
         # 错误被吃掉，调用方看到"一切正常"，而 stamp 根本没打上。
         stamp = "/* by1ggml */"
-    return stamp + GGML_HEAD + "\n".join(head) + main, \
+    return stamp + GGML_HEAD + dump_c + "\n".join(head) + main, \
         n_nodes, mem_tok, mem_pair
 
 
@@ -1535,11 +1580,12 @@ def run_one(by1_path, args, run=True, expect="pass"):
             # （2.098e-07 / 1.317e-07 / 1.827e-07）。
             _g = load("by1graph").lower_model(ir, name)
             src, n_nodes, mem_tok, mem_pair = emit_model_c_graph(
-                _g, ir, order, params_shapes)
+                _g, ir, order, params_shapes, dump=args.dump)
         else:
             # **旧路径（临时保留）**：按 IR kind 手写。现在唯一的用途是
             # 当**差分对照** —— A3-3 之后删掉，别让两份发射器长期并存。
-            src, n_nodes, mem_tok, mem_pair = emit_model_c(ir, order, params_shapes)
+            src, n_nodes, mem_tok, mem_pair = emit_model_c(ir, order, params_shapes,
+                                                  dump=args.dump)
     except SystemExit as e:
         # 降不动 / 图里有原语没映射 —— **点名拒绝**，语义和融合门同款
         print(str(e))
@@ -1703,6 +1749,9 @@ def main(argv=None):
     ap.add_argument("--expect-reject", action="store_true",
                     help="这份 .by1 应当被支持集拒绝")
     ap.add_argument("--ggml-src", default=None)
+    ap.add_argument("--dump", action="append", default=[],
+                    help="打印名字含此子串的中间节点（ne + 前 16 个值，"
+                         "按张量逻辑步长读）—— 调试用，可重复")
     ap.add_argument("--ggml-build", default=None)
     ap.add_argument("--from-ir", action="store_true",
                     help="走**旧路径**（按 IR kind 手写发射）—— 只当差分对照用，"
