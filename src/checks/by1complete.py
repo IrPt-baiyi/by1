@@ -22,7 +22,9 @@ GALLERY = ['complete-Qwen3-0.6B.by1', 'complete-Qwen3-8B.by1',
            'complete-gpt-oss-20b.by1', 'complete-Qwen3.8-27B.by1',
            # **第二个机制族（T26）**：SSM/递归状态。
            # **第三个机制族（T27）**：混合栈 —— 逐层类型表。
-           'complete-granite-4.0-h-350m.by1']
+           'complete-granite-4.0-h-350m.by1',
+           # **T28：同一类的第二个成员**（不同图案）—— 这一条是"支持一类"的证人。
+           'complete-granite-4.0-h-1b.by1']
 
 #: **按名字取件，不要按下标。** 加一个模型就会把 `GALLERY[-1]` / `GALLERY[5]`
 #: 悄悄换成另一个模型 —— 2026-10-16 加 mamba 时真撞上：MTP/视觉那两个用例
@@ -35,6 +37,8 @@ GPT_OSS = 'complete-gpt-oss-20b.by1'
 QWEN38 = 'complete-Qwen3.8-27B.by1'
 MAMBA = 'complete-mamba-130m-hf.by1'
 GRANITE = 'complete-granite-4.0-h-350m.by1'
+#: T28：**同一类的第二个成员**（图案不同：注意力在 5/15/25/35，40 层）。
+GRANITE_1B = 'complete-granite-4.0-h-1b.by1'
 
 #: 夹具用的 norm eps —— **`tiny()` 与 `config_of()` 必须取同一个值**：
 #: 一个是"声明编译出来的配置"，一个是"独立写出来的参考配置"，
@@ -142,10 +146,18 @@ def tiny(name):
         hp['d_inner'] = str(expand * 32)
         hp['dt_rank'] = '2'
     if family == 'granitemoehybrid':
-        # **按类型取样，不按层号截断。** 通用那段只留前 2 层，而这个模型
-        # 前 10 层全是 Mamba2 —— 只留前 2 层会触发 `_compile_moe_hybrid` 的
-        # "两种机制都要出现"（那是判据，不是 bug：混合栈的定义就是两种都在）。
-        # 所以这里各取几个：2 个 SSM2 + 1 个 Attention。
+        # **夹具把 μP 四个缩放也钉住**（与 `config_of` 里写的那份一致）：
+        # 两个 granite 成员的真实值不同（350m：12/0.246/3/0.015625；
+        # 1b：12/0.22/6/0.0078125），而 `config_of(family, …)` 只按家族取件、
+        # 分不出是哪个成员。**真实值由 `official_configs` 那条逐字段用例负责** ——
+        # 和 `tiny_eps` 是同一个套路：夹具钉住，判据在别处。
+        hp.update(embedding_multiplier='12', residual_multiplier='0.246',
+                  logits_scaling='3', attention_multiplier='0.015625')
+        # **按类型取样，不按层号截断。** 通用那段只留前 2 层，而这个家族
+        # 前 10 层（1b 是前 5 层）全是 Mamba2 —— 只留前 2 层会触发
+        # `_compile_moe_hybrid` 的"两种机制都要出现"（那是判据，不是 bug：
+        # 混合栈的定义就是两种都在）。所以从**截断前的层表**里各取几个：
+        # 2 个 SSM2 + 1 个 Attention。
         ssm_keep, attn_keep = [], None
         for entry in original_seq:
             stack, mech = entry[0], entry[1]
@@ -373,7 +385,9 @@ def main():
                                      # **还没进 GALLERY** —— 那张表要写 tiny/config_of/
                                      # reference 三条分支，下一步做（见 docs/t27-plan.md）。
                                      # config 逐字段与家族无关，先接上。
-                                     (GRANITE, 'ibm-granite__granite-4.0-h-350m.config.json')]:
+                                     (GRANITE, 'ibm-granite__granite-4.0-h-350m.config.json'),
+                                     # T28：同类第二个成员（图案与 μP 都不同）。
+                                     (GRANITE_1B, 'ibm-granite__granite-4.0-h-1b.config.json')]:
             family, cfg, _ = by1full.compile_config(description(name))
             raw = json.loads(pathlib.Path(by1paths.REFS, reference_file).read_text(encoding='utf-8'))
             # **用 by1full._tclass**：mamba 系的两个类没导出到顶层，
