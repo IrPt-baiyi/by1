@@ -1,6 +1,6 @@
 # 这个仓库里每个文件是干什么的
 
-> 410 个跟踪文件。按"你会想找什么"分组，不按字母表。
+> 411 个跟踪文件。按"你会想找什么"分组，不按字母表。
 >
 > **这份文档是生成的**：`python src/by1files.py --write`。
 > 文件清单、每组的个数、每个文件的一句话都从目录树和 docstring 来 ——
@@ -230,7 +230,7 @@
 | `fig3-schools.png` | article/ 配图：Q3 五大流派对比（含 Kimi-K3） |
 | `fig4-shape.png` | article/ 配图：收敛出的公共形状示意图 |
 
-## `docs/` —— 35 个
+## `docs/` —— 36 个
 
 活的文档 —— 还没做完的事记在这里，做完的挪去 `history/`。
 
@@ -260,6 +260,7 @@
 | `product-definition.md` | T1 产品定义（冻结版）：目标用户/输入输出/支持层级/不做的运行时职责/代表模型 |
 | `quantization.md` | 量化格式的存储合同、共享权重边界和 Q1–Q3 验收顺序 |
 | `qwen3asr-silent-load-report.md` | T21 取证报告：transformers 对 Qwen3-ASR-0.6B 静默装载错误模型（版本错配实录，A3 缺口的证据本体） |
+| `rc1-decision.md` | RC1 架构决策（T30） |
 | `repro-guide.md` | 复现指南：从零到绿的一条路 |
 | `step5-contract-plan.md` | A 线工作单：把 Step-5 反推草稿升格成 models/ 合同（① 95 层调度证据已就位 · ⑤ 六个语义未知项收缩到 1 个 · ③ 后端选择是方向题） |
 | `step5-convert-cheatsheet.md` | Step-5 发布日当天结构对账 + 转换速查（2449 张量逐项实测，非预测）：新张量名/新机制/转换器要改的 9 处/待确认坑 |
