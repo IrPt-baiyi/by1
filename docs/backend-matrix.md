@@ -21,7 +21,7 @@
 | `complete-granite-4.0-h-350m.by1` | SSM2 + Attention（逐层混排） | ✗ | — | — | — | ✅ |
 | `complete-Falcon-H1-0.5B-Instruct.by1` | Parallel（层内并行：SSM2 + Attention） | ✗ | — | — | — | ✅ |
 | `llama-shaped.by1` | Attention + FFN（RoPE） | ✅ | ✅ | ✅ | ✅ | ✗ |
-| `llama3-shaped.by1` | Attention + FFN（LLaMA3 RoPE 缩放） | ✅ | ✅ | ✗ | ✅ | ✗ |
+| `llama3-shaped.by1` | Attention + FFN（LLaMA3 RoPE 缩放） | ✅ | ✅ | ✅ | ✅ | ✗ |
 | `mixtral-shaped.by1` | Attention + MoE | ✅ | ✅ | ✗ | ✅ | ✗ |
 | `gpt-oss-shaped.by1` | Attention + MoE（sigmoid 路由） | ✅ | ✅ | ✗ | ✅ | ✗ |
 | `qwen3-next-shaped.by1` | Linear + MoE + Attention（线性注意力） | ✅ | ✅ | ✗ | ✅ | ✗ |
@@ -59,11 +59,10 @@
 | `complete-granite-4.0-h-350m.by1` | `codegen` | 完整模型使用 transformers 后端；请用 by1 build，不能把多分支模型降成串行 IR |
 | `complete-Falcon-H1-0.5B-Instruct.by1` | `codegen` | 完整模型使用 transformers 后端；请用 by1 build，不能把多分支模型降成串行 IR |
 | `llama-shaped.by1` | `full` | 完整后端的 arch 必须是 qwen3, qwen2, gpt2, gpt_oss, qwen3_5, mamba, granitemoehybrid, falcon_h1 |
-| `llama3-shaped.by1` | `ggml` | 第 1 层 op1（Attention）：yarn={'type': 'llama3', 'factor': 2.0, 'original': 4096, 'beta_fast': 32.0, 'beta_slow': 1.0, 'high_freq': 32.0, 'low_freq': 1.0, 'truncate': True} 还没实现（M3）；第 2 层 op1（Attention）：yarn={'type': 'llama3', 'factor': 2.0, 'original': 4096, 'beta_fast': 32.0, 'beta_slow': 1.0, 'high_f |
 | `llama3-shaped.by1` | `full` | 完整后端的 arch 必须是 qwen3, qwen2, gpt2, gpt_oss, qwen3_5, mamba, granitemoehybrid, falcon_h1 |
 | `mixtral-shaped.by1` | `ggml` | 第 0 层 op4（MoE）：算子 MoE 还没有 ggml 映射；第 1 层 op4（MoE）：算子 MoE 还没有 ggml 映射；第 2 层 op4（MoE）：算子 MoE 还没有 ggml 映射；第 3 层 op4（MoE）：算子 MoE 还没有 ggml 映射 |
 | `mixtral-shaped.by1` | `full` | 完整后端的 arch 必须是 qwen3, qwen2, gpt2, gpt_oss, qwen3_5, mamba, granitemoehybrid, falcon_h1 |
-| `gpt-oss-shaped.by1` | `ggml` | 第 0 层 op1（Attention）：sink 还没实现（M3）；第 0 层 op1（Attention）：yarn={'type': 'yarn', 'factor': 32.0, 'original': 4096, 'beta_fast': 32.0, 'beta_slow': 1.0, 'high_freq': 4.0, 'low_freq': 1.0, 'truncate': False} 还没实现（M3）；第 0 层 op4（MoE）：算子 MoE 还没有 ggml 映射；第 1 层 op1（Attention）：sink 还没实现（M3）；第 1 层 op1（Attention |
+| `gpt-oss-shaped.by1` | `ggml` | 第 0 层 op1（Attention）：sink 还没实现（M3）；第 0 层 op4（MoE）：算子 MoE 还没有 ggml 映射；第 1 层 op1（Attention）：sink 还没实现（M3）；第 1 层 op4（MoE）：算子 MoE 还没有 ggml 映射 |
 | `gpt-oss-shaped.by1` | `full` | 完整后端的 arch 必须是 qwen3, qwen2, gpt2, gpt_oss, qwen3_5, mamba, granitemoehybrid, falcon_h1 |
 | `qwen3-next-shaped.by1` | `ggml` | 第 0 层 op1（Linear）：算子 Linear 还没有 ggml 映射；第 0 层 op4（MoE）：算子 MoE 还没有 ggml 映射；第 1 层 op1（Linear）：算子 Linear 还没有 ggml 映射；第 1 层 op4（MoE）：算子 MoE 还没有 ggml 映射；第 2 层 op1（Linear）：算子 Linear 还没有 ggml 映射；第 2 层 op4（MoE）：算子 MoE 还没有 ggml 映射；第 3 层 op1（Attention）：q_gate 还没实现；第 3 层 op4（MoE）：算子 MoE 还没有 ggml 映射 |
 | `qwen3-next-shaped.by1` | `full` | 完整后端的 arch 必须是 qwen3, qwen2, gpt2, gpt_oss, qwen3_5, mamba, granitemoehybrid, falcon_h1 |
@@ -86,6 +85,7 @@
 - `mla-shaped.by1` —— MLA
 - `ssm-shaped.by1` —— SSM（Mamba2/Nemotron-H 参数化）
 - `llama-shaped.by1` —— Attention + FFN（RoPE）
+- `llama3-shaped.by1` —— Attention + FFN（LLaMA3 RoPE 缩放）
 - `gpt2-tiny.by1` —— Attention + FFN（learned 位置）
 
 ### 3.2 五后端交集（含 `full`）
@@ -98,12 +98,11 @@
 > **可补** = 我们的工程活；**卡上游** = 缺 ggml/上游原语；
 > **设计如此** = 边界而非缺口。
 
-### 可补（2 格）
+### 可补（0 格）
 
-- `llama3-shaped.by1` × `ggml` —— LLaMA3 的 RoPE 缩放（yarn 风格 beta_fast/beta_slow/factor）—— `ggml_rope_ext` 的参数位就有，缺的是折算实现
-- `gpt-oss-shaped.by1` × `ggml` —— LLaMA3 的 RoPE 缩放（yarn 风格 beta_fast/beta_slow/factor）—— `ggml_rope_ext` 的参数位就有，缺的是折算实现
+**没有。**
 
-### 卡上游（10 格）
+### 卡上游（11 格）
 
 - `mla-sparse-shaped.by1` × `ggml` —— 要 top-k/比较算子 —— 这版 ggml 没有（等上游或自研 kernel）
 - `moe-routing-shaped.by1` × `ggml` —— 缺的是 ggml 原语（MoE 路由要 top-k、KDA 要 delta_rule），不是我们这边的活
@@ -111,6 +110,7 @@
 - `kda-gva-shaped.by1` × `ggml` —— 缺的是 ggml 原语（MoE 路由要 top-k、KDA 要 delta_rule），不是我们这边的活
 - `kda-lowrank-shaped.by1` × `ggml` —— 缺的是 ggml 原语（MoE 路由要 top-k、KDA 要 delta_rule），不是我们这边的活
 - `mixtral-shaped.by1` × `ggml` —— 缺的是 ggml 原语（MoE 路由要 top-k、KDA 要 delta_rule），不是我们这边的活
+- `gpt-oss-shaped.by1` × `ggml` —— 缺的是 ggml 原语（MoE 路由要 top-k、KDA 要 delta_rule），不是我们这边的活
 - `qwen3-next-shaped.by1` × `ggml` —— 缺的是 ggml 原语（MoE 路由要 top-k、KDA 要 delta_rule），不是我们这边的活
 - `ling-tiny.by1` × `ggml` —— 缺的是 ggml 原语（MoE 路由要 top-k、KDA 要 delta_rule），不是我们这边的活
 - `glm-text-tiny.by1` × `ggml` —— 要 top-k/比较算子 —— 这版 ggml 没有（等上游或自研 kernel）

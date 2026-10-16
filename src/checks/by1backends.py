@@ -349,12 +349,6 @@ def classify(probe, backend, msg):
             or "完整后端不能忽略这些块" in msg):
         return "设计如此", ("两扇门：`full` 吃官方家族的 arch；`tensors{}` / "
                           "`emit{}` 是 IR 路的契约块 —— 不是缺口")
-    if ("yarn" in msg or "llama3" in msg.lower()) and backend == "ggml":
-        # **真·可补**：LLaMA3 的 RoPE 缩放是 yarn 风格（beta_fast/beta_slow/
-        # factor），而 `ggml_rope_ext` 的参数位就摆在那里 —— 缺的是我们
-        # 把 low/high_freq_factor 折成那几个参数的实现，不是上游能力。
-        return "可补", ("LLaMA3 的 RoPE 缩放（yarn 风格 beta_fast/beta_slow/factor）"
-                       "—— `ggml_rope_ext` 的参数位就有，缺的是折算实现")
     if ("top-k" in msg or "top_k" in msg or "比较算子" in msg):
         return "卡上游", "要 top-k/比较算子 —— 这版 ggml 没有（等上游或自研 kernel）"
     if "delta_rule" in msg or ("递推" in msg and backend == "ggml"):
@@ -368,6 +362,13 @@ def classify(probe, backend, msg):
         # 递推也是 delta-rule 族，和 KDA 同一个缺口。
         return "卡上游", ("缺的是 delta_rule 递推原语（Linear = GDN 线性注意力，"
                         "和 KDA 同一族）—— 这版 ggml 没有")
+    if ("yarn" in msg or "llama3" in msg.lower()) and backend == "ggml":
+        # **顺序要紧**：这条排在"缺算子"后面 —— 一个格子同时有 yarn 和 MoE
+        # 时（gpt-oss 就是），硬阻塞（卡上游）才算数，yarn 是"顺手能补"。
+        # 真·可补：LLaMA3 的 RoPE 缩放是 yarn 风格（beta_fast/beta_slow/
+        # factor），`ggml_rope_ext` 的参数位就摆在那里 —— 缺的是折算实现。
+        return "可补", ("LLaMA3 的 RoPE 缩放（yarn 风格 beta_fast/beta_slow/factor）"
+                       "—— `ggml_rope_ext` 的参数位就有，缺的是折算实现")
     if "Raw" in msg and backend in ("c", "exec"):
         # **两层逃生舱的分工**（2026-10-17 核对过代码）：
         #   第一层 `Raw` = `raw.py` 的工厂，**契约就是 PyTorch**（返回 nn.Module）；

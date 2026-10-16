@@ -97,9 +97,8 @@ def check_support(ir):
                     # 不猜一个语义出来。
                     bad.append(f"{where}：qkv_fused + kv_tie 组合还没实现"
                                "（融合布局里 v 那截怎么处理没定义）")
-                _y = a.get("yarn")
-                if _y:
-                    bad.append(f"{where}：yarn={_y!r} 还没实现（M3）")
+                # `yarn` 已实现（2026-10-17）：三支统一成 freq_factors，
+                # 见 `_rope_call`。`rope_scale` 仍未实现（见下）。
                 if float(a.get("rope_scale", 1.0)) != 1.0:
                     bad.append(f"{where}：rope_scale={a.get('rope_scale')} "
                                "≠ 1.0 还没实现（M3）")
@@ -323,6 +322,39 @@ def _weight_lines(order, params):
     return out
 
 
+def _rope_call(p, indent, x_tmpl, pos_expr, nrot, mode, base_c, base_f, yarn):
+    """rope 的三支（普通 / YaRN / llama3）**统一成逐对维 `freq_factors`**。
+
+    ggml 的角 = `pos · base^(-2i/n) / ff[i]`（ops.cpp：`theta/ff`），
+    by1 的角 = `pos · inv[i]`（**唯一公式源 `by1graph.rope_inv`**，
+    三支都在里面）—— 所以 `ff[i] = base^(-2i/n) / inv[i]`。
+
+    普通支 `ff ≡ 1`（不传 c）；YaRN/llama3 的斜坡**已经折进 `inv` 里**，
+    所以 ggml 侧不需要它自己的 yarn ramp（`ext_factor = 0`）。
+    这样"一条规则三处实现"的老毛病不会再犯：公式只在 `rope_inv`，
+    这里只做**刻度换算**。
+
+    返回 (要先发射的行, 带 `%s` 的调用模板)。
+    """
+    lines = []
+    tail = (f"{pos_expr}, %s, {nrot}, {mode}, 0, "
+            f"{base_c}, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f)")
+    if not yarn:
+        return lines, "ggml_rope_ext(ctx, %s, " + tail % 'NULL'
+    import numpy as _np
+    import by1graph as _bg
+    half = nrot // 2
+    inv = _np.asarray(_bg.rope_inv(nrot, base_f, yarn), dtype=_np.float64)
+    ff = (base_f ** (-2.0 * _np.arange(half) / nrot)) / inv
+    lines.append(f"{indent}float * {p}ff_buf = (float *) malloc(sizeof(float) * {half});")
+    for _i, _v in enumerate(ff):
+        lines.append(f"{indent}{p}ff_buf[{_i}] = {_f(float(_v))};")
+    lines.append(f"{indent}struct ggml_tensor * {p}ff = ggml_new_tensor_1d("
+                 f"ctx, GGML_TYPE_F32, {half});")
+    lines.append(f"{indent}{p}ff->data = {p}ff_buf;")
+    return lines, "ggml_rope_ext(ctx, %s, " + tail % f'{p}ff'
+
+
 def _mask_lines(wins):
     """因果 + 滑窗掩码（host 侧填好，图里当叶子用）。
     by1 的规则：j <= i 且 j > i - window（window 个 key）。"""
@@ -483,9 +515,19 @@ def emit_model_c_graph(g, ir, order, params):
         elif prim == "rope":
             nrot = int(at["n_dims"])
             mode = 2 if str(at["pairing"]) == "half" else 0
-            _put(body, prim, node,
-                 f"ggml_rope_ext(ctx, {a[0]}, {a[1]}, NULL, {nrot}, {mode}, 0, "
-                 f"{_f(at['base'])}, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f)")
+            if float(at.get("rope_scale", 1.0)) != 1.0:
+                # **这里原来是静默算错**：ref 是 `cos/sin · rope_scale`，
+                # 而发射出去的是 mscale=1.0 —— rope_scale≠1 的模型会
+                # "看起来对、算的是另一个模型"。要么实现（attn_factor -> mscale
+                # 的折算还没数值验过），**要么拒绝**。
+                raise SystemExit(
+                    "  [不支持] 图路的 rope_scale（cos/sin 缩放）还没接 "
+                    "mscale —— **拒绝，不猜**（折算未数值验过）")
+            _rl, _tmpl = _rope_call(f"_g{len(body)}", "    ", "%s", a[1],
+                                    nrot, mode, _f(float(at["base"])),
+                                    float(at["base"]), at.get("yarn"))
+            body += _rl
+            _put(body, prim, node, _tmpl % a[0])
         elif prim == "soft_max":
             w = int(node["ins"][1].rsplit("_", 1)[-1])
             _put(body, prim, node,
@@ -770,8 +812,12 @@ def emit_model_c(ir, order, params):
                 # 和 NORMAL 差一个 q/k **共同**置换，点积不变。
                 # **这条不许当假设**，由 --selftest 的孪生模型数值证明。
                 mode = 2 if str(a.get("rope_pairing", "half")) == "half" else 0
-                rope = (f"ggml_rope_ext(ctx, %s, pos, NULL, {nrot}, {mode}, 0, "
-                        f"{_f(a['rope_base'])}, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f)")
+                # rope：三支（普通/YaRN/llama3）统一成 freq_factors（`_rope_call`）
+                rope_lines, rope = _rope_call(p, indent, '%s', 'pos', nrot, mode,
+                                              _f(a['rope_base']),
+                                              float(a['rope_base']),
+                                              a.get("yarn"))
+                lines += rope_lines
                 lines.append(f"{indent}{p}q3 = {rope % (p + 'q3')};")
                 lines.append(f"{indent}{p}k3 = {rope % (p + 'k3')};")
             w = int(a.get("window") or 0)
@@ -978,9 +1024,12 @@ def emit_model_c(ir, order, params):
             lines.append(f"{indent}struct ggml_tensor * {p}v3 = ggml_cont(ctx, "
                          f"ggml_view_3d(ctx, {p}kv3, {vd}, {nh}, n, {p}kv3->nb[1], "
                          f"{p}kv3->nb[2], (size_t) {nope} * {p}kv3->nb[0]));")
-            # ③ rope 只转 nr 维；k_rot 转完广播到所有头
-            rope = (f"ggml_rope_ext(ctx, %s, pos, NULL, {nr}, {mode}, 0, "
-                    f"{base}, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f)")
+            # ③ rope 只转 nr 维；k_rot 转完广播到所有头。
+            #    三支（普通/YaRN/llama3）统一成 freq_factors（`_rope_call`）。
+            rope_lines, rope = _rope_call(p, indent, '%s', 'pos', nr, mode,
+                                          base, float(a.get("rope_base", 10000.0)),
+                                          a.get("yarn"))
+            lines += rope_lines
             lines.append(f"{indent}struct ggml_tensor * {p}q_rope = "
                          f"{rope % (p + 'q_rot')};")
             lines.append(f"{indent}struct ggml_tensor * {p}k_rope = "
