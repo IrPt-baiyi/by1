@@ -174,17 +174,13 @@ WANT = [
     ('LICENSE', 'GPL-3.0'),
     ('NOTICE', '第三方来源与许可'),
     ('graphs-golden.json', '原语图 golden 快照（A3 的护栏，档 1 判卷人要它）'),
-    ('docs/complete-models.md', '完整模型：怎么对拍、验到了哪一步'),
-    ('docs/gpu-validation-results.md', 'GPU 轮次的结果（README 指向它）'),
-    ('docs/gpu-day-runbook.md', 'GPU 日手册（gpu/README 指向它）'),
-    ('docs/autodl-file-storage.md', 'AutoDL 文件存储备忘'),
-    ('docs/1.0-roadmap.md', '到 1.0 的路线图'),
-    ('docs/criteria-review.md', '判据的自我审查'),
-    ('docs/llamacpp-plan.md', 'llama.cpp 参照线的计划'),
-    ('docs/llama.cpp-baseline.md', 'llama.cpp 基线：怎么对着上游验产物'),
-    ('docs/quantization.md', '量化的边界（哪些只是存储合同）'),
-    ('docs/precision-budget.md', '精度预算表：每个阈值的出处与实测余量'),
-    ('docs/prims-spec.md', '原语规格（每个原语的语义与守卫 eps）'),
+    ('models.md', '模型清单：机制与出处的对照表（`docs/by1-language-spec.md` 指向它）'),
+    ('by1langspec.py', '语言规格：写不出名字的机制必须被拒绝（文档引用它）'),
+    ('by1sync.py', '把各处的数字与清单对齐（GPU 手册引用它）'),
+    # **`docs/` 整层由下面的循环装**（见 `main()` 里那一段）——
+    # 不再一个一个往这里写。2026-10-16 实测：手写清单漏了 13 份文档，
+    # 而新增一份指南又会引出新的"链接指向不在包里的文档"。
+    # 判据是 `selfcheck()`：包里的文档链接得到的东西必须在包里。
     ('by1cache.py', 'HuggingFace 缓存/存储的搬迁与审计（AutoDL 相关）'),
     ('by1triage.py', '分诊：一次门禁里哪些是真红、哪些是没验'),
     ('by1gpubench.py', 'CUDA 前向/反向基准（gpu/README 的第一条命令）'),
@@ -406,6 +402,21 @@ def main():
         rel = _where(name)
         put(norm(rel), rel)
 
+    # **`src/` 下的模块一律补齐。**
+    #
+    # `WANT` 是手写的"有说明的核心清单"，而**文档可能提到任何一个模块** ——
+    # "包缺脚本"这一类在这个仓库里反复发生（2026-10-16 的判卷人那一批一次
+    # 报出 9 个，随后文档引用又逐个报出 `by1langspec` / `by1sync` / `by1cmp` …）。
+    # 每次补一个名字，就是再等下一次漏。所以这里收口：
+    # **凡是 `src/` 下存在的模块，包里都得有** —— 它们加起来才几百 KB。
+    # `WANT` 仍然有用：它是"每个文件是干什么的"那份**说明**，
+    # 也是 `closure_missing()` / `judges_missing()` 的判据来源。
+    staged = {_where(name) for name, _why in WANT}
+    for bare in sorted(disk_modules()):
+        rel = _where(bare)
+        if rel not in staged:
+            put(norm(rel), rel)
+
     # models/ 的 .by1 描述
     for s in sorted(glob.glob(norm('models/*.by1'))):
         put(s, 'models/' + os.path.basename(s))
@@ -436,11 +447,41 @@ def main():
         if os.path.isfile(s):
             put(s, 'history/external-repro/' + os.path.basename(s))
 
+    # docs/ 整层（含 .md 与 .txt）：**文档之间的互链必须能落地**。
+    # 手写清单在这件事上漏过 13 份，而"新写一份指南"又会引出新的缺口 ——
+    # 所以这里整层装，另外由 `selfcheck()` 兜底（包里的文档链接得到的东西
+    # 缺一个就打包失败）。
+    for s in sorted(glob.glob(norm('docs/*'))):
+        if os.path.isfile(s):
+            put(s, 'docs/' + os.path.basename(s))
+
     # docs/gpu-results/（GPU 轮次的原始结果；`docs/gpu-validation-results.md`
     # 逐个链接它们 —— 不装就是 12 处 404）
     for s in sorted(glob.glob(norm('docs/gpu-results/*'))):
         if os.path.isfile(s):
             put(s, 'docs/gpu-results/' + os.path.basename(s))
+
+    # ── 把"外部产物"名单写进包里 ────────────────────────────────
+    #
+    # 包里不是 git 检出，所以它没法自己回答"这个缺失的路径是不是**故意不在库**"。
+    # 在这里（仓库里、git 可用）问一次 `by1docs`，把那桶路径写进包根的
+    # `.by1-ignored`；包里的 `by1docs` 读它来分类，而不是把
+    # `history/_hf_probe/*.py` 这种被 `.gitignore` 挡着的引用判成"缺文件"。
+    import json as _json
+    import subprocess
+    try:
+        r = subprocess.run([sys.executable, norm('src/checks/by1docs.py'),
+                            '--external-json'], cwd=ROOT, capture_output=True,
+                           text=True, encoding='utf-8', errors='replace', timeout=900)
+        lines = [x for x in (r.stdout or '').splitlines() if x.strip()]
+        external = _json.loads(lines[-1]) if r.returncode == 0 and lines else []
+    except Exception:                            # noqa: BLE001 - 拿不到就当没有
+        external = []
+    with open(os.path.join(OUT, '.by1-ignored'), 'w', encoding='utf-8') as f:
+        f.write('# 由 by1pack 生成：仓库里被 .gitignore 挡着、而文档引用了的路径。\n')
+        f.write('# 包里的 by1docs 读它来分类（包里没有 git 可问）。\n')
+        for k in external:
+            f.write('%s\n' % k)
 
     # ── 自检：**在自己刚打出来的产物里跑一遍文档检查** ──────────────
     #

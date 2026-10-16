@@ -79,6 +79,36 @@ def _at_repo_root():
     return _AT_REPO_ROOT
 
 
+def _pack_ignored(rel_path):
+    """发布包里的"外部产物"名单 —— 由 `by1pack` 在**仓库里**问 `git` 写下来。
+
+    **为什么需要它**：`ignored()` 靠 `git check-ignore`，而发布包不是 git 检出
+    （它是一棵导出的树）。于是包里没法回答"这个缺失的路径是不是**故意不在库**"，
+    文档引用的 `history/_hf_probe/*.py`（被 `.gitignore` 挡着的探针脚本）
+    就会被当成"缺文件"，打包自检红 —— 而那是判据错，不是包错。
+
+    做法：打包时在仓库里跑一遍这个检查器（`--external-json`），把那一桶
+    路径写成包根的 `.by1-ignored`。包里再读它。
+    """
+    try:
+        text = by1io.read_text(os.path.join(ROOT, '.by1-ignored'), errors='replace')
+    except OSError:
+        return False
+    key = rel_path.replace('\\', '/')
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith('#'):
+            continue
+        line = line.replace('\\', '/')
+        # 目录式条目（以 `/` 收尾）按前缀算；其余精确匹配。
+        if line.endswith('/'):
+            if key.startswith(line):
+                return True
+        elif key == line:
+            return True
+    return False
+
+
 def ignored(rel_path):
     """这个路径是**故意不在库**的吗（被 `.gitignore` 挡着）？
 
@@ -89,7 +119,7 @@ def ignored(rel_path):
     所以它们进单独一桶（既不算通过也不算失败），而不是判红。
     """
     if not _at_repo_root():          # 包/副本里没有 gitignore 这回事
-        return False
+        return _pack_ignored(rel_path)
     try:
         done = subprocess.run(['git', 'check-ignore', '-q', '--', rel_path],
                               cwd=ROOT, capture_output=True)
@@ -282,6 +312,11 @@ def main():
 
     files = md_files()
     total, bad, ext_paths = 0, [], []
+    # **所有"被引用且被 `.gitignore` 挡着"的路径**（不管它在本机存不存在）。
+    # 发布包里要的就是这一份：包按"gitignore 说它不在库"分类，
+    # 而不是按"打包这台机器上有没有" —— 后者会让名单**随机器变**
+    # （开发树里那些探针脚本是存在的，干净检出里不存在）。
+    ignored_refs = set()
     for p in files:
         rel = by1paths.rel(p)
         near = os.path.dirname(p)
@@ -298,6 +333,9 @@ def main():
                             ('链接', t[:m.start()].count('\n') + 1))
         if not seen:
             continue
+        for k in seen:
+            if ignored(k):
+                ignored_refs.add(k)
         miss = [(k, ln, kind) for k, (kind, ln) in seen.items()
                 if not find(k, near)]
         # **分两桶**：真缺的 vs「故意不在库」的（被 .gitignore 挡着）。
@@ -336,6 +374,12 @@ def main():
     missing = [k for k in calls
                if not any(find(k, d) for d in calls[k].values())]
     ext_scripts = [k for k in sorted(missing) if ignored(k)]
+    # **名单要收"被引用且 gitignored"的全部，不只是"缺的"。**
+    # 第一版只收了 `missing` 里的 —— 而在开发树里那些探针脚本**是存在的**
+    # （gitignored 但躺在盘上），于是它们从来进不了名单；
+    # 到了发布包（没有这些文件）就变成"文档引用了不存在的脚本"。
+    # 判据应该是"gitignore 说它不在库"，与打包这台机器上有没有**无关**。
+    ignored_refs.update(k for k in calls if ignored(k))
     missing = [k for k in missing if not ignored(k)]
     print('     %d 个不同的脚本被提到' % len(calls))
     if missing:
@@ -501,6 +545,14 @@ def main():
              if clean
              else '%d 处路径 + %d 个脚本 + %d 个数字 + %d 个生成物 + %d 处双语 有问题'
                   % (len(bad), len(missing), len(wrong), len(stale), len(bi_bad))))
+    if '--external-json' in sys.argv:
+        # 给 `by1pack` 用（打包时在仓库里跑一次）：把"被引用且被 `.gitignore`
+        # 挡着"的路径交出去，它写进包根的 `.by1-ignored`，包里再按它分类。
+        # **放在最后**：路径/链接那一桶与脚本调用那一桶都要收齐。
+        # 输出是**最后一行 JSON**，调用方取最后一行即可（前面是正常报告）。
+        import json as _json
+        print(_json.dumps(sorted(ignored_refs)))
+        return 0
     print()
     return 0 if clean else 1
 
