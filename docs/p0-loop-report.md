@@ -8,8 +8,9 @@
 
 ## 结论（一句话）
 
-`.by1 声明 → 真实产物对账 → 标准 GGUF → 未修改的上游 llama.cpp 加载与生成`
-四段，在 Qwen3-0.6B 上都有可重跑证据：**311/311 张量命中**、
+`.by1 声明 → 真实产物对账 → 真权重独立数值对拍 → 标准 GGUF → 未修改的上游
+llama.cpp 加载与生成` 五段，在 Qwen3-0.6B 上都有可重跑证据：**311/311 张量命中**、
+**真权重前向 max|Δ| = 0.000e+00（CPU，两个独立 loader）**、
 **上游 logits 逐位相同（106949 个值）**、**生成文本完全相同**。
 
 ## 一、输入（每项可核对）
@@ -27,7 +28,7 @@
 config 与声明的关键字段逐项吻合：`qwen3` · 28 层 · 16:8 头 · `head_dim` 128 ·
 `tie_word_embeddings=true` · `rope_theta` 1e6 · `max_position_embeddings` 40960。
 
-## 二、四段证据
+## 二、五段证据
 
 ### ① 声明 ↔ 发布方产物（T12）
 
@@ -100,6 +101,39 @@ llamacpp/build-cli/bin/llama-cli.exe -m <gguf> -p "The capital of France is" \
 Okay, the user is asking about the capital of France. Let me
 ```
 
+### ⑤ 真权重独立数值对拍（T13）—— **CPU 上就能跑**
+
+```bash
+python src/modelcheck/by1shadow.py --smoke-refs \
+    --by1 complete-Qwen3-0.6B.by1 --weights-dir model-cache/qwen3-0.6b
+```
+
+```
+真权重 model-cache/qwen3-0.6b：311 个真名（1.40 GB，未合成）
+源二 e2e OK：双 loader 零 missing/unexpected，前向 max|Δ| = 0.000e+00
+```
+
+两个独立 loader（官方 Transformers 的 `Qwen3ForCausalLM` 与 by1 生成的模型）
+装**同一份发布方权重**、喂同一输入，前向**逐位相同**。
+判据一个字没改 —— 只是把权重来源从"按 refs 合成"换成"发布方原样"
+（`--weights-dir`，2026-10-16 新增）。**无需显卡**：0.6B fp32 两份约 4.8 GB。
+
+### ⑥ tie 语义（原悬案，已结）
+
+发布方的张量清单里 `lm_head.weight` 与 `model.embed_tokens.weight` **同时存在**，
+而 config 说 `tie_word_embeddings=true` —— 到底是绑的还是不绑的？
+直接比真权重文件里的值：
+
+```
+逐元素相同: True · max|Δ| = 0.0 · 非零元素占比 0.0000%
+```
+
+**共享关系被物化成两份逐位相同的存储。** 结论：
+① by1 声明 `tie_word_embeddings=true` 与产物一致；
+② 合成权重上那句"两者值不同故不绑"的警告在真 checkpoint 上不成立；
+③ 因为两份值相同，**绑与不绑在数值上等价** —— 这也是两个 loader 逐位相同的一个前提。
+（换成一个真·untied 模型时，这条要重验 —— 届时"绑不绑"就不再等价了。）
+
 ## 三、这次销掉的缺口（docs/gap-analysis.md 已同步）
 
 - **S2**（build-gguf 族覆盖只 qwen2）：**qwen3 档已实证** —— 311 张量全映射、
@@ -112,8 +146,7 @@ Okay, the user is asking about the capital of France. Let me
 
 | 项 | 状态 | 原因 / 收口路径 |
 |---|---|---|
-| **T13 真权重数值对拍** | **未跑** | `by1gputrain.py:149` 硬要 `torch.cuda.is_available()`、`by1gpubench.py` 写死 `device_map={'':'cuda:0'}` —— **本机无卡跑不了**。两条路：给工具加 `--device cpu`（0.6B fp32 约 2.4 GB 内存，可行），或留租卡日 |
-| **tie 语义** | 未定论 | 清单同时含 embed 与 lm_head，config 说 tie=true，加载器未绑。要给结论（绑 / 证明不绑） |
+| **T39 真权重训练步**（梯度 + AdamW 一步） | **未跑** | `by1gputrain.py` 硬要 CUDA；即便加 CPU 路径，本机可用内存 10.3 GB < 全参数 fp32 训练步需要的约 10–12 GB（params 2.4 + grads 2.4 + 两个优化器状态 4.8）。留租卡日，或换更小模型/梯度检查点 |
 | **S1 tokenizer 组装线** | 仍未实现 | 本次 GGUF 的 tokenizer KV 从上游 ref 整拷 —— 按记档，非缺陷伪装 |
 | 其余模型族 | 不外推 | Qwen3-0.6B 一个新档，不代表别的族 |
 
@@ -123,6 +156,8 @@ Okay, the user is asking about the capital of France. Let me
 python src/data/by1fetch.py --only Qwen3-0.6B          # refs 语料
 # 权重：HF Qwen/Qwen3-0.6B 的 model.safetensors + config.json + tokenizer 全套
 python src/modelcheck/by1shadow.py --smoke-refs --by1 complete-Qwen3-0.6B.by1
+python src/modelcheck/by1shadow.py --smoke-refs --by1 complete-Qwen3-0.6B.by1 \
+    --weights-dir <真 checkpoint 目录>          # T13：真权重双 loader 逐位（CPU 可跑）
 python llamacpp/llama.cpp/convert_hf_to_gguf.py <hf-dir> --outfile ref-f32.gguf --outtype f32
 python src/checks/by1llama.py build-gguf <hf-dir> by1-f32.gguf --ref ref-f32.gguf \
     --arch qwen3 --n-blocks 28

@@ -17,7 +17,7 @@
 | 模型 | 规格检查 | 加载 | 运行 | 产物 | 证据 / 备注 |
 |---|---|---|---|---|---|
 | gpt2 | ✅ | ✅ | ✅ | ✅ | 运行：[六模型对比](gpu-results/gpu-benchmark.json) + [by1gpt2 前向](../history/ir.md)；产物：标准 GGUF 走 llama.cpp（[基线](llama.cpp-baseline.md)） |
-| Qwen3-0.6B | ✅ | ✅ | ✅ | ✅ [闭环报告](p0-loop-report.md) | 运行：六模型对比 + [训练步](gpu-results/)；**产物**：by1 从 HF 权重出 F32 GGUF，未修改的上游 llama.cpp 加载后 logits 与官方 convert 产物**逐位相同（106949 值）**、生成同文；T13 真权重数值对拍待（工具 GPU-only） |
+| Qwen3-0.6B | ✅ | ✅ | ✅ | ✅ [闭环报告](p0-loop-report.md) | 运行：六模型对比 + [训练步](gpu-results/) + **真权重双 loader fp32 前向逐位（CPU，max\|Δ\|=0）**；**产物**：by1 从 HF 权重出 F32 GGUF，未修改的上游 llama.cpp 加载后 logits 与官方 convert 产物**逐位相同（106949 值）**、生成同文 |
 | Qwen2.5-7B-Instruct | ✅ | ✅ | ✅ | — 未验 | 六模型对比；影子冒烟超本机内存（GPU 日补） |
 | Qwen3-8B | ✅ | ✅ | ✅ | — 未验 | 六模型对比 |
 | gpt-oss-20b（MXFP4） | ✅ | ✅ | ✅ | — 未验 | [原生 MXFP4](gpu-results/gpu-benchmark-gptoss-final.json)；量化存储审计过 |

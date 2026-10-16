@@ -737,9 +737,15 @@ def refs_check(only=''):
     return 0 if bad_n == 0 else 1
 
 
-def smoke_refs(by1_name='complete-gpt2.by1'):
+def smoke_refs(by1_name='complete-gpt2.by1', weights_dir=None, seed=None):
     """源二 e2e：refs 真名真形状合成 -> 双 loader 零 missing/unexpected +
-    前向逐位。**这是"命名与官方一致"从假设变成验证的那一步。**"""
+    前向逐位。**这是"命名与官方一致"从假设变成验证的那一步。**
+
+    `weights_dir` 给了就用**真 checkpoint**（T13：真权重独立数值对拍）——
+    判据一个字不改（同两个 loader、同一输入、同一容差），
+    只把权重来源从"按 refs 合成"换成"发布方原样"。
+    **CPU 也能跑**：0.6B fp32 两份约 4.8 GB，不需要显卡。
+    """
     import torch
     import transformers as T
     import by1check
@@ -761,13 +767,26 @@ def smoke_refs(by1_name='complete-gpt2.by1'):
     tensors_text = pathlib.Path(tcands[0]).read_text(encoding='utf-8')
 
     out = by1paths.root('build', 'shadow-smoke-refs-' + base)
-    manifest = build_from_refs(config_text, tensors_text, out, dtype='float32')
-    print('  源二影子 %s：%d 个真名（%.2f GB）' % (out, manifest['tensor_names'],
-                                              manifest['bytes'] / 1024 ** 3))
+    real = bool(weights_dir)
+    if real:
+        # **真权重分支**：不合成、不下载 —— 目录由调用方给（本地已有）。
+        out = str(weights_dir)
+        n_names = len(json.loads(tensors_text))
+        total = sum(f.stat().st_size for f in
+                    pathlib.Path(out).glob('*.safetensors'))
+        manifest = {'tensor_names': n_names, 'bytes': total,
+                    'seed': seed if seed is not None else 20261016}
+        print('  真权重 %s：%d 个真名（%.2f GB，未合成）'
+              % (out, n_names, total / 1024 ** 3))
+    else:
+        manifest = build_from_refs(config_text, tensors_text, out, dtype='float32')
+        print('  源二影子 %s：%d 个真名（%.2f GB）' % (out, manifest['tensor_names'],
+                                                  manifest['bytes'] / 1024 ** 3))
 
+    load_kwargs = {} if not real else {'dtype': torch.float32}
     reference, loading = T.AutoModelForCausalLM.from_pretrained(
         str(out), output_loading_info=True, local_files_only=True,
-        attn_implementation='eager')
+        attn_implementation='eager', **load_kwargs)
     extra = [k for k in (loading.get('unexpected_keys') or [])
              if not k.startswith('mtp.')]
     bad = {k: v for k, v in (('missing', loading.get('missing_keys')),
@@ -776,7 +795,7 @@ def smoke_refs(by1_name='complete-gpt2.by1'):
     if bad:
         raise RuntimeError('官方 loader 对源二影子有意见：%s' % bad)
     by1_model = by1full.load_model(family, declared, mtp, str(out),
-                                   local_files_only=True)
+                                   local_files_only=True, **load_kwargs)
 
     generator = torch.Generator().manual_seed(manifest['seed'])
     ids = torch.randint(0, min(reference.config.vocab_size, 10000),
@@ -812,6 +831,9 @@ def main(argv=None):
                         help='元对照：模型类装载键 vs refs 真名（T8 判据，零字节）')
     parser.add_argument('--smoke-refs', action='store_true',
                         help='源二 e2e：refs 真名合成 -> 双 loader + 前向（默认 gpt2）')
+    parser.add_argument('--weights-dir',
+                        help='配 --smoke-refs：用**真 checkpoint 目录**代替合成影子 '
+                             '（T13 真权重对拍；CPU 可跑，0.6B fp32 约 4.8 GB）')
     parser.add_argument('--fetch-config', metavar='REPO',
                         help='冒烟前只拉该仓库的 config.json（几 KB）')
     args = parser.parse_args(argv)
@@ -819,7 +841,8 @@ def main(argv=None):
         return refs_check(args.refs_check)
     if args.smoke_refs:
         try:
-            smoke_refs(by1_name=args.by1 or 'complete-gpt2.by1')
+            smoke_refs(by1_name=args.by1 or 'complete-gpt2.by1',
+                       weights_dir=args.weights_dir)
         except Exception as exc:
             return by1skip.broken('源二 e2e 失败：%s' % exc)
         return 0
