@@ -56,7 +56,7 @@
 
 | 项 | 为什么不定 |
 |---|---|
-| ~~**承诺的公共子集有多大**~~ → **已量（2026-10-16）** | 原来"未定"，因为没人量过。现在有机器判的矩阵（[`docs/backend-matrix.md`](backend-matrix.md)，由 `by1backends.py` 生成并进档 3）：**IR 路公共子集 = 3/12**（`hello.by1` = Attention + FFN；`attn-fused-shaped.by1` = 融合 q/k/v 的 Attention；`ssm-shaped.by1` = SSM 递推（Mamba2 参数化）—— 后两个都是当天在 ggml 侧补齐的，数值判据：ggml vs NumPy **6.6e-08 / 8.2e-08**）；**五后端交集 = 0**（`full` 是另一扇门：吃官方家族的 arch，不走串行 IR）。**对外措辞只有一个说法："机制组合的多后端承诺目前到 Attention + FFN（含融合 q/k/v）与 SSM"**，"多后端已支持"不成立。矩阵还给了"下一步补哪条最划算"的路线图 |
+| ~~**承诺的公共子集有多大**~~ → **已量（2026-10-17）** | 原来"未定"，因为没人量过。现在有机器判的矩阵（[`docs/backend-matrix.md`](backend-matrix.md)，由 `by1backends.py` 生成并进档 3）：**IR 路公共子集 = 4/12**（`hello` = Attention + FFN；`attn-fused` = 融合 q/k/v；`ssm-shaped` = SSM 递推（Mamba2 参数化）；`mla-shaped` = MLA 低秩注意力 —— 后三个都是逐日在 ggml 侧补齐的，各有 ggml vs NumPy 数值对拍 6.6e-08 / 8.2e-08 / 2.1e-07）；**五后端交集 = 0**（`full` 是另一扇门）。**对外措辞只有一个说法："机制组合的多后端承诺目前到 Attention（含融合 q/k/v）、SSM、MLA"**，"多后端已支持"不成立。剩余缺口逐条记在矩阵的"拒绝原文"里（MoE/KDA 缺 ggml 原语、SparseMLA 缺 top-k、Raw 是逃生舱） |
 | **100B 级 / 真尺寸大模型** | 无卡、无证据；"能描述"不等于"能算"（本项目的第一条纪律） |
 | **量化 Q3** | 未开；无任何证据 |
 | **发布包的对外承诺** | 现在它是"能跑门禁的产物"，**不是**"稳定发布物" —— 冻结为现状，直到有第二人独立复现 |

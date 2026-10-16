@@ -65,7 +65,8 @@ def _qk_on(v):
 
 # ── 支持集：要么实现，要么拒绝 ──────────────────────────────────────
 
-SUPPORTED_KINDS = ("Embed", "Norm", "Head", "Attention", "FFN", "Add", "SSM")
+SUPPORTED_KINDS = ("Embed", "Norm", "Head", "Attention", "FFN", "Add", "SSM",
+                   "MLA")
 SUPPORTED_ACT = ("silu", "gelu", "gelu_new", "gelu_tanh", "tanh")
 
 
@@ -125,6 +126,20 @@ def check_support(ir):
                 if a.get("proj_bias"):
                     bad.append(f"{where}：proj_bias=True 还没实现"
                                "（参照实现也没有它，不猜语义）")
+            elif k == "MLA":
+                # **语义唯一在 `by1exec.op_mla`**（判卷人 `src/modelcheck/by1mla.py`
+                # 对官方 MLA 验过）。SparseMLA 的 DSA 索引要 top-k/比较算子 ——
+                # **这版 ggml 没有**（和 MoE 路由同一个摸底结论），索引路整体拒绝。
+                if a.get("index_heads"):
+                    bad.append(f"{where}：index_heads（SparseMLA/DSA 索引）"
+                               "还没实现 —— 要 top-k/比较算子，这版 ggml 没有")
+                if int(a.get("index_kpool", 1)) != 1 or a.get("index_kpool_tail"):
+                    bad.append(f"{where}：index_kpool={a.get('index_kpool')} "
+                               "≠ 1（k 池化）还没实现")
+                if str(a.get("gate_act", "sigmoid")) not in ("sigmoid", "softplus"):
+                    bad.append(f"{where}：gate_act={a.get('gate_act')!r} 还没实现")
+                if str(a.get("head_gate", "off")) not in ("off", "per_head"):
+                    bad.append(f"{where}：head_gate={a.get('head_gate')!r} 还没实现")
     for o in ir["globals"]:
         if o["kind"] not in SUPPORTED_KINDS:
             bad.append(f"全局算子 {o['kind']} 还没有 ggml 映射")
@@ -644,9 +659,11 @@ def emit_model_c(ir, order, params):
     head = _head_lines(ir, order, params)
     n_nodes, mem_tok, mem_pair = _budget(ir)
     body = _weight_lines(order, params)
+    # 掩码按 **Attention / MLA** 的 window 收 —— 用掩码的就这两类
+    # （MLA 漏收时 `mask_var[0]` 直接 KeyError，实测）。
     wins = sorted({int((o["attrs"].get("window") or 0))
                    for L in ir["layers"] for o in L["ops"]
-                   if o["kind"] == "Attention"})
+                   if o["kind"] in ("Attention", "MLA")})
     _mlines, mask_var = _mask_lines(wins)
     body += _mlines
 
@@ -893,6 +910,118 @@ def emit_model_c(ir, order, params):
                          f"{W_('norm.w')}, {gs}, {ng}));")
             lines.append(f"{indent}struct ggml_tensor * {dst} = ggml_mul_mat(ctx, "
                          f"{W_('out_proj')}, ggml_cont_2d(ctx, {p}g3, {di}, n));")
+        elif k == "MLA":
+            # **低秩压缩的注意力（DeepSeek MLA）** —— 语义唯一在 `by1exec.op_mla`
+            # （判卷人 `src/modelcheck/by1mla.py` 对官方 MLA 验过）。
+            # 和 Attention 分支的差别都在 "q/k 怎么来"：
+            #   ① q 低秩：q_a -> LN -> q_b，再按 **nope | rope** 拆两截；
+            #   ② kv 低秩：kv_a -> [c_kv | k_rot] -> LN(c_kv) -> kv_b，
+            #      按 **k_pass | v** 拆；**k_rot 是单头的**（MQA 那截），
+            #      rope 之后广播到所有头；
+            #   ③ rope 只作用在 rope 那 nr 维上（不是整头）—— 切出来、转、再拼。
+            # 注意力核心与 Attention 分支同一套（含"interleaved 差一个 q/k
+            # **共同**置换、点积不变"那条实测结论，这里 q_rot·k_rot 同侧同置
+            # 换，照样不变）。
+            nh, nope, nr = int(a["q"]), int(a["qk_nope"]), int(a["qk_rope"])
+            vd, kvl = int(a["v_dim"]), int(a["kv_lora"])
+            hd = nope + nr
+            eps = _f(a.get("norm_eps", _DEFAULT_EPS))
+            one = 1 if a.get("norm_one_plus") else 0
+            bias = bool(a.get("bias"))
+            base = _f(a.get("rope_base", 10000.0))
+            mode = 0 if str(a.get("pairing", "interleaved")) == "interleaved" else 2
+
+            def _ln(xv, wname, tag):
+                """rms_norm + 逐维缩放；one_plus = (1+w)·r。"""
+                r = f"{p}{tag}_r"
+                lines.append(f"{indent}struct ggml_tensor * {r} = "
+                             f"ggml_rms_norm(ctx, {xv}, {eps});")
+                if one:
+                    lines.append(f"{indent}struct ggml_tensor * {p}{tag} = "
+                                 f"ggml_add(ctx, ggml_mul(ctx, {r}, {W_(wname)}), {r});")
+                else:
+                    lines.append(f"{indent}struct ggml_tensor * {p}{tag} = "
+                                 f"ggml_mul(ctx, {r}, {W_(wname)});")
+
+            # ① q 低秩 -> (hd, nh, n)，拆 nope | rope
+            lines.append(f"{indent}struct ggml_tensor * {p}qa = ggml_mul_mat(ctx, "
+                         f"{W_('q_a_proj')}, {src[0]});")
+            _ln(f"{p}qa", "q_a_layernorm.w", "qres")
+            lines.append(f"{indent}struct ggml_tensor * {p}qv = ggml_mul_mat(ctx, "
+                         f"{W_('q_b_proj')}, {p}qres);")
+            lines.append(f"{indent}struct ggml_tensor * {p}q3 = ggml_reshape_3d(ctx, "
+                         f"{p}qv, {hd}, {nh}, n);")
+            lines.append(f"{indent}struct ggml_tensor * {p}q_pass = ggml_view_3d(ctx, "
+                         f"{p}q3, {nope}, {nh}, n, {p}q3->nb[1], {p}q3->nb[2], 0);")
+            lines.append(f"{indent}struct ggml_tensor * {p}q_rot = ggml_cont(ctx, "
+                         f"ggml_view_3d(ctx, {p}q3, {nr}, {nh}, n, {p}q3->nb[1], "
+                         f"{p}q3->nb[2], (size_t) {nope} * {p}q3->nb[0]));")
+            # ② kv 低秩 -> k_pass | v；k_rot 单头另走
+            lines.append(f"{indent}struct ggml_tensor * {p}ckv = ggml_mul_mat(ctx, "
+                         f"{W_('kv_a_proj_with_mqa')}, {src[0]});")
+            lines.append(f"{indent}struct ggml_tensor * {p}c_kv = ggml_cont_2d(ctx, "
+                         f"ggml_view_2d(ctx, {p}ckv, {kvl}, n, {p}ckv->nb[1], 0), "
+                         f"{kvl}, n);")
+            # k_rot 是**单头**的：(nr, 1, n) —— 2D 的话 rope 的 ne[2]=1 对不上
+            # 位置数（GGML_ASSERT(a->ne[2] == b->ne[0])，实测）。
+            lines.append(f"{indent}struct ggml_tensor * {p}kr0 = ggml_reshape_3d(ctx, "
+                         f"ggml_cont_2d(ctx, ggml_view_2d(ctx, {p}ckv, {nr}, n, "
+                         f"{p}ckv->nb[1], (size_t) {kvl} * {p}ckv->nb[0]), "
+                         f"{nr}, n), {nr}, 1, n);")
+            _ln(f"{p}c_kv", "kv_a_layernorm.w", "kvres")
+            lines.append(f"{indent}struct ggml_tensor * {p}kvv = ggml_mul_mat(ctx, "
+                         f"{W_('kv_b_proj')}, {p}kvres);")
+            lines.append(f"{indent}struct ggml_tensor * {p}kv3 = ggml_reshape_3d(ctx, "
+                         f"{p}kvv, {nope + vd}, {nh}, n);")
+            lines.append(f"{indent}struct ggml_tensor * {p}k_pass = ggml_view_3d(ctx, "
+                         f"{p}kv3, {nope}, {nh}, n, {p}kv3->nb[1], {p}kv3->nb[2], 0);")
+            lines.append(f"{indent}struct ggml_tensor * {p}v3 = ggml_cont(ctx, "
+                         f"ggml_view_3d(ctx, {p}kv3, {vd}, {nh}, n, {p}kv3->nb[1], "
+                         f"{p}kv3->nb[2], (size_t) {nope} * {p}kv3->nb[0]));")
+            # ③ rope 只转 nr 维；k_rot 转完广播到所有头
+            rope = (f"ggml_rope_ext(ctx, %s, pos, NULL, {nr}, {mode}, 0, "
+                    f"{base}, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f)")
+            lines.append(f"{indent}struct ggml_tensor * {p}q_rope = "
+                         f"{rope % (p + 'q_rot')};")
+            lines.append(f"{indent}struct ggml_tensor * {p}k_rope = "
+                         f"{rope % (p + 'kr0')};")
+            lines.append(f"{indent}struct ggml_tensor * {p}pat = ggml_new_tensor_3d("
+                         f"ctx, GGML_TYPE_F32, {nr}, {nh}, n);")
+            lines.append(f"{indent}struct ggml_tensor * {p}k_rot = ggml_repeat(ctx, "
+                         f"{p}k_rope, {p}pat);")
+            lines.append(f"{indent}struct ggml_tensor * {p}qq = ggml_concat(ctx, "
+                         f"{p}q_pass, {p}q_rope, 0);")
+            lines.append(f"{indent}struct ggml_tensor * {p}kk = ggml_concat(ctx, "
+                         f"{p}k_pass, {p}k_rot, 0);")
+            # ④ 注意力核心（与 Attention 分支同一套）
+            lines.append(f"{indent}{p}qq = ggml_permute(ctx, {p}qq, 0, 2, 1, 3);")
+            lines.append(f"{indent}{p}kk = ggml_permute(ctx, {p}kk, 0, 2, 1, 3);")
+            lines.append(f"{indent}struct ggml_tensor * {p}kq = ggml_mul_mat(ctx, "
+                         f"{p}kk, {p}qq);")
+            w = int(a.get("window") or 0)
+            lines.append(f"{indent}{p}kq = ggml_soft_max_ext(ctx, {p}kq, "
+                         f"{mask_var[w]}, 1.0f / sqrtf((float) {hd}), 0.0f);")
+            lines.append(f"{indent}struct ggml_tensor * {p}v3t = ggml_cont(ctx, "
+                         f"ggml_transpose(ctx, ggml_permute(ctx, {p}v3, 0, 2, 1, 3)));")
+            lines.append(f"{indent}struct ggml_tensor * {p}kqv = ggml_mul_mat(ctx, "
+                         f"{p}v3t, {p}kq);")
+            lines.append(f"{indent}struct ggml_tensor * {p}att = ggml_cont_2d(ctx, "
+                         f"ggml_permute(ctx, {p}kqv, 0, 2, 1, 3), {nh * vd}, n);")
+            # ⑤ 头门（per_head：sigmoid 或 softplus），乘在输出投影之前
+            if str(a.get("head_gate", "off")) != "off":
+                gfn = ("ggml_sigmoid" if str(a.get("gate_act", "sigmoid")) == "sigmoid"
+                       else "ggml_softplus")
+                lines.append(f"{indent}struct ggml_tensor * {p}g = {gfn}(ctx, "
+                             f"ggml_mul_mat(ctx, {W_('g_proj')}, {src[0]}));")
+                lines.append(f"{indent}{p}att = ggml_cont_2d(ctx, ggml_mul(ctx, "
+                             f"ggml_reshape_3d(ctx, {p}att, {vd}, {nh}, n), "
+                             f"ggml_reshape_3d(ctx, {p}g, 1, {nh}, n)), "
+                             f"{nh * vd}, n);")
+            # ⑥ 输出投影
+            lines.append(f"{indent}struct ggml_tensor * {dst} = ggml_mul_mat(ctx, "
+                         f"{W_('dense')}, {p}att);")
+            if bias:
+                lines.append(f"{indent}{dst} = ggml_add(ctx, {dst}, {W_('dense.bias')});")
         elif k == "FFN":
             hid = int(a["hidden"])
             bias = bool(a.get("bias"))

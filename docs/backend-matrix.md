@@ -10,7 +10,7 @@
 |---|---|---|---|---|---|---|
 | `hello.by1` | Attention + FFN（最小完整） | ✅ | ✅ | ✅ | ✅ | ✗ |
 | `attn-fused-shaped.by1` | Attention（融合 qkv + 门） | ✅ | ✅ | ✅ | ✅ | ✗ |
-| `mla-shaped.by1` | MLA | ✅ | ✅ | ✗ | ✅ | ✗ |
+| `mla-shaped.by1` | MLA | ✅ | ✅ | ✅ | ✅ | ✗ |
 | `mla-sparse-shaped.by1` | MLA + 稀疏索引（DSA） | ✅ | ✅ | ✗ | ✅ | ✗ |
 | `moe-routing-shaped.by1` | MoE（路由） | ✅ | ✅ | ✗ | ✅ | ✗ |
 | `kda-shaped.by1` | KDA | ✅ | ✅ | ✗ | ✅ | ✗ |
@@ -31,9 +31,8 @@
 |---|---|---|
 | `hello.by1` | `full` | 完整后端的 arch 必须是 qwen3, qwen2, gpt2, gpt_oss, qwen3_5, mamba, granitemoehybrid, falcon_h1 |
 | `attn-fused-shaped.by1` | `full` | 完整后端的 arch 必须是 qwen3, qwen2, gpt2, gpt_oss, qwen3_5, mamba, granitemoehybrid, falcon_h1 |
-| `mla-shaped.by1` | `ggml` | 第 0 层 op1（MLA）：算子 MLA 还没有 ggml 映射；第 1 层 op1（MLA）：算子 MLA 还没有 ggml 映射；第 2 层 op1（MLA）：算子 MLA 还没有 ggml 映射；第 3 层 op1（MLA）：算子 MLA 还没有 ggml 映射 |
 | `mla-shaped.by1` | `full` | 完整后端的 arch 必须是 qwen3, qwen2, gpt2, gpt_oss, qwen3_5, mamba, granitemoehybrid, falcon_h1 |
-| `mla-sparse-shaped.by1` | `ggml` | 第 0 层 op1（MLA）：算子 MLA 还没有 ggml 映射；第 1 层 op1（MLA）：算子 MLA 还没有 ggml 映射；第 2 层 op1（MLA）：算子 MLA 还没有 ggml 映射；第 3 层 op1（MLA）：算子 MLA 还没有 ggml 映射 |
+| `mla-sparse-shaped.by1` | `ggml` | 第 0 层 op1（MLA）：index_heads（SparseMLA/DSA 索引）还没实现 —— 要 top-k/比较算子，这版 ggml 没有；第 1 层 op1（MLA）：index_heads（SparseMLA/DSA 索引）还没实现 —— 要 top-k/比较算子，这版 ggml 没有；第 2 层 op1（MLA）：index_heads（SparseMLA/DSA 索引）还没实现 —— 要 top-k/比较算子，这版 ggml 没有；第 2 层 op1（MLA）：index_kpool=4 ≠ 1（k 池化）还没实现；第 3 层 op1（MLA）：index_heads（Sp |
 | `mla-sparse-shaped.by1` | `full` | 完整后端的 arch 必须是 qwen3, qwen2, gpt2, gpt_oss, qwen3_5, mamba, granitemoehybrid, falcon_h1 |
 | `moe-routing-shaped.by1` | `ggml` | 第 0 层 op4（MoE）：算子 MoE 还没有 ggml 映射；第 1 层 op4（MoE）：算子 MoE 还没有 ggml 映射；第 2 层 op4（MoE）：算子 MoE 还没有 ggml 映射 |
 | `moe-routing-shaped.by1` | `full` | 完整后端的 arch 必须是 qwen3, qwen2, gpt2, gpt_oss, qwen3_5, mamba, granitemoehybrid, falcon_h1 |
@@ -59,10 +58,11 @@
 
 - `hello.by1` —— Attention + FFN（最小完整）
 - `attn-fused-shaped.by1` —— Attention（融合 qkv + 门）
+- `mla-shaped.by1` —— MLA
 - `ssm-shaped.by1` —— SSM（Mamba2/Nemotron-H 参数化）
 
 ### 3.2 五后端交集（含 `full`）
 
 **一个都没有。** 这不奇怪：`full` 是**另一扇门**（吃 `arch = qwen3 / granitemoehybrid / …` 的官方家族），而上面那些 shaped 探针走的是串行 IR 门。**但对外措辞要照实**：不存在"一份声明五后端通吃"，"多后端已支持"这句话现在不成立。
 
-生成时间：2026-10-16（仅作记录，判据不看它）
+生成时间：2026-10-17（仅作记录，判据不看它）

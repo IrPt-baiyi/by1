@@ -284,7 +284,8 @@ EXEC_SEQ = {'mla-sparse-shaped.by1': 16}
 #: `nb[0]`（**字节 vs 元素**），形状、名字全对、只有数值错（3.6e-01）——
 #: 而 `--selftest` 的孪生模型不含融合 qkv，于是它一直绿。
 #: **没进门禁的检查会烂**，同一条纪律（D6）。
-GGML_IR_MODELS = ['hello.by1', 'attn-fused-shaped.by1', 'ssm-shaped.by1']
+GGML_IR_MODELS = ['hello.by1', 'attn-fused-shaped.by1', 'ssm-shaped.by1',
+                  'mla-shaped.by1']
 
 SHAPED = ['llama-shaped.by1', 'mixtral-shaped.by1', 'gpt-oss-shaped.by1',
           'qwen3-next-shaped.by1', 'mla-shaped.by1', 'llama3-shaped.by1',
@@ -360,8 +361,9 @@ JUDGES = [
     ('by1rules.py', 3),
     # 后端 × 机制矩阵：**承诺的公共子集到底有多大**（T30 那条"未定"）。
     # 12 个探针 × 5 个后端；拒绝必须带理由；docs/backend-matrix.md 是生成物。
-    # 实测（2026-10-16）：IR 路公共子集 = **3/12**（hello：Attention + FFN；
-    # attn-fused：融合 q/k/v；ssm-shaped：SSM 递推 —— ggml 侧当天补齐），
+    # 实测（2026-10-17）：IR 路公共子集 = **4/12**（hello：Attention + FFN；
+    # attn-fused：融合 q/k/v；ssm-shaped：SSM 递推；mla-shaped：MLA 低秩注意力
+    # —— 后三个是逐日在 ggml 侧补齐的，各有数值对拍），
     # 五后端交集 = 0 —— 这些数字是量出来的，不是宣传出来的。
     ('by1backends.py', 3),
 
