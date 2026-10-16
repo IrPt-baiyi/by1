@@ -179,6 +179,26 @@ embedding 得到层输入，numpy 复算到 q3/k3，与 C 打印的 `before` 对
    与 `ggml_mul_mat` 的 `a^T @ b` 组合出的行列关系；
 3. my numpy 的 `yn.reshape(8, vd)` 与 C 的 [t][nv][dv] 扁平序在 vd=32 时的对齐。
 
+### 2026-10-17 早（第八刀）：嫌疑 ① 洗清，锁在 **mul_mat 的视图**
+
+- 把 `ggml_cont_2d(y3, vd, n)` 换成 `ggml_reshape_2d(y3, vd, n)` ——
+  **数值一模一样**（2.683e-03）⇒ `cont_2d` 的重排**不是**问题（连续张量下两者等价）；
+- 变体对照（同一 `yn` 与 `out_proj`）：
+  - (a) `yn @ W.T`（= 参照公式）＝ -5.9e-05 -2.6e-05 -7.0e-06 …
+  - (b) `yn @ W.ravel().reshape(32, 64)` ＝ 3.0e-05 2.0e-05 5.6e-05 …
+  - C 的 `out` ＝ 0.000030 0.000002 0.000002 -0.000008 -0.000023 0.000059
+  ⇒ **三个都不精确一致**（(b) 的第 0 个值撞上，其余不是）；
+- 权重布局已验（`params[out_proj] == w.bin[OFF_L0_OP1_OUT_PROJ:]` 逐位）✓。
+
+**结论**：分歧不在重排、不在权重数据本身，而在 **`mul_mat` 所见的
+张量视图（ne0/ne1 的解释或步长）** —— 也可能是复算脚本的变体本身算错
+（`(b)` 的 reshape 语义就写错过一次）。
+
+**下一轮一刀**：在 C 里把 `mul_mat` 的**两个输入**各取前 8 个值打出来
+（`t_out_proj` 的 `[0,0..7]` 与 `cont_2d(y3)` 的 `[0..7, 0]`），
+与 numpy 的 `params['out_proj'][:, 0]`、`yn[0, :, 0]` 逐位对 ——
+把"视图"这最后一层钉死。
+
 **收口判据**：`python src/by1ggml.py --from-ir linear-gdn-shaped.by1`
 对拍进 1e-6 以内，且 `clef-tiny` 同绿（那时 `check_support` 的拒绝一起撤）。
 
