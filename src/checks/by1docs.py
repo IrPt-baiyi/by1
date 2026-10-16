@@ -263,9 +263,10 @@ def main():
         # `refs/*.index.json`、`llamacpp/`、`history/_hf_probe/` 都是
         # 上游产物 / 缓存 / 可再生语料，文档**该**引用它们。
         # 2026-10-16 干净克隆实测：这一桶有 10 处，原来让档 1 直接红。
-        keep = []
+        ext_here, keep = [], []
         for k, ln, kind in miss:
-            (ext_paths if ignored(k) else keep).append((rel, ln, kind, k))
+            (ext_here if ignored(k) else keep).append((k, ln, kind))
+        ext_paths.extend((rel, ln, kind, k) for k, ln, kind in ext_here)
         miss = keep
         total += len(seen)
         if miss:

@@ -165,6 +165,9 @@ OVERRIDE = {
     'step5-runbook.md': 'Step-5 发布日快速反应手册：抓元数据/草稿 by1/合同审计/GGUF 产物/推销素材/风险预案',
     'step5-convert-cheatsheet.md': 'Step-5 发布日当天结构对账 + 转换速查（2449 张量逐项实测，非预测）：'
                                    '新张量名/新机制/转换器要改的 9 处/待确认坑',
+    'step5-contract-plan.md': 'A 线工作单：把 Step-5 反推草稿升格成 models/ 合同'
+                              '（① 95 层调度证据已就位 · ⑤ 六个语义未知项收缩到 1 个 · '
+                              '③ 后端选择是方向题）',
     'step5-preview-draft.by1': 'by1boot 从 Step-5-Preview-BF16 产物反推的草稿合同（drafts/，没有判卷人，不算数）',
     '2026q3-open-model-war.md': 'Q3 开源模型大战图文发布稿：24 款阵容、★/●/○ 三级数据标注、张量级深挖',
     'fig0-roster.png': 'article/ 配图：Q3 24 款阵容全景（★张量级实测 / ●配置实测 / ○未验）',
