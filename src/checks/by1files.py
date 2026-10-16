@@ -43,6 +43,7 @@ import subprocess
 import sys
 
 import by1io
+import by1skip
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 # **ROOT 从 `by1paths` 拿，不从自己的位置推。**
@@ -274,8 +275,17 @@ def tracked():
     # 而那时 stdout 是空的 —— 空文件清单会生成一份空文档，
     # 看起来像"这个仓库没有文件"。
     if r.returncode != 0:
+        err = (r.stderr or '').strip()
+        # **不是 git 检出 -> 这一步"没验"，不是失败。**
+        # 发布包（`by1pack` 的产物）就是这样：它是从仓库导出的树，没有 `.git`，
+        # 而"FILES.md 和目录树一致吗"这个问题**只在检出里成立**（它比的就是
+        # `git ls-files`）。原来这里直接 `SystemExit(1)`，于是包里跑门禁
+        # 会报"by1files 失败"—— 那是判据错，不是包错（五种结论里的 30）。
+        if 'not a git repository' in err:
+            print('  [跳过] 这不是 git 检出 —— FILES.md 一致性这一步没验')
+            raise SystemExit(by1skip.CODE)
         raise SystemExit('  git ls-files 失败（rc=%d）：%s'
-                         % (r.returncode, (r.stderr or '').strip()[:80]))
+                         % (r.returncode, err[:80]))
     # 把尚未提交的新源码/示例也纳入，忽略构建与缓存产物。
     return sorted(set(x for x in r.stdout.split('\n') if x.strip()))
 

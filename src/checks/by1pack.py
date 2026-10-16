@@ -89,6 +89,22 @@ WANT = [
     ('by1oracles.py', '十个神谕：不依赖 by1 的期望值'),
     ('by1docs.py', '文档里的路径**和数字**'),
     ('by1gpt2.py', '真实维度前向：GPT-2（另一代）'),
+    # **2026-10-16：`judges_missing()` 修好之后，它一次报出这 9 个。**
+    # 那个守卫原来硬拼 `src/by1all.py`（而那文件早就搬进 `src/checks/`），
+    # 路径不存在就**静默返回 []** —— 于是"守卫在看着"是错觉，
+    # 包里少了这 9 个判卷人，而打包脚本一声不吭。症状要到云端跑门禁才现形。
+    ('by1fast.py', '快速检查：编译/import/解析/行尾（档 1 的判卷人）'),
+    ('by1files.py', 'FILES.md 与目录树一致（生成的文档也会过期）'),
+    ('by1mutate.py', '变异反例库：`by1ir.validate` 每条规则一个必红反例'),
+    ('by1sample.py', '采样链逐 token 判卷人（对 sampler-probe）'),
+    ('by1complete.py', '完整模型：前向/反向 + config 逐字段 + 负例'),
+    ('by1ssm.py', '判卷人：Mamba2 / Nemotron-H mixer 的递推'),
+    ('by1kda.py', '判卷人：KDA（Kimi Delta Attention）'),
+    ('by1sparse.py', '判卷人：DSA 稀疏索引器（对 `GlmMoeDsaIndexer`）'),
+    ('by1ggml.py', '后端四：生成 ggml C（并按 manifest 对拍）'),
+    ('by1llama.py', '产物线：GGUF 构建 / 上游 logits 逐位对拍 / 转换期改写'),
+    ('by1quant.py', '量化格式声明（MXFP4 / FP8）的数值 oracle 与运行时规格'),
+    ('by1q2schema.py', 'Q2 报告的 schema：指标与容差写在一处（分片量化的口径）'),
     # **下面三个是"文档叫你跑，而包里没有"的那一类。**
     # `by1docs.py` 在包里自己把它们抓出来了 —— 它扫 README 里
     # `python xxx.py` 的调用，而包里没有这些文件。
@@ -149,6 +165,33 @@ WANT = [
     # 拿到包的人在**那棵树里**继续改动时，规则要跟着走；
     # 不然他本地一提交，行尾又乱回去（原来就没这个文件，见它的注释）。
     ('.gitattributes', '行尾规范：文本一律 LF'),
+    # **2026-10-16：包里少的东西不是脚本，是文档和许可证。**
+    # 症状：照 README 敲第一条命令就 FileNotFoundError ——
+    # 而 README 自己就在包里，指着 13 个不存在的文件。
+    # 这些是 `selfcheck()`（打完包在产物里跑 `by1docs`）一次报出来的。
+    ('TESTING.md', '怎么自己跑一遍（README 指向它）'),
+    ('FILES.md', '每个文件是干什么的（生成的）'),
+    ('LICENSE', 'GPL-3.0'),
+    ('NOTICE', '第三方来源与许可'),
+    ('graphs-golden.json', '原语图 golden 快照（A3 的护栏，档 1 判卷人要它）'),
+    ('docs/complete-models.md', '完整模型：怎么对拍、验到了哪一步'),
+    ('docs/gpu-validation-results.md', 'GPU 轮次的结果（README 指向它）'),
+    ('docs/gpu-day-runbook.md', 'GPU 日手册（gpu/README 指向它）'),
+    ('docs/autodl-file-storage.md', 'AutoDL 文件存储备忘'),
+    ('docs/1.0-roadmap.md', '到 1.0 的路线图'),
+    ('docs/criteria-review.md', '判据的自我审查'),
+    ('docs/llamacpp-plan.md', 'llama.cpp 参照线的计划'),
+    ('docs/llama.cpp-baseline.md', 'llama.cpp 基线：怎么对着上游验产物'),
+    ('docs/quantization.md', '量化的边界（哪些只是存储合同）'),
+    ('docs/precision-budget.md', '精度预算表：每个阈值的出处与实测余量'),
+    ('docs/prims-spec.md', '原语规格（每个原语的语义与守卫 eps）'),
+    ('by1cache.py', 'HuggingFace 缓存/存储的搬迁与审计（AutoDL 相关）'),
+    ('by1triage.py', '分诊：一次门禁里哪些是真红、哪些是没验'),
+    ('by1gpubench.py', 'CUDA 前向/反向基准（gpu/README 的第一条命令）'),
+    ('by1gpuday.py', 'GPU 日的一键脚本'),
+    ('by1gpusmoke.py', '显卡冒烟：装好了吗'),
+    ('by1gputrain.py', 'GPU 训练步（含 CPU 回退）'),
+    ('by1shadow.py', '影子对拍：同一份声明走两条 loader'),
 ]
 
 # refs/ 全要（官方产物，判卷人的原材料）
@@ -256,9 +299,18 @@ def judges_missing():
     它是 `by1all` 的一部分，改了这边就跟着改。
     """
     import re as _re
-    p = norm('src/by1all.py')
+    # **路径要用 `_where()` 解，不能硬拼 `src/`。**
+    # 实测（2026-10-16）：这一行原来写 `norm('src/by1all.py')`，而
+    # `by1all.py` 早就搬到了 `src/checks/` —— 于是 `os.path.exists` 为假、
+    # 函数**静默返回 []**：守卫看起来在看着，其实一直是死的。
+    # 后果：包里少了 9 个 `by1all` 会调用的判卷人（`by1fast`/`by1files`/
+    # `by1mutate`/`by1sample`/`by1complete`/`by1ssm`/`by1kda`/`by1sparse`/
+    # `by1ggml`），而打包脚本一声不吭 —— 症状要到云端跑门禁才现形
+    # （"文件不存在"，长得像"这一包本身有问题"）。
+    p = norm(_where('by1all.py'))
     if not os.path.exists(p):
-        return []
+        # **找不到就大声说。** 静默返回 [] 正是上面那个坑。
+        raise SystemExit('  [FAIL] 判卷人清单解析不了：找不到 %s' % p)
     src = by1io.read_text(p, encoding='utf-8')
     names = set()
     # `JUDGES = [...]` 里的裸名
@@ -273,6 +325,36 @@ def judges_missing():
 
 def norm(p):
     return os.path.join(ROOT, p)
+
+
+def selfcheck(staged):
+    """在**刚打出来的产物**里跑 `by1docs`：包自己得自洽。
+
+    绿 -> 返回 None；红 -> 返回截断后的报告（调用方负责打印并失败）。
+
+    **为什么要跑这个**：包里最容易坏的不是代码，而是**文档指向的东西**。
+    `WANT` 是手写的，而"文档提到什么"由文档自己决定 —— 两个清单各说各话
+    就是这类事故的成因。这里让**产物自己说话**：把 `by1docs` 放进产物里跑，
+    它扫的是产物自己的 `README.md` / `docs/`，找不到就红。
+    """
+    import subprocess
+    # **必须绝对化**：下面 `cwd=staged` 一换，相对路径就会再拼一层
+    # （实测报的是 `build/by1-pack/build/by1-pack/src/checks/by1docs.py`）。
+    staged = os.path.abspath(staged)
+    script = os.path.join(staged, 'src', 'checks', 'by1docs.py')
+    if not os.path.exists(script):
+        return '  产物里没有 src/checks/by1docs.py —— 自检根本跑不了（这本身就是缺口）'
+    try:
+        r = subprocess.run([sys.executable, script], cwd=staged,
+                           capture_output=True, text=True, encoding='utf-8',
+                           errors='replace', timeout=900)
+    except Exception as exc:                     # noqa: BLE001 - 打包要报出来，不要吞
+        return '  自检跑不起来：%s' % exc
+    if r.returncode == 0 and '[PASS]' in (r.stdout or ''):
+        return None
+    # 两个通道都看：退出码（进程活下来了吗）与判定行（检查器自己怎么说）。
+    tail = ((r.stdout or '') + (r.stderr or '')).strip().splitlines()
+    return '  自检退出码 %d\n%s' % (r.returncode, '\n'.join(tail[-25:]))
 
 
 def main():
@@ -341,6 +423,42 @@ def main():
             if os.path.isfile(s):
                 put(s, 'gpu/' + f)
 
+    # drafts/（**草稿也要装**）：`docs/` 里的工作单引用它们
+    # （例如 `docs/step5-contract-plan.md` 指向 `drafts/step5-schedule-probe.by1`）
+    # —— 不装的话，拿到包的人照文档点链接就是 404。
+    # 它们不是"没有判卷人的草稿就不发"，而是"文档引用得到的东西必须在包里"。
+    for s in sorted(glob.glob(norm('drafts/*'))):
+        if os.path.isfile(s):
+            put(s, 'drafts/' + os.path.basename(s))
+
+    # history/external-repro/（第三方复现报告；README 里指向这个目录）
+    for s in sorted(glob.glob(norm('history/external-repro/*'))):
+        if os.path.isfile(s):
+            put(s, 'history/external-repro/' + os.path.basename(s))
+
+    # docs/gpu-results/（GPU 轮次的原始结果；`docs/gpu-validation-results.md`
+    # 逐个链接它们 —— 不装就是 12 处 404）
+    for s in sorted(glob.glob(norm('docs/gpu-results/*'))):
+        if os.path.isfile(s):
+            put(s, 'docs/gpu-results/' + os.path.basename(s))
+
+    # ── 自检：**在自己刚打出来的产物里跑一遍文档检查** ──────────────
+    #
+    # 这是"包不完整"这一类事故的判卷人。以前没有它，于是可以打出
+    # 一个少 17 个判卷人、少 13 份文档、少一个 golden 快照的包，
+    # 而打包脚本照样印"打包完成" —— 症状要到云端（或收包的人手里）
+    # 才现形，长得还像"这一包本身有问题"。
+    #
+    # 判据：`by1docs` 在包里必须是绿的。它查的正是"文档里写的路径还在吗"，
+    # 而包最容易被诟病的就是这个。
+    problem = selfcheck(OUT)
+    if problem:
+        print('=' * 70)
+        print('  **打包失败 —— 这一包自己都不自洽**')
+        print('=' * 70)
+        print(problem)
+        return 1
+
     # 打成一个 tar.gz（保留目录结构）
     stamp = time.strftime('%Y%m%d')
     tgz = os.path.join(os.path.dirname(OUT), 'by1-upload-%s.tar.gz' % stamp)
@@ -361,8 +479,8 @@ def main():
     print('  **没有装**（在云端重新拿）：')
     print('    · 模型权重 —— 从 HF 下，下多少取决于跑哪个模型')
     print('    · llamacpp/ 里的参考源码 —— 可重新下载')
-    print('    · drafts/ —— 没有判卷人的草稿')
-    print('    · cgen/ __pycache__ —— 生成物')
+    print('    · refs/ 的子目录（只装顶层那些官方产物文件）')
+    print('    · cgen/ build/ __pycache__ —— 生成物')
     print()
     print('  包里的结构和仓库一样（src/ models/ refs/ + 根下的文档）。')
     print('  上传后：  tar xzf %s && cd by1-upload && bash gpu/run.sh'

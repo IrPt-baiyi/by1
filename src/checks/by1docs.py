@@ -49,6 +49,36 @@ import by1paths
 ROOT = by1paths.ROOT
 
 
+_AT_REPO_ROOT = None
+
+
+def _at_repo_root():
+    """被扫的这棵树**就是** git 仓库的根吗（只算一次）。
+
+    **不是的话，`.gitignore` 那套语义在这里不成立。**
+    实测（2026-10-16）：把发布包打在 `build/` 下、再在包里跑这个检查器时，
+    `git check-ignore README.md` 会一路向上找到**外面那个仓库**，
+    而 `build/**` 正是被 `.gitignore` 挡着的 —— 于是包里每个文件都被判
+    "故意不在库"，检查器扫到 **0 个 .md** 却印"全部通过"那一套。
+    一个永远扫不到东西的检查，比没有检查更坏。
+    """
+    global _AT_REPO_ROOT
+    if _AT_REPO_ROOT is None:
+        try:
+            done = subprocess.run(['git', 'rev-parse', '--show-toplevel'], cwd=ROOT,
+                                  capture_output=True, text=True,
+                                  encoding='utf-8', errors='replace')
+            top = (done.stdout or '').strip()
+            # **读 returncode**（不只是读输出）：`by1lint` 的 ⑨ 那条说得对 ——
+            # 一个退出码非零的 `git` 照样可能吐出一行像路径的东西。
+            _AT_REPO_ROOT = done.returncode == 0 and bool(top) and \
+                os.path.normcase(os.path.abspath(top)) == \
+                os.path.normcase(os.path.abspath(ROOT))
+        except OSError:
+            _AT_REPO_ROOT = False
+    return _AT_REPO_ROOT
+
+
 def ignored(rel_path):
     """这个路径是**故意不在库**的吗（被 `.gitignore` 挡着）？
 
@@ -58,6 +88,8 @@ def ignored(rel_path):
     把这些算成"路径坏了"，干净克隆就永远红：**那是判据错，不是文档错**。
     所以它们进单独一桶（既不算通过也不算失败），而不是判红。
     """
+    if not _at_repo_root():          # 包/副本里没有 gitignore 这回事
+        return False
     try:
         done = subprocess.run(['git', 'check-ignore', '-q', '--', rel_path],
                               cwd=ROOT, capture_output=True)
@@ -100,8 +132,18 @@ def md_files():
                                 'node_modules', '.mimocode', 'cgen',
                                 '.venv', '.dsh', 'llamacpp')]
         for f in files:
-            if f.endswith('.md'):
-                out.append(os.path.join(base, f))
+            if not f.endswith('.md'):
+                continue
+            p = os.path.join(base, f)
+            # **被 `.gitignore` 挡着的目录不扫。** 名字表挡不住的东西靠这条：
+            # 实测（2026-10-16）把发布包打进 `build/`（`by1pack` 的默认输出就在
+            # 那儿附近），包里那份**整仓副本**的 `.md` 立刻让这个检查器报出
+            # 3 处假路径 —— 而 `build/` 在 `.gitignore` 里，本来就不该被扫。
+            # 名字表（`cgen` / `.venv` / `llamacpp` …）保留：它们有些是
+            # 可再生的检出，提前剪掉省一次 `git check-ignore`。
+            if ignored(by1paths.rel(p)):
+                continue
+            out.append(p)
     return sorted(out)
 
 
