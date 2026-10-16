@@ -38,7 +38,7 @@
 | E1 | **混合栈家族**：Zamba2-1.2B（共享注意力 + memory block）· Nemotron-H（同类不同图案） | 逐层类型表已证明对**一类**成立（350m → 1b **零改动**）；llama.cpp/transformers 判卷人都在 | 中（**Zamba2 两侧判卷人只齐一半**：transformers `Zamba2ForCausalLM` ✅，llama.cpp 没有 `ZAMBA2` → 产物腿做不了；且下载 4.53 GB） |
 | E2 | **层内并行家族**：Bamba | T29 的 `Parallel` 机制 + Mamba2 那一代改写可直接复用 | **低**（2026-10-16 调查：`ibm-ai-platform/Bamba-9B-v2` 是 **18.23 GB**，CPU fp32 放不下；没有更小的 Bamba。**真正的检验要等有卡**） |
 | E3 | **产物线"改写表"化**：把三类八条改写从 `if/elif` 提成**可枚举的表** | 八条都是"照着上游某一行"写的；表化之后每条自带出处，新增家族就是加一行 | **✅ 已做（2026-10-16）**：`CONVERT_RULES` **16 条**（含九个折标量），每条带 `cite`/`probe`/`check`；判卷人 `by1rules.py` **已进档 3 门禁**（102 项 0 失败）；重构后五个模型对拍**逐位一致** |
-| E4 | **CI 加"完整模型"腿**（装 torch/transformers，跑 `by1complete` + `by1rules`） | 档 4 现在只在本地跑；它保护的正是 T26–T29 那批判据 | **⚠ 延期（2026-10-16）**：加过、本机按 CI 条件**全过**（干净 clone + 仅 `[full]`，依赖版本与 CI 一致：torch 2.14.1+cpu / transformers 5.20.0 / numpy 2.5.4），但 **ubuntu runner 上红一条**：<br>`!! 完整 checkpoint 分片往返；缺 MTP 必须拒绝: 加载后主干输出变化`<br>即 `torch.equal(model(...), loaded(...))` 在**存盘 → 读回**之后不成立（**Windows 上成立**）。**一条"预期会红"的门会训练人忽略红**，所以移除并记档（[缺口盘点](gap-analysis.md) G3）。两个待验方向：① 重新实例化与 `from_pretrained` 走了不同算子路径（SDPA vs math，ulp 级）；② NaN（`torch.equal` 对 NaN 恒假）。夹具已改成会报 `max\|Δ\|` 与 NaN，下次接上就能一眼分辨。`by1rules` 不受影响 —— 它已经在**档 3** 里跑 |
+| E4 | **CI 加"完整模型"腿**（装 torch/transformers，跑 `by1complete` + `by1rules`） | 档 4 现在只在本地跑；它保护的正是 T26–T29 那批判据 | **✅ 已做（2026-10-17）**：一度因 Linux 独有红移出 CI，靠**只测量不判门**的诊断腿把数字从公开注解读出来（`max\|Δ\|=7.451e-08、无 NaN` = 1 ulp 级，不是结构问题）。根因是 `torch.equal` 对"重新实例化的模型"过强；判据改两层：**权重逐位（state_dict）+ 前向浮点舍入内一致**（容差 1e-6，实测余量 13 倍，差值每次都报）。腿已回 CI（job `complete`）。**G3、E4 一起销账** |
 | E5 | **外部复现从"报告级"升到"审计级"** | 现有 1 次是入门示例、非审计；[复现指南](repro-guide.md) 已备好（含六条真权重判据与预期输出） | 高（判据在别人手里，不占本机时间） |
 
 ## 三、决定三：**删减 / 延期**（明确不做、或先不做）

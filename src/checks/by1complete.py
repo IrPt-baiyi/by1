@@ -539,23 +539,32 @@ def main():
             good, broken = root / 'good', root / 'broken'
             model.save_pretrained(good, max_shard_size='20KB')
             loaded = by1full.load_model(family, cfg, mtp, str(good), local_files_only=True).eval()
+            # **"存盘/读回无损"的本意是权重逐位相同** —— 这一条不放松，
+            # 用 `torch.equal` 断言 state_dict（safetensors 往返就是逐位的）。
+            sd_a, sd_b = model.state_dict(), loaded.state_dict()
+            require(set(sd_a) == set(sd_b), '存盘读回后键不一致')
+            drift = [k for k in sd_a if not torch.equal(sd_a[k], sd_b[k])]
+            require(not drift, '权重不再逐位：%s' % drift[:4])
+            # **前向允许浮点舍入级差异。** 实测（2026-10-17，诊断腿的公开注解）：
+            # Linux 上 max|Δ| = 7.451e-08、无 NaN —— **1 ulp 级**，来自两个模型
+            # 实例走的归约/内核略有差别（Windows 上恰好逐位）。
+            # `torch.equal` 对"重新实例化的模型"过强：真正的判据是
+            # **权重逐位（上）+ 前向在浮点舍入内一致**，容差按实测取 1e-6
+            # （对 7.45e-08 是 13 倍余量）。**差多少每次都报**，不许变大不吭声。
             args = inputs(family, torch)
-            # **报出差多少、有没有 NaN。** 存盘再读回来本该逐位相同；
-            # 一旦不同，先分清是"1 ulp 级的算子差"还是"结构性差异（NaN/大差）"——
-            # 否则只看到一句"输出变化"，等于什么都没说。
-            # （实测：Linux CI 上这条红、Windows 上绿 —— 差异本身要能被读到。）
             a_logits, b_logits = model(**args).logits, loaded(**args).logits
-            require(torch.equal(a_logits, b_logits),
+            delta = (a_logits - b_logits).abs().max().item()
+            require(delta <= 1e-6 and not bool(a_logits.isnan().any())
+                    and not bool(b_logits.isnan().any()),
                     '加载后主干输出变化：max|Δ|=%.3e · NaN %s/%s'
-                    % ((a_logits - b_logits).abs().max().item(),
-                       bool(a_logits.isnan().any()), bool(b_logits.isnan().any())))
+                    % (delta, bool(a_logits.isnan().any()),
+                       bool(b_logits.isnan().any())))
             ids = args['input_ids']; positions = torch.arange(ids.shape[1])[None]
             h = model(**args).hidden_states[-1]
             m_logits = model.forward_mtp(ids, h, positions)['logits']
             l_logits = loaded.forward_mtp(ids, h, positions)['logits']
-            require(torch.equal(m_logits, l_logits),
-                    '加载后 MTP 输出变化：max|Δ|=%.3e'
-                    % (m_logits - l_logits).abs().max().item())
+            delta = (m_logits - l_logits).abs().max().item()
+            require(delta <= 1e-6, '加载后 MTP 输出变化：max|Δ|=%.3e' % delta)
             state = dict(model.state_dict()); state.pop('mtp.fc.weight')
             model.save_pretrained(broken, state_dict=state)
             try:

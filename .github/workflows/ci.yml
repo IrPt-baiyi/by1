@@ -24,35 +24,23 @@
 #   **发布包（`pack`）** —— 打包 → 解到**仓库外** → 在包里跑档 1。
 #       它守的不是"仓库里跑得通"，而是"**递出去的那一包**站得住"。
 #
-# ## 为什么**没有**"完整模型"那条腿（2026-10-16 **延期**，不是忘了）
+# ## "完整模型"那条腿：**G3 销账记**（2026-10-17）
 #
-# T30 的 E4 本来要加一条"装 torch/transformers，跑 `by1complete` + `by1rules`"的腿。
-# 本机按 CI 条件验过（干净 clone + 仅 `[full]`，且依赖版本与 CI 一致：
-# torch 2.14.1+cpu / transformers 5.20.0 / numpy 2.5.4）→ **全过**；
-# 但在 ubuntu runner 上**红一条**：
+# 这条腿（`by1complete` + `by1rules`，装 torch/transformers）一度被移出 CI：
+# ubuntu runner 上 `torch.equal(存盘前, 读回后)` 不成立（Windows 上成立），
+# 而 **job 日志要管理员权限** —— "为什么红"从外面不可见。于是先加了一条
+# **只测量、不判门**的诊断腿（`continue-on-error: true`），把数字从公开注解里
+# 读了出来：
 #
-#     !! 完整 checkpoint 分片往返；缺 MTP 必须拒绝: 加载后主干输出变化
+#     !! …: 加载后主干输出变化：max|Δ|=7.451e-08 · NaN False/False
 #
-# 即 `torch.equal(model(**args).logits, loaded(**args).logits)` 在
-# "存盘 → 读回来"之后不成立（**Windows 上成立**）。夹具现在会报 `max|Δ|` 与 NaN，
-# 但那条腿的红**还没根因**。
+# **1 ulp 级、无 NaN** —— 不是结构问题，是 `torch.equal` 对"重新实例化的模型"
+# 过强。真正的判据应该是两层：**权重逐位（state_dict，safetensors 往返就是逐位）**
+# + **前向在浮点舍入内一致**（容差 1e-6，对实测的 7.45e-08 有 13 倍余量，
+# 差值每次都报出来）。夹具改成这个判据后，腿就回来了 —— G3、E4 一起销账。
 #
-# **所以不把它留在 CI 里**：一条"预期会红"的门会训练人忽略红。
-# 记为延期 —— 证据、复现条件与两个待验假设写在 docs/rc1-decision.md（E4）。
-# 本机 `by1complete` 仍是绿的；`by1rules` 已经在**档 3** 里跑（CI 里缺 torch/gguf-py
-# 的那几条会如实报"没验"，不混进通过）。
-#
-# ## 顺带留下的一件有用的东西：**失败也能被公开读到**
-#
-# GitHub 的 job 日志要管理员权限（API 403），运行页 HTML 里也不含日志行；
-# 能公开读到的只有 job 成败与 **check-runs annotations**。
-# 所以那条腿的步骤写成了"失败时用 `::error::` 把 `!!` 行与尾行打成注解" ——
-# 上面那句失败详情就是这么读出来的（不用登进去复制粘贴）。
-# **外部复核者读得到的东西，才算真的公开。**
-#
-# 这套东西现在用在**诊断腿 `diag-complete`** 上（`continue-on-error: true`）：
-# 它只测量、不判门 —— 把 G3 那条 Linux 独有红的 `max|Δ|` / NaN 从公开注解里
-# 读出来。判据不看它，它负责把"为什么红"变成可见的测量值。
+# 留下的工具与教训：**失败也要能被公开读到**（check-runs annotations 公开，
+# job 日志不公开）。"外部复核者读得到的东西，才算真的公开。"
 #
 # ## 不跑什么（**不假装覆盖**）
 #
@@ -147,16 +135,9 @@ jobs:
       # 一条新规则没有反例，档 2 的 by1mutate 不会红 —— 但**规则本身跑错**
       # 会在档 3 的 refs 契约里红出来。
 
-  # ── 诊断腿：**只测量，不判门**（G3）────────────────────────────
-  # T30 的 E4 延期原因是一条 Linux 独有红：`torch.equal(存盘前, 读回后)`
-  # 不成立（Windows 上成立），本机复刻不出，而 job 日志要管理员权限。
-  # 这条腿用 `continue-on-error: true` —— **它红了不算 CI 红**；
-  # 失败时把 `max|Δ|` 与 NaN 打成**公开注解**，从外面就能读到数字。
-  # 判据不看它；它负责把"为什么红"变成可见的测量值。
-  diag-complete:
-    name: 诊断：完整模型判据（只测量，不判门 · G3）
+  complete:
+    name: 完整模型判据（要 torch + transformers）
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
@@ -167,21 +148,26 @@ jobs:
       - name: 装 [full]（torch + transformers）
         run: python -m pip install -e ".[full]"
 
-      - name: 跑完整模型判据（失败把 max|Δ| / NaN 打成注解）
+      # **失败时把 `!!` 行与尾行打成 GitHub 注解**（公开可读；job 日志要管理员）。
+      - name: 完整模型判据 + 转换期改写表
         run: |
           python - <<'PY'
           import subprocess, sys
-          r = subprocess.run([sys.executable, "src/checks/by1complete.py"],
-                             capture_output=True, text=True)
-          out = (r.stdout or "") + (r.stderr or "")
-          print(out)
-          detail = [l for l in out.splitlines()
-                    if l.strip().startswith("!!") or "Traceback" in l
-                    or "max" in l or "NaN" in l]
-          for line in (detail[:14] + [l for l in out.strip().splitlines()
-                                      if l.strip()][-10:]):
-              print("::error::" + line[:900])
-          sys.exit(r.returncode)
+          bad = 0
+          for script in ("src/checks/by1complete.py", "src/checks/by1rules.py"):
+              r = subprocess.run([sys.executable, script],
+                                 capture_output=True, text=True)
+              out = (r.stdout or "") + (r.stderr or "")
+              print(out)
+              if r.returncode:
+                  bad = 1
+                  detail = [l for l in out.splitlines()
+                            if l.strip().startswith("!!") or "Traceback" in l
+                            or "max" in l or "NaN" in l]
+                  for line in (detail[:12] + [l for l in out.strip().splitlines()
+                                              if l.strip()][-8:]):
+                      print("::error::" + line[:900])
+          sys.exit(bad)
           PY
 
   pack:
