@@ -51,7 +51,7 @@ PROBES = [
     ('kda-shaped.by1', 'KDA'),
     ('kda-gva-shaped.by1', 'KDA（GVA）'),
     ('kda-lowrank-shaped.by1', 'KDA（低秩）'),
-    ('ssm-shaped.by1', 'SSM（Mamba1）'),
+    ('ssm-shaped.by1', 'SSM（Mamba2/Nemotron-H 参数化）'),
     ('raw-escape.by1', 'Raw（逃生舱）'),
     ('complete-granite-4.0-h-350m.by1', 'SSM2 + Attention（逐层混排）'),
     ('complete-Falcon-H1-0.5B-Instruct.by1', 'Parallel（层内并行：SSM2 + Attention）'),
@@ -106,16 +106,25 @@ def _probe_c(info, ir):
 
 
 def _probe_ggml(info, ir):
-    """ggml 生成器：自带的 `check_support(ir)` 返回问题列表（空 = 支持）。"""
+    """ggml 生成器（**第四后端 = IR → ggml C**，见 by1all 的 6b 段）。
+
+    不只问 `check_support` —— **真把 C 发出来**（发射器里的断言/拒绝也算拒绝）。
+    图路径（`emit_model_c_graph`）是并行的迁移线，有自己的缺口清单，
+    不在这一格里判 —— 矩阵每格写的是"IR 路"这句承诺。
+    """
     if ir is None:
         return None, '上游 codegen 先拒（本后端未到）'
     try:
+        import by1c
+        import by1exec
         import by1ggml
         problems = by1ggml.check_support(ir)
+        if problems:
+            return False, '；'.join(str(p) for p in problems)
+        order = by1c.emit_c(ir, info, by1exec.shapes_of(ir))[1]
+        by1ggml.emit_model_c(ir, order, by1exec.shapes_of(ir))
     except _REFUSAL as ex:
         return False, str(ex) or type(ex).__name__
-    if problems:
-        return False, '；'.join(str(p) for p in problems)
     return _accept()
 
 

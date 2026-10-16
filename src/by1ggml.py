@@ -65,7 +65,7 @@ def _qk_on(v):
 
 # ── 支持集：要么实现，要么拒绝 ──────────────────────────────────────
 
-SUPPORTED_KINDS = ("Embed", "Norm", "Head", "Attention", "FFN", "Add")
+SUPPORTED_KINDS = ("Embed", "Norm", "Head", "Attention", "FFN", "Add", "SSM")
 SUPPORTED_ACT = ("silu", "gelu", "gelu_new", "gelu_tanh", "tanh")
 
 
@@ -115,6 +115,16 @@ def check_support(ir):
                 if a.get("limit"):
                     bad.append(f"{where}：limit={a.get('limit')} "
                                "（SwiGLU 夹取）还没实现")
+            elif k == "SSM":
+                # **语义唯一在 `by1exec.op_ssm`**（判卷人 `src/modelcheck/by1ssm.py`
+                # 对官方 `NemotronHMamba2Mixer` 验过）。这里只拒"参照实现也没有的东西"
+                # —— ggml 不猜语义。
+                if str(a.get("act", "silu")) != "silu":
+                    bad.append(f"{where}：act={a.get('act')!r} —— "
+                               "参照实现（by1exec.op_ssm）写死 silu，不一致就拒绝")
+                if a.get("proj_bias"):
+                    bad.append(f"{where}：proj_bias=True 还没实现"
+                               "（参照实现也没有它，不猜语义）")
     for o in ir["globals"]:
         if o["kind"] not in SUPPORTED_KINDS:
             bad.append(f"全局算子 {o['kind']} 还没有 ggml 映射")
@@ -695,10 +705,13 @@ def emit_model_c(ir, order, params):
                 Wo, Wo_bias = W_('proj'), W_('proj.bias')
                 if bias:
                     _qb = W_('qkv.bias')
+                    # **偏移是字节** —— 少乘 `nb[0]` 就是三截 bias 全错位
+                    # （实测 max|Δ| 3.6e-01，形状与名字都对，只有数值不对）。
                     Bq = f"ggml_view_1d(ctx, {_qb}, {qw}, 0)"
-                    Bk = f"ggml_view_1d(ctx, {_qb}, {kvw}, (size_t) {qw})"
+                    Bk = (f"ggml_view_1d(ctx, {_qb}, {kvw}, "
+                          f"(size_t) {qw} * {_qb}->nb[0])")
                     Bv = (f"ggml_view_1d(ctx, {_qb}, {kvw}, "
-                          f"(size_t) {qw + kvw})")
+                          f"(size_t) {qw + kvw} * {_qb}->nb[0])")
             else:
                 Wq, Wk, Wv = W_('wq'), W_('wk'), W_('wv')
                 Wo, Wo_bias = W_('wo'), W_('wo.bias')
@@ -771,6 +784,115 @@ def emit_model_c(ir, order, params):
                          f"{Wo}, {p}att);")
             if bias:
                 lines.append(f"{indent}{dst} = ggml_add(ctx, {dst}, {Wo_bias});")
+        elif k == "SSM":
+            # **选择性状态空间（Mamba2 · Nemotron-H 那一版）**。
+            # 语义唯一在 `by1exec.op_ssm`（判卷人 `src/modelcheck/by1ssm.py`
+            # 对官方 `NemotronHMamba2Mixer` 验过）。ggml 侧用它自带的两个原语
+            # （`ggml_ssm_conv` 因果深度卷积、`ggml_ssm_scan` 递推），
+            # 但**三个差异要自己补齐**：
+            #   ① scan 的读出只有 `Σ s·C`，**D 跳连没有** —— 图里补加；
+            #   ② scan 的输出 = y 与末态**拼在同一个 1D 里**，y 是前半段的视图；
+            #   ③ conv 的**输入**布局相反（见下）—— 权重不用转置，
+            #     `_weight_lines` 的 `wt2` 已把 by1 的 (cd, k) 载成 ggml 的
+            #     (k, cd)（= d_conv, d_inner）。
+            # 还有两处**方向相反**的差异：
+            #   · softplus：**scan 内部自己做**（它照 mamba_ssm 的公式），
+            #     所以这里喂 `dt + dt_bias` 原值 —— 与参照实现不同、结果相同；
+            #   · conv 输入要**左补 k-1 个零**、且是 **(token, channel)** 布局
+            #     （conv_x 是 (k-1+T, cd, 1)）—— 与 mul_mat 的 (channel, token)
+            #     正好相反。
+            h, hd = int(a["heads"]), int(a["head_dim"])
+            ng, st, kcv = (int(a["n_groups"]), int(a["ssm_state"]),
+                           int(a["conv_kernel"]))
+            di = h * hd
+            cd = di + 2 * ng * st
+            gs = di // ng
+            eps = _f(a.get("norm_eps", _DEFAULT_EPS))
+            bias_c = bool(a.get("conv_bias"))
+            # ① in_proj：gate | bc | dt 三截（`by1exec.op_ssm` 的 split 顺序）
+            lines.append(f"{indent}struct ggml_tensor * {p}pj = ggml_mul_mat(ctx, "
+                         f"{W_('in_proj')}, {src[0]});")
+            lines.append(f"{indent}struct ggml_tensor * {p}gate = ggml_cont_2d(ctx, "
+                         f"ggml_view_2d(ctx, {p}pj, {di}, n, {p}pj->nb[1], 0), "
+                         f"{di}, n);")
+            lines.append(f"{indent}struct ggml_tensor * {p}bc = ggml_cont_2d(ctx, "
+                         f"ggml_view_2d(ctx, {p}pj, {cd}, n, {p}pj->nb[1], "
+                         f"(size_t) {di} * {p}pj->nb[0]), {cd}, n);")
+            lines.append(f"{indent}struct ggml_tensor * {p}dtv = ggml_cont_2d(ctx, "
+                         f"ggml_view_2d(ctx, {p}pj, {h}, n, {p}pj->nb[1], "
+                         f"(size_t) {di + cd} * {p}pj->nb[0]), {h}, n);")
+            # ② 因果深度卷积：权重直接用（`wt2` 已载成 (k, cd)）；输入转成
+            #    (token, channel) 并左补 k-1 个零
+            lines.append(f"{indent}float * {p}pad_buf = (float *) calloc("
+                         f"(size_t) {kcv - 1} * {cd}, sizeof(float));")
+            lines.append(f"{indent}struct ggml_tensor * {p}pad0 = ggml_new_tensor_2d("
+                         f"ctx, GGML_TYPE_F32, {kcv - 1}, {cd});")
+            lines.append(f"{indent}{p}pad0->data = {p}pad_buf;")
+            lines.append(f"{indent}struct ggml_tensor * {p}cv = ggml_ssm_conv(ctx, "
+                         f"ggml_concat(ctx, {p}pad0, ggml_cont(ctx, "
+                         f"ggml_transpose(ctx, {p}bc)), 0), {W_('conv')});")
+            if bias_c:
+                lines.append(f"{indent}{p}cv = ggml_add(ctx, {p}cv, "
+                             f"{W_('conv.bias')});")
+            lines.append(f"{indent}{p}cv = ggml_silu(ctx, {p}cv);")
+            # ③ xs | B | C 三截 -> scan 的布局（ggml 的 ne 只是内存重解释，
+            #    所以 (T, ng, ssm) 的 numpy 序 = (ssm, ng, T) 的 ggml 序 ✓）
+            lines.append(f"{indent}struct ggml_tensor * {p}xs = ggml_cont_2d(ctx, "
+                         f"ggml_view_2d(ctx, {p}cv, {di}, n, {p}cv->nb[1], 0), "
+                         f"{di}, n);")
+            lines.append(f"{indent}struct ggml_tensor * {p}B4 = ggml_reshape_4d(ctx, "
+                         f"ggml_cont_2d(ctx, ggml_view_2d(ctx, {p}cv, {ng * st}, n, "
+                         f"{p}cv->nb[1], (size_t) {di} * {p}cv->nb[0]), "
+                         f"{ng * st}, n), {st}, {ng}, n, 1);")
+            lines.append(f"{indent}struct ggml_tensor * {p}C4 = ggml_reshape_4d(ctx, "
+                         f"ggml_cont_2d(ctx, ggml_view_2d(ctx, {p}cv, {ng * st}, n, "
+                         f"{p}cv->nb[1], (size_t) {di + ng * st} * {p}cv->nb[0]), "
+                         f"{ng * st}, n), {st}, {ng}, n, 1);")
+            # dt：**喂原值**（scan 内部做 softplus）；A：**预乘 -exp(A_log)**
+            lines.append(f"{indent}struct ggml_tensor * {p}dt3 = ggml_reshape_3d(ctx, "
+                         f"ggml_cont_2d(ctx, ggml_add(ctx, {p}dtv, "
+                         f"{W_('dt_bias')}), {h}, n), {h}, n, 1);")
+            lines.append(f"{indent}struct ggml_tensor * {p}A2 = ggml_reshape_2d(ctx, "
+                         f"ggml_neg(ctx, ggml_exp(ctx, {W_('A_log')})), 1, {h});")
+            # 初态与序列号：两个 host 侧叶子（和掩码同一个做法）
+            lines.append(f"{indent}float * {p}s0_buf = (float *) calloc("
+                         f"(size_t) {st} * {hd} * {h}, sizeof(float));")
+            lines.append(f"{indent}struct ggml_tensor * {p}s0 = ggml_new_tensor_4d("
+                         f"ctx, GGML_TYPE_F32, {st}, {hd}, {h}, 1);")
+            lines.append(f"{indent}{p}s0->data = {p}s0_buf;")
+            lines.append(f"{indent}int32_t * {p}ids_buf = (int32_t *) calloc(1, "
+                         f"sizeof(int32_t));")
+            lines.append(f"{indent}struct ggml_tensor * {p}ids = ggml_new_tensor_1d("
+                         f"ctx, GGML_TYPE_I32, 1);")
+            lines.append(f"{indent}{p}ids->data = {p}ids_buf;")
+            lines.append(f"{indent}struct ggml_tensor * {p}res = ggml_ssm_scan(ctx, "
+                         f"{p}s0, ggml_reshape_4d(ctx, {p}xs, {hd}, {h}, n, 1), "
+                         f"{p}dt3, {p}A2, {p}B4, {p}C4, {p}ids, {ng});")
+            # y = 前半段（末态拼在后面，这里只取视图）。
+            # **步长要一格不差**：nb1 = hd·nb0、nb2 = hd·h·nb0、nb3 = hd·h·n·nb0
+            # （第一版整体错位一格，于是 y4 不连续、reshape 当场 GGML_ASSERT）。
+            lines.append(f"{indent}struct ggml_tensor * {p}y4 = ggml_view_4d(ctx, "
+                         f"{p}res, {hd}, {h}, n, 1, "
+                         f"(size_t) {hd} * {p}res->nb[0], "
+                         f"(size_t) {hd} * {h} * {p}res->nb[0], "
+                         f"(size_t) {hd} * {h} * n * {p}res->nb[0], 0);")
+            # ④ D 跳连（scan 只给 Σ s·C）+ gate（**乘在 norm 之前**）。
+            #    `ggml_mul(a, b)` 要求 **b 能广播进 a** —— 大形状在前。
+            lines.append(f"{indent}struct ggml_tensor * {p}y2 = ggml_add(ctx, "
+                         f"ggml_reshape_2d(ctx, {p}y4, {di}, n), "
+                         f"ggml_reshape_2d(ctx, ggml_mul(ctx, "
+                         f"ggml_reshape_4d(ctx, {p}xs, {hd}, {h}, n, 1), "
+                         f"ggml_reshape_4d(ctx, {W_('D')}, 1, {h}, 1, 1)), "
+                         f"{di}, n));")
+            lines.append(f"{indent}{p}y2 = ggml_mul(ctx, {p}y2, "
+                         f"ggml_silu(ctx, {p}gate));")
+            # ⑤ 按组 norm（ggml_rms_norm 沿 dim0 归一 -> (gs, ng, n) 正好逐组）
+            lines.append(f"{indent}struct ggml_tensor * {p}g3 = ggml_mul(ctx, "
+                         f"ggml_rms_norm(ctx, ggml_reshape_3d(ctx, {p}y2, "
+                         f"{gs}, {ng}, n), {eps}), ggml_reshape_2d(ctx, "
+                         f"{W_('norm.w')}, {gs}, {ng}));")
+            lines.append(f"{indent}struct ggml_tensor * {dst} = ggml_mul_mat(ctx, "
+                         f"{W_('out_proj')}, ggml_cont_2d(ctx, {p}g3, {di}, n));")
         elif k == "FFN":
             hid = int(a["hidden"])
             bias = bool(a.get("bias"))
@@ -861,6 +983,16 @@ def emit_model_c(ir, order, params):
         body.append("    /* ---- 最终 norm + head：**在层之后**（吃的是层跑完的残差）---- */")
         for j, o in gpost:
             emit_op(body, 0, j, o, indent="    ", wmap=gmap[o["kind"]])
+
+    # **图预算按实际发射的调用数回写**，不靠 `_budget` 的按 kind 估算 ——
+    # 和图路径（`emit_model_c_graph`）同一个理由：复合式一个算子顶好几个
+    # ggml 节点（SSM 一层就 ~25 个），按估的数会 `GGML_ASSERT(cgraph->n_nodes
+    # < cgraph->size)`（实测 ssm-shaped 炸在这）。宁多勿少：图句柄就是几 KB。
+    _calls = sum(str(line).count("ggml_") for line in body)
+    n_nodes = max(n_nodes, 3 * _calls + 64)
+    for _i, _ln in enumerate(head):
+        if str(_ln).startswith("#define N_NODES "):
+            head[_i] = f"#define N_NODES {n_nodes}"
 
     return _assemble(head, body, logits, n_nodes, mem_tok, mem_pair)
 

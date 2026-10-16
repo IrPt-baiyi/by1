@@ -16,7 +16,7 @@
 | `kda-shaped.by1` | KDA | ✅ | ✅ | ✗ | ✅ | ✗ |
 | `kda-gva-shaped.by1` | KDA（GVA） | ✅ | ✅ | ✗ | ✅ | ✗ |
 | `kda-lowrank-shaped.by1` | KDA（低秩） | ✅ | ✅ | ✗ | ✅ | ✗ |
-| `ssm-shaped.by1` | SSM（Mamba1） | ✅ | ✅ | ✗ | ✅ | ✗ |
+| `ssm-shaped.by1` | SSM（Mamba2/Nemotron-H 参数化） | ✅ | ✅ | ✅ | ✅ | ✗ |
 | `raw-escape.by1` | Raw（逃生舱） | ✅ | ✗ | ✗ | ✗ | ✗ |
 | `complete-granite-4.0-h-350m.by1` | SSM2 + Attention（逐层混排） | ✗ | — | — | — | ✅ |
 | `complete-Falcon-H1-0.5B-Instruct.by1` | Parallel（层内并行：SSM2 + Attention） | ✗ | — | — | — | ✅ |
@@ -43,7 +43,6 @@
 | `kda-gva-shaped.by1` | `full` | 完整后端的 arch 必须是 qwen3, qwen2, gpt2, gpt_oss, qwen3_5, mamba, granitemoehybrid, falcon_h1 |
 | `kda-lowrank-shaped.by1` | `ggml` | 第 0 层 op1（KDA）：算子 KDA 还没有 ggml 映射；第 1 层 op1（KDA）：算子 KDA 还没有 ggml 映射；第 2 层 op1（KDA）：算子 KDA 还没有 ggml 映射；第 3 层 op1（KDA）：算子 KDA 还没有 ggml 映射 |
 | `kda-lowrank-shaped.by1` | `full` | 完整后端的 arch 必须是 qwen3, qwen2, gpt2, gpt_oss, qwen3_5, mamba, granitemoehybrid, falcon_h1 |
-| `ssm-shaped.by1` | `ggml` | 第 0 层 op1（SSM）：算子 SSM 还没有 ggml 映射；第 1 层 op1（SSM）：算子 SSM 还没有 ggml 映射；第 2 层 op1（SSM）：算子 SSM 还没有 ggml 映射；第 3 层 op1（SSM）：算子 SSM 还没有 ggml 映射 |
 | `ssm-shaped.by1` | `full` | 完整后端的 arch 必须是 qwen3, qwen2, gpt2, gpt_oss, qwen3_5, mamba, granitemoehybrid, falcon_h1 |
 | `raw-escape.by1` | `c` | [不支持] C 后端还没有 Raw |
 | `raw-escape.by1` | `ggml` | 第 0 层 op1（Raw）：算子 Raw 还没有 ggml 映射；第 1 层 op1（Raw）：算子 Raw 还没有 ggml 映射 |
@@ -60,6 +59,7 @@
 
 - `hello.by1` —— Attention + FFN（最小完整）
 - `attn-fused-shaped.by1` —— Attention（融合 qkv + 门）
+- `ssm-shaped.by1` —— SSM（Mamba2/Nemotron-H 参数化）
 
 ### 3.2 五后端交集（含 `full`）
 

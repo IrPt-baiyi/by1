@@ -279,6 +279,13 @@ REAL = [
 # **挑选本身对不对由 `by1sparse.py` 对着 transformers 的 `GlmMoeDsaIndexer` 判。**
 EXEC_SEQ = {'mla-sparse-shaped.by1': 16}
 
+#: **IR 路（--from-ir）要进门槛的三个探针** —— 与后端矩阵里 ggml ✅ 的三格同集。
+#: 为什么必须进门禁（2026-10-16 实测）：`qkv_fused` 的 bias 视图偏移少乘了
+#: `nb[0]`（**字节 vs 元素**），形状、名字全对、只有数值错（3.6e-01）——
+#: 而 `--selftest` 的孪生模型不含融合 qkv，于是它一直绿。
+#: **没进门禁的检查会烂**，同一条纪律（D6）。
+GGML_IR_MODELS = ['hello.by1', 'attn-fused-shaped.by1', 'ssm-shaped.by1']
+
 SHAPED = ['llama-shaped.by1', 'mixtral-shaped.by1', 'gpt-oss-shaped.by1',
           'qwen3-next-shaped.by1', 'mla-shaped.by1', 'llama3-shaped.by1',
           # **SparseMLA**：MLA 加一个 DSA 稀疏索引器（GLM-5.3-Flash 那一路）。
@@ -353,8 +360,8 @@ JUDGES = [
     ('by1rules.py', 3),
     # 后端 × 机制矩阵：**承诺的公共子集到底有多大**（T30 那条"未定"）。
     # 12 个探针 × 5 个后端；拒绝必须带理由；docs/backend-matrix.md 是生成物。
-    # 实测（2026-10-16）：IR 路公共子集 = **2/12**（hello：Attention + FFN；
-    # attn-fused：融合 q/k/v 的 Attention —— 当天补上 ggml 侧实现），
+    # 实测（2026-10-16）：IR 路公共子集 = **3/12**（hello：Attention + FFN；
+    # attn-fused：融合 q/k/v；ssm-shaped：SSM 递推 —— ggml 侧当天补齐），
     # 五后端交集 = 0 —— 这些数字是量出来的，不是宣传出来的。
     ('by1backends.py', 3),
 
@@ -1026,6 +1033,18 @@ def main():
                          note_of(g_st, g_out, g_line, empty='（没有判定行）')))
             if g_st == 'fail':
                 fails.append('ggml selftest')
+            # **IR 路的数值对拍**（判卷人是 NumPy）：见 `GGML_IR_MODELS` 处
+            # 的来由。这三行就是"第四后端承诺到哪"的数值版。
+            for f, (st, out) in zip(GGML_IR_MODELS, run_many(
+                    [(['by1ggml.py', '--from-ir', f], 'ggml-ir ' + f)
+                     for f in GGML_IR_MODELS])):
+                line = [l.strip() for l in out.splitlines()
+                        if '最大绝对差' in l]
+                st = confirmed(st, out, line)
+                rows.append(('ggml IR ' + f, st,
+                             note_of(st, out, line, empty='').replace('   ', ' ')))
+                if st == 'fail':
+                    fails.append('ggml-ir ' + f)
 
         t0 = _tick('6. C 后端', t0)
 
