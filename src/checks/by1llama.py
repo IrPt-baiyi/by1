@@ -436,6 +436,15 @@ def selftest_kv_map(gguf_path):
     return missing
 
 
+#: **用了 Mamba2 那一代 SSM 的族。** 上游的 `Mamba2Model` 给它们同一套
+#: 转换期改写（`conversion/mamba.py` 的 `filter_tensors` / `modify_tensors`）——
+#: `GraniteHybridModel(Mamba2Model)` 与 `FalconH1Model(Mamba2Model)` 都继承它。
+#: 所以 by1 这边的规则也**按"那一代"划**，不按"某个家族"划：实测
+#: falcon_h1 有 36 个 `mamba.dt_bias` 映射不上，而那条规则 T27 就写好了，
+#: 只是当时 scope 写死在 granite 上。
+MAMBA2_ARCHES = ('granite_hybrid', 'falcon_h1')
+
+
 def _gguf_name(arch, hf_name, mapper, has_experts=False):
     """HF 名 -> GGML 名，**含"映射表里没有、上游在钩子里做"的那几条**。
 
@@ -450,7 +459,7 @@ def _gguf_name(arch, hf_name, mapper, has_experts=False):
     不补这几条，症状是"包能打出来、装不上"或者"名字对不上、张量少一批"。
     """
     fixed = hf_name
-    if arch == 'granite_hybrid' and hf_name.endswith('.dt_bias'):
+    if arch in MAMBA2_ARCHES and hf_name.endswith('.dt_bias'):
         fixed = hf_name[:-len('.dt_bias')] + '.dt_proj.bias'
     g = mapper.get_name(fixed, try_suffixes=('.weight', '.bias'))
     if arch == 'granite_hybrid' and 'shared_mlp.' in hf_name and has_experts:
@@ -495,7 +504,7 @@ def _modify_tensor(arch, hf_name, ggml_name, arr, n_groups=1):
         # HF 是 `(d_inner, 1, kernel)`，GGML 要 2D `(kernel, d_inner)`（写盘时反序）。
         if hf_name.endswith('conv1d.weight'):
             return np.squeeze(arr)
-    if arch == 'granite_hybrid':
+    if arch in MAMBA2_ARCHES:
         # **Mamba2 那一代的三条形状规则**（conversion/mamba.py:184-194）——
         # Mamba1 没有它们（它的 A_log/D 本来就是那个形状），只有这一族要：
         #   · `ssm_conv1d.weight` -> squeeze
@@ -511,7 +520,7 @@ def _modify_tensor(arch, hf_name, ggml_name, arr, n_groups=1):
         elif ggml_name.endswith('ssm_norm.weight'):
             out = out.reshape((n_groups, out.shape[0] // n_groups))
         arr = out
-    if arch in ('mamba', 'granite_hybrid') and hf_name.endswith('.A_log'):
+    if arch in ('mamba',) + MAMBA2_ARCHES and hf_name.endswith('.A_log'):
         # 值：GGML 的 `ssm_a` 存的是 **A = -exp(A_log)**，不是 A_log。
         # **必须用 torch.exp**：与上游 `torch.exp` 差 ~1 ulp 就会让逐位判据红
         # （T26 实测：max|Δ| 0.625，首个分歧 @1034）。放在 reshape 之后，

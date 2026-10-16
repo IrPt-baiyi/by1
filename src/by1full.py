@@ -25,6 +25,8 @@ FAMILIES = {
     # **第三个机制族（T27）**：混合栈 —— 同一份声明里 Attention 与 SSM 混排。
     # 这一类把 config 生成从"一个家族一种机制"推到"逐层类型表"。
     "granitemoehybrid": ("GraniteMoeHybridConfig", "GraniteMoeHybridForCausalLM"),
+    # **层内并行（T29）**：每层里 SSM 与注意力并存、输出相加。
+    "falcon_h1": ("FalconH1Config", "FalconH1ForCausalLM"),
 }
 MECH_FIELDS = {
     "Attention": {"q", "kv", "head_dim", "out_dim", "window", "qk_norm", "bias",
@@ -44,6 +46,11 @@ MECH_FIELDS = {
     # **和 `SSM` 不是一套** —— 两者并存，因为两个模型都在。
     "SSM2": {"n_heads", "d_head", "d_state", "n_groups", "chunk_size",
              "d_conv", "conv_bias", "proj_bias", "expand", "act", "structural"},
+    # **组合机制（T29）**：一层里两个混合器**并存**（不是"这层是 A、那层是 B"）。
+    # `a` / `b` 是**指向另外两个机制的名字** —— 语言层不用改：
+    # `mech X : KIND { k = v }` 本来就收裸名，而"不认识的 kind"由各后端明确拒绝
+    # （实测：codegen 报"机制 'Both' 的类型是 'Parallel'，codegen 还不支持"）。
+    "Parallel": {"a", "b", "structural"},
 }
 
 
@@ -353,6 +360,114 @@ def _compile_moe_hybrid(info, hp):
     return 'granitemoehybrid', cfg, {}
 
 
+def _compile_falcon_h1(info, hp):
+    """Falcon-H1（T29）：**层内并行** —— 每层里 SSM 与注意力**并存**、输出相加。
+
+    这是 by1 第一次处理"一层里两个混合器"。声明那边用的是一种**组合机制**：
+
+        mech Both : Parallel { a = Mixer; b = Attn }
+        pattern = 36 * Both
+
+    `a` / `b` 是**指向另外两个已声明机制的名字**。语言层不用改：解析器本来就收
+    裸名（`window = none`、`index = global` 都是这个写法），而各后端遇到不认识的
+    kind 会**明确拒绝** —— 实测 codegen 的原文是
+    "机制 'Both' 的类型是 'Parallel'，codegen 还不支持（目前支持：…）"。
+    这正是"要么实现，要么拒绝"，不是新增机制。
+
+    这一支只负责把它算成 `FalconH1Config`（由 config 逐字段判据守住）。
+    """
+    stacks = _layers(info)
+    main_names = [s for s in stacks if not info.get('stack_aux', {}).get(s)]
+    _fail(len(main_names) == 1, "完整后端需要一个主干栈；辅助栈请声明 aux = true")
+    _fail(not (set(stacks) - set(main_names)), "falcon_h1 没有视觉/MTP 分支")
+    main = stacks[main_names[0]]
+    _fail(all(mix[0] == 'Parallel' for mix, _ in main),
+          "falcon_h1 的每一层都要是 Parallel —— 层内并行是这一族的定义")
+    _fail(all(feed is not None for _mix, feed in main), "每层都要挂一个 FFN")
+    _fail({feed[0] for _mix, feed in main} == {'FFN'}, "这一族每层挂的是 dense FFN")
+    feed = _uniform([feed[1] for _mix, feed in main], 'FFN')
+    mixers = _uniform([mix[1] for mix, _ in main], 'Parallel')
+
+    sub = {}
+    for slot in ('a', 'b'):
+        _fail(slot in mixers, f"Parallel 必须写 a 与 b（缺 {slot}）")
+        name = mixers[slot]
+        _fail(name in info['mechs'],
+              f"Parallel 的 {slot} 指向未声明的机制 {name!r}")
+        sub[info['mechs'][name]] = dict(info['mech_attrs'][name])
+    _fail(set(sub) == {'SSM2', 'Attention'},
+          "这一族的层内并行恰好是 SSM2 与 Attention 两条支路")
+    ssm, attn = sub['SSM2'], sub['Attention']
+
+    d = _number(hp, 'd_model')
+    vocab = _number(hp, 'vocab')
+    eps = _number(hp, 'rms_eps', 1e-5, False)
+    _fail(0 < eps < 1, 'norm eps 必须在 (0,1) 内')
+    q, kv, hd = (_number(attn, k) for k in ('q', 'kv', 'head_dim'))
+    _fail(q % kv == 0, "q 必须是 kv 的整数倍")
+    _fail(not _bool(attn.get('bias', attn.get('qkv_bias')))
+          and not _bool(attn.get('out_bias')), "falcon_h1 的注意力没有 bias")
+    n_heads = _number(ssm, 'n_heads')
+    dh = _number(ssm, 'd_head')
+    # **这一族的 SSM 宽度与主干解耦**：`d_ssm = n_heads × d_head = 1536`，
+    # 而 `expand × d_model = 2048` —— 两者**不相等**（与 granite 那一族相反）。
+    # 所以这里按 `n_heads × d_head` 推，并显式记下这条差异。
+    _fail(ssm.get('act', 'silu') == 'silu', "SSM2 的激活实测为 silu")
+    _fail(not _bool(ssm.get('proj_bias')), "这一族的 SSM 投影没有 bias")
+    hidden = _number(feed, 'hidden')
+    _fail(feed.get('act', 'silu') == 'silu' and _bool(feed.get('gate'), True),
+          "前馈是有门控的 silu（SwiGLU）")
+
+    for key in ('embedding_multiplier', 'attention_in_multiplier',
+                'attention_out_multiplier', 'ssm_in_multiplier',
+                'ssm_out_multiplier', 'key_multiplier', 'lm_head_multiplier',
+                'ssm_multipliers', 'mlp_multipliers'):
+        _fail(key in hp, f"层内并行必须显式声明 {key}（改数值的字段，不能有默认值）")
+    cfg = dict(
+        vocab_size=vocab, hidden_size=d, num_hidden_layers=len(main),
+        num_attention_heads=q, num_key_value_heads=kv, head_dim=hd,
+        max_position_embeddings=_number(hp, 'max_pos'),
+        rms_norm_eps=eps, hidden_act='silu',
+        attention_bias=False, attention_dropout=0.0,
+        attention_in_multiplier=_number(hp, 'attention_in_multiplier', None, False),
+        attention_out_multiplier=_number(hp, 'attention_out_multiplier', None, False),
+        embedding_multiplier=_number(hp, 'embedding_multiplier', None, False),
+        key_multiplier=_number(hp, 'key_multiplier', None, False),
+        lm_head_multiplier=_number(hp, 'lm_head_multiplier', None, False),
+        ssm_in_multiplier=_number(hp, 'ssm_in_multiplier', None, False),
+        ssm_out_multiplier=_number(hp, 'ssm_out_multiplier', None, False),
+        ssm_multipliers=[float(x) for x in _json(hp['ssm_multipliers'])],
+        mlp_multipliers=[float(x) for x in _json(hp['mlp_multipliers'])],
+        intermediate_size=hidden,
+        mlp_bias=_bool(hp.get('mlp_bias'), False),
+        mlp_expansion_factor=_number(hp, 'mlp_expansion_factor', 8, False),
+        projectors_bias=_bool(hp.get('projectors_bias'), False),
+        mamba_n_heads=n_heads, mamba_d_head=dh,
+        mamba_d_state=_number(ssm, 'd_state'),
+        mamba_n_groups=_number(ssm, 'n_groups', 1),
+        mamba_chunk_size=_number(ssm, 'chunk_size', 128),
+        mamba_d_conv=_number(ssm, 'd_conv', 4),
+        mamba_expand=_number(ssm, 'expand'),
+        mamba_d_ssm=n_heads * dh,
+        mamba_conv_bias=_bool(ssm.get('conv_bias'), True),
+        mamba_proj_bias=_bool(ssm.get('proj_bias'), False),
+        mamba_use_mlp=_bool(hp.get('mamba_use_mlp'), True),
+        mamba_norm_before_gate=_bool(hp.get('mamba_norm_before_gate'), False),
+        mamba_rms_norm=_bool(hp.get('mamba_rms_norm'), False),
+        rope_parameters={'rope_type': 'default',
+                         'rope_theta': _number(hp, 'rope_theta', 1e11, False)},
+        initializer_range=_number(hp, 'initializer_range', 0.02, False),
+        use_cache=True,
+        bos_token_id=int(_json(hp.get('bos_token_id', 1))),
+        eos_token_id=int(_json(hp.get('eos_token_id', 11))),
+        pad_token_id=int(_json(hp.get('pad_token_id', 0))),
+        tie_word_embeddings=_bool(hp['tie_word_embeddings']),
+    )
+    _fail(cfg['mamba_d_ssm'] > 0 and cfg['mamba_chunk_size'] > 0,
+          "SSM 的宽度与分块大小必须为正")
+    return 'falcon_h1', cfg, {}
+
+
 def compile_config(info):
     """声明 -> (家族, 完整配置, MTP 规格)。不下载配置、不导入 torch。"""
     family = info.get('arch')
@@ -372,12 +487,21 @@ def compile_config(info):
                 'max_pos', 'embedding_multiplier', 'residual_multiplier',
                 'logits_scaling', 'attention_multiplier', 'shared_hidden',
                 'init_method', 'router_aux_loss_coef', 'output_router_logits',
-                'rope_theta'}, 'hparams')
+                'rope_theta',
+                # 层内并行独有（T29）：九个缩放标量 + FFN 的两个开关 +
+                # Mamba 那三个开关。**它们都改数值或改结构**，全部显式声明。
+                'attention_in_multiplier', 'attention_out_multiplier',
+                'ssm_in_multiplier', 'ssm_out_multiplier', 'key_multiplier',
+                'lm_head_multiplier', 'ssm_multipliers', 'mlp_multipliers',
+                'mlp_expansion_factor', 'mlp_bias', 'projectors_bias',
+                'mamba_use_mlp', 'mamba_norm_before_gate', 'mamba_rms_norm'}, 'hparams')
     _fail('tie_word_embeddings' in hp, "完整架构必须显式声明 tie_word_embeddings")
     if family == 'mamba':
         return _compile_mamba(info, hp)
     if family == 'granitemoehybrid':
         return _compile_moe_hybrid(info, hp)
+    if family == 'falcon_h1':
+        return _compile_falcon_h1(info, hp)
     stacks = _layers(info)
     main_names = [s for s in stacks if not info.get('stack_aux', {}).get(s)]
     _fail(len(main_names) == 1, "完整后端需要一个主干栈；视觉/MTP 栈请声明 aux = true")

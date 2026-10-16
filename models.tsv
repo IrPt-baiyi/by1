@@ -74,6 +74,7 @@ granite-4.0-h-350m	granite-4.0-h-350m	ibm-granite/granite-4.0-h-350m	混合栈�
 Qwen3.5-397B-A17B	Qwen3.5-397B-A17B	Qwen/Qwen3.5-397B-A17B	Qwen3.5 家族唯一 MoE 号：主干专家**融合**、MTP 专家**逐专家**（两个机制声明）
 granite-4.0-h-1b	granite-4.0-h-1b	ibm-granite/granite-4.0-h-1b	混合栈第二个成员（40 层，注意力在 5/15/25/35）：μP 换个值照样拦得住
 Qwen3-Coder-Next	Qwen3-Coder-Next	Qwen/Qwen3-Coder-Next	`qwen3_next` 扁平 config：**逐专家 MoE** + `in_proj_qkvz`/`in_proj_ba` 两块融合，无 MTP / 无视觉塔
+Falcon-H1-0.5B-Instruct	Falcon-H1-0.5B-Instruct	tiiuae/Falcon-H1-0.5B-Instruct	层内并行（每层 SSM 与注意力并存相加）：Parallel 组合机制 + 九个缩放标量
 DeepSeek-R1-Distill-Qwen-7B	DeepSeek-R1-Distill-Qwen-7B	deepseek-ai/DeepSeek-R1-Distill-Qwen-7B	Qwen2 架构（同 1.5B）：**q/k/v 带 bias 而 o_proj 不带**
 Qwen3.8-Flash-Next	Qwen3.8-Flash-Next	Qwen/Qwen3.8-Flash-Next	`qwen4_exp`：**mHC 超连接 + 稀疏索引器 + PLE（128 个 ngram 分片）** + MTP 改名
 gemma-4-26B-A4B	gemma-4-26B-A4B	google/gemma-4-26B-A4B	gemma4 MoE 号：**稠密 FFN 与专家并存**（专家不在 `mlp.` 下）+ 自定义 `router.*` 三件套 + 层内 7 个 norm

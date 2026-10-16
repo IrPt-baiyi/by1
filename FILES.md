@@ -1,6 +1,6 @@
 # 这个仓库里每个文件是干什么的
 
-> 407 个跟踪文件。按"你会想找什么"分组，不按字母表。
+> 410 个跟踪文件。按"你会想找什么"分组，不按字母表。
 >
 > **这份文档是生成的**：`python src/by1files.py --write`。
 > 文件清单、每组的个数、每个文件的一句话都从目录树和 docstring 来 ——
@@ -329,7 +329,7 @@
 |---|---|
 | `2026-10-16-colab-hello.md` | 外部复现 #1 —— Colab CPU quickstart（John6666） |
 
-## `models/` —— 64 个
+## `models/` —— 65 个
 
 命名规矩：**文件名 = 长名 = HF 的模型名（去掉 owner）**，
 `model` 声明 = 短名（手写的）。两列的对照见 `models.tsv`。
@@ -361,6 +361,7 @@
 | `attn-fused-shaped.by1` | 融合 q/k/v 的注意力**（视觉塔那种布局） |
 | `clef-tiny.by1` | 目的：证明"对着真 checkpoint 验过的那份描述"**同时是能跑的** |
 | `clef.by1` | 真实模型 · HF id `Cloudflare/clef` |
+| `complete-Falcon-H1-0.5B-Instruct.by1` | 完整 Falcon-H1-0.5B（层内并行）—— **by1 第一次描述"一层里两个混合器"** |
 | `complete-Qwen2.5-7B-Instruct.by1` | 完整 Qwen2.5-7B-Instruct：Q/K/V 有 bias，输出投影无 bias |
 | `complete-Qwen3-0.6B.by1` | 完整 Qwen3-0.6B：包含 embedding/lm_head 参数共享 |
 | `complete-Qwen3-8B.by1` | 完整 Qwen3-8B：36 层 GQA + SwiGLU，独立输出头 |
@@ -463,16 +464,16 @@
 | `manifest.json` | "schemaVersion": 1, |
 | `page-0001.png` | 论文页面预览图（paper/preview-*/ 里的 PNG 快照，按目录分语言和版本） |
 
-## `refs/` —— 92 个
+## `refs/` —— 94 个
 
 从 HuggingFace / ModelScope 抓的**模型元数据**（配置 + 张量名/形状清单），
 **不是权重**。版权属各发布方，各自适用各自的许可证。
 
 | 种类 | 个数 | 是什么 |
 |---|---|---|
-| `*.config.json` | 38 | |
+| `*.config.json` | 39 | |
 | `*.gguf.json` | 3 | |
-| `*.tensors.json` | 37 | |
+| `*.tensors.json` | 38 | |
 | `ISTA-DASLab__Qwen3.8-27B-GSQ-RCO-GGUF.IQ2_S-mtp.alloc.txt` | 14 | |
 
 

@@ -24,7 +24,9 @@ GALLERY = ['complete-Qwen3-0.6B.by1', 'complete-Qwen3-8B.by1',
            # **第三个机制族（T27）**：混合栈 —— 逐层类型表。
            'complete-granite-4.0-h-350m.by1',
            # **T28：同一类的第二个成员**（不同图案）—— 这一条是"支持一类"的证人。
-           'complete-granite-4.0-h-1b.by1']
+           'complete-granite-4.0-h-1b.by1',
+           # **T29：层内并行** —— 一层里两个混合器。
+           'complete-Falcon-H1-0.5B-Instruct.by1']
 
 #: **按名字取件，不要按下标。** 加一个模型就会把 `GALLERY[-1]` / `GALLERY[5]`
 #: 悄悄换成另一个模型 —— 2026-10-16 加 mamba 时真撞上：MTP/视觉那两个用例
@@ -39,6 +41,8 @@ MAMBA = 'complete-mamba-130m-hf.by1'
 GRANITE = 'complete-granite-4.0-h-350m.by1'
 #: T28：**同一类的第二个成员**（图案不同：注意力在 5/15/25/35，40 层）。
 GRANITE_1B = 'complete-granite-4.0-h-1b.by1'
+#: T29（工作稿编号）：**层内并行** —— 每层里 SSM 与注意力并存相加。
+FALCON = 'complete-Falcon-H1-0.5B-Instruct.by1'
 
 #: 夹具用的 norm eps —— **`tiny()` 与 `config_of()` 必须取同一个值**：
 #: 一个是"声明编译出来的配置"，一个是"独立写出来的参考配置"，
@@ -145,6 +149,33 @@ def tiny(name):
                 attrs['ssm_state'] = '4'
         hp['d_inner'] = str(expand * 32)
         hp['dt_rank'] = '2'
+    if family == 'falcon_h1':
+        # **层内并行（T29）的夹具**：两种机制在**同一层**里，所以"按类型取样"
+        # 那一套用不上 —— 每层都是 `Parallel`，通用截断留前 2 层即可。
+        # 但**支路本身要缩**：SSM2 与注意力都在 `mech_attrs` 里（不是 layer_seq
+        # 的 mixer 属性），因为它们是被 `Parallel` 引用的**独立机制**。
+        for name_, attrs in info['mech_attrs'].items():
+            kind = info['mechs'][name_]
+            if kind == 'SSM2':
+                attrs.update(n_heads='2', d_head='16', d_state='8', chunk_size='8')
+            elif kind == 'Attention':
+                attrs.update(q='4', kv='2', head_dim='8')
+            elif kind == 'FFN':
+                attrs['hidden'] = '64'
+        hp['max_pos'] = '32'
+        hp['pad_token_id'] = '0'
+        # 九个缩放 + FFN/Mamba 的开关：**夹具钉住**（与 `config_of` 那份一致），
+        # 真实值由 `official_configs` 的逐字段用例负责。
+        hp.update(embedding_multiplier='1.5', attention_in_multiplier='1.0',
+                  attention_out_multiplier='0.5', ssm_in_multiplier='1.0',
+                  ssm_out_multiplier='0.5', key_multiplier='0.5',
+                  lm_head_multiplier='0.5',
+                  ssm_multipliers='[1.0, 1.0, 1.0, 1.0, 1.0]',
+                  mlp_multipliers='[1.0, 1.0]',
+                  mlp_expansion_factor='8', mlp_bias='false',
+                  projectors_bias='false', mamba_use_mlp='true',
+                  mamba_norm_before_gate='false', mamba_rms_norm='false',
+                  rope_theta='10000.0')
     if family == 'granitemoehybrid':
         # **夹具把 μP 四个缩放也钉住**（与 `config_of` 里写的那份一致）：
         # 两个 granite 成员的真实值不同（350m：12/0.246/3/0.015625；
@@ -243,6 +274,28 @@ def config_of(family, tied, T):
             use_bias=False, use_conv_bias=True, pad_vocab_size_multiple=8,
             ssm_cfg={}, bos_token_id=54, eos_token_id=55, pad_token_id=0,
             tie_word_embeddings=tied)
+    if family == 'falcon_h1':
+        # **层内并行（T29）**：字段名是这一族自己那套（九个缩放 + `mamba_*` + `mlp_*`）。
+        # 值必须与 `tiny()` 里钉住的那份**逐位一致**，否则前向必然不同。
+        return by1full._tclass('FalconH1Config')(
+            vocab_size=64, hidden_size=32, num_hidden_layers=2,
+            num_attention_heads=4, num_key_value_heads=2, head_dim=8,
+            max_position_embeddings=32, rms_norm_eps=tiny_eps(family),
+            hidden_act='silu', attention_bias=False, attention_dropout=0.0,
+            embedding_multiplier=1.5, attention_in_multiplier=1.0,
+            attention_out_multiplier=0.5, ssm_in_multiplier=1.0,
+            ssm_out_multiplier=0.5, key_multiplier=0.5, lm_head_multiplier=0.5,
+            ssm_multipliers=[1.0] * 5, mlp_multipliers=[1.0, 1.0],
+            intermediate_size=64, mlp_bias=False, mlp_expansion_factor=8,
+            projectors_bias=False,
+            mamba_n_heads=2, mamba_d_head=16, mamba_d_state=8, mamba_n_groups=1,
+            mamba_chunk_size=8, mamba_d_conv=4, mamba_expand=2, mamba_d_ssm=32,
+            mamba_conv_bias=True, mamba_proj_bias=False, mamba_use_mlp=True,
+            mamba_norm_before_gate=False, mamba_rms_norm=False,
+            rope_parameters={'rope_type': 'default', 'rope_theta': 10000.0},
+            initializer_range=0.02, use_cache=True,
+            bos_token_id=54, eos_token_id=55, pad_token_id=0,
+            tie_word_embeddings=tied)
     if family == 'granitemoehybrid':
         # **混合栈用不了 `common`**：主干的形状来自**逐层类型表**，
         # 而逐层类型表要与 `tiny()` 取样后的顺序一致（2 个递归层 + 1 个注意力层）。
@@ -299,6 +352,8 @@ def reference(family, tied, torch, T):
     if family == 'granitemoehybrid':
         # 这一族**顶层有导出**，直接取。
         return T.GraniteMoeHybridForCausalLM(config_of(family, tied, T))
+    if family == 'falcon_h1':
+        return by1full._tclass('FalconH1ForCausalLM')(config_of(family, tied, T))
     return T.Qwen3_5ForConditionalGeneration(config_of(family, tied, T))
 
 
@@ -387,7 +442,9 @@ def main():
                                      # config 逐字段与家族无关，先接上。
                                      (GRANITE, 'ibm-granite__granite-4.0-h-350m.config.json'),
                                      # T28：同类第二个成员（图案与 μP 都不同）。
-                                     (GRANITE_1B, 'ibm-granite__granite-4.0-h-1b.config.json')]:
+                                     (GRANITE_1B, 'ibm-granite__granite-4.0-h-1b.config.json'),
+                                     # T29：**层内并行**（九个缩放标量逐个对上）。
+                                     (FALCON, 'tiiuae__Falcon-H1-0.5B-Instruct.config.json')]:
             family, cfg, _ = by1full.compile_config(description(name))
             raw = json.loads(pathlib.Path(by1paths.REFS, reference_file).read_text(encoding='utf-8'))
             # **用 by1full._tclass**：mamba 系的两个类没导出到顶层，
@@ -700,6 +757,75 @@ def main():
             return
         raise RuntimeError('混合栈换成 MoE 前馈竟然被接受')
     case('混合栈换成 MoE 前馈被拒绝', hybrid_moe_feed)
+
+    # ── T29（层内并行）的五条规则：**每条一个必红反例** ──────────────
+
+    def _falcon():
+        return copy.deepcopy(description(FALCON))
+
+    def _del_mech_attr(info, mech_name, key):
+        info['mech_attrs'][mech_name].pop(key, None)
+        for entry in info['layer_seq']:
+            if entry[1] == mech_name:
+                entry[2].pop(key, None)
+
+    def parallel_missing_branch():
+        """`Parallel` 必须写全 `a` 与 `b` —— 少一条支路必须被拒。"""
+        info = _falcon()
+        _del_mech_attr(info, 'Both', 'b')
+        try:
+            by1full.compile_config(info)
+        except ValueError:
+            return
+        raise RuntimeError('少一条支路的 Parallel 竟然被接受')
+    case('Parallel 少一条支路被拒绝', parallel_missing_branch)
+
+    def parallel_unknown_branch():
+        """`a` / `b` 指向**未声明的机制**必须被拒（不是默默当字符串）。"""
+        info = _falcon()
+        _set_mech_attr(info, 'Both', a='NotAMechanism')
+        try:
+            by1full.compile_config(info)
+        except ValueError:
+            return
+        raise RuntimeError('Parallel 指向不存在的机制竟然被接受')
+    case('Parallel 指向不存在的机制被拒绝', parallel_unknown_branch)
+
+    def parallel_same_kind():
+        """两条支路必须**不同类**（这一族恰好是 SSM2 + Attention）。"""
+        info = _falcon()
+        _set_mech_attr(info, 'Both', a='Mixer', b='Mixer')
+        try:
+            by1full.compile_config(info)
+        except ValueError:
+            return
+        raise RuntimeError('两条支路是同一类竟然被接受')
+    case('Parallel 两条支路同类被拒绝', parallel_same_kind)
+
+    def parallel_not_parallel():
+        """falcon_h1 的每一层都必须是 `Parallel` —— 换成单机制必须被拒。"""
+        info = _falcon()
+        # `layer_seq` 里是**元组**，不能就地改；重建一份。
+        info['layer_seq'] = [(e[0], 'Attn', {'q': '8', 'kv': '2', 'head_dim': '64'},
+                              e[3], e[4]) for e in info['layer_seq']]
+        info['mechs']['Attn'] = 'Attention'
+        try:
+            by1full.compile_config(info)
+        except ValueError:
+            return
+        raise RuntimeError('falcon_h1 的主层换成单机制竟然被接受')
+    case('层内并行换成单机制被拒绝', parallel_not_parallel)
+
+    def falcon_missing_scale():
+        """九个缩放**没有默认值** —— 少一个必须被拒。"""
+        info = _falcon()
+        info['hparams'].pop('key_multiplier')
+        try:
+            by1full.compile_config(info)
+        except ValueError:
+            return
+        raise RuntimeError('少一个缩放标量竟然被接受')
+    case('缺一个缩放标量被拒绝', falcon_missing_scale)
 
     print('\n  [%s] 完整模型：%s' % ('FAIL' if failures else 'PASS', ', '.join(failures) if failures else '全部通过'))
     return 1 if failures else 0

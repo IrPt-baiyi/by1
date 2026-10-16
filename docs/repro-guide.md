@@ -127,6 +127,13 @@ python3 -m venv --without-pip .venv && python3 -m pip --python .venv install -e 
 | E | `真权重 …：370 个真名` · `前向 max\|Δ\| = 0.000e+00` |
 | F | `cache 里的两本账：递归层 28 个 · 注意力层 4 个（DynamicCache）` · `官方 loader：max\|Δ\| = 9.918e-05` · `by1 模型：max\|Δ\| = 9.918e-05` · `[PASS] 混合状态：增量 == 全量` |
 
+**还有第三个成员：层内并行** —— `complete-Falcon-H1-0.5B-Instruct.by1`
+（`tiiuae/Falcon-H1-0.5B-Instruct`，0.97 GB）：每一层里 SSM 与注意力**并存相加**
+（不是"这层 SSM、那层注意力"）。命令同样只换 `--by1` 与权重目录，实测：
+**579 个真名 · 前向 max\|Δ\| = 0.000e+00** · 增量 == 全量 官方 **4.959e-05** /
+by1 **4.768e-05**。（这是第一个"两个 loader 不完全同值"的族 —— 差 4%，
+原因还没查，两者都远在判据内。）
+
 **E/F 这两条各还有一个"同类第二成员"**：`complete-granite-4.0-h-1b.by1`
 （`ibm-granite/granite-4.0-h-1b`，2.73 GB）—— 命令一模一样，只换 `--by1`
 与权重目录。实测：**466 个真名 · 前向 max\|Δ\| = 0.000e+00** ·

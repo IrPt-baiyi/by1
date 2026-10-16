@@ -1,0 +1,107 @@
+# 完整 Falcon-H1-0.5B（层内并行）—— **by1 第一次描述"一层里两个混合器"**。
+#
+# 每一层里 SSM 与注意力**并存**（不是"这层 SSM、那层注意力"）：
+#
+#     a = mamba(x) * ssm_out_multiplier
+#     b = self_attn(x * attention_in_multiplier) * attention_out_multiplier
+#     x = a + b                      ← 两条支路**读同一个归一化输入**、输出**相加**
+#     再残差；pre_ff_layernorm → feed_forward → 残差
+#
+# 表达方式是**组合机制** `Parallel`：`a` / `b` 指向另外两个已声明的机制。
+# 语言层没有为此改动：解析器本来就收裸名（`window = none` 那种写法），
+# 而"不认识的 kind"由各后端明确拒绝（codegen 的原文：
+# "机制 'Both' 的类型是 'Parallel'，codegen 还不支持（目前支持：…）"）。
+#
+# 这一族的两个"与别处相反"之处（都实测过）：
+#   · **SSM 宽度与主干解耦**：`d_ssm = n_heads × d_head = 24 × 64 = 1536`，
+#     而 `expand × d_model = 2 × 1024 = 2048` —— **两者不相等**（granite 那一族是相等）。
+#   · **`q × head_dim ≠ d_model`**：8 × 64 = 512，而 d_model = 1024。
+#
+# 九个缩放标量是无理数（`5.656854249492381` = 4√2 之类），**照配置字面量写**，
+# 由 config 逐字段判据守住；它们是"改数值不改形状"的字段。
+#
+# 判卷人（两侧都实测过）：
+#   · transformers 5.15.1 `FalconH1ForCausalLM`（521.4 M · 579 张量）
+#   · llama.cpp `MODEL_ARCH.FALCON_H1` + `conversion/falcon_h1.py`
+model FalconH1Small {
+  backend transformers
+  arch falcon_h1
+  ctx 16384
+
+  hparams {
+    d_model = 1024
+    vocab = 32784
+    n_layer = 36
+    rms_eps = 1e-05
+    max_pos = 16384
+    # 这一族**不共享**词嵌入（有独立的 lm_head）。
+    tie_word_embeddings = false
+    bos_token_id = 1
+    eos_token_id = 11
+    pad_token_id = 0
+    initializer_range = 0.02
+    rope_theta = 100000000000.0
+    # FFN 的开关
+    mlp_expansion_factor = 8
+    mlp_bias = false
+    projectors_bias = false
+    # Mamba 那三个开关
+    mamba_use_mlp = true
+    mamba_norm_before_gate = false
+    mamba_rms_norm = false
+    # 九个缩放（改数值、不改形状 —— 少一个就是"算的是另一个模型"）
+    embedding_multiplier = 5.656854249492381
+    attention_in_multiplier = 1.0
+    attention_out_multiplier = 0.9375
+    ssm_in_multiplier = 1.25
+    ssm_out_multiplier = 0.23570226039551587
+    key_multiplier = 0.39062499999999994
+    lm_head_multiplier = 0.0390625
+    ssm_multipliers = [0.3535533905932738, 0.25, 0.3535533905932738, 0.5, 0.3535533905932738]
+    mlp_multipliers = [0.8838834764831844, 0.5859375]
+  }
+
+  # 注意力：8 个查询头 / 2 个 KV 头，头维 64（8 × 64 = 512 ≠ d_model，上面写了）。
+  mech Attn : Attention {
+    q = 8
+    kv = 2
+    head_dim = 64
+  }
+
+  # Mamba2 那一代：`n_heads × d_head = 1536` 就是 `d_ssm`。
+  mech Mixer : SSM2 {
+    n_heads = 24
+    d_head = 64
+    d_state = 128
+    n_groups = 1
+    chunk_size = 128
+    d_conv = 4
+    conv_bias = true
+    proj_bias = false
+    expand = 2
+    act = silu
+    structural = [n_heads, d_head, d_state, n_groups, d_conv]
+  }
+
+  # **组合机制**：一层里两条支路并存（输出相加，由这一族的语义定）。
+  mech Both : Parallel {
+    a = Mixer
+    b = Attn
+  }
+
+  mech MLP : FFN {
+    hidden = 2048
+    act = silu
+    gate = true
+    bias = false
+  }
+
+  stack main {
+    pattern = 36 * Both
+    main[:] >> MLP
+  }
+
+  position {
+    default = rope(base = 100000000000, pairing = half)
+  }
+}
