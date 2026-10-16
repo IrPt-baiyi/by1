@@ -395,6 +395,77 @@ def main():
                 return
             raise RuntimeError('错误声明被接受')
         case(name + '被拒绝', rejected)
+
+    # ── T26 加的五条规则：**每条配一个必红反例**（否则规则可能永远绿）──
+    MAMBA = 'complete-mamba-130m-hf.by1'
+
+    def _mamba():
+        return copy.deepcopy(description(MAMBA))
+
+    def ssm_with_feed():
+        """SSM 层不能再挂 FFN/MoE —— Mamba1 的 mixer 就是整层。"""
+        info = _mamba()
+        info['mechs']['MLP'] = 'FFN'
+        info['mech_attrs']['MLP'] = {'hidden': '1536'}
+        info['layer_seq'][0][4].append('MLP')
+        try:
+            by1full.compile_config(info)
+        except ValueError:
+            return
+        raise RuntimeError('SSM 层挂上 FFN 竟然被接受')
+    case('SSM 层挂 FFN 被拒绝', ssm_with_feed)
+
+    def d_inner_mismatch():
+        """`d_inner` 必须等于 `expand × d_model`（1516 那种手滑要拦住）。"""
+        info = _mamba()
+        info['hparams']['d_inner'] = '1024'
+        try:
+            by1full.compile_config(info)
+        except ValueError:
+            return
+        raise RuntimeError('d_inner 与 expand x d_model 不等竟然被接受')
+    case('d_inner 不等被拒绝', d_inner_mismatch)
+
+    def mamba_non_ssm():
+        """mamba 的主层只能是 SSM —— 换成 Attention 必须报错（且不是因为属性表）。"""
+        info = _mamba()
+        name = info['layer_seq'][0][1]
+        info['mechs'][name] = 'Attention'
+        info['mech_attrs'][name] = {'q': '4', 'kv': '2', 'head_dim': '32',
+                                    'structural': []}
+        try:
+            by1full.compile_config(info)
+        except ValueError:
+            return
+        raise RuntimeError('mamba 主层换成 Attention 竟然被接受')
+    case('mamba 主层非 SSM 被拒绝', mamba_non_ssm)
+
+    def tclass_fallback():
+        """`_tclass`：**顶层取不到不等于没有** —— mamba 的两个类就没导出。"""
+        import transformers as T
+        if getattr(T, 'MambaForCausalLM', None) is None:
+            cls = by1full._tclass('MambaForCausalLM')
+            require(cls.__name__ == 'MambaForCausalLM', '_tclass 解析错了')
+        require(by1full._tclass('Qwen3Config').__name__ == 'Qwen3Config',
+                '_tclass 对顶层类也应当直接取到')
+    case('_tclass 顶层取不到时走 auto 映射', tclass_fallback)
+
+    def modify_tensor_rules():
+        """转换期改写（mamba 两条）：**改值**与**改形状** —— 少了就是"算另一个模型"。"""
+        import numpy as np
+        import torch
+        import by1llama
+        src = np.array([[1.0, 2.0]], dtype=np.float32)
+        a = np.asarray(by1llama._modify_tensor('mamba', 'x.A_log', 'blk.0.ssm_a', src))
+        want = (-torch.exp(torch.as_tensor(src))).numpy()
+        require(np.array_equal(a, want), 'A_log -> A 不是 -exp(A_log)')
+        conv = np.zeros((3, 1, 4), dtype=np.float32)
+        got = by1llama._modify_tensor('mamba', 'x.conv1d.weight', 'blk.0.ssm_conv1d.weight', conv)
+        require(np.asarray(got).shape == (3, 4), 'conv1d 没有 squeeze')
+        require(by1llama._modify_tensor('qwen3', 'x.A_log', 'x', src) is src,
+                '非 mamba 架构不该被改写')
+    case('转换期改写（A_log 改值 / conv1d 改形状）', modify_tensor_rules)
+
     print('\n  [%s] 完整模型：%s' % ('FAIL' if failures else 'PASS', ', '.join(failures) if failures else '全部通过'))
     return 1 if failures else 0
 
