@@ -39,6 +39,10 @@ llama.cpp 加载与生成` 五段，加上**增量状态**（T14）与 **tie 语
 
 config 与声明的关键字段逐项吻合：`qwen3` · 28 层 · 16:8 头 · `head_dim` 128 ·
 `tie_word_embeddings=true` · `rope_theta` 1e6 · `max_position_embeddings` 40960。
+**这条不是手比的**：`python src/checks/by1complete.py` 的
+`official_configs` 用例（2026-10-16 起把 P0 模型算进去）把**声明生成的 config**
+与 `refs/Qwen__Qwen3-0.6B.config.json` 逐字段对照，用 `by1full._check_config`
+（声明里每个键都必须在官方 config 里、且值相等）。
 
 ## 二、证据（逐段）
 
@@ -219,8 +223,8 @@ config 由 `by1full.compile_config` 直接生成、权重由 HF 自己的 loader
 
 | IR 路径的格子 | Transformers 后端的等价判据 | 本报告里的证据 |
 |---|---|---|
-| config 逐字段 | 生成 config → HF 装载**零 missing/unexpected** | ① / ⑤（311/311，零缺失） |
-| emit + 张量名/形状 | 双 loader 装载同一份真权重 + 前向逐位 | ⑤（max\|Δ\| = 0.000e+00） |
+| config 逐字段 | `by1complete` 的 `official_configs`：**声明生成的 config vs 发布方 config 逐字段**（每个键都必须在官方 config 里、值相等） | 2026-10-16 起覆盖 P0 模型；`by1complete` 全过 |
+| emit + 张量名/形状 | 双 loader 装载同一份真权重 + 前向逐位（HF 装载零 missing/unexpected） | ⑤（max\|Δ\| = 0.000e+00） |
 
 换句话说：**同一件事有两种判据，别把"跳过"读成"没验"** ——
 跳过的是不适用的那套机制。

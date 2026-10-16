@@ -210,7 +210,13 @@ def main():
     case('Qwen3.8 真尺寸 1199 张量与 MTP 共享关系', manifest)
 
     def official_configs():
-        for name, reference_file in [(GALLERY[3], 'openai-community__gpt2.config.json'),
+        # **2026-10-16 补 P0 模型（GALLERY[0] = complete-Qwen3-0.6B）。**
+        # 这一格原来是"手工比过"：P0 闭环报告里那句"关键字段逐项吻合"没有
+        # 可重跑命令。IR 路径早就有 by1verify 的 config 逐字段行，而
+        # complete-* 走 Transformers 后端、没有 field 映射表 —— 于是漏在两边之间。
+        # **refs/ 里有哪个模型的 config，这里就能比哪个。**
+        for name, reference_file in [(GALLERY[0], 'Qwen__Qwen3-0.6B.config.json'),
+                                     (GALLERY[3], 'openai-community__gpt2.config.json'),
                                      (GALLERY[4], 'openai__gpt-oss-20b.config.json'),
                                      (GALLERY[5], 'Qwen__Qwen3.8-27B.config.json')]:
             family, cfg, _ = by1full.compile_config(description(name))
@@ -221,7 +227,7 @@ def main():
                     by1full._check_config(cfg[section], getattr(actual, section).to_dict(), section)
             by1full._check_config({k: v for k, v in cfg.items() if k not in ('text_config', 'vision_config')},
                                  actual.to_dict(), 'config')
-    case('GPT-2/gpt-oss/Qwen3.8 官方配置的有效语义', official_configs)
+    case('Qwen3-0.6B/GPT-2/gpt-oss/Qwen3.8 官方配置的有效语义', official_configs)
 
     for filename in GALLERY:
         def numerical(filename=filename):
