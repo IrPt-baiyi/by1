@@ -1,0 +1,45 @@
+# ── attn-qgate-shaped.by1 ────────────────────────────────────────────
+# **带 q_gate 的注意力**（clef 视觉塔 / GLM-5.3 的文本主干那一路）。
+#
+# 为什么要单独一份：`q_gate` 让 q 的投影**宽一倍** —— `wq` 是
+# `(2*q*head_dim, d_model)`，前一半是 q、后一半是 gate，注意力算完之后
+# **逐元素** `o *= sigmoid(gate)`（语义唯一在 `by1exec.op_attention`：
+# gate 从 qq 的后半截切出来，乘在输出上，不是乘在 q 上）。
+#
+# 不说的话后端只能按 `wq = (q*head_dim, d_model)` 推 —— **形状和产物对不上**。
+# 单独一份的另一个理由：clef-tiny 还带 Linear（GDN），跑不起来 ——
+# **一个特性没被单独验过，就等于没验**（qkv_fused 那次的教训：
+# 形状、名字全对，只有数值错）。
+#
+#   python by1exec.py attn-qgate-shaped.by1 --compare
+#   python by1ggml.py --from-ir attn-qgate-shaped.by1
+
+model AttnQGateShaped {
+  ctx 512
+
+  hparams {
+    d_model = 128
+    n_layer = 2
+    vocab   = 256
+    rms_eps = 1e-05
+  }
+
+  mech Attention : Attention {
+    heads     = { q = 4, kv = 2, head_dim = 32 }
+    bias      = true
+    # **q 的投影宽一倍：q | gate 两截。**
+    q_gate    = true
+    structural = [ head_dim, q_gate ]
+  }
+
+  mech FFN_ : FFN { hidden = 256 }
+
+  stack main {
+    pattern = 2 * Attention
+    main[:] >> FFN_
+  }
+
+  position {
+    default = rope(base = 10000, pairing = half)
+  }
+}

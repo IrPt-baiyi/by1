@@ -1,6 +1,6 @@
 # 这个仓库里每个文件是干什么的
 
-> 416 个跟踪文件。按"你会想找什么"分组，不按字母表。
+> 418 个跟踪文件。按"你会想找什么"分组，不按字母表。
 >
 > **这份文档是生成的**：`python src/by1files.py --write`。
 > 文件清单、每组的个数、每个文件的一句话都从目录树和 docstring 来 ——
@@ -232,7 +232,7 @@
 | `fig3-schools.png` | article/ 配图：Q3 五大流派对比（含 Kimi-K3） |
 | `fig4-shape.png` | article/ 配图：收敛出的公共形状示意图 |
 
-## `docs/` —— 37 个
+## `docs/` —— 38 个
 
 活的文档 —— 还没做完的事记在这里，做完的挪去 `history/`。
 
@@ -248,6 +248,7 @@
 | `convert-diff.md` | by1 build-gguf 与上游 convert_hf_to_gguf 的结构差异（T24） |
 | `criteria-review.md` | **请人重算**的任务卡：判据本身没人验过，这一份是那份活。含"refs 判 by1 不是外部判卷"那一节 |
 | `gap-analysis.md` | 缺口盘点（rc1 后）：真 bug / 证据缺口 / 范围缺口 / 环境缺口 / 计划缺口 五类分账，每条带证据与收口路径 |
+| `ggml-gaps-feasibility.md` | ggml 缺口可行性（2026-10-17） |
 | `ggml-plan.md` | ggml 数值对拍：测量与判据 |
 | `gpu-day-runbook.md` | GPU 日 runbook —— 租卡那天照这张纸走 |
 | `gpu-validation-results.md` | GPU Validation Results / GPU 验证结果 |
@@ -340,7 +341,7 @@
 | `expected.json` | "_comment": [ |
 | `run-audit.py` | 把外部复现从"报告级"升到"审计级" |
 
-## `models/` —— 65 个
+## `models/` —— 66 个
 
 命名规矩：**文件名 = 长名 = HF 的模型名（去掉 owner）**，
 `model` 声明 = 短名（手写的）。两列的对照见 `models.tsv`。
@@ -370,6 +371,7 @@
 | `Qwen3.8-Flash-Next.by1` | 真实模型 · HF id `Qwen/Qwen3.8-Flash-Next` |
 | `Step-3.7-Flash.by1` | 真实模型 · HF id `stepfun-ai/Step-3.7-Flash` |
 | `attn-fused-shaped.by1` | 融合 q/k/v 的注意力**（视觉塔那种布局） |
+| `attn-qgate-shaped.by1` | 带 q_gate 的注意力**（clef 视觉塔 / GLM-5.3 的文本主干那一路） |
 | `clef-tiny.by1` | 目的：证明"对着真 checkpoint 验过的那份描述"**同时是能跑的** |
 | `clef.by1` | 真实模型 · HF id `Cloudflare/clef` |
 | `complete-Falcon-H1-0.5B-Instruct.by1` | 完整 Falcon-H1-0.5B（层内并行）—— **by1 第一次描述"一层里两个混合器"** |

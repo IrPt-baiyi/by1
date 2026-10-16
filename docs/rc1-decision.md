@@ -56,7 +56,7 @@
 
 | 项 | 为什么不定 |
 |---|---|
-| ~~**承诺的公共子集有多大**~~ → **已量（2026-10-17）** | 原来"未定"，因为没人量过。现在有机器判的矩阵（[`docs/backend-matrix.md`](backend-matrix.md)，由 `by1backends.py` 生成并进档 3，**21 个探针 × 5 个后端**）：**IR 路公共子集 = 7/21**（hello / attn-fused / mla / ssm / llama-shaped / gpt2-tiny / llama3）；**五后端交集 = 0**（`full` 是另一扇门）。每个 ✗ 格还要**分类**（判据红出未分类的拒绝）：**可补 11** · **卡上游 0** · **设计如此 24**（两扇门 21 + 逃生舱两层分工 3）。**注意"卡上游"这档清零了**：2026-10-17 逐个数过 ggml 的 `enum ggml_op`（101 个）——`TOP_K`/`ARGSORT`/`GATED_DELTA_NET`/`GATED_LINEAR_ATTN`/`LIGHTNING_INDEXER` **都在**，之前"这版 ggml 没有 top_k/递推原语"是**过时的摸底结论**（注释里写死、没人复核）。剩下 11 格全是**映射实现工作** |
+| ~~**承诺的公共子集有多大**~~ → **已量（2026-10-17）** | 原来"未定"，因为没人量过。现在有机器判的矩阵（[`docs/backend-matrix.md`](backend-matrix.md)，由 `by1backends.py` 生成并进档 3，**22 个探针 × 5 个后端**）：**IR 路公共子集 = 8/22**（hello / attn-fused / attn-qgate / mla / ssm / llama-shaped / gpt2-tiny / llama3）；**五后端交集 = 0**（`full` 是另一扇门）。每个 ✗ 格还要**分类**（判据红出未分类的拒绝）：**可补 11 · 卡上游 0 · 设计如此 24**。剩余 11 格的实施路线见 [`ggml-gaps-feasibility`](ggml-gaps-feasibility.md)（含关键发现：`GATED_DELTA_NET` 一个原语覆盖 GDN 与 KDA 两种模式） |
 | **100B 级 / 真尺寸大模型** | 无卡、无证据；"能描述"不等于"能算"（本项目的第一条纪律） |
 | **量化 Q3** | 未开；无任何证据 |
 | **发布包的对外承诺** | 现在它是"能跑门禁的产物"，**不是**"稳定发布物" —— 冻结为现状，直到有第二人独立复现 |

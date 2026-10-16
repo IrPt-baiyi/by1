@@ -45,6 +45,7 @@ DOC = 'docs/backend-matrix.md'
 PROBES = [
     ('hello.by1', 'Attention + FFN（最小完整）'),
     ('attn-fused-shaped.by1', 'Attention（融合 qkv + 门）'),
+    ('attn-qgate-shaped.by1', 'Attention（q_gate：q 投影宽一倍）'),
     ('mla-shaped.by1', 'MLA'),
     ('mla-sparse-shaped.by1', 'MLA + 稀疏索引（DSA）'),
     ('moe-routing-shaped.by1', 'MoE（路由）'),

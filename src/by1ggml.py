@@ -85,8 +85,11 @@ def check_support(ir):
                 bad.append(f"{where}：算子 {k} 还没有 ggml 映射")
                 continue
             if k == "Attention":
-                if a.get("q_gate"):
-                    bad.append(f"{where}：q_gate 还没实现")
+                if a.get("q_gate") and a.get("qkv_fused"):
+                    # 融合布局里 q 那截宽一倍（q | gate）怎么摆没定义过 ——
+                    # **要么实现，要么拒绝**，不猜。
+                    bad.append(f"{where}：qkv_fused + q_gate 组合还没实现"
+                               "（融合布局里 q 那截宽一倍怎么摆没定义）")
                 if a.get("head_gate", "off") != "off":
                     bad.append(f"{where}：head_gate 还没实现")
                 if a.get("sink"):
@@ -791,6 +794,21 @@ def emit_model_c(ir, order, params):
             if bias:
                 lines.append(f"{indent}{p}aq = ggml_add(ctx, {p}aq, {Bq});")
                 lines.append(f"{indent}{p}ak = ggml_add(ctx, {p}ak, {Bk});")
+            # **q_gate：q 的投影宽一倍，且是逐头的 `[q_hd | gate_hd]` 块**
+            # （参照实现 `qq.reshape(b, n, q, head_dim*2)` 再按 :head_dim 切 ——
+            # **不是**按两大半切；第一版那么切，max|Δ| = 1.9e-02）。
+            # 语义：gate 乘在**注意力输出**上（sigmoid），不是乘在 q 上。
+            # 切分在 bias 之后 —— 参照实现是先加满宽 bias 再切。
+            if bool(a.get("q_gate")):
+                lines.append(f"{indent}struct ggml_tensor * {p}aq3 = "
+                             f"ggml_reshape_3d(ctx, {p}aq, {2 * hd}, {nh}, n);")
+                lines.append(f"{indent}struct ggml_tensor * {p}gate2 = "
+                             f"ggml_cont_2d(ctx, ggml_view_3d(ctx, {p}aq3, {hd}, "
+                             f"{nh}, n, {p}aq3->nb[1], {p}aq3->nb[2], "
+                             f"(size_t) {hd} * {p}aq3->nb[0]), {qw}, n);")
+                lines.append(f"{indent}{p}aq = ggml_cont_2d(ctx, ggml_view_3d(ctx, "
+                             f"{p}aq3, {hd}, {nh}, n, {p}aq3->nb[1], {p}aq3->nb[2], "
+                             f"0), {qw}, n);")
             # **kv_tie：v 是 k 的原始投影** —— 必须在 qk_norm / rope 之前分叉
             if a.get("kv_tie"):
                 lines.append(f"{indent}struct ggml_tensor * {p}v3 = "
@@ -852,6 +870,11 @@ def emit_model_c(ir, order, params):
             # 合头：[hd, n, nh] -> [nh*hd, n]（permute 后 cont_2d 重排连续）
             lines.append(f"{indent}struct ggml_tensor * {p}att = ggml_cont_2d(ctx, "
                          f"ggml_permute(ctx, {p}kqv, 0, 2, 1, 3), {qw}, n);")
+            # q_gate 乘在**注意力输出**上（sigmoid），顺序照参照实现：
+            # 先 q_gate、后 head_gate。
+            if bool(a.get("q_gate")):
+                lines.append(f"{indent}{p}att = ggml_mul(ctx, {p}att, "
+                             f"ggml_sigmoid(ctx, {p}gate2));")
             lines.append(f"{indent}struct ggml_tensor * {dst} = ggml_mul_mat(ctx, "
                          f"{Wo}, {p}att);")
             if bias:
