@@ -1,6 +1,6 @@
 # 这个仓库里每个文件是干什么的
 
-> 406 个跟踪文件。按"你会想找什么"分组，不按字母表。
+> 407 个跟踪文件。按"你会想找什么"分组，不按字母表。
 >
 > **这份文档是生成的**：`python src/by1files.py --write`。
 > 文件清单、每组的个数、每个文件的一句话都从目录树和 docstring 来 ——
@@ -230,7 +230,7 @@
 | `fig3-schools.png` | article/ 配图：Q3 五大流派对比（含 Kimi-K3） |
 | `fig4-shape.png` | article/ 配图：收敛出的公共形状示意图 |
 
-## `docs/` —— 34 个
+## `docs/` —— 35 个
 
 活的文档 —— 还没做完的事记在这里，做完的挪去 `history/`。
 
@@ -269,6 +269,7 @@
 | `t26-plan.md` | T26 第二架构毕业选型：mamba-130m-hf（130M，递归状态）——判卷人实测表（transformers Mamba v1 走 AutoModel / llama.cpp mamba）、缺什么、四件事、完成定义 |
 | `t27-plan.md` | T27：第三个机制族 —— **混合栈**（Attention 与 SSM 在同一个模型里） |
 | `t28-plan.md` | T28：同一类的**第二个成员** —— 不同混合图案的 granite-4.0-h-1b |
+| `t29-plan.md` | T29：另一根轴 —— **层内并行**（Falcon-H1） |
 | `which-gpu.md` | > 从 `README.md` 挪出来的。它是一次**具体的调查** —— 这台开发机上 |
 
 ## `docs/gpu-results/` —— 10 个
