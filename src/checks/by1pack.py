@@ -156,6 +156,13 @@ WANT = [
     ('README.md', '门面'),
     ('pyproject.toml', '装得上'),
     ('VERSION', '版本的投影（打包读它，不导入模块）'),
+    # **`models.tsv` 必须进包。** 它是"长名 / 短名 / HF repo"的唯一真相源，
+    # 也是 `by1refs` 判 **refs 出处**的来源之一（`.by1` 头部没有
+    # `# by1-repo:` 的那些，就靠它）。
+    # 实测（2026-10-16）：漏了它 -> 包里 `by1refs` 报 "models.tsv 0"，
+    # 于是 granite-350m/1b 与 Falcon-H1 的 6 个 refs 文件"没有出处" ->
+    # **档 1 在包里红** —— 而 CI 的发布包 job 正是"在包里跑档 1"。
+    ('models.tsv', '模型清单：长名/短名/HF repo 的唯一真相源 + refs 出处来源'),
     ('1.md', '项目说明（宣言）'),
     ('history/ir.md', '开发日志'),
     ('history/plan.md', '2026-10-08 的计划'),
@@ -324,33 +331,39 @@ def norm(p):
 
 
 def selfcheck(staged):
-    """在**刚打出来的产物**里跑 `by1docs`：包自己得自洽。
+    """在**刚打出来的产物**里跑**档 1**：包自己得站得住。
 
     绿 -> 返回 None；红 -> 返回截断后的报告（调用方负责打印并失败）。
 
-    **为什么要跑这个**：包里最容易坏的不是代码，而是**文档指向的东西**。
-    `WANT` 是手写的，而"文档提到什么"由文档自己决定 —— 两个清单各说各话
-    就是这类事故的成因。这里让**产物自己说话**：把 `by1docs` 放进产物里跑，
-    它扫的是产物自己的 `README.md` / `docs/`，找不到就红。
+    ## 为什么是"跑档 1"，而不是只跑一个检查器
+
+    原来这里只跑 `by1docs`（查"文档指向的东西在不在"）。**那不够**：实测
+    （2026-10-16）包里漏了 `models.tsv` —— 文档一处都没引用它，`by1docs` 全绿，
+    可 `by1refs` 因此判 6 个 refs 文件"没有出处"，于是**包里的档 1 红**。
+    而 CI 的发布包 job 干的就是"在包里跑档 1"。
+
+    所以判据直接取**那一件事本身**：在产物里跑 `by1all --tier 1`。
+    它也是"包能不能用"的最短定义 —— 而且只要标准库，打包脚本本来就只依赖标准库。
     """
     import subprocess
     # **必须绝对化**：下面 `cwd=staged` 一换，相对路径就会再拼一层
     # （实测报的是 `build/by1-pack/build/by1-pack/src/checks/by1docs.py`）。
     staged = os.path.abspath(staged)
-    script = os.path.join(staged, 'src', 'checks', 'by1docs.py')
+    script = os.path.join(staged, 'src', 'checks', 'by1all.py')
     if not os.path.exists(script):
-        return '  产物里没有 src/checks/by1docs.py —— 自检根本跑不了（这本身就是缺口）'
+        return '  产物里没有 src/checks/by1all.py —— 自检根本跑不了（这本身就是缺口）'
     try:
-        r = subprocess.run([sys.executable, script], cwd=staged,
+        r = subprocess.run([sys.executable, script, '--tier', '1'], cwd=staged,
                            capture_output=True, text=True, encoding='utf-8',
-                           errors='replace', timeout=900)
+                           errors='replace', timeout=1800)
     except Exception as exc:                     # noqa: BLE001 - 打包要报出来，不要吞
         return '  自检跑不起来：%s' % exc
-    if r.returncode == 0 and '[PASS]' in (r.stdout or ''):
+    if r.returncode == 0 and '[全过' in (r.stdout or ''):
         return None
     # 两个通道都看：退出码（进程活下来了吗）与判定行（检查器自己怎么说）。
     tail = ((r.stdout or '') + (r.stderr or '')).strip().splitlines()
-    return '  自检退出码 %d\n%s' % (r.returncode, '\n'.join(tail[-25:]))
+    return '  自检退出码 %d（在产物里跑 `by1all --tier 1`）\n%s' % (
+        r.returncode, '\n'.join(tail[-25:]))
 
 
 def main():
