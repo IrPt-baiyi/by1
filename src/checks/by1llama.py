@@ -449,8 +449,20 @@ def build_gguf(hf_dir, out_path, ref_gguf=None, arch="llama", n_blocks=24,
     import numpy as np
     import torch
     from safetensors.torch import load_file
-    from gguf.tensor_mapping import TensorNameMap
-    from gguf import MODEL_ARCH
+    # **gguf-py 来自 llama.cpp 的检出，不在本仓库里**（`llamacpp/` 被
+    # .gitignore 挡着）。干净克隆下这里是第一道坎 —— 2026-10-16 实测：
+    # 原来吐的是裸 ModuleNotFoundError traceback，看不出该去做什么。
+    try:
+        from gguf.tensor_mapping import TensorNameMap
+        from gguf import MODEL_ARCH
+    except ImportError as exc:
+        raise SystemExit(
+            '  [缺依赖] 找不到 gguf-py（%s）\n'
+            '  它来自 llama.cpp 的检出，**不在本仓库**（llamacpp/ 被 .gitignore 挡着）。\n'
+            '  取法见 docs/llama.cpp-baseline.md，例：\n'
+            '    git clone --depth 1 https://github.com/ggml-org/llama.cpp '
+            'llamacpp/llama.cpp\n'
+            '  然后重跑本命令。' % exc)
 
     sd = {}
     import glob

@@ -40,12 +40,30 @@ _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)
 import by1paths  # noqa: E402,F401
 import os
 import re
+import subprocess
 import sys
 
 import by1io
 import by1paths
 
 ROOT = by1paths.ROOT
+
+
+def ignored(rel_path):
+    """这个路径是**故意不在库**的吗（被 `.gitignore` 挡着）？
+
+    2026-10-16 干净克隆实测：`refs/*.index.json`（可再生语料）、
+    `llamacpp/`（上游检出）、`history/_hf_probe/`（门禁探针日志）
+    在干净克隆里本来就不存在 —— 而文档**该**引用它们。
+    把这些算成"路径坏了"，干净克隆就永远红：**那是判据错，不是文档错**。
+    所以它们进单独一桶（既不算通过也不算失败），而不是判红。
+    """
+    try:
+        done = subprocess.run(['git', 'check-ignore', '-q', '--', rel_path],
+                              cwd=ROOT, capture_output=True)
+        return done.returncode == 0
+    except OSError:
+        return False
 
 # 文档里写的路径（字面量）
 PAT_PATH = re.compile(r"(refs/[\w.\-]+\.json|[\w.\-]+\.by1)")
@@ -221,7 +239,7 @@ def main():
     print()
 
     files = md_files()
-    total, bad = 0, []
+    total, bad, ext_paths = 0, [], []
     for p in files:
         rel = by1paths.rel(p)
         near = os.path.dirname(p)
@@ -240,6 +258,15 @@ def main():
             continue
         miss = [(k, ln, kind) for k, (kind, ln) in seen.items()
                 if not find(k, near)]
+        # **分两桶**：真缺的 vs「故意不在库」的（被 .gitignore 挡着）。
+        # 干净克隆下后者**本来就不存在** —— 把它们判红，等于判据错：
+        # `refs/*.index.json`、`llamacpp/`、`history/_hf_probe/` 都是
+        # 上游产物 / 缓存 / 可再生语料，文档**该**引用它们。
+        # 2026-10-16 干净克隆实测：这一桶有 10 处，原来让档 1 直接红。
+        keep = []
+        for k, ln, kind in miss:
+            (ext_paths if ignored(k) else keep).append((rel, ln, kind, k))
+        miss = keep
         total += len(seen)
         if miss:
             print('  %s（%d 处引用）' % (rel, len(seen)))
@@ -265,6 +292,8 @@ def main():
             calls.setdefault(m.group(1), {})[by1paths.rel(p)] = os.path.dirname(p)
     missing = [k for k in calls
                if not any(find(k, d) for d in calls[k].values())]
+    ext_scripts = [k for k in sorted(missing) if ignored(k)]
+    missing = [k for k in missing if not ignored(k)]
     print('     %d 个不同的脚本被提到' % len(calls))
     if missing:
         for k in sorted(missing):
@@ -411,6 +440,18 @@ def main():
     print()
 
     clean = not bad and not missing and not wrong and not stale and not bi_bad
+    print('  ── 外部产物：文档引用了「故意不在库」的路径（`.gitignore` 挡着的）')
+    if ext_paths or ext_scripts:
+        for rel, ln, kind, k in ext_paths:
+            print('     %s:%d  %s  %s' % (rel, ln, kind, k))
+        for k in ext_scripts:
+            print('     %s' % k)
+        print('     **%d 处** —— 既不算通过、也不算失败：干净克隆里它们本来就不在，'
+              % (len(ext_paths) + len(ext_scripts)))
+        print('     取法写在 docs/llama.cpp-baseline.md / refs/SOURCES.tsv 里。')
+    else:
+        print('     没有 ✓')
+    print()
     print('  [%s] 文档路径 %s'
           % ('PASS' if clean else 'FAIL',
              '路径、链接、脚本调用、数字、生成物、双语都在'
