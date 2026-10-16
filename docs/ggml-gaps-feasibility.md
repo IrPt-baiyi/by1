@@ -73,6 +73,23 @@ q/k 的 L2 归一在 op 外面做）。`qwen3-next`/`clef-tiny` 的 `Linear` 与
 2. `beta`/`g` 的逐头索引（`(1, nv, n)` 的 nb1 步长）；
 3. 状态转置约定（内核注释 `s_out[j*S_v+i] = S[i][j]`）与参照 `(dk, dv)` 的对齐。
 
+### 2026-10-17 凌晨的两刀（把范围砍小了）
+
+**① 复算脚本（build/dbg-linear.py，不入库）证明管线语义是对的**：
+同一组权重、同一输入，参照公式 vs 我的 C 语义逐步对差 = **2.2e-16**
+（qkvz/mix/beta/g/out/y 全部一致）—— 所以 bug **不在语义，在发射的 C**。
+
+**② `l2_eps = 1e6` 时全对（3.5e-08）**：eps 巨大 -> L2 退化成统一缩放
+（被后面的 RMS 归一吸收）-> **误差消失**；`l2_eps = 0` 仍错（2.7e-3）。
+=> **根因锁定在 L2 链的逐头数值**（不是 eps 加法本身、不是递推、不是 conv）。
+
+L2 链现状（发射的 C）：
+`x / sqrt(sum_rows(x*x) + eps)`，`sum_rows` 沿 dim0（= dk）✓ 查过实现；
+`ggml_add1` 要**单元素张量**（`ggml_new_f32` 装 eps）✓；`ggml_rsqrt` 不存在
+（用 `ggml_div` + `ggml_sqrt`）✓；`cont_2d` 是**真重排**（cont_4d）✓。
+—— 逐行都对得上但数值不对，下轮要么逐元素对拍 L2 的中间量，
+要么换个构造（如把 L2 拆成"平方和"与"除法"两个节点分别验证）。
+
 **收口判据**：`python src/by1ggml.py --from-ir linear-gdn-shaped.by1`
 对拍进 1e-6 以内，且 `clef-tiny` 同绿（那时 `check_support` 的拒绝一起撤）。
 

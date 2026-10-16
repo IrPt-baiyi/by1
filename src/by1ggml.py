@@ -1206,10 +1206,17 @@ def emit_model_c(ir, order, params):
             lines.append(f"{indent}struct ggml_tensor * {p}v3 = ggml_reshape_3d(ctx, "
                          f"{p}v1, {dv}, {nv}, n);")
             # q 的 `dk^-0.5` 缩放**在原语内部**（内核 `attn_data[j] = sum * scale`
-            # ，`scale = 1/sqrt(S_v)`）—— 这里**不能**再乘一次（第一版预乘了，
-            # 双重缩放）。只做 L2 归一。
-            lines.append(f"{indent}{p}q3 = ggml_l2_norm(ctx, {p}q3, {l2e});")
-            lines.append(f"{indent}{p}k3 = ggml_l2_norm(ctx, {p}k3, {l2e});")
+            # ，`scale = 1/sqrt(S_v)`）—— 这里**不能**再乘一次。
+            # **L2 归一不用 `ggml_l2_norm`**：它的 eps 进法是
+            # `1/max(sqrt(sum), eps)`，而参照是 `1/sqrt(sum + l2_eps)`
+            # （小范数的头会差几个数量级）。按参照公式自己拼。
+            def _l2(x3):
+                return (f"ggml_div(ctx, {x3}, ggml_reshape_3d(ctx, "
+                        f"ggml_sqrt(ctx, ggml_add1(ctx, ggml_sum_rows(ctx, "
+                        f"ggml_mul(ctx, {x3}, {x3})), "
+                        f"ggml_new_f32(ctx, {l2e}))), 1, {nv}, n))")
+            lines.append(f"{indent}{p}q3 = {_l2(p + 'q3')};")
+            lines.append(f"{indent}{p}k3 = {_l2(p + 'k3')};")
             # ⑤ GDN 递推（输出 = y 与末态拼接，y 取前半段视图）
             lines.append(f"{indent}float * {p}s0_buf = (float *) calloc("
                          f"(size_t) {dk} * {dv} * {nv}, sizeof(float));")
