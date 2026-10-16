@@ -76,6 +76,34 @@ logits **逐位相同（89474 值）**。
 `num_local_experts > 0` 时**直接报错拒绝** ——
 「要么实现，要么拒绝」，不产出一个"名字看着对、算的是另一个模型"的包。
 
+## 把标量**折进权重**（Falcon-H1，2026-10-16，T29）
+
+上面那些改写改的是**名字**与**形状**。Falcon-H1 逼出第三类，而且是最隐蔽的一类：
+**名字一个不差、形状一个不差，只是每个数都乘了一个系数。**
+
+实测：不折的话，**579 个张量里 218 个值不同**（`attn_k`/`attn_output`/`ssm_in`/
+`ssm_out`/`ffn_gate`/`ffn_down` 全中）。上游 `conversion/falcon_h1.py:60-96`
+把这一族的九个缩放**乘进对应的权重**：
+
+| HF 张量（名字含） | 乘的系数 |
+|---|---|
+| `down_proj` / `gate_proj` | `mlp_multipliers[1]` / `[0]`（`up_proj` **不乘**） |
+| `k_proj` | `key_multiplier` × `attention_in_multiplier` |
+| `q_proj` / `v_proj` | `attention_in_multiplier` |
+| `o_proj` | `attention_out_multiplier` |
+| `out_proj` | `ssm_out_multiplier` |
+| `in_proj` | 先乘 `ssm_in_multiplier`，再**按行分五段**乘 `ssm_multipliers[0..4]`（z / x / B / C / dt；段宽 = `d_ssm` 与 `n_groups × d_state`） |
+| `lm_head` / `embed_tokens` | `lm_head_multiplier` / `embedding_multiplier` |
+
+**顺序也照抄**：先跑父类（`Mamba2Model` 的三条形状规则 + `A_log` 取负 exp），
+**再**乘系数 —— 反过来的话 `A_log` 那一支会算错。
+
+**收口之后**：579/579 张量逐位相同 · 上游未修改的 llama.cpp 加载 by1 的产物，
+logits **逐位相同（188445 值）**。
+
+> 这一类改写对"自研后端"是个提醒：**运行时缩放**与**折进权重**在数学上等价，
+> 但产物里只能有一种。判卷人是上游那一行代码，不是"我觉得等价"。
+
 ## 判卷人
 
 `src/checks/by1llama.py`（build_gguf / _gguf_write / selftest_kv_map）·

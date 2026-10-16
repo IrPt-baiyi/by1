@@ -547,8 +547,67 @@ def _permute(weights, n_head, n_head_kv):
             .reshape(weights.shape))
 
 
+def _falcon_fold(hf_name, arr, cfg):
+    """Falcon-H1：九个缩放**折进权重**（`conversion/falcon_h1.py:60-96`）。
+
+    上游的做法是"**先跑父类**（`Mamba2Model` 那几条形状规则：conv1d squeeze、
+    A/D unsqueeze、norm 二维化、A_log 取负 exp），**再按名字乘系数**"——
+    所以这里也在 `_modify_tensor` **之后**调用，顺序照抄。
+
+    实测（2026-10-16）：不折的话，579 个张量里 **218 个值不同**
+    （`attn_k` / `attn_output` / `ssm_in` / `ssm_out` / `ffn_*` 全中），
+    而**名字一个不差、形状一个不差** —— 又是一类"看着对、算的是另一个模型"。
+
+    `in_proj` 那一支还要**按行分块**乘五个不同的系数
+    （z / x / B / C / dt 五段；`zxbcdt_multipliers`）。
+    """
+    import numpy as np
+    cfg = cfg or {}
+
+    def num(key, default):
+        value = cfg.get(key, default)
+        return None if value is None else float(value)
+
+    def lst(key):
+        value = cfg.get(key) or []
+        return [float(x) for x in value]
+
+    if 'down_proj' in hf_name:
+        m = lst('mlp_multipliers')
+        return arr * (m[1] if len(m) > 1 else 1.0)
+    if 'gate_proj' in hf_name:
+        m = lst('mlp_multipliers')
+        return arr * (m[0] if m else 1.0)
+    if 'k_proj' in hf_name:
+        return arr * num('key_multiplier', 1.0) * num('attention_in_multiplier', 1.0)
+    if 'q_proj' in hf_name or 'v_proj' in hf_name:
+        return arr * num('attention_in_multiplier', 1.0)
+    if 'o_proj' in hf_name:
+        return arr * num('attention_out_multiplier', 1.0)
+    if 'out_proj' in hf_name:
+        return arr * num('ssm_out_multiplier', 1.0)
+    if 'in_proj' in hf_name:
+        out = arr * num('ssm_in_multiplier', 1.0)
+        zxbcdt = lst('ssm_multipliers')
+        d_ssm = int(num('mamba_d_ssm', 0) or 0)
+        gts = int(num('mamba_n_groups', 1)) * int(num('mamba_d_state', 0))
+        if len(zxbcdt) == 5 and d_ssm > 0 and gts > 0:
+            out = np.array(out, copy=True)
+            out[:d_ssm, :] *= zxbcdt[0]
+            out[d_ssm:2 * d_ssm, :] *= zxbcdt[1]
+            out[2 * d_ssm:2 * d_ssm + gts, :] *= zxbcdt[2]
+            out[2 * d_ssm + gts:2 * d_ssm + 2 * gts, :] *= zxbcdt[3]
+            out[2 * d_ssm + 2 * gts:, :] *= zxbcdt[4]
+        return out
+    if 'lm_head' in hf_name:
+        return arr * num('lm_head_multiplier', 1.0)
+    if 'embed_tokens' in hf_name:
+        return arr * num('embedding_multiplier', 1.0)
+    return arr
+
+
 def _tensors_for(arch, hf_name, ggml_name, arr, n_groups=1, n_heads=None,
-                 n_kv_heads=None):
+                 n_kv_heads=None, hf_cfg=None):
     """一个 HF 张量 -> **要写进 GGUF 的 (名字, 数组) 列表**。
 
     多数是 1:1，但上游有 **1:2** 的情形：granite 那个融合的
@@ -569,7 +628,10 @@ def _tensors_for(arch, hf_name, ggml_name, arr, n_groups=1, n_heads=None,
             out = _permute(out, n_heads, n_heads)
         elif hf_name.endswith('self_attn.k_proj.weight') and n_heads:
             out = _permute(out, n_heads, n_kv_heads or n_heads)
-    return [(ggml_name, _modify_tensor(arch, hf_name, ggml_name, out, n_groups))]
+    out = _modify_tensor(arch, hf_name, ggml_name, out, n_groups)
+    if arch == 'falcon_h1':
+        out = _falcon_fold(hf_name, out, hf_cfg)
+    return [(ggml_name, out)]
 
 
 def build_gguf(hf_dir, out_path, ref_gguf=None, arch="llama", n_blocks=24,
@@ -624,7 +686,7 @@ def build_gguf(hf_dir, out_path, ref_gguf=None, arch="llama", n_blocks=24,
             continue
         arr = val.to(torch.float32).numpy() if hasattr(val, "to") else np.asarray(val)
         for g_name, g_arr in _tensors_for(arch, name, g, arr, n_groups,
-                                          n_heads, n_kv_heads):
+                                          n_heads, n_kv_heads, _cfg):
             g_arr = np.ascontiguousarray(g_arr)
             vshape = g_arr.shape
             if quantize and g_arr.ndim >= 2:
