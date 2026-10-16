@@ -19,6 +19,9 @@ FAMILIES = {
     "gpt2": ("GPT2Config", "GPT2LMHeadModel"),
     "gpt_oss": ("GptOssConfig", "GptOssForCausalLM"),
     "qwen3_5": ("Qwen3_5Config", "Qwen3_5ForConditionalGeneration"),
+    # **第二个机制族（T26）**：选择性状态空间，没有 KV cache。
+    # 注意这两个类在 transformers 里**没导出到顶层** —— 见 `_tclass`。
+    "mamba": ("MambaConfig", "MambaForCausalLM"),
 }
 MECH_FIELDS = {
     "Attention": {"q", "kv", "head_dim", "out_dim", "window", "qk_norm", "bias",
@@ -28,7 +31,37 @@ MECH_FIELDS = {
     "FFN": {"hidden", "act", "gate", "bias", "structural"},
     "MoE": {"experts", "top_k", "hidden", "shared", "router_bias", "expert_bias",
             "routing", "act", "swiglu_limit", "alpha", "structural"},
+    # **Mamba1 那一代的参数化**（不是 Mamba2：那边的 `heads`/`n_groups`/`chunk_size`
+    # 在这里没有对应物 —— 见 models/mamba-130m-hf.by1 的长注释）。
+    "SSM": {"expand", "conv_kernel", "ssm_state", "conv_bias", "proj_bias",
+            "act", "structural"},
 }
+
+
+def _tclass(name):
+    """取 transformers 的一个类：**顶层取不到就去 auto 映射里取**。
+
+    实测（2026-10-16）：`MambaConfig` / `MambaForCausalLM` 在本机 5.15.1 与
+    克隆 5.20.0 里**都没有导出到顶层**（`getattr(T, 'MambaForCausalLM')` 直接
+    AttributeError），但 `CONFIG_MAPPING_NAMES['mamba'] = 'MambaConfig'`、
+    因果 LM 映射里也有它。原来三处都写死 `getattr(T, ...)` —— 加家族时会
+    以"找不到类"的形式炸掉，而真正的原因只是"没导出"。
+    """
+    import transformers as T
+    cls = getattr(T, name, None)
+    if cls is not None:
+        return cls
+    from transformers.models.auto.configuration_auto import CONFIG_MAPPING
+    from transformers.models.auto.modeling_auto import MODEL_FOR_CAUSAL_LM_MAPPING
+    for cfg_cls in CONFIG_MAPPING.values():
+        if cfg_cls is None:
+            continue
+        if cfg_cls.__name__ == name:
+            return cfg_cls
+        lm = MODEL_FOR_CAUSAL_LM_MAPPING.get(cfg_cls)
+        if lm is not None and lm.__name__ == name:
+            return lm
+    raise ValueError(f"transformers 里找不到 {name}（顶层与 auto 映射都没有）")
 
 
 def _fail(condition, message):
@@ -86,11 +119,18 @@ def _layers(info):
             a = dict(info['mech_attrs'][target])
             a.update(info['overrides'].get(f'{stack}|{index}|{target}', {}))
             feeds.append((info['mechs'][target], a))
-        _fail(len(feeds) == 1, f"{stack}[{index}] 必须挂载一个 FFN/MoE")
+        # **SSM 层可以没有 FFN**（T26，mamba）：Mamba1 的 mixer **就是整层**
+        # —— `intermediate_size = d_inner`，不是"另有一个 FFN"。
+        # 其余机制仍然要求恰好一个 feed（这条规则原来是无条件的，于是
+        # mamba 的 complete 声明在建 config 这一步就炸）。
+        if mix[0] == 'SSM':
+            _fail(not feeds, "SSM 层不能再挂 FFN/MoE（这一代 mixer 就是整层）")
+        else:
+            _fail(len(feeds) == 1, f"{stack}[{index}] 必须挂载一个 FFN/MoE")
         for kind, a in [mix] + feeds:
             _fail(kind in MECH_FIELDS, f"完整后端尚不支持 {kind}")
             _known(a, MECH_FIELDS[kind], kind)
-        result.setdefault(stack, []).append((mix, feeds[0]))
+        result.setdefault(stack, []).append((mix, feeds[0] if feeds else None))
     return result
 
 
@@ -138,6 +178,60 @@ def _rope(info, attention):
     return params
 
 
+def _compile_mamba(info, hp):
+    """mamba 家族（T26）：**主干是 `SSM` mixer 的重复 —— 没有 Attention、没有 FFN。**
+
+    这条路和别的家族不是同一套形状来源：`d_inner` / `time_step_rank` / `state_size`
+    都不是从 `q/kv/head_dim` 推的，各自是独立字段（config 自己就叫这些名字）。
+    所以它是一条**早退分支**，不走下面那段围着 Attention 写的公共构造。
+
+    声明的形状与 `models/mamba-130m-hf.by1` 的 `emit -> transformers.config`
+    字段表逐项一致（那张表已由 `by1all` 档 3 对发布方 config 判过：一致 32）。
+    """
+    stacks = _layers(info)
+    main_names = [s for s in stacks if not info.get('stack_aux', {}).get(s)]
+    _fail(len(main_names) == 1, "完整后端需要一个主干栈；辅助栈请声明 aux = true")
+    _fail(not (set(stacks) - set(main_names)), "mamba 家族没有视觉/MTP 分支")
+    main = stacks[main_names[0]]
+    kinds = {mix[0] for mix, _feed in main}
+    _fail(kinds == {'SSM'}, "mamba 家族的主层只能是 SSM（没有 Attention/FFN）")
+    _fail(all(feed is None for _mix, feed in main), "SSM 层不能再挂 FFN/MoE")
+    mech = _uniform([mix[1] for mix, _feed in main], 'SSM')
+
+    d = _number(hp, 'd_model')
+    d_inner = _number(hp, 'd_inner')
+    dt_rank = _number(hp, 'dt_rank')
+    vocab = _number(hp, 'vocab')
+    eps = _number(hp, 'rms_eps', 1e-5, False)
+    _fail(0 < eps < 1, 'norm eps 必须在 (0,1) 内')
+    state = _number(mech, 'ssm_state')
+    conv = _number(mech, 'conv_kernel')
+    expand = _number(mech, 'expand')
+    _fail(expand * d == d_inner, "d_inner 必须等于 expand × d_model（实测 2 × 768 = 1536）")
+    _fail(mech.get('act', 'silu') == 'silu', "mamba 的激活实测为 silu")
+    _fail(not _bool(mech.get('proj_bias')), "mamba1 的 in_proj/out_proj 无 bias（只有 dt_proj 有）")
+    _fail(conv > 0, 'conv_kernel 必须为正')
+    cfg = dict(
+        vocab_size=vocab, hidden_size=d, num_hidden_layers=len(main),
+        intermediate_size=d_inner, hidden_act='silu', initializer_range=0.1,
+        layer_norm_epsilon=eps, use_cache=True,
+        d_model=d, d_inner=d_inner, n_layer=len(main),
+        state_size=state, conv_kernel=conv, expand=expand,
+        time_step_rank=dt_rank, time_step_scale=1.0, time_step_min=0.001,
+        time_step_max=0.1, time_step_init_scheme='random',
+        time_step_floor=0.0001, rms_norm=True, residual_in_fp32=True,
+        fused_add_norm=True, rescale_prenorm_residual=False,
+        use_bias=False, use_conv_bias=_bool(mech.get('conv_bias'), True),
+        pad_vocab_size_multiple=8, ssm_cfg={},
+        bos_token_id=int(_json(hp.get('bos_token_id', 0))),
+        eos_token_id=int(_json(hp.get('eos_token_id', 0))),
+        pad_token_id=int(_json(hp.get('pad_token_id', 0))),
+        tie_word_embeddings=_bool(hp['tie_word_embeddings']),
+    )
+    _fail(cfg['time_step_rank'] > 0 and cfg['state_size'] > 0, '时间步秩与状态维必须为正')
+    return 'mamba', cfg, {}
+
+
 def compile_config(info):
     """声明 -> (家族, 完整配置, MTP 规格)。不下载配置、不导入 torch。"""
     family = info.get('arch')
@@ -149,8 +243,12 @@ def compile_config(info):
         _fail(not {'ln_eps', 'resid_dropout', 'embed_dropout'} & set(hp), '这些 LayerNorm/dropout 字段仅适用于 GPT-2')
     _known(hp, {'d_model', 'vocab', 'n_layer', 'rms_eps', 'ln_eps', 'norm_kind', 'norm',
                 'tie_word_embeddings', 'bos_token_id', 'eos_token_id', 'pad_token_id',
-                'attention_dropout', 'resid_dropout', 'embed_dropout', 'initializer_range'}, 'hparams')
+                'attention_dropout', 'resid_dropout', 'embed_dropout', 'initializer_range',
+                # mamba 独有（T26）：都不是从 d_model 推的，各自是独立字段。
+                'd_inner', 'dt_rank'}, 'hparams')
     _fail('tie_word_embeddings' in hp, "完整架构必须显式声明 tie_word_embeddings")
+    if family == 'mamba':
+        return _compile_mamba(info, hp)
     stacks = _layers(info)
     main_names = [s for s in stacks if not info.get('stack_aux', {}).get(s)]
     _fail(len(main_names) == 1, "完整后端需要一个主干栈；视觉/MTP 栈请声明 aux = true")
@@ -320,7 +418,7 @@ def compile_quantization(info):
 
 def _model_class(family, mtp_spec):
     import transformers as T
-    base = getattr(T, FAMILIES[family][1])
+    base = _tclass(FAMILIES[family][1])
     if not mtp_spec:
         return base
     import torch
@@ -396,7 +494,7 @@ def build_model(family, configuration, mtp_spec=None, device=None, dtype=None):
     """按完整声明建模型；device='meta' 可核对真实尺寸而不分配权重内存。"""
     import torch
     import transformers as T
-    cfg = getattr(T, FAMILIES[family][0])(**copy.deepcopy(configuration))
+    cfg = _tclass(FAMILIES[family][0])(**copy.deepcopy(configuration))
     cfg._attn_implementation = 'eager'
     if family == 'qwen3_5':
         cfg.text_config._attn_implementation = 'eager'
@@ -425,7 +523,7 @@ def load_model(family, configuration, mtp_spec, checkpoint, quantization=None, *
             _check_config(declared[section], actual.to_dict(), section)
     actual = checkpoint_cfg.to_dict()
     _check_config({k: v for k, v in declared.items() if k not in ('text_config', 'vision_config')}, actual, 'config')
-    cfg = getattr(T, FAMILIES[family][0])(**declared)
+    cfg = _tclass(FAMILIES[family][0])(**declared)
     cfg._attn_implementation = 'eager'
     if family == 'qwen3_5':
         cfg.text_config._attn_implementation = 'eager'

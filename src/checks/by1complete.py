@@ -218,16 +218,24 @@ def main():
         for name, reference_file in [(GALLERY[0], 'Qwen__Qwen3-0.6B.config.json'),
                                      (GALLERY[3], 'openai-community__gpt2.config.json'),
                                      (GALLERY[4], 'openai__gpt-oss-20b.config.json'),
-                                     (GALLERY[5], 'Qwen__Qwen3.8-27B.config.json')]:
+                                     (GALLERY[5], 'Qwen__Qwen3.8-27B.config.json'),
+                                     # T26：第二架构（SSM）。**没有进 GALLERY** ——
+                                     # 那张表的用例是按 Attention/FFN 家族写的，
+                                     # mamba 的入场要另一套（见 docs/t26-plan.md）。
+                                     # 但 config 逐字段这条判据与家族无关，先接上。
+                                     ('complete-mamba-130m-hf.by1',
+                                      'state-spaces__mamba-130m-hf.config.json')]:
             family, cfg, _ = by1full.compile_config(description(name))
             raw = json.loads(pathlib.Path(by1paths.REFS, reference_file).read_text(encoding='utf-8'))
-            actual = getattr(T, by1full.FAMILIES[family][0])(**raw)
+            # **用 by1full._tclass**：mamba 系的两个类没导出到顶层，
+            # `getattr(T, ...)` 在这一行会 AttributeError（T26 实测）。
+            actual = by1full._tclass(by1full.FAMILIES[family][0])(**raw)
             for section in ('text_config', 'vision_config'):
                 if section in cfg:
                     by1full._check_config(cfg[section], getattr(actual, section).to_dict(), section)
             by1full._check_config({k: v for k, v in cfg.items() if k not in ('text_config', 'vision_config')},
                                  actual.to_dict(), 'config')
-    case('Qwen3-0.6B/GPT-2/gpt-oss/Qwen3.8 官方配置的有效语义', official_configs)
+    case('Qwen3-0.6B/GPT-2/gpt-oss/Qwen3.8/mamba 官方配置的有效语义', official_configs)
 
     for filename in GALLERY:
         def numerical(filename=filename):

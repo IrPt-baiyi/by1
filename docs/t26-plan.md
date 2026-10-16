@@ -59,11 +59,23 @@
 4. **标准产物**：`by1llama build-gguf --arch mamba` → 上游 `llama-eval-callback`
    logits 逐位（短序列即可）。
 
+### 进度（2026-10-16 当天）
+
+| 步 | 状态 | 证据 |
+|---|---|---|
+| 1 | **✅** | `by1full`：`FAMILIES` 加 `mamba` · `MECH_FIELDS` 加 `SSM` · `_compile_mamba` 早退分支 · `_tclass`（**两个类没导出到顶层**，`getattr(T, …)` 会 AttributeError）· `_layers` 允许 **SSM 层没有 FFN**（Mamba1 的 mixer 就是整层） |
+| 2 | **✅** | `models/complete-mamba-130m-hf.by1`：`by1check` **0 错 0 警** · `compile_config` 出 **32 个 config 字段** · `build_model(meta)` → `MambaForCausalLM` **129.1 M**（与真权重同）· `load_model` 真权重**零 missing/unexpected** · `by1complete` 的 `official_configs` 已把 mamba 接进逐字段判据（**PASS**） |
+| 3 | **✅（前向那半）** | `by1shadow --smoke-refs --by1 complete-mamba-130m-hf.by1 --weights-dir model-cache/mamba-130m-hf` → **242 个真名 · 双 loader 零 missing/unexpected · 前向 max\|Δ\| = 0.000e+00** |
+| 3' | 待做 | 递归状态的"**增量 == 全量**"等价判据（写法与 KV cache 那条不同：状态定长） |
+| 4 | 待做 | `build-gguf --arch mamba` + 上游 `llama-eval-callback` logits 逐位 |
+| — | 待做 | 把 mamba 接进 `by1complete` 的 **GALLERY**（那张表的用例是按 Attention/FFN 家族写的，mamba 入场要另一套夹具） |
+
 ## 四、完成定义
 
-- [ ] 那份 complete 声明过 `by1check` + `by1complete`；
-- [ ] 真权重双 loader：零 missing/unexpected + 前向 max|Δ| ≤ 2e-3；
-- [ ] 上游加载 + logits 逐位；
+- [x] complete 声明过 `by1check` + `by1complete`（含 config 逐字段）；
+- [x] 真权重双 loader：零 missing/unexpected + 前向 max|Δ| **0.000e+00**；
+- [ ] 递归状态的"增量 == 全量"等价判据；
+- [ ] 上游加载 + logits 逐位（`build-gguf --arch mamba`）；
 - [ ] 报告进 `docs/`，并更新 [支持矩阵](support-matrix.md) 的"第二架构"一行。
 
 ## 五、不许做的

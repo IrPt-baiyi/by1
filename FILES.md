@@ -1,6 +1,6 @@
 # 这个仓库里每个文件是干什么的
 
-> 396 个跟踪文件。按"你会想找什么"分组，不按字母表。
+> 397 个跟踪文件。按"你会想找什么"分组，不按字母表。
 >
 > **这份文档是生成的**：`python src/by1files.py --write`。
 > 文件清单、每组的个数、每个文件的一句话都从目录树和 docstring 来 ——
@@ -325,7 +325,7 @@
 |---|---|
 | `2026-10-16-colab-hello.md` | 外部复现 #1 —— Colab CPU quickstart（John6666） |
 
-## `models/` —— 61 个
+## `models/` —— 62 个
 
 命名规矩：**文件名 = 长名 = HF 的模型名（去掉 owner）**，
 `model` 声明 = 短名（手写的）。两列的对照见 `models.tsv`。
@@ -363,6 +363,7 @@
 | `complete-Qwen3.8-27B.by1` | 完整 Qwen3.8-27B：文本、视觉、MTP 三个分支，包含共享参数关系 |
 | `complete-gpt-oss-20b.by1` | 完整 gpt-oss-20b：MoE、路由/专家 bias、sink、交替滑窗、YaRN |
 | `complete-gpt2.by1` | 完整 GPT-2：共享词嵌入/输出头、学习位置、LayerNorm、dropout |
+| `complete-mamba-130m-hf.by1` | 完整 mamba-130m-hf（T26 第二架构毕业）：**没有 Attention、没有 KV cache** |
 | `embeddinggemma-2.by1` | 真实模型 · HF id `google/embeddinggemma-2` |
 | `gate-probe.by1` | 取值门的**反例**：故意写一个 codegen 没实现的取值 |
 | `gemma-4-12B.by1` | 真实模型 · HF id `google/gemma-4-12B` |

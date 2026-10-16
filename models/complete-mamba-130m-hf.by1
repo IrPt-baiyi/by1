@@ -1,0 +1,56 @@
+# 完整 mamba-130m-hf（T26 第二架构毕业）：**没有 Attention、没有 KV cache**。
+#
+# 状态是**定长递归状态**（`ssm_state = 16`）—— 和 P0 那条"增量 == 全量"的判据
+# 不是同一种账（KV cache 是随序列增长的，这里是定长的）。
+#
+# 机制是 `SSM`，参数化是 **Mamba1 那一代**（不是 Mamba2：没有 heads/n_groups/
+# chunk_size）。逐张量的形状与出处见 models/mamba-130m-hf.by1 的长注释。
+#
+# 判卷人（两侧都在，2026-10-16 实测）：
+#   · transformers `MambaForCausalLM`（**没导出到顶层**，走 AutoModel/`_tclass`）
+#   · llama.cpp `LLM_ARCH_MAMBA`（"mamba"）
+model Mamba130M {
+  backend transformers
+  arch mamba
+  ctx 2048
+
+  hparams {
+    d_model = 768
+    n_layer = 24
+    vocab   = 50280
+    # config 里叫 `layer_norm_epsilon`（1e-05），不是 rms_norm_eps。
+    rms_eps = 1e-05
+    # `d_inner = expand × d_model = 2 × 768`；`dt_rank = ceil(d_model/16)`。
+    # **两个都不能省**：in_proj / conv1d / A_log / D 的宽度是 d_inner，不是 d_model。
+    d_inner = 1536
+    dt_rank = 48
+    # checkpoint 里没有 lm_head（共享）—— 见 IR 声明的 `lm_head.weight : --`。
+    tie_word_embeddings = true
+    bos_token_id = 0
+    eos_token_id = 0
+    pad_token_id = 0
+  }
+
+  # 具名 mech（和 IR 声明同形）。**不能用内联 `SSM(...)`**：那样检查器会把它
+  # 当成"token 混合器"，于是要求每层再挂一个 FFN/MoE —— 而 mamba 每层就只有一个
+  # mixer（`intermediate_size = d_inner` 不是"另有一个 FFN"）。
+  mech Mixer : SSM {
+    expand      = 2
+    conv_kernel = 4
+    ssm_state   = 16
+    conv_bias   = true
+    proj_bias   = false
+    act         = silu
+    structural  = [ expand, conv_kernel, ssm_state ]
+  }
+
+  stack main {
+    # 每层**只有 mixer，没有 MLP** —— 所以这里没有 `>>`。
+    pattern = 24 * Mixer
+  }
+
+  position {
+    # SSM 不转位置 —— 状态随 token 递推。
+    default = none
+  }
+}
