@@ -3,6 +3,16 @@
 > 日期 **2026-10-16** · 机器：本机 Windows · **CPU-only（无显卡）** ·
 > 代表模型选择记录见 [p0-model-selection.md](p0-model-selection.md)。
 >
+> **环境（本报告所有结论都出自这一套）**：torch `2.13.0+cpu` ·
+> transformers `5.15.1` · safetensors `0.8.0` · numpy `2.5.2`。
+>
+> ⚠ **版本口径分裂，复现前先看这条**：`pyproject` 的 `[full]` 钉的是
+> `transformers>=5.19,<6`，而 `gpu-results/` 里的 GPU 报告记录的也是 **5.19.0**；
+> **本报告的 CPU 结论跑在 5.15.1 上**（与 `docs/which-gpu.md` 记的"和本机一致"
+> 同一条）。也就是说：**GPU 腿与 CPU 腿用的是两个大版本**。
+> 按 pyproject 装出来的环境是 5.19 —— 它能否复现本报告的 CPU 数字，
+> **还没有验过**（列在第四节的未跑项里）。
+>
 > 本报告只写**今天真正跑出来的那几段**。没跑的单独列在第四节 ——
 > **不写成通过**，这是这个仓库对"证据"的最低要求。
 
@@ -149,6 +159,7 @@ python src/modelcheck/by1shadow.py --smoke-refs \
 | **T14 增量状态**（cache 增量 vs 全量重算） | **未跑** | 生成侧已同文（④），但"增量 == 全量"要有新判据；且 `by1instella` 记过 transformers `DynamicCache` API 随版本漂移（走缓存那条路会 AttributeError），要么钉版本要么绕开 —— 不是随手能加的 |
 | **T39 真权重训练步**（梯度 + AdamW 一步） | **未跑** | `by1gputrain.py` 硬要 CUDA；即便加 CPU 路径，本机可用内存 10.3 GB < 全参数 fp32 训练步需要的约 10–12 GB（params 2.4 + grads 2.4 + 两个优化器状态 4.8）。留租卡日，或换更小模型/梯度检查点 |
 | **S1 tokenizer 组装线** | 仍未实现 | 本次 GGUF 的 tokenizer KV 从上游 ref 整拷 —— 按记档，非缺陷伪装 |
+| **按 pyproject 装出的 5.19 环境能否复现本报告** | **未验** | 本报告 CPU 结论跑在 transformers 5.15.1；`[full]` 钉的是 `>=5.19,<6`，GPU 报告用的是 5.19.0 —— **两个大版本**。要么在 5.19 下重跑一遍 CPU 腿，要么把依赖声明改成实测过的版本（先有证据再改） |
 | **T15 干净克隆（剩余腿）** | **部分** | 安装 + README 入门 + 档 1 已在干净克隆里跑通（第七节）；但 torch/transformers 那两段（真权重对拍、产物线）**没在克隆的 venv 里重跑** —— 要装 `.[full]`（约 2 GB 下载） |
 | 其余模型族 | 不外推 | Qwen3-0.6B 一个新档，不代表别的族 |
 
