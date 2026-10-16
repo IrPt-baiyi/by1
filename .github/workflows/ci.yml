@@ -159,8 +159,12 @@ jobs:
           out = (r.stdout or "") + (r.stderr or "")
           print(out)
           if r.returncode:
-              tail = [l for l in out.strip().splitlines() if l.strip()][-15:]
-              for line in tail:
+              # **先打失败详情**（`by1complete` 把每条用例的原因写在 `!!` 行里），
+              # 再补尾行。只打尾行的话，注解里只有"哪条用例红了"、没有"为什么"。
+              detail = [l for l in out.splitlines()
+                        if l.strip().startswith("!!") or "Traceback" in l
+                        or "Error" in l or "error" in l.lower() and "::" not in l]
+              for line in (detail[:12] + [l for l in out.strip().splitlines() if l.strip()][-12:]):
                   print("::error::" + line[:900])
           sys.exit(r.returncode)
           PY
