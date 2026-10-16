@@ -71,11 +71,9 @@
 > **可补** = 我们的工程活；**卡上游** = 缺 ggml/上游原语；
 > **设计如此** = 边界而非缺口。
 
-### 可补（3 格）
+### 可补（0 格）
 
-- `raw-escape.by1` × `c` —— raw.py 的工厂现在是 **PyTorch 专用**（返回 nn.Module）；多后端要先扩这个契约 —— 工程活，不是上游问题
-- `raw-escape.by1` × `ggml` —— raw.py 的工厂现在是 **PyTorch 专用**（返回 nn.Module）；多后端要先扩这个契约 —— 工程活，不是上游问题
-- `raw-escape.by1` × `exec` —— raw.py 的工厂现在是 **PyTorch 专用**（返回 nn.Module）；多后端要先扩这个契约 —— 工程活，不是上游问题
+**没有。**
 
 ### 卡上游（5 格）
 
@@ -85,7 +83,7 @@
 - `kda-gva-shaped.by1` × `ggml` —— 缺的是 ggml 原语（MoE 路由要 top-k、KDA 要 delta_rule），不是我们这边的活
 - `kda-lowrank-shaped.by1` × `ggml` —— 缺的是 ggml 原语（MoE 路由要 top-k、KDA 要 delta_rule），不是我们这边的活
 
-### 设计如此（12 格）
+### 设计如此（15 格）
 
 - `hello.by1` × `full` —— 两扇门：`full` 吃官方家族的 arch，串行 IR 后端吃机制组合 —— 不是缺口
 - `attn-fused-shaped.by1` × `full` —— 两扇门：`full` 吃官方家族的 arch，串行 IR 后端吃机制组合 —— 不是缺口
@@ -96,6 +94,9 @@
 - `kda-gva-shaped.by1` × `full` —— 两扇门：`full` 吃官方家族的 arch，串行 IR 后端吃机制组合 —— 不是缺口
 - `kda-lowrank-shaped.by1` × `full` —— 两扇门：`full` 吃官方家族的 arch，串行 IR 后端吃机制组合 —— 不是缺口
 - `ssm-shaped.by1` × `full` —— 两扇门：`full` 吃官方家族的 arch，串行 IR 后端吃机制组合 —— 不是缺口
+- `raw-escape.by1` × `c` —— 两层分工：`Raw`（第一层）的契约是 PyTorch 工厂；c/exec 的逃生舱走**第二层 `External`（.so）** —— 已由 by1extdemo 三后端验过，不是缺口
+- `raw-escape.by1` × `ggml` —— ggml 是**图发射**，装不下任意外部调用（进图要 custom op）—— 两层逃生舱在 ggml 上没有对应的门，这是结构边界
+- `raw-escape.by1` × `exec` —— 两层分工：`Raw`（第一层）的契约是 PyTorch 工厂；c/exec 的逃生舱走**第二层 `External`（.so）** —— 已由 by1extdemo 三后端验过，不是缺口
 - `raw-escape.by1` × `full` —— 两扇门：`full` 吃官方家族的 arch，串行 IR 后端吃机制组合 —— 不是缺口
 - `complete-granite-4.0-h-350m.by1` × `codegen` —— 两扇门：`full` 吃官方家族的 arch，串行 IR 后端吃机制组合 —— 不是缺口
 - `complete-Falcon-H1-0.5B-Instruct.by1` × `codegen` —— 两扇门：`full` 吃官方家族的 arch，串行 IR 后端吃机制组合 —— 不是缺口

@@ -343,9 +343,19 @@ def classify(probe, backend, msg):
             or "算子 KDA 还没有 ggml 映射" in msg):
         return "卡上游", ("缺的是 ggml 原语（MoE 路由要 top-k、"
                         "KDA 要 delta_rule），不是我们这边的活")
-    if "Raw" in msg and backend != "codegen":
-        return "可补", ("raw.py 的工厂现在是 **PyTorch 专用**（返回 nn.Module）；"
-                      "多后端要先扩这个契约 —— 工程活，不是上游问题")
+    if "Raw" in msg and backend in ("c", "exec"):
+        # **两层逃生舱的分工**（2026-10-17 核对过代码）：
+        #   第一层 `Raw` = `raw.py` 的工厂，**契约就是 PyTorch**（返回 nn.Module）；
+        #   第二层 `External` = .so + C —— **exec/c/codegen 三后端都在**
+        #   （`by1extdemo` 刚验过："PyTorch · NumPy · C 39 行 11 个张量"）。
+        # 所以 c/exec 的 Raw 拒绝不是缺口：要那两个后端的逃生舱，走第二层。
+        return "设计如此", ("两层分工：`Raw`（第一层）的契约是 PyTorch 工厂；"
+                          "c/exec 的逃生舱走**第二层 `External`（.so）** —— "
+                          "已由 by1extdemo 三后端验过，不是缺口")
+    if "Raw" in msg and backend == "ggml":
+        return "设计如此", ("ggml 是**图发射**，装不下任意外部调用"
+                          "（进图要 custom op）—— 两层逃生舱在 ggml 上"
+                          "没有对应的门，这是结构边界")
     return None, ""
 
 
