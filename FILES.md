@@ -1,6 +1,6 @@
 # 这个仓库里每个文件是干什么的
 
-> 395 个跟踪文件。按"你会想找什么"分组，不按字母表。
+> 396 个跟踪文件。按"你会想找什么"分组，不按字母表。
 >
 > **这份文档是生成的**：`python src/by1files.py --write`。
 > 文件清单、每组的个数、每个文件的一句话都从目录树和 docstring 来 ——
@@ -230,7 +230,7 @@
 | `fig3-schools.png` | article/ 配图：Q3 五大流派对比（含 Kimi-K3） |
 | `fig4-shape.png` | article/ 配图：收敛出的公共形状示意图 |
 
-## `docs/` —— 30 个
+## `docs/` —— 31 个
 
 活的文档 —— 还没做完的事记在这里，做完的挪去 `history/`。
 
@@ -265,6 +265,7 @@
 | `step5-runbook.md` | Step-5 发布日快速反应手册：抓元数据/草稿 by1/合同审计/GGUF 产物/推销素材/风险预案 |
 | `step5-vs-h2-2026.md` | 2026 H2 四模型架构大表：Step-5 vs Step-3.7 / DSV4.1-Flash / Qwen3.8-Flash-Next / GLM-5.3-Flash |
 | `support-matrix.md` | 支持矩阵（四态）/ Support matrix (four states) |
+| `t26-plan.md` | T26 第二架构毕业选型：mamba-130m-hf（130M，递归状态）——判卷人实测表（transformers Mamba v1 走 AutoModel / llama.cpp mamba）、缺什么、四件事、完成定义 |
 | `which-gpu.md` | > 从 `README.md` 挪出来的。它是一次**具体的调查** —— 这台开发机上 |
 
 ## `docs/gpu-results/` —— 10 个
