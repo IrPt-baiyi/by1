@@ -21,7 +21,8 @@ GALLERY = ['complete-Qwen3-0.6B.by1', 'complete-Qwen3-8B.by1',
            'complete-Qwen2.5-7B-Instruct.by1', 'complete-gpt2.by1',
            'complete-gpt-oss-20b.by1', 'complete-Qwen3.8-27B.by1',
            # **第二个机制族（T26）**：SSM/递归状态。
-           'complete-mamba-130m-hf.by1']
+           # **第三个机制族（T27）**：混合栈 —— 逐层类型表。
+           'complete-granite-4.0-h-350m.by1']
 
 #: **按名字取件，不要按下标。** 加一个模型就会把 `GALLERY[-1]` / `GALLERY[5]`
 #: 悄悄换成另一个模型 —— 2026-10-16 加 mamba 时真撞上：MTP/视觉那两个用例
@@ -63,6 +64,10 @@ def tiny(name):
     info = copy.deepcopy(description(name))
     family = info['arch']
     hp = info['hparams']
+    # **留一份截断前的层表。** 通用那段只留前几层，而混合栈要**按类型取样**
+    # （这个模型前 10 层全是 Mamba2，截断后就找不到注意力层了）——
+    # 所以那一段必须从原始层表里挑，而不是从截断后的。
+    original_seq = list(info['layer_seq'])
     hp.update(d_model='32', vocab='64', bos_token_id='54', eos_token_id='55')
     # **夹具把 eps 也钉住**（与 `config_of` 共用 `TINY_EPS`）：
     # mamba 的真实声明是 1e-5、gpt-oss 的参考配置是 1e-5，其余 1e-6 ——
@@ -136,6 +141,46 @@ def tiny(name):
                 attrs['ssm_state'] = '4'
         hp['d_inner'] = str(expand * 32)
         hp['dt_rank'] = '2'
+    if family == 'granitemoehybrid':
+        # **按类型取样，不按层号截断。** 通用那段只留前 2 层，而这个模型
+        # 前 10 层全是 Mamba2 —— 只留前 2 层会触发 `_compile_moe_hybrid` 的
+        # "两种机制都要出现"（那是判据，不是 bug：混合栈的定义就是两种都在）。
+        # 所以这里各取几个：2 个 SSM2 + 1 个 Attention。
+        ssm_keep, attn_keep = [], None
+        for entry in original_seq:
+            stack, mech = entry[0], entry[1]
+            if stack != 'main':
+                continue
+            kind = info['mechs'][mech]
+            if kind == 'SSM2' and len(ssm_keep) < 2:
+                ssm_keep.append(entry)
+            elif kind == 'Attention' and attn_keep is None:
+                attn_keep = entry
+        info['layer_seq'] = ssm_keep + ([attn_keep] if attn_keep else [])
+        hp['n_layer'] = str(len(info['layer_seq']))
+        # 上下文与共享前馈一起缩（`max_pos` 必须显式声明，见 by1full 的混合栈分支）。
+        hp['max_pos'] = '32'
+        hp['shared_hidden'] = '64'
+        # 词表缩到 64，而声明里的 `pad_token_id` 是 100256（大词表的值）——
+        # 不缩的话 PyTorch 会报 `Padding_idx must be within num_embeddings`。
+        hp['pad_token_id'] = '0'
+        # **SSM2 与注意力都要缩**：`expand × d_model == n_heads × d_head`
+        # （2 × 32 = 4 × 16）、`q × head_dim == d_model`（4 × 8 = 32）。
+        # 注意：取回来的注意力层来自 `original_seq`，通用那段没碰过它 ——
+        # 不缩的话它还带着 12 × 64（= 768）。
+        for entry in info['layer_seq']:
+            attrs = entry[2]
+            if info['mechs'][entry[1]] == 'SSM2':
+                attrs.update(n_heads='4', d_head='16', d_state='8', chunk_size='8')
+            elif info['mechs'][entry[1]] == 'Attention':
+                attrs.update(q='4', kv='2', head_dim='8')
+                if 'out_dim' in attrs:
+                    attrs['out_dim'] = '32'
+        for name_, attrs in info['mech_attrs'].items():
+            if info['mechs'][name_] == 'SSM2':
+                attrs.update(n_heads='4', d_head='16', d_state='8', chunk_size='8')
+            elif info['mechs'][name_] == 'Attention':
+                attrs.update(q='4', kv='2', head_dim='8')
     return by1full.compile_config(info)
 
 
@@ -186,6 +231,31 @@ def config_of(family, tied, T):
             use_bias=False, use_conv_bias=True, pad_vocab_size_multiple=8,
             ssm_cfg={}, bos_token_id=54, eos_token_id=55, pad_token_id=0,
             tie_word_embeddings=tied)
+    if family == 'granitemoehybrid':
+        # **混合栈用不了 `common`**：主干的形状来自**逐层类型表**，
+        # 而逐层类型表要与 `tiny()` 取样后的顺序一致（2 个递归层 + 1 个注意力层）。
+        # μP 四个缩放照声明写死 —— 两边必须逐位相同，否则前向必然不同。
+        return T.GraniteMoeHybridConfig(
+            vocab_size=64, hidden_size=32, num_hidden_layers=3,
+            num_attention_heads=4, num_key_value_heads=2,
+            layer_types=['linear_attention', 'linear_attention', 'full_attention'],
+            max_position_embeddings=32,
+            rms_norm_eps=tiny_eps(family), hidden_act='silu',
+            attention_bias=False, attention_dropout=0.0,
+            attention_multiplier=0.015625, embedding_multiplier=12,
+            residual_multiplier=0.246, logits_scaling=3,
+            intermediate_size=64, shared_intermediate_size=64,
+            num_local_experts=0, num_experts_per_tok=0,
+            output_router_logits=False, router_aux_loss_coef=0.01,
+            mamba_n_heads=4, mamba_d_head=16, mamba_d_state=8, mamba_n_groups=1,
+            mamba_chunk_size=8, mamba_d_conv=4, mamba_expand=2,
+            mamba_conv_bias=True, mamba_proj_bias=False,
+            position_embedding_type='nope',
+            rope_parameters={'rope_type': 'default', 'rope_theta': 10000.0},
+            normalization_function='rmsnorm', init_method='mup',
+            initializer_range=0.1, use_cache=True,
+            bos_token_id=54, eos_token_id=55, pad_token_id=0,
+            tie_word_embeddings=tied)
     text = dict(vocab_size=64, hidden_size=32, intermediate_size=64, num_hidden_layers=4,
                 num_attention_heads=4, num_key_value_heads=2, head_dim=16, rms_norm_eps=1e-6,
                 max_position_embeddings=32, tie_word_embeddings=False, bos_token_id=54, eos_token_id=55,
@@ -214,6 +284,9 @@ def reference(family, tied, torch, T):
     if family == 'mamba':
         # 同样要用 `_tclass`（没导出到顶层）。
         return by1full._tclass('MambaForCausalLM')(config_of(family, tied, T))
+    if family == 'granitemoehybrid':
+        # 这一族**顶层有导出**，直接取。
+        return T.GraniteMoeHybridForCausalLM(config_of(family, tied, T))
     return T.Qwen3_5ForConditionalGeneration(config_of(family, tied, T))
 
 
@@ -543,6 +616,76 @@ def main():
         require(by1llama._modify_tensor('qwen3', 'x.A_log', 'x', src) is src,
                 '非 mamba 架构不该被改写')
     case('转换期改写（A_log 改值 / conv1d 改形状）', modify_tensor_rules)
+
+    # ── T27 加的五条规则：混合栈的**必红反例** ──────────────────────
+
+    def _granite():
+        return copy.deepcopy(description(GRANITE))
+
+    def _set_mech_attr(info, mech_name, **kw):
+        """机制属性**两处都要改**：`layer_seq` 里那份是建配置用的，
+        `mech_attrs` 那份只有 feed 用（T26 在这里栽过一次）。"""
+        info['mech_attrs'][mech_name].update({k: str(v) for k, v in kw.items()})
+        for entry in info['layer_seq']:
+            if entry[1] == mech_name:
+                entry[2].update({k: str(v) for k, v in kw.items()})
+
+    def hybrid_single_mechanism():
+        """混合栈里**两种机制都要出现** —— 删掉注意力层必须被拒。"""
+        info = _granite()
+        info['layer_seq'] = [e for e in info['layer_seq']
+                             if info['mechs'][e[1]] != 'Attention']
+        try:
+            by1full.compile_config(info)
+        except ValueError:
+            return
+        raise RuntimeError('只剩一种机制竟然被接受（那该用单机制家族）')
+    case('混合栈只剩一种机制被拒绝', hybrid_single_mechanism)
+
+    def hybrid_missing_mup():
+        """μP 缩放**没有默认值** —— 少一个必须被拒（它改数值不改形状）。"""
+        info = _granite()
+        info['hparams'].pop('logits_scaling')
+        try:
+            by1full.compile_config(info)
+        except ValueError:
+            return
+        raise RuntimeError('少一个 μP 缩放竟然被接受')
+    case('缺一个 μP 缩放被拒绝', hybrid_missing_mup)
+
+    def hybrid_ssm_width():
+        """`expand × d_model == n_heads × d_head` —— 不等必须被拒。"""
+        info = _granite()
+        _set_mech_attr(info, 'Mixer', n_heads=16)
+        try:
+            by1full.compile_config(info)
+        except ValueError:
+            return
+        raise RuntimeError('SSM2 宽度对不上竟然被接受')
+    case('SSM2 宽度对不上被拒绝', hybrid_ssm_width)
+
+    def hybrid_attn_width():
+        """混合栈的注意力：`q × head_dim == d_model` —— 不等必须被拒。"""
+        info = _granite()
+        _set_mech_attr(info, 'Attn', q=8)
+        try:
+            by1full.compile_config(info)
+        except ValueError:
+            return
+        raise RuntimeError('注意力宽度对不上竟然被接受')
+    case('混合栈注意力宽度对不上被拒绝', hybrid_attn_width)
+
+    def hybrid_moe_feed():
+        """这一族每层挂的是 dense FFN —— 换成 MoE 必须被拒。"""
+        info = _granite()
+        info['mechs']['MLP'] = 'MoE'
+        info['mech_attrs']['MLP'] = {'experts': '4', 'top_k': '2', 'hidden': '64'}
+        try:
+            by1full.compile_config(info)
+        except ValueError:
+            return
+        raise RuntimeError('混合栈换成 MoE 前馈竟然被接受')
+    case('混合栈换成 MoE 前馈被拒绝', hybrid_moe_feed)
 
     print('\n  [%s] 完整模型：%s' % ('FAIL' if failures else 'PASS', ', '.join(failures) if failures else '全部通过'))
     return 1 if failures else 0

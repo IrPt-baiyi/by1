@@ -113,7 +113,19 @@ M M M M M M M M M M A M M A M M M A M M M M M M M M M A M M M M
 | 3 | **✅（前向那半）** | `by1shadow --smoke-refs` → **370 个真名 · 双 loader 零 missing/unexpected · 前向 max\|Δ\| = 0.000e+00（逐位）** |
 | 3' | **✅** | `by1shadow --smoke-state-hybrid`（新加的第三条判据）：**一个 `DynamicCache` 里 28 个递归层 + 4 个注意力层** · 官方 **9.918e-05** · by1 **9.918e-05**（判据 2e-3，余量约 20×）· 逐位置曲线 **不随序列增长**（1e-5 ~ 1e-4 平着走）—— 比 T26 的纯递归（1.497e-03）还小 15 倍，所以**别把纯递归的余量外推给别的递归形态**（已登记进[精度预算](precision-budget.md)） |
 | 4 | 待做 | `--arch granite_hybrid` 产物 + 上游 logits 逐位 |
-| — | 待做 | 把 granite 接进 `by1complete` 的 **GALLERY**（要为它写 `tiny`/`config_of`/`reference` 三条分支）；以及 `SSM2` / 混合栈那几条新规则的**必红反例** |
+| — | **✅** | 已进 `by1complete` 的 **GALLERY**（`tiny`/`config_of`/`reference` 三条分支都写了）：那一步现在跑 **8 个完整声明**的前向/反向 + config 逐字段 + **13 条必红反例**（含 T27 新加的 5 条）→ `[PASS] 完整模型：全部通过` |
+
+**夹具这一步踩的三个坑（都记进代码注释了）**：
+
+1. **`tiny()` 要"按类型取样"，不能按层号截断**：通用那段只留前 2 层，
+   而这个模型前 10 层全是 Mamba2 —— 截断后连一个注意力层都不剩，
+   于是触发"两种机制都要出现"。所以混合栈那一段从**截断前的层表**里
+   各取 2 个递归层 + 1 个注意力层。（第一次就是按截断后的表取，取了个空。）
+2. **从原始层表取回来的层，属性还是大尺寸**：注意力层带着 12 × 64（= 768），
+   而夹具的 `d_model` 是 32 —— 采样后必须**显式缩小** `q/kv/head_dim`
+   与 `n_heads/d_head/d_state/chunk_size`，两处（`layer_seq` 与 `mech_attrs`）都要改。
+3. **词表缩了，`pad_token_id` 也要缩**：声明里是 100256，而夹具词表只有 64，
+   PyTorch 直接报 `Padding_idx must be within num_embeddings`。
 
 **这一轮踩过的两个坑（都记进代码注释了）**：
 
