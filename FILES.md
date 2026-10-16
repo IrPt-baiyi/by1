@@ -1,6 +1,6 @@
 # 这个仓库里每个文件是干什么的
 
-> 412 个跟踪文件。按"你会想找什么"分组，不按字母表。
+> 414 个跟踪文件。按"你会想找什么"分组，不按字母表。
 >
 > **这份文档是生成的**：`python src/by1files.py --write`。
 > 文件清单、每组的个数、每个文件的一句话都从目录树和 docstring 来 ——
@@ -43,7 +43,7 @@
 
 ---
 
-## `src/` —— 87 个模块 + 1 个非 .py
+## `src/` —— 88 个模块 + 1 个非 .py
 
 ### 底座（留在 src/ 顶层）
 
@@ -151,6 +151,7 @@
 | `by1gpuday.py` | GPU 日单入口**：一条命令把租卡那天该跑的按序跑完 |
 | `by1llama.py` | llama.cpp 基线记录、GGUF 清单校验、logits 逐位对拍 |
 | `by1rules.py` | 转换期改写表的判卷人 |
+| `by1backends.py` | 后端 × 机制矩阵：**承诺的公共子集到底有多大** |
 | `by1sync.py` | 推导 ↔ 契约 的同步报表**（1.0.0-rc0 的 T0.2） |
 | `by1mutate.py` | 变异反例库**（1.0.0-rc0 的 T0.3） |
 | `by1complete.py` | 完整模型验收：参数共享、bias、梯度、视觉、MTP 与严格权重加载 |
@@ -231,7 +232,7 @@
 | `fig3-schools.png` | article/ 配图：Q3 五大流派对比（含 Kimi-K3） |
 | `fig4-shape.png` | article/ 配图：收敛出的公共形状示意图 |
 
-## `docs/` —— 36 个
+## `docs/` —— 37 个
 
 活的文档 —— 还没做完的事记在这里，做完的挪去 `history/`。
 
@@ -240,6 +241,7 @@
 | `1.0-roadmap.md` | By1 长期路线图 |
 | `INVENTORY.txt` | 验证清单：每个模型验到了什么、判卷人是谁 |
 | `autodl-file-storage.md` | AutoDL 文件存储操作单 —— 重租卡 0 下载 |
+| `backend-matrix.md` | 后端 × 机制矩阵（生成物，别手改） |
 | `by1-language-spec.md` | T2 语言合同（可执行规范）：语法骨架/错误模型/版本策略/最小绿红例；一致性判卷人 by1langspec.py |
 | `check-map.md` | `check()` 的结构图 |
 | `complete-models.md` | 完整模型：参数共享、视觉与 MTP |
@@ -479,12 +481,13 @@
 | `ISTA-DASLab__Qwen3.8-27B-GSQ-RCO-GGUF.IQ2_S-mtp.alloc.txt` | 14 | |
 
 
-## `src/checks/` —— 33 个
+## `src/checks/` —— 34 个
 
 | 文件 | 用途 |
 |---|---|
 | `__init__.py` | 让这个目录成为一个包，这样 setuptools 装得上 |
 | `by1all.py` | 一次跑完全部验证，失败就非零退出 |
+| `by1backends.py` | 后端 × 机制矩阵：**承诺的公共子集到底有多大** |
 | `by1blind.py` | 量"看不见的东西" |
 | `by1bootir.py` | 两条路的判卷人**：从 .by1 出来的 IR，和从产物反推出来的 IR |
 | `by1complete.py` | 完整模型验收：参数共享、bias、梯度、视觉、MTP 与严格权重加载 |
