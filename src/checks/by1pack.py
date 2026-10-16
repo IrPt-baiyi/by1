@@ -105,6 +105,7 @@ WANT = [
     ('by1llama.py', '产物线：GGUF 构建 / 上游 logits 逐位对拍 / 转换期改写'),
     ('by1quant.py', '量化格式声明（MXFP4 / FP8）的数值 oracle 与运行时规格'),
     ('by1q2schema.py', 'Q2 报告的 schema：指标与容差写在一处（分片量化的口径）'),
+    ('by1rules.py', '转换期改写表的判卷人（每条规则的上游出处 + 探针）'),
     # **下面三个是"文档叫你跑，而包里没有"的那一类。**
     # `by1docs.py` 在包里自己把它们抓出来了 —— 它扫 README 里
     # `python xxx.py` 的调用，而包里没有这些文件。

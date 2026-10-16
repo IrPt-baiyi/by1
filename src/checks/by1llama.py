@@ -606,6 +606,273 @@ def _falcon_fold(hf_name, arr, cfg):
     return arr
 
 
+#: 转换期改写表 —— **每条都指向上游那一行，且都带一个探针**。
+#:
+#: 三类（`phase`）：
+#:   `name`   改名字（查映射表之前/之后的特判）
+#:   `fanout` 一个 HF 张量变**多个** GGUF 张量
+#:   `shape`  改形状
+#:   `value`  改数值（**顺序敏感**：先形状、后数值）
+#:
+#: 每条 = (id, phase, arches, cite, probe, check)
+#:   · `cite` 是 `conversion/<arch>.py:行` —— 自检会去**核对那一行真的在**
+#:     （检出不在时算「没验」，不算通过）；
+#:   · `probe` 是一个小 fixture（名字 + 形状）；
+#:   · `check` 拿**真实管线**（`_gguf_name` / `_tensors_for`）跑出来的结果断言，
+#:     期望值是**独立写一遍**的上游公式，不是把实现抄一遍。
+#:
+#: 加一条规则 = 加一行。**加一行而自检没红，才算真的加上了。**
+CONVERT_RULES = []
+
+
+def _rule(rule_id, phase, arches, cite, probe, check):
+    CONVERT_RULES.append({'id': rule_id, 'phase': phase, 'arches': arches,
+                          'cite': cite, 'probe': probe, 'check': check})
+
+
+def _np():
+    import numpy as np
+    return np
+
+
+# ── 名字：`dt_bias` 先改名再查表（Mamba2 那一代都有）──────────────────
+_rule('mamba2.dt_bias', 'name', MAMBA2_ARCHES,
+      'conversion/mamba.py:.dt_bias',
+      ('model.layers.0.mamba.dt_bias', None, (24,), False),
+      lambda got: got is not None and got.endswith('ssm_dt.bias'))
+
+# ── 名字：granite 的共享前馈落名（无专家时是 `ffn_down`）──────────────
+_rule('granite.ffn_down', 'name', ('granite_hybrid',),
+      'conversion/granite.py:223',
+      ('model.layers.3.shared_mlp.output_linear.weight', None, (4, 4), False),
+      lambda got: got == 'blk.3.ffn_down.weight')
+
+# ── 一对多：融合的 gate+up 拆成两个（无专家时）───────────────────────
+_rule('granite.split_gate_up', 'fanout', ('granite_hybrid',),
+      'conversion/granite.py:211-222',
+      ('model.layers.3.shared_mlp.input_linear.weight', None, (8, 4), False),
+      lambda got: ({n for n, _a in got} == {'blk.3.ffn_gate.weight',
+                                            'blk.3.ffn_up.weight'}
+                   and all(a.shape == (4, 4) for _n, a in got)))
+
+# ── 形状：conv1d squeeze ────────────────────────────────────────────
+_rule('mamba2.conv1d_squeeze', 'shape', MAMBA2_ARCHES,
+      'conversion/mamba.py:184-185',
+      ('model.layers.0.mamba.conv1d.weight', 'blk.0.ssm_conv1d.weight',
+       (8, 1, 4), False),
+      lambda got: got[0][1].shape == (8, 4))
+
+# ── 形状：`ssm_d` unsqueeze 一维 ─────────────────────────────────────
+_rule('mamba2.d_unsqueeze', 'shape', MAMBA2_ARCHES,
+      'conversion/mamba.py:186-192',
+      ('model.layers.0.mamba.D', 'blk.0.ssm_d', (8,), False),
+      lambda got: got[0][1].shape == (8, 1))
+
+# ── 形状：`ssm_norm` 二维化 ─────────────────────────────────────────
+_rule('mamba2.norm_reshape', 'shape', MAMBA2_ARCHES,
+      'conversion/mamba.py:193-194',
+      ('model.layers.0.mamba.norm.weight', 'blk.0.ssm_norm.weight', (8,), False),
+      lambda got: got[0][1].shape == (1, 8))
+
+# ── 数值：`A_log` -> `-exp(A_log)`（**必须 torch.exp**）──────────────
+def _check_alog(got):
+    import torch
+    # 探针的输入恒为 `arange(n)+1`（见 `selftest_convert_rules`）。
+    base = torch.tensor([1.0, 2.0, 3.0])
+    return _np().array_equal(got[0][1], (-torch.exp(base)).numpy())
+
+
+_rule('mamba2.a_log_neg_exp', 'value', ('mamba',) + MAMBA2_ARCHES,
+      'conversion/mamba.py:196-198',
+      ('model.layers.0.mamba.A_log', 'blk.0.ssm_a', (3,), True),
+      _check_alog)
+
+# ── 数值：q/k 置换（`undo_permute = True` 的族）──────────────────────
+def _check_permute(got):
+    np = _np()
+    arr = (np.arange(16, dtype=np.float32) + 1.0).reshape(8, 2)
+    n_head = 2
+    want = (arr.reshape(n_head, 2, arr.shape[0] // n_head // 2, *arr.shape[1:])
+            .swapaxes(1, 2).reshape(arr.shape))
+    return np.array_equal(got[0][1], want)
+
+
+_rule('granite.qk_permute', 'value', ('granite_hybrid',),
+      'conversion/llama.py:permute',
+      ('model.layers.10.self_attn.q_proj.weight', 'blk.10.attn_q.weight',
+       (8, 2), False),
+      _check_permute)
+
+# ── 数值：Falcon-H1 把九个缩放折进权重（逐分支各测一条）──────────────
+_FALCON_CFG = {
+    'mlp_multipliers': [3.0, 5.0], 'key_multiplier': 7.0,
+    'attention_in_multiplier': 2.0, 'attention_out_multiplier': 11.0,
+    'ssm_in_multiplier': 13.0, 'ssm_out_multiplier': 17.0,
+    'lm_head_multiplier': 19.0, 'embedding_multiplier': 23.0,
+    'ssm_multipliers': [2.0, 3.0, 5.0, 7.0, 11.0],
+    'mamba_d_ssm': 2, 'mamba_n_groups': 1, 'mamba_d_state': 1,
+}
+
+
+def _fold_factor(hf_name):
+    """独立写一遍上游那张表（`conversion/falcon_h1.py:64-91`）。"""
+    c = _FALCON_CFG
+    if 'down_proj' in hf_name:
+        return c['mlp_multipliers'][1]
+    if 'gate_proj' in hf_name:
+        return c['mlp_multipliers'][0]
+    if 'k_proj' in hf_name:
+        return c['key_multiplier'] * c['attention_in_multiplier']
+    if 'q_proj' in hf_name or 'v_proj' in hf_name:
+        return c['attention_in_multiplier']
+    if 'o_proj' in hf_name:
+        return c['attention_out_multiplier']
+    if 'out_proj' in hf_name:
+        return c['ssm_out_multiplier']
+    if 'lm_head' in hf_name:
+        return c['lm_head_multiplier']
+    if 'embed_tokens' in hf_name:
+        return c['embedding_multiplier']
+    return 1.0
+
+
+def _check_fold(k):
+    def check(got):
+        np = _np()
+        base = (np.arange(12, dtype=np.float32) + 1.0).reshape(3, 4)
+        return np.array_equal(got[0][1], base * k)
+    return check
+
+
+for _name, _rows, _ggml in (
+        ('mlp_down', 'model.layers.0.feed_forward.down_proj.weight',
+         'blk.0.ffn_down.weight'),
+        ('mlp_gate', 'model.layers.0.feed_forward.gate_proj.weight',
+         'blk.0.ffn_gate.weight'),
+        ('key', 'model.layers.0.self_attn.k_proj.weight', 'blk.0.attn_k.weight'),
+        ('out', 'model.layers.0.self_attn.o_proj.weight',
+         'blk.0.attn_output.weight'),
+        ('ssm_out', 'model.layers.0.mamba.out_proj.weight',
+         'blk.0.ssm_out.weight'),
+        ('embed', 'model.embed_tokens.weight', 'token_embd.weight'),
+        ('lm_head', 'lm_head.weight', 'output.weight')):
+    _rule('falcon.fold_%s' % _name, 'value', ('falcon_h1',),
+          'conversion/falcon_h1.py:64-91',
+          (_rows, _ggml, (3, 4), False),
+          _check_fold(_fold_factor(_rows)))
+
+
+def _check_falcon_in_proj(got):
+    """`in_proj`：先乘 `ssm_in_multiplier`，再**按行分五段**乘五个系数。
+
+    段宽：`d_ssm = 2`、`gts = n_groups × d_state = 1` → 五段是
+    `[0:2] [2:4] [4:5] [5:6] [6:7]`，系数 `[2, 3, 5, 7, 11]`。
+    """
+    np = _np()
+    base = (np.arange(14, dtype=np.float32) + 1.0).reshape(7, 2)
+    want = base * 13.0
+    for lo, hi, k in ((0, 2, 2.0), (2, 4, 3.0), (4, 5, 5.0),
+                      (5, 6, 7.0), (6, 7, 11.0)):
+        want[lo:hi, :] *= k
+    return np.array_equal(got[0][1], want)
+
+
+_rule('falcon.fold_in_proj', 'value', ('falcon_h1',),
+      'conversion/falcon_h1.py:78-87',
+      ('model.layers.0.mamba.in_proj.weight', 'blk.0.ssm_in.weight', (7, 2), False),
+      _check_falcon_in_proj)
+
+
+def _mapper_for(arch, n_blocks=40):
+    """给名字类探针取**真**的映射表（gguf-py）。取不到返回 None = 没验。"""
+    try:
+        import sys as _sys
+        py = by1paths.ROOT + '/llamacpp/llama.cpp/gguf-py'
+        if py not in _sys.path:
+            _sys.path.insert(0, py)
+        from gguf.tensor_mapping import TensorNameMap
+        from gguf import MODEL_ARCH
+        return TensorNameMap(getattr(MODEL_ARCH, arch.upper()), n_blocks)
+    except Exception:                                  # noqa: BLE001
+        return None
+
+
+def selftest_convert_rules(verbose=True):
+    """逐条核对改写表：**上游那一行还在不在** + **探针走真管线对不对**。
+
+    三态：通过 / 失败 / 没验（上游检出不在、或需要 torch/gguf-py 而没装）。
+    """
+    import os as _o
+    checkout = _o.path.join(by1paths.ROOT, 'llamacpp', 'llama.cpp')
+    try:
+        import numpy  # noqa: F401
+        have_numpy = True
+    except ImportError:
+        have_numpy = False
+    try:
+        import torch  # noqa: F401
+        have_torch = True
+    except ImportError:
+        have_torch = False
+    bad, skipped, cite_checked = [], [], 0
+    for r in CONVERT_RULES:
+        path, _, line = r['cite'].partition(':')
+        full = _o.path.join(checkout, path)
+        if _o.path.exists(full):
+            with open(full, encoding='utf-8', errors='replace') as fh:
+                text = fh.read()
+            n = text.count('\n') + 1
+            cite_checked += 1
+            if line and line[0].isdigit():
+                lo = int(line.split('-')[0])
+                hi = int(line.split('-')[-1])
+                if hi > n:
+                    bad.append('%s: 出处 %s 只到第 %d 行' % (r['id'], r['cite'], n))
+            elif line:
+                # **符号引用**（比行号耐用）：那一行/那个名字还在文件里吗。
+                if line not in text:
+                    bad.append('%s: 出处 %s 里找不到 %r'
+                               % (r['id'], r['cite'], line))
+        hf, ggml, shape, need_torch = r['probe']
+        if not have_numpy or (need_torch and not have_torch):
+            skipped.append('%s（缺 %s）' % (r['id'], 'torch' if need_torch else 'numpy'))
+            continue
+        mapper = _mapper_for(r['arches'][0]) if r['phase'] == 'name' else True
+        if mapper is None:
+            skipped.append('%s（缺 gguf-py）' % r['id'])
+            continue
+        np = _np()
+        arr = (np.arange(int(np.prod(shape)), dtype=np.float32) + 1.0
+               ).reshape(shape)
+        try:
+            if r['phase'] == 'name':
+                got = _gguf_name(r['arches'][0], hf, mapper, False)
+            else:
+                cfg = _FALCON_CFG if 'falcon_h1' in r['arches'] else None
+                got = _tensors_for(r['arches'][0], hf, ggml, arr, 1, 2, 2, cfg)
+            if not r['check'](got):
+                bad.append('%s: 探针没通过（probe=%s）' % (r['id'], hf))
+        except Exception as exc:                       # noqa: BLE001
+            bad.append('%s: 探针抛异常 %s' % (r['id'], exc))
+    if verbose:
+        print('  转换期改写表：%d 条（出处核对 %d 条）' % (len(CONVERT_RULES), cite_checked))
+        for r in CONVERT_RULES:
+            print('    %-26s %-7s %-34s %s'
+                  % (r['id'], r['phase'], r['cite'],
+                     '/'.join(r['arches'])))
+        if skipped:
+            print('  没验（%d 条）：%s' % (len(skipped), '、'.join(skipped)))
+    if bad:
+        print('  [FAIL] 改写表 %d 条不成立：' % len(bad))
+        for b in bad:
+            print('     · %s' % b)
+        return 1
+    print('  [PASS] 改写表 %d 条：探针全过%s'
+          % (len(CONVERT_RULES),
+             '（%d 条没验：缺依赖或上游检出不在）' % len(skipped) if skipped else ''))
+    return 0
+
+
 def _tensors_for(arch, hf_name, ggml_name, arr, n_groups=1, n_heads=None,
                  n_kv_heads=None, hf_cfg=None):
     """一个 HF 张量 -> **要写进 GGUF 的 (名字, 数组) 列表**。
@@ -929,6 +1196,8 @@ def main(argv=None):
     # runbook 里写的 `by1llama.py build-gguf ...` 命令跑不通（2026-10-16 发现）。
     # 它原来的 `arch` 参数也被硬编成 LLAMA、n_blocks 默认 24 ——
     # 那正是 gap S2「只 qwen2 档实证」的字面来源；现在真按参数走。
+    sub.add_parser('selftest-rules',
+                   help='转换期改写表自检：每条规则的**上游出处**与**探针**')
     bb = sub.add_parser('build-gguf',
                         help='HF 权重 -> 真 .gguf（F32；KV 表驱动，'
                              'tokenizer 从 --ref 整拷 —— S1 记档）')
@@ -956,6 +1225,8 @@ def main(argv=None):
         n, size = rewrite_gguf(args.src, args.out, quant_q8_0=args.q8_0)
         print('  写了 %s：%d 个张量 %.1f GB' % (args.out, n, size / 1e9))
         return 0
+    if args.cmd == 'selftest-rules':
+        return selftest_convert_rules()
     if args.cmd == 'build-gguf':
         ts = build_gguf(args.hf_dir, args.out, args.ref, args.arch,
                         args.n_blocks, args.q8_0, args.n_groups)
