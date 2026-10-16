@@ -134,8 +134,15 @@ by1 自己用的 torch：rsqrt / tril / atan2 / outer / finfo …
 ```
 
 ```bash
-pip install transformers==5.15.1 safetensors     # 和本机一致
+pip install transformers==5.15.1 safetensors     # 和本机一致（CPU 侧）
 ```
+
+> **两处版本号的关系（2026-10-16 记）**：本机 CPU 侧是 **5.15.1**，
+> 而 `pyproject` 的 `[full]` 钉的是 `>=5.19,<6`、GPU 报告记录的是 **5.19.0**
+> —— 也就是**两个大版本并存**。P0 闭环报告已补验：关键那一步
+> （真权重双 loader 前向对拍）在 5.15.1 与 5.19.0 下**逐位相同**
+> （`max|Δ| = 0.000e+00`），见 [P0 闭环报告](p0-loop-report.md) 第七节。
+> 换版本前仍按下面这条纪律走。
 
 > **判卷人换了就不是同一个判卷人。**
 > 版本不一致的话，改的可能是参考，不是 by1。
