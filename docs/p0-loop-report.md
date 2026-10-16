@@ -146,6 +146,7 @@ python src/modelcheck/by1shadow.py --smoke-refs \
 
 | 项 | 状态 | 原因 / 收口路径 |
 |---|---|---|
+| **T14 增量状态**（cache 增量 vs 全量重算） | **未跑** | 生成侧已同文（④），但"增量 == 全量"要有新判据；且 `by1instella` 记过 transformers `DynamicCache` API 随版本漂移（走缓存那条路会 AttributeError），要么钉版本要么绕开 —— 不是随手能加的 |
 | **T39 真权重训练步**（梯度 + AdamW 一步） | **未跑** | `by1gputrain.py` 硬要 CUDA；即便加 CPU 路径，本机可用内存 10.3 GB < 全参数 fp32 训练步需要的约 10–12 GB（params 2.4 + grads 2.4 + 两个优化器状态 4.8）。留租卡日，或换更小模型/梯度检查点 |
 | **S1 tokenizer 组装线** | 仍未实现 | 本次 GGUF 的 tokenizer KV 从上游 ref 整拷 —— 按记档，非缺陷伪装 |
 | 其余模型族 | 不外推 | Qwen3-0.6B 一个新档，不代表别的族 |
