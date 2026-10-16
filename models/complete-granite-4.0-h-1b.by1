@@ -1,0 +1,80 @@
+# 完整 granite-4.0-h-1b（T28）：**混合栈的第二个成员** —— 同族、**图案不同**。
+#
+# T27 做的是 350m（32 层，注意力在不规则的 10/13/17/27）；这一份是 1b
+# （**40 层，注意力在 5/15/25/35** —— 每 10 层一个）。同一套声明机制能不能
+# 表达另一种图案，这就是那个检验。
+#
+# 与 350m 的差异（都实测过，不是照抄）：
+#   hidden 768 -> 1536 · 头维 64 -> 128 · SSM2 48×32 -> 48×64（= 2 × 1536）
+#   前馈 2048 -> 4096 · ctx 32768 -> 131072
+#   μP：attention_multiplier 1/64 -> **1/128** · logits_scaling 3 -> **6**
+#       residual_multiplier 0.246 -> **0.22**
+# 相同的：dense（`num_local_experts = 0`）· NoPE · `init_method = mup` ·
+#   `embedding_multiplier = 12` · Mamba2 那一套 · `tie_word_embeddings = true`
+#
+# 判卷人（与 350m 同一套，都实测过）：
+#   · transformers `GraniteMoeHybridForCausalLM`
+#   · llama.cpp `MODEL_ARCH.GRANITE_HYBRID`
+model Granite4Hybrid1B {
+  backend transformers
+  arch granitemoehybrid
+  ctx 131072
+
+  hparams {
+    d_model = 1536
+    vocab = 100352
+    n_layer = 40
+    rms_eps = 1e-05
+    max_pos = 131072
+    tie_word_embeddings = true
+    bos_token_id = 100257
+    eos_token_id = 100257
+    pad_token_id = 100256
+    init_method = mup
+    shared_hidden = 4096
+    embedding_multiplier = 12
+    residual_multiplier = 0.22
+    logits_scaling = 6
+    # = 1 / 头维(128)
+    attention_multiplier = 0.0078125
+  }
+
+  # 12 个查询头 / 4 个 KV 头，头维 128（12 × 128 = 1536 = d_model）。
+  mech Attn : Attention {
+    q = 12
+    kv = 4
+    head_dim = 128
+  }
+
+  # Mamba2：`n_heads × d_head = 48 × 64 = 3072 = expand × d_model`。
+  mech Mixer : SSM2 {
+    n_heads = 48
+    d_head = 64
+    d_state = 128
+    n_groups = 1
+    chunk_size = 256
+    d_conv = 4
+    conv_bias = true
+    proj_bias = false
+    expand = 2
+    act = silu
+    structural = [n_heads, d_head, d_state, n_groups, d_conv]
+  }
+
+  mech MLP : FFN {
+    hidden = 4096
+    act = silu
+    gate = true
+    bias = false
+  }
+
+  stack main {
+    # 5 M → A@5 → 9 M → A@15 → 9 M → A@25 → 9 M → A@35 → 4 M
+    pattern = 5*Mixer + 1*Attn + 9*Mixer + 1*Attn + 9*Mixer + 1*Attn + 9*Mixer + 1*Attn + 4*Mixer
+    main[:] >> MLP
+  }
+
+  position {
+    default = none
+  }
+}

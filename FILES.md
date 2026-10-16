@@ -1,6 +1,6 @@
 # 这个仓库里每个文件是干什么的
 
-> 402 个跟踪文件。按"你会想找什么"分组，不按字母表。
+> 406 个跟踪文件。按"你会想找什么"分组，不按字母表。
 >
 > **这份文档是生成的**：`python src/by1files.py --write`。
 > 文件清单、每组的个数、每个文件的一句话都从目录树和 docstring 来 ——
@@ -230,7 +230,7 @@
 | `fig3-schools.png` | article/ 配图：Q3 五大流派对比（含 Kimi-K3） |
 | `fig4-shape.png` | article/ 配图：收敛出的公共形状示意图 |
 
-## `docs/` —— 33 个
+## `docs/` —— 34 个
 
 活的文档 —— 还没做完的事记在这里，做完的挪去 `history/`。
 
@@ -268,6 +268,7 @@
 | `support-matrix.md` | 支持矩阵（四态）/ Support matrix (four states) |
 | `t26-plan.md` | T26 第二架构毕业选型：mamba-130m-hf（130M，递归状态）——判卷人实测表（transformers Mamba v1 走 AutoModel / llama.cpp mamba）、缺什么、四件事、完成定义 |
 | `t27-plan.md` | T27：第三个机制族 —— **混合栈**（Attention 与 SSM 在同一个模型里） |
+| `t28-plan.md` | T28：同一类的**第二个成员** —— 不同混合图案的 granite-4.0-h-1b |
 | `which-gpu.md` | > 从 `README.md` 挪出来的。它是一次**具体的调查** —— 这台开发机上 |
 
 ## `docs/gpu-results/` —— 10 个
@@ -327,7 +328,7 @@
 |---|---|
 | `2026-10-16-colab-hello.md` | 外部复现 #1 —— Colab CPU quickstart（John6666） |
 
-## `models/` —— 63 个
+## `models/` —— 64 个
 
 命名规矩：**文件名 = 长名 = HF 的模型名（去掉 owner）**，
 `model` 声明 = 短名（手写的）。两列的对照见 `models.tsv`。
@@ -365,6 +366,7 @@
 | `complete-Qwen3.8-27B.by1` | 完整 Qwen3.8-27B：文本、视觉、MTP 三个分支，包含共享参数关系 |
 | `complete-gpt-oss-20b.by1` | 完整 gpt-oss-20b：MoE、路由/专家 bias、sink、交替滑窗、YaRN |
 | `complete-gpt2.by1` | 完整 GPT-2：共享词嵌入/输出头、学习位置、LayerNorm、dropout |
+| `complete-granite-4.0-h-1b.by1` | 完整 granite-4.0-h-1b（T28）：**混合栈的第二个成员** —— 同族、**图案不同** |
 | `complete-granite-4.0-h-350m.by1` | 完整 granite-4.0-h-350m（T27）：**混合栈** —— 同一个主干里既有注意力层、 |
 | `complete-mamba-130m-hf.by1` | 完整 mamba-130m-hf（T26 第二架构毕业）：**没有 Attention、没有 KV cache** |
 | `embeddinggemma-2.by1` | 真实模型 · HF id `google/embeddinggemma-2` |
@@ -460,16 +462,16 @@
 | `manifest.json` | "schemaVersion": 1, |
 | `page-0001.png` | 论文页面预览图（paper/preview-*/ 里的 PNG 快照，按目录分语言和版本） |
 
-## `refs/` —— 90 个
+## `refs/` —— 92 个
 
 从 HuggingFace / ModelScope 抓的**模型元数据**（配置 + 张量名/形状清单），
 **不是权重**。版权属各发布方，各自适用各自的许可证。
 
 | 种类 | 个数 | 是什么 |
 |---|---|---|
-| `*.config.json` | 37 | |
+| `*.config.json` | 38 | |
 | `*.gguf.json` | 3 | |
-| `*.tensors.json` | 36 | |
+| `*.tensors.json` | 37 | |
 | `ISTA-DASLab__Qwen3.8-27B-GSQ-RCO-GGUF.IQ2_S-mtp.alloc.txt` | 14 | |
 
 
