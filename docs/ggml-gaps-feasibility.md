@@ -99,6 +99,18 @@ L2 链现状（发射的 C）：
 而不是链本身。具体做法：把 `linear-gdn-shaped` 的权重导出，
 用 numpy 复算到 L2 这一步，与生成 C 的中间量对拍（在 C 里加临时打印）。
 
+**④ C 里的自证打印（打桩 dbg_before/dbg_after）**：在生成的 model.c 里挂钩子，
+算完对比 `after` 与 `before/sqrt(sum(before²)+eps)` —— **逐值一致**
+（两个头都查了 ✓）；且头 0/头 1 的值相同 = interleave 的 repeat 语义正确 ✓。
+=> **L2 步与 interleave 双双洗清**；`l2_eps = 1e6` 通过的机制是
+"均匀分母把逐头差异掩盖"（不是 L2 本身对错）。
+
+**剩下要对拍的只有：`q3/k3` 的值本身 vs numpy**（投影 → 卷积 → 切分这段）。
+做法（下一轮）：从 `cgen-ggml-linear-gdn-shaped/w.bin` 读权重、按 ids 做
+embedding 得到层输入，numpy 复算到 q3/k3，与 C 打印的 `before` 对拍。
+—— 注意 `_o1_pj3`（reshape 后的逐头块）与 `_o1_cv`（卷积输出）也要打，
+一次就能定位到具体哪一步。
+
 **收口判据**：`python src/by1ggml.py --from-ir linear-gdn-shaped.by1`
 对拍进 1e-6 以内，且 `clef-tiny` 同绿（那时 `check_support` 的拒绝一起撤）。
 
