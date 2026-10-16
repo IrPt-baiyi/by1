@@ -179,7 +179,7 @@ by1 模型   ：max|Δ| = 2.289e-05
 |---|---|---|
 | **T39 真权重训练步**（梯度 + AdamW 一步） | **未跑** | `by1gputrain.py` 硬要 CUDA；即便加 CPU 路径，本机可用内存 10.3 GB < 全参数 fp32 训练步需要的约 10–12 GB（params 2.4 + grads 2.4 + 两个优化器状态 4.8）。留租卡日，或换更小模型/梯度检查点 |
 | **S1 tokenizer 组装线** | 仍未实现 | 本次 GGUF 的 tokenizer KV 从上游 ref 整拷 —— 按记档，非缺陷伪装 |
-| **T15 干净克隆（剩余腿）** | **部分** | 安装 + README 入门 + 档 1 已在干净克隆里跑通；真权重对拍也在克隆里用 `transformers==5.19.0` 补验过（第七节）。仍缺：在克隆里**从零装** `.[full]`（torch 约 2 GB）重跑产物线 —— 现在那次是 `--system-site-packages` 借的系统 torch，环境干净度打了折 |
+| **T15 干净克隆** | **✅（by1 侧）** | 从零克隆 → `.[run]`/`.[full]` 两套装法 → README 入门 + 档 1 + T13 + T14 + 产物线全部跑通（第七节）。**边界**：权重、llama.cpp/gguf-py、llama-eval-callback 来自克隆之外（上游侧，按纪律另取） |
 | 其余模型族 | 不外推 | Qwen3-0.6B 一个新档，不代表别的族 |
 
 ## 五、复现（按顺序，全程 CPU）
@@ -225,7 +225,7 @@ config 由 `by1full.compile_config` 直接生成、权重由 HF 自己的 loader
 换句话说：**同一件事有两种判据，别把"跳过"读成"没验"** ——
 跳过的是不适用的那套机制。
 
-## 七、干净克隆复现（T15 的第一腿）
+## 七、干净克隆复现（T15）
 
 ```bash
 git clone --depth 1 https://github.com/IrPt-baiyi/by1.git by1-clean
@@ -241,20 +241,66 @@ python src/checks/by1all.py --tier 1                # 14 项，0 项失败，13 
 `1.0.0-rc1`（上一轮修的版本串当场被这条路径验证），`by1 run` 的数值
 （4.2576e-01）与开发树**逐位相同**。
 
-### 这条腿当场抓到两个真缺陷（都已修，commit `4f322b8`）
+### 这条腿当场抓到三个真缺陷（都已修）
 
 | 缺陷 | 表现 | 根因 | 修法 |
 |---|---|---|---|
-| `by1docs` 判据错 | 干净克隆里档 1 红：`refs/*.index.json` + `history/_hf_probe/*.py`(8) + `llamacpp/...convert_hf_to_gguf.py` 共 **10 处**判"不存在" | 这些路径都被 `.gitignore` 挡着（可再生语料 / 上游检出 / 门禁探针日志）—— **文档该引用它们**，判红等于要求"干净克隆里也得有本地产物" | 加 `ignored()`（`git check-ignore`）分类，进单独一桶「外部产物」，**既不算通过也不算失败**，并打印出来 |
-| `build-gguf` 失败姿势 | 裸 `ModuleNotFoundError: No module named 'gguf'` traceback | `gguf-py` 来自 llama.cpp 检出，不在库里 | 改成明确的缺依赖提示（说清来源 + 给出取法），exit 1 |
+| `by1docs` 判据错（`4f322b8`） | 干净克隆里档 1 红：`refs/*.index.json` + `history/_hf_probe/*.py`(8) + `llamacpp/...convert_hf_to_gguf.py` 共 **10 处**判"不存在" | 这些路径都被 `.gitignore` 挡着（可再生语料 / 上游检出 / 门禁探针日志）—— **文档该引用它们**，判红等于要求"干净克隆里也得有本地产物" | 加 `ignored()`（`git check-ignore`）分类，进单独一桶「外部产物」，**既不算通过也不算失败**，并打印出来 |
+| `build-gguf` 失败姿势（`4f322b8`） | 裸 `ModuleNotFoundError: No module named 'gguf'` traceback | `gguf-py` 来自 llama.cpp 检出，不在库里 | 改成明确的缺依赖提示（说清来源 + 给出取法），exit 1 |
+| `build-gguf` 不建输出目录（`cadfa34`） | 裸 `FileNotFoundError: build\by1-clone.gguf` | 干净克隆里没有 `build/`（`.gitignore` 挡着，只有跑过东西的树才有） | 写之前 `mkdir(parents=True, exist_ok=True)`（`logits-run` 早就这么做，这处漏了） |
 
-### 这条腿**没有**覆盖的（不写成通过）
+**三个都是"第一次用它的人会撞上"的那一类** —— 开发树里全都不出现，
+因为开发树里那些目录和检出**都已经在**。
 
-- **权重与 llama.cpp 二进制来自克隆之外**（`model-cache/`、`llamacpp/` 都被
-  `.gitignore` 挡着）—— 这是设计，不是缺陷；但"从零开始"里"零"的边界要写清。
-- **克隆的 venv 只装了 `.[run]`（numpy）**：torch 那几段没用克隆的 venv 装过
-  （`.[full]` 约 2 GB 下载）。不过下面那条 5.19 补验用
-  `--system-site-packages` 借了系统 torch —— **环境干净度打了折，如实记在这里**。
+### 完整腿：从零装 `.[full]`，并在克隆里跑完 T13 / T14 / 产物线
+
+```bash
+python -m venv .venv-full
+.venv-full/Scripts/python -m pip install -e ".[full]"
+# 装出：torch 2.14.1+cpu · transformers 5.20.0 · safetensors 0.8.0 · numpy 2.5.4
+
+.venv-full/Scripts/python src/modelcheck/by1shadow.py --smoke-refs \
+    --by1 complete-Qwen3-0.6B.by1 --weights-dir <真 checkpoint>
+#   → 双 loader 零 missing/unexpected，前向 max|Δ| = 0.000e+00
+.venv-full/Scripts/python src/modelcheck/by1shadow.py --smoke-state \
+    --by1 complete-Qwen3-0.6B.by1 --weights-dir <真 checkpoint>
+#   → 增量 == 全量：官方 2.289e-05 · by1 2.289e-05（判据 2e-3）
+
+# 产物线（gguf-py 经 PYTHONPATH 指到 llama.cpp 检出）
+PYTHONPATH=<llamacpp>/gguf-py .venv-full/Scripts/python src/checks/by1llama.py \
+    build-gguf <真 checkpoint> build/by1-clone.gguf --ref <上游 f32 产物> \
+    --arch qwen3 --n-blocks 28
+#   → 写了 build/by1-clone.gguf：311 个张量
+.venv-full/Scripts/python src/checks/by1llama.py logits-run \
+    --gguf build/by1-clone.gguf -o cgen/clone.logits --llama-cli <llama-eval-callback>
+.venv-full/Scripts/python src/checks/by1llama.py logits-compare \
+    <开发树的 ref dump> cgen/clone.logits
+#   → [PASS] logits 逐位相同（106949 个值）
+```
+
+**换一棵树、换一套依赖装法，结论一字不变**：311 张量、前向逐位、
+增量 == 全量、上游 logits 逐位。
+
+### 三次版本，同一个结论
+
+| transformers | 场景 | 真权重双 loader 前向 |
+|---|---|---|
+| **5.15.1** | 开发机 CPU | `max\|Δ\| = 0.000e+00` |
+| **5.19.0** | 声明下界（手动钉） | `max\|Δ\| = 0.000e+00` |
+| **5.20.0** | `.[full]` 今天实际解析到的版本 | `max\|Δ\| = 0.000e+00` |
+
+⚠ 顺带记一笔：`pyproject` 的 `[full]` 是**开区间上界**（`>=5.19,<6`），
+所以今天 pip 装出的是 **5.20.0**，而 `gpu-results/` 的 GPU 报告记录的是 5.19.0。
+**"证据写在哪个版本上"这件事，靠区间声明是锁不住的** —— 要么把上界收紧，
+要么每份报告自己写清版本（本报告选后者）。
+
+### 这条腿的边界："从零"里"零"到哪
+
+- **by1 自己的代码**：从零克隆、从零装（`.[run]` 与 `.[full]` 两套）、从零跑通
+  —— 这一半是干净的；
+- **上游侧来自克隆之外**：真权重 1.4 GB（`model-cache/`）、llama.cpp 检出
+  与 `gguf-py`（`llamacpp/`）、`llama-eval-callback` 二进制 —— 按 upstream-first
+  的纪律本来就该另取，但"另取"这件事要在报告里写出来，不能算进"克隆里全都有"。
 
 ### 补验：换到依赖钉的那个版本（`transformers==5.19.0`）结论不变
 
