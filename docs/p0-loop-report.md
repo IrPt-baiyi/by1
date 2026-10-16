@@ -149,6 +149,7 @@ python src/modelcheck/by1shadow.py --smoke-refs \
 | **T14 增量状态**（cache 增量 vs 全量重算） | **未跑** | 生成侧已同文（④），但"增量 == 全量"要有新判据；且 `by1instella` 记过 transformers `DynamicCache` API 随版本漂移（走缓存那条路会 AttributeError），要么钉版本要么绕开 —— 不是随手能加的 |
 | **T39 真权重训练步**（梯度 + AdamW 一步） | **未跑** | `by1gputrain.py` 硬要 CUDA；即便加 CPU 路径，本机可用内存 10.3 GB < 全参数 fp32 训练步需要的约 10–12 GB（params 2.4 + grads 2.4 + 两个优化器状态 4.8）。留租卡日，或换更小模型/梯度检查点 |
 | **S1 tokenizer 组装线** | 仍未实现 | 本次 GGUF 的 tokenizer KV 从上游 ref 整拷 —— 按记档，非缺陷伪装 |
+| **T15 干净克隆（剩余腿）** | **部分** | 安装 + README 入门 + 档 1 已在干净克隆里跑通（第七节）；但 torch/transformers 那两段（真权重对拍、产物线）**没在克隆的 venv 里重跑** —— 要装 `.[full]`（约 2 GB 下载） |
 | 其余模型族 | 不外推 | Qwen3-0.6B 一个新档，不代表别的族 |
 
 ## 五、复现（按顺序，全程 CPU）
@@ -191,3 +192,34 @@ config 由 `by1full.compile_config` 直接生成、权重由 HF 自己的 loader
 
 换句话说：**同一件事有两种判据，别把"跳过"读成"没验"** ——
 跳过的是不适用的那套机制。
+
+## 七、干净克隆复现（T15 的第一腿）
+
+```bash
+git clone --depth 1 https://github.com/IrPt-baiyi/by1.git by1-clean
+cd by1-clean
+python -m venv .venv
+.venv/Scripts/python -m pip install -e ".[run]"     # 装出 by1-1.0.0rc1 + numpy 2.5.4
+.venv/Scripts/by1 check models/hello.by1            # 0 错误 / 0 警告
+.venv/Scripts/by1 run   models/hello.by1 --seq 8    # 跑通：输出 (1, 8, 256)，幅度 4.2576e-01
+python src/checks/by1all.py --tier 1                # 14 项，0 项失败，13 项跳过
+```
+
+克隆规模 393 文件 / 41.4 MB。**README 的逐条命令全通**，而且装出来的正是
+`1.0.0-rc1`（上一轮修的版本串当场被这条路径验证），`by1 run` 的数值
+（4.2576e-01）与开发树**逐位相同**。
+
+### 这条腿当场抓到两个真缺陷（都已修，commit `4f322b8`）
+
+| 缺陷 | 表现 | 根因 | 修法 |
+|---|---|---|---|
+| `by1docs` 判据错 | 干净克隆里档 1 红：`refs/*.index.json` + `history/_hf_probe/*.py`(8) + `llamacpp/...convert_hf_to_gguf.py` 共 **10 处**判"不存在" | 这些路径都被 `.gitignore` 挡着（可再生语料 / 上游检出 / 门禁探针日志）—— **文档该引用它们**，判红等于要求"干净克隆里也得有本地产物" | 加 `ignored()`（`git check-ignore`）分类，进单独一桶「外部产物」，**既不算通过也不算失败**，并打印出来 |
+| `build-gguf` 失败姿势 | 裸 `ModuleNotFoundError: No module named 'gguf'` traceback | `gguf-py` 来自 llama.cpp 检出，不在库里 | 改成明确的缺依赖提示（说清来源 + 给出取法），exit 1 |
+
+### 这条腿**没有**覆盖的（不写成通过）
+
+- **权重与 llama.cpp 二进制来自克隆之外**（`model-cache/`、`llamacpp/` 都被
+  `.gitignore` 挡着）—— 这是设计，不是缺陷；但"从零开始"里"零"的边界要写清。
+- **克隆的 venv 只装了 `.[run]`（numpy）**：torch/transformers 那几段
+  （⑤ 真权重对拍、② 产物线）是在开发树里跑的，没在克隆的 venv 里重跑 ——
+  要跑得装 `.[full]`（约 2 GB 下载）。这一格仍是"未跑"。
