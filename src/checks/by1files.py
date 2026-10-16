@@ -131,6 +131,7 @@ DIR_INTRO = {
     'drafts': '''还没进 `models/` 的草稿。**没有判卷人，所以不算数。**''',
     'gpu': '''只有显卡上能跑的那部分。''',
     'tools': '''一次性脚本。**没有任何代码引用它们。**''',
+    'article': '''对外发布的图文成品：数据配图（charts.py 程序绘制，不用生图模型——数字必须程序画）与发布稿。''',
     'src': '''代码。''',
 }
 
@@ -162,6 +163,20 @@ OVERRIDE = {
     'gap-analysis.md': '缺口盘点（rc1 后）：真 bug / 证据缺口 / 范围缺口 / 环境缺口 / 计划缺口 五类分账，每条带证据与收口路径',
     'qwen3asr-silent-load-report.md': 'T21 取证报告：transformers 对 Qwen3-ASR-0.6B 静默装载错误模型（版本错配实录，A3 缺口的证据本体）',
     'step5-runbook.md': 'Step-5 发布日快速反应手册：抓元数据/草稿 by1/合同审计/GGUF 产物/推销素材/风险预案',
+    'step5-convert-cheatsheet.md': 'Step-5 发布日当天结构对账 + 转换速查（2449 张量逐项实测，非预测）：'
+                                   '新张量名/新机制/转换器要改的 9 处/待确认坑',
+    'step5-preview-draft.by1': 'by1boot 从 Step-5-Preview-BF16 产物反推的草稿合同（drafts/，没有判卷人，不算数）',
+    '2026q3-open-model-war.md': 'Q3 开源模型大战图文发布稿：24 款阵容、★/●/○ 三级数据标注、张量级深挖',
+    'fig0-roster.png': 'article/ 配图：Q3 24 款阵容全景（★张量级实测 / ●配置实测 / ○未验）',
+    'fig1-tensors.png': 'article/ 配图：张量世界观（对数横条，1471~96085）',
+    'fig2-dtype.png': 'article/ 配图：dtype 存储分布（BF16 / F8 / I8 三派）',
+    'fig3-schools.png': 'article/ 配图：Q3 五大流派对比（含 Kimi-K3）',
+    'fig4-shape.png': 'article/ 配图：收敛出的公共形状示意图',
+    'by1-en.docx': 'paper/ 的论文正文（英文版 docx）',
+    'by1-zh.docx': 'paper/ 的论文正文（中文版 docx）',
+    'page-0001.png': '论文页面预览图（paper/preview-*/ 里的 PNG 快照，按目录分语言和版本）',
+    'page-0002.png': '论文页面预览图（paper/preview-*/ 里的 PNG 快照，按目录分语言和版本）',
+    'page-0003.png': '论文页面预览图（paper/preview-*/ 里的 PNG 快照，按目录分语言和版本）',
     'by1-language-spec.md': 'T2 语言合同（可执行规范）：语法骨架/错误模型/版本策略/最小绿红例；一致性判卷人 by1langspec.py',
     'by1langspec.py': 'T2 判卷人：规范示例 x by1check x 错误输出三方一致（绿例绿/红例红/selftest 基线 9 错）',
     'product-definition.md': 'T1 产品定义（冻结版）：目标用户/输入输出/支持层级/不做的运行时职责/代表模型',
@@ -300,6 +315,13 @@ def describe(path):
     try:
         head = by1io.head_text(full, 2000)
     except OSError:
+        return None
+    except UnicodeDecodeError:
+        # 二进制文件（docx / png 这类）读不成文本，这很正常。
+        # 不捕获的话 by1files.py 会在生成文档的半路崩掉 —— 而崩溃
+        # 报的是 codec can't decode byte，看起来像编码坏了，
+        # 其实是“这个文件本来就没有说明可取”。返回 None 让它走
+        # OVERRIDE 或报“没写说明”，两种都比崩掉强。
         return None
     for ln in head.split('\n')[:12]:
         t = ln.strip().lstrip('#').strip().strip('/*').strip()

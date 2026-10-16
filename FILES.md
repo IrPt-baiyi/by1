@@ -1,6 +1,6 @@
 # 这个仓库里每个文件是干什么的
 
-> 350 个跟踪文件。按"你会想找什么"分组，不按字母表。
+> 390 个跟踪文件。按"你会想找什么"分组，不按字母表。
 >
 > **这份文档是生成的**：`python src/by1files.py --write`。
 > 文件清单、每组的个数、每个文件的一句话都从目录树和 docstring 来 ——
@@ -216,7 +216,21 @@
 |---|---|
 | `ci.yml` | 每次提交都跑档 1 —— **这是这个仓库唯一的自动门 |
 
-## `docs/` —— 26 个
+## `article/` —— 7 个
+
+对外发布的图文成品：数据配图（charts.py 程序绘制，不用生图模型——数字必须程序画）与发布稿。
+
+| 文件 | 用途 |
+|---|---|
+| `2026q3-open-model-war.md` | Q3 开源模型大战图文发布稿：24 款阵容、★/●/○ 三级数据标注、张量级深挖 |
+| `charts.py` | import math |
+| `fig0-roster.png` | article/ 配图：Q3 24 款阵容全景（★张量级实测 / ●配置实测 / ○未验） |
+| `fig1-tensors.png` | article/ 配图：张量世界观（对数横条，1471~96085） |
+| `fig2-dtype.png` | article/ 配图：dtype 存储分布（BF16 / F8 / I8 三派） |
+| `fig3-schools.png` | article/ 配图：Q3 五大流派对比（含 Kimi-K3） |
+| `fig4-shape.png` | article/ 配图：收敛出的公共形状示意图 |
+
+## `docs/` —— 28 个
 
 活的文档 —— 还没做完的事记在这里，做完的挪去 `history/`。
 
@@ -245,7 +259,9 @@
 | `product-definition.md` | T1 产品定义（冻结版）：目标用户/输入输出/支持层级/不做的运行时职责/代表模型 |
 | `quantization.md` | 量化格式的存储合同、共享权重边界和 Q1–Q3 验收顺序 |
 | `qwen3asr-silent-load-report.md` | T21 取证报告：transformers 对 Qwen3-ASR-0.6B 静默装载错误模型（版本错配实录，A3 缺口的证据本体） |
+| `step5-convert-cheatsheet.md` | Step-5 发布日当天结构对账 + 转换速查（2449 张量逐项实测，非预测）：新张量名/新机制/转换器要改的 9 处/待确认坑 |
 | `step5-runbook.md` | Step-5 发布日快速反应手册：抓元数据/草稿 by1/合同审计/GGUF 产物/推销素材/风险预案 |
+| `step5-vs-h2-2026.md` | 2026 H2 四模型架构大表：Step-5 vs Step-3.7 / DSV4.1-Flash / Qwen3.8-Flash-Next / GLM-5.3-Flash |
 | `support-matrix.md` | 支持矩阵（四态）/ Support matrix (four states) |
 | `which-gpu.md` | > 从 `README.md` 挪出来的。它是一次**具体的调查** —— 这台开发机上 |
 
@@ -264,7 +280,7 @@
 | `gpu-smoke-fp32-20261013-2026.json` | "schema": 1, |
 | `gpu-smoke-fp32.json` | "schema": 1, |
 
-## `drafts/` —— 3 个
+## `drafts/` —— 4 个
 
 还没进 `models/` 的草稿。**没有判卷人，所以不算数。**
 
@@ -273,6 +289,7 @@
 | `README.md` | 门面。是什么、怎么跑、数据从哪来 |
 | `deepseek-v4.1-flash.by1` | 验收 #5（最难的一个）。写它的目的就是逼出语法缺口，所以每一处当前草案 |
 | `qwen3.8-flash-next.by1` | model Qwen3.8-Flash-Next { |
+| `step5-preview-draft.by1` | by1boot 从 Step-5-Preview-BF16 产物反推的草稿合同（drafts/，没有判卷人，不算数） |
 
 ## `gpu/` —— 5 个
 
@@ -297,6 +314,12 @@
 | `llamacpp-plan-2026-10.md` | 接 llama.cpp：完整计划（执行版） |
 | `plan.md` | by1 · 接下来的计划 |
 | `roadmap-rc-2026-10.md` | 1.0.0 路线图（rc0 – rc9 → 1.0.0） |
+
+## `history/external-repro/` —— 1 个
+
+| 文件 | 用途 |
+|---|---|
+| `2026-10-16-colab-hello.md` | 外部复现 #1 —— Colab CPU quickstart（John6666） |
 
 ## `models/` —— 61 个
 
@@ -367,16 +390,78 @@
 | `selftest.by1` | 检查器自检。这个文件里每一处都是故意的错，用来证明检查不是空过 |
 | `ssm-shaped.by1` | SSM（选择性状态空间 / Mamba2）的最小可跑模型 |
 
-## `refs/` —— 84 个
+## `paper/` —— 9 个
+
+| 文件 | 用途 |
+|---|---|
+| `README.md` | 门面。是什么、怎么跑、数据从哪来 |
+| `build_docx.py` | 生成 Word 版：paper/by1-en.docx、paper/by1-zh.docx |
+| `by1-en.docx` | paper/ 的论文正文（英文版 docx） |
+| `by1-en.tex` | % ═══════════════════════════════════════════════════════════════════════ |
+| `by1-refs.bib` | % 两篇正文（by1-en.tex / by1-zh.tex）都引用这份文件 |
+| `by1-zh.docx` | paper/ 的论文正文（中文版 docx） |
+| `by1-zh.tex` | % ═══════════════════════════════════════════════════════════════════════ |
+| `check-en.json` | "format": "docx", |
+| `check-zh.json` | "format": "docx", |
+
+## `paper/preview-en/` —— 3 个
+
+| 文件 | 用途 |
+|---|---|
+| `manifest.json` | "schemaVersion": 1, |
+| `page-0001.png` | 论文页面预览图（paper/preview-*/ 里的 PNG 快照，按目录分语言和版本） |
+| `page-0002.png` | 论文页面预览图（paper/preview-*/ 里的 PNG 快照，按目录分语言和版本） |
+
+## `paper/preview-en-v2/` —— 3 个
+
+| 文件 | 用途 |
+|---|---|
+| `manifest.json` | "schemaVersion": 1, |
+| `page-0001.png` | 论文页面预览图（paper/preview-*/ 里的 PNG 快照，按目录分语言和版本） |
+| `page-0002.png` | 论文页面预览图（paper/preview-*/ 里的 PNG 快照，按目录分语言和版本） |
+
+## `paper/preview-en-v3/` —— 2 个
+
+| 文件 | 用途 |
+|---|---|
+| `manifest.json` | "schemaVersion": 1, |
+| `page-0001.png` | 论文页面预览图（paper/preview-*/ 里的 PNG 快照，按目录分语言和版本） |
+
+## `paper/preview-zh/` —— 4 个
+
+| 文件 | 用途 |
+|---|---|
+| `manifest.json` | "schemaVersion": 1, |
+| `page-0001.png` | 论文页面预览图（paper/preview-*/ 里的 PNG 快照，按目录分语言和版本） |
+| `page-0002.png` | 论文页面预览图（paper/preview-*/ 里的 PNG 快照，按目录分语言和版本） |
+| `page-0003.png` | 论文页面预览图（paper/preview-*/ 里的 PNG 快照，按目录分语言和版本） |
+
+## `paper/preview-zh-v2/` —— 4 个
+
+| 文件 | 用途 |
+|---|---|
+| `manifest.json` | "schemaVersion": 1, |
+| `page-0001.png` | 论文页面预览图（paper/preview-*/ 里的 PNG 快照，按目录分语言和版本） |
+| `page-0002.png` | 论文页面预览图（paper/preview-*/ 里的 PNG 快照，按目录分语言和版本） |
+| `page-0003.png` | 论文页面预览图（paper/preview-*/ 里的 PNG 快照，按目录分语言和版本） |
+
+## `paper/preview-zh-v3/` —— 2 个
+
+| 文件 | 用途 |
+|---|---|
+| `manifest.json` | "schemaVersion": 1, |
+| `page-0001.png` | 论文页面预览图（paper/preview-*/ 里的 PNG 快照，按目录分语言和版本） |
+
+## `refs/` —— 86 个
 
 从 HuggingFace / ModelScope 抓的**模型元数据**（配置 + 张量名/形状清单），
 **不是权重**。版权属各发布方，各自适用各自的许可证。
 
 | 种类 | 个数 | 是什么 |
 |---|---|---|
-| `*.config.json` | 34 | |
+| `*.config.json` | 35 | |
 | `*.gguf.json` | 3 | |
-| `*.tensors.json` | 33 | |
+| `*.tensors.json` | 34 | |
 | `ISTA-DASLab__Qwen3.8-27B-GSQ-RCO-GGUF.IQ2_S-mtp.alloc.txt` | 14 | |
 
 
