@@ -6,12 +6,12 @@
 > **环境（本报告所有结论都出自这一套）**：torch `2.13.0+cpu` ·
 > transformers `5.15.1` · safetensors `0.8.0` · numpy `2.5.2`。
 >
-> ⚠ **版本口径分裂，复现前先看这条**：`pyproject` 的 `[full]` 钉的是
-> `transformers>=5.19,<6`，而 `gpu-results/` 里的 GPU 报告记录的也是 **5.19.0**；
-> **本报告的 CPU 结论跑在 5.15.1 上**（与 `docs/which-gpu.md` 记的"和本机一致"
-> 同一条）。也就是说：**GPU 腿与 CPU 腿用的是两个大版本**。
-> 按 pyproject 装出来的环境是 5.19 —— 它能否复现本报告的 CPU 数字，
-> **还没有验过**（列在第四节的未跑项里）。
+> ⚠ **版本口径分裂（已验，不影响本报告结论）**：`pyproject` 的 `[full]` 钉的是
+> `transformers>=5.19,<6`，`gpu-results/` 里的 GPU 报告记录的也是 **5.19.0**；
+> 而本报告的 CPU 结论跑在 **5.15.1** 上（与 `docs/which-gpu.md` 记的"和本机一致"
+> 同一条）。**已补验**：在干净克隆里用 `transformers==5.19.0` 重跑关键那一步
+> （真权重双 loader 对拍），结果与 5.15.1 下**逐位相同**（`max|Δ| = 0.000e+00`）
+> —— 这条结论**跨这两个大版本稳定**，见第七节。
 >
 > 本报告只写**今天真正跑出来的那几段**。没跑的单独列在第四节 ——
 > **不写成通过**，这是这个仓库对"证据"的最低要求。
@@ -159,8 +159,7 @@ python src/modelcheck/by1shadow.py --smoke-refs \
 | **T14 增量状态**（cache 增量 vs 全量重算） | **未跑** | 生成侧已同文（④），但"增量 == 全量"要有新判据；且 `by1instella` 记过 transformers `DynamicCache` API 随版本漂移（走缓存那条路会 AttributeError），要么钉版本要么绕开 —— 不是随手能加的 |
 | **T39 真权重训练步**（梯度 + AdamW 一步） | **未跑** | `by1gputrain.py` 硬要 CUDA；即便加 CPU 路径，本机可用内存 10.3 GB < 全参数 fp32 训练步需要的约 10–12 GB（params 2.4 + grads 2.4 + 两个优化器状态 4.8）。留租卡日，或换更小模型/梯度检查点 |
 | **S1 tokenizer 组装线** | 仍未实现 | 本次 GGUF 的 tokenizer KV 从上游 ref 整拷 —— 按记档，非缺陷伪装 |
-| **按 pyproject 装出的 5.19 环境能否复现本报告** | **未验** | 本报告 CPU 结论跑在 transformers 5.15.1；`[full]` 钉的是 `>=5.19,<6`，GPU 报告用的是 5.19.0 —— **两个大版本**。要么在 5.19 下重跑一遍 CPU 腿，要么把依赖声明改成实测过的版本（先有证据再改） |
-| **T15 干净克隆（剩余腿）** | **部分** | 安装 + README 入门 + 档 1 已在干净克隆里跑通（第七节）；但 torch/transformers 那两段（真权重对拍、产物线）**没在克隆的 venv 里重跑** —— 要装 `.[full]`（约 2 GB 下载） |
+| **T15 干净克隆（剩余腿）** | **部分** | 安装 + README 入门 + 档 1 已在干净克隆里跑通；真权重对拍也在克隆里用 `transformers==5.19.0` 补验过（第七节）。仍缺：在克隆里**从零装** `.[full]`（torch 约 2 GB）重跑产物线 —— 现在那次是 `--system-site-packages` 借的系统 torch，环境干净度打了折 |
 | 其余模型族 | 不外推 | Qwen3-0.6B 一个新档，不代表别的族 |
 
 ## 五、复现（按顺序，全程 CPU）
@@ -231,6 +230,25 @@ python src/checks/by1all.py --tier 1                # 14 项，0 项失败，13 
 
 - **权重与 llama.cpp 二进制来自克隆之外**（`model-cache/`、`llamacpp/` 都被
   `.gitignore` 挡着）—— 这是设计，不是缺陷；但"从零开始"里"零"的边界要写清。
-- **克隆的 venv 只装了 `.[run]`（numpy）**：torch/transformers 那几段
-  （⑤ 真权重对拍、② 产物线）是在开发树里跑的，没在克隆的 venv 里重跑 ——
-  要跑得装 `.[full]`（约 2 GB 下载）。这一格仍是"未跑"。
+- **克隆的 venv 只装了 `.[run]`（numpy）**：torch 那几段没用克隆的 venv 装过
+  （`.[full]` 约 2 GB 下载）。不过下面那条 5.19 补验用
+  `--system-site-packages` 借了系统 torch —— **环境干净度打了折，如实记在这里**。
+
+### 补验：换到依赖钉的那个版本（`transformers==5.19.0`）结论不变
+
+```bash
+# 在干净克隆里
+python -m venv --system-site-packages .venv519
+.venv519/Scripts/python -m pip install "transformers==5.19.0"
+.venv519/Scripts/python src/modelcheck/by1shadow.py --smoke-refs \
+    --by1 complete-Qwen3-0.6B.by1 --weights-dir <真 checkpoint 目录>
+```
+
+```
+transformers 5.19.0 | torch 2.13.0+cpu | safetensors 0.8.0
+源二 e2e OK：双 loader 零 missing/unexpected，前向 max|Δ| = 0.000e+00
+```
+
+`pyproject` 钉的版本（5.19.0，PyPI 上确实存在、12.6 MB 装得上）
+与开发机的 5.15.1 **给出同一个结论**。所以"版本口径分裂"是记账问题，
+**不是**结论的隐患 —— 但它仍然是记账问题，两处版本号该写明（本报告 + which-gpu）。
