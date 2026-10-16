@@ -34,4 +34,35 @@ llama-cli logits 逐位 max|Δ|=0 —— **产物等价，差异全在过程**�
 ## 判卷人
 
 `src/checks/by1llama.py`（build_gguf / _gguf_write / selftest_kv_map）·
-`llamacpp/build-cli/bin/llama-eval-logits.exe` · 上游 `convert_hf_to_gguf.py` / `llama-quantize`。
+`llamacpp/build-cli/bin/llama-eval-callback.exe` · 上游 `convert_hf_to_gguf.py` / `llama-quantize`。
+
+## 怎么跑（2026-10-16 接上入口）
+
+```bash
+# 0) tokenizer KV 的来源 / 逐位基准：上游自己的转换器
+python llamacpp/llama.cpp/convert_hf_to_gguf.py <hf-dir> \
+    --outfile build/ref-f32.gguf --outtype f32
+
+# 1) by1 的产物线（KV 表驱动；tokenizer KV 从 --ref 整拷 —— 第 2 行的范围记档）
+python src/checks/by1llama.py build-gguf <hf-dir> build/by1-f32.gguf \
+    --ref build/ref-f32.gguf --arch qwen3 --n-blocks 28
+
+# 2) 未修改的上游运行时加载 + logits 逐位（两份产物各产一份 dump）
+python src/checks/by1llama.py logits-run --gguf build/ref-f32.gguf \
+    -o cgen/ref.logits --llama-cli <llama-eval-callback>
+python src/checks/by1llama.py logits-run --gguf build/by1-f32.gguf \
+    -o cgen/by1.logits --llama-cli <llama-eval-callback>
+python src/checks/by1llama.py logits-compare cgen/ref.logits cgen/by1.logits
+```
+
+**两个前置**（都不在库里，按 upstream-first 另取）：
+
+- `gguf-py` 来自 **llama.cpp 检出**（`llamacpp/` 被 `.gitignore` 挡着）。
+  在仓库里跑会自动用它；在别处跑用 `PYTHONPATH=<llamacpp>/gguf-py`。
+  缺了会给出明确提示（不是裸 traceback）。
+- `--ref` 必须是**真 GGUF**：S1 记档说 tokenizer KV 由上游产物整拷。
+
+**入口这条账**：`build_gguf` 原来是库里一个**没有调用者**的函数
+（`main()` 的子命令里没有它，runbook 里那条命令跑不通），且 `arch` 硬编成
+`LLAMA`、`n_blocks` 默认 24 —— 那正是第 8 行"只 qwen2 档实证"的字面来源。
+现在按参数走，qwen3 档已实证（[P0 闭环报告](p0-loop-report.md)）。
