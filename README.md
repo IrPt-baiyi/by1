@@ -4,7 +4,7 @@
 **A declarative language for describing LLM architectures, with machine verification.**
 
 ```
-by1 0.9.0 · by1-ir 1.0
+by1 1.0.0-rc1 · by1-ir 1.1
 ```
 
 [English quick start](#english) · [中文入门](#中文) · [License](#license)
@@ -62,6 +62,19 @@ python3 -m venv .venv
 .venv/bin/by1 run models/hello.by1 --seq 8
 ```
 
+If `python3 -m venv` stops during `ensurepip` (seen on some hosted Linux
+images, including one Colab image), create the environment without pip and
+drive it from the base interpreter — a first-time external user installed
+by1 exactly this way:
+
+```bash
+python3 -m venv --without-pip .venv
+python3 -m pip --python .venv install -e ".[run]"
+```
+
+A failure inside `venv`/`ensurepip` happens **before** by1 is installed and
+is not evidence of a packaging defect.
+
 The checker should report `0 错误 / 0 警告` (no errors or warnings).
 The runner prints `4 层 · 1,049,728 个参数` (4 layers, 1,049,728 parameters)
 and `跑通：输出 (1, 8, 256)` (forward pass completed). Current CLI reports
@@ -95,9 +108,21 @@ The output shape stays the same because sequence length and vocabulary size
 stay the same. Change `2` back to `4` to restore the example. Logit values are
 from random weights and are not a quality comparison.
 
+A green `check` says the structure is sound; whether an operator combination
+is executable is a separate question. `run` rejects undefined combinations
+before the forward pass, with a diagnostic: `head_dim = 30` runs,
+`head_dim = 31` is rejected (rotary pairing needs an even width).
+See [TESTING.md](TESTING.md) for where that boundary is drawn.
+
 This path was checked on Windows with Python 3.12.10 and NumPy 2.5.4 in an
 isolated environment without PyTorch or Transformers, including installation
-and both layer counts. A first-time external user has not tried it yet.
+and both layer counts. **One external reproduction (2026-10-16):** a
+first-time user ran this quickstart on hosted Linux/Colab at pinned commit
+`ffaf2a4` and got the documented results — including an independent
+hand-recomputation of both parameter counts — and found one real gap
+(`head_dim = 31` passed `check` and crashed `run`; fixed the same day).
+The report is archived in
+[history/external-repro/](history/external-repro/).
 
 **3. Where to go next.** `by1 build models/hello.by1 -o hello_model.py`
 generates a trainable PyTorch model with `build()`. Use the same environment's
@@ -144,7 +169,11 @@ pip install -e .                         # optional: the `by1` CLI
 
 **What does not work.**
 
-- **No external users. Zero.** No evidence anyone wants this.
+- **External reproduction: 1. Standing users: 0.** One first-time user
+  reproduced the CPU quickstart on Colab (2026-10-16, pinned commit) and
+  found a real gap — the report is in
+  [history/external-repro/](history/external-repro/). No one has used by1
+  for real work yet; there is still no evidence anyone wants this.
 - **By1 does not generate a complete native llama.cpp adapter.** Its current plan uses upstream features and standard GGUF for deployment; generated ggml remains a validation backend. See [the integration strategy](docs/llamacpp-plan.md) and [the long-term roadmap](docs/1.0-roadmap.md).
 - **The criteria themselves are unaudited.** The `1e-4` threshold, the
   definition of "covered", the 15 chosen models — all written here.
@@ -208,6 +237,17 @@ python3 -m venv .venv
 .venv/bin/by1 run models/hello.by1 --seq 8
 ```
 
+如果 `python3 -m venv` 在 `ensurepip` 阶段失败（部分托管 Linux 镜像上见过，
+包括某个 Colab 镜像），可以不装 pip 建环境、用基础解释器代管 —— 第一位外部
+试用者就是这么装上的：
+
+```bash
+python3 -m venv --without-pip .venv
+python3 -m pip --python .venv install -e ".[run]"
+```
+
+`venv`/`ensurepip` 里的失败发生在 by1 安装**之前**，不是打包缺陷的证据。
+
 检查结果应包含 `0 错误 / 0 警告`。运行结果应包含：
 
 ```text
@@ -240,8 +280,16 @@ model Hello {
 只改架构声明，就改变了模型深度和参数量。序列长度和词表没有改变，所以输出形状
 保持一致。把 `2` 改回 `4` 即可恢复示例。随机权重产生的数值不用于比较模型质量。
 
+`check` 绿表示结构成立；算子组合能不能执行是另一件事。`run` 会在前向之前
+显式拒绝没有定义的组合并给出诊断：`head_dim = 30` 跑得通，`head_dim = 31`
+会被拒绝（旋转配对要求偶数宽度）。这条边界画在哪里见 [TESTING.md](TESTING.md)。
+
 这条流程已在 Windows、Python 3.12.10、NumPy 2.5.4 的隔离环境中实测，
-包括首次安装和两种层数；环境没有 PyTorch 或 Transformers。尚未经过外部新用户试用。
+包括首次安装和两种层数；环境没有 PyTorch 或 Transformers。
+**外部复现 1 次（2026-10-16）：** 一位首次使用者在 Colab（钉住 commit
+`ffaf2a4`）复现了整个入门流程，数字与文档一致，还独立手推核对了两个参数量；
+他同时发现一处真实缺口（`head_dim = 31` 过了 `check`、`run` 崩，当天已修）。
+报告存档于 [history/external-repro/](history/external-repro/)。
 
 **3. 接下来能做什么。** 使用同一虚拟环境中的 `by1` 执行
 `by1 build models/hello.by1 -o hello_model.py`，可生成带 `build()` 的可训练
@@ -282,7 +330,10 @@ pip install -e .                         # 可选：装 `by1` 命令行
 
 **还没做到的。**
 
-- **没有外部用户。零。** 没有任何证据表明别人想要它。
+- **外部复现 1 次，持续用户 0。** 一位首次使用者在 Colab（钉住 commit）
+  复现了 CPU 入门流程并抓到一处真实缺口，报告见
+  [history/external-repro/](history/external-repro/)。还没有人把 by1 用于
+  真实工作——依旧没有任何证据表明别人想要它。
 - **By1 目前不生成完整的原生 llama.cpp 适配器。** 部署优先使用上游能力和标准 GGUF；生成的 ggml 路径继续作为验证后端。详见[集成策略](docs/llamacpp-plan.md)和[长期路线图](docs/1.0-roadmap.md)。
 - **判据本身没人复核。** `1e-4` 那个阈值、"覆盖"的定义、选定的这 15 个模型
   —— 全是这里写的。见 [`docs/criteria-review.md`](docs/criteria-review.md)。

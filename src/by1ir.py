@@ -1267,6 +1267,48 @@ def _check_op(where, op, errs):
                 "**两个各写各的就是两个真相源**。只写 `score` 就行"
                 % (where, sc, sc2))
 
+    # ── rope：**旋转宽度必须是偶数** ───────────────────────────────
+    # 两种配对都按 2 维一组定义旋转：half=(i, i+h)、interleaved=(2i, 2i+1)。
+    # 奇数宽度剩一个无法配对的分量 —— 这不是「还没实现」，是**没有定义**，
+    # 所以它进 IR 合同，不是某个后端的口味。
+    #
+    # 这条是**外部复现抓出来的**（2026-10-16，Colab，hello head_dim=31）：
+    # check 过、run 在 NumPy 广播里裸崩（(1,4,8,16) vs (8,15)）——
+    # 正是「要么实现，要么拒绝」要禁的第三条路。
+    #
+    # 判据按**旋转宽度**算，不是 head_dim（两点都是发现者的设计意见）：
+    #   ① rope_partial 折出来的子维同样要满足（64×0.5=32 ✓，30×0.5=15 ✗）；
+    #   ② rope 关着时任意 head_dim 都合法（GPT-2 那条路）——
+    #      **不许做成「见奇数就拒」的全局规则**。
+    if k == "Attention" and isinstance(attrs, dict) and attrs.get("rope"):
+        hd, part = attrs.get("head_dim"), attrs.get("rope_partial", 1.0)
+        if isinstance(hd, int) and hd > 0:
+            try:
+                npr = int(hd * float(part))
+            except (TypeError, ValueError):
+                npr = hd
+            w = npr if 0 < npr < hd else hd
+            if w % 2:
+                errs.append(
+                    "%s (Attention): rope 开着而旋转宽度 %d 是奇数 —— "
+                    "配对按 2 维一组定义（half=(i,i+h)、interleaved=(2i,2i+1)），"
+                    "奇数宽度剩一个无法配对的分量。来源：head_dim=%s × "
+                    "rope_partial=%s → 旋转宽度 %d。把它凑成偶数（改 head_dim "
+                    "或 rope_partial），或 rope = false（位置由外部加）"
+                    % (where, w, hd, part, w))
+    if k == "MLA" and isinstance(attrs, dict):
+        # 主 rope 转 qk_rope 那一段（pairing 记在自己身上）；索引器的
+        # 配对**固定 interleaved**（by1exec 的 MLA 注释），所以 index_dim
+        # 同一条款。qk_rope = 0 = 不转，不适用。
+        for fld, src in (("qk_rope", attrs.get("pairing")),
+                         ("index_dim", "index_dim（索引器固定 interleaved）")):
+            v = attrs.get(fld)
+            if isinstance(v, int) and v > 0 and v % 2:
+                errs.append(
+                    "%s (MLA): %s = %d 是奇数 —— 旋转配对按 2 维一组（%s），"
+                    "奇数宽度剩一个无法配对的分量。把它凑成偶数"
+                    % (where, fld, v, src))
+
 
 def to_json(ir, indent=1):
     """规范化输出：**键排序**，这样两份等价的 IR 字节相同。"""

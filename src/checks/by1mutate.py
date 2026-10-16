@@ -99,6 +99,19 @@ def ext_ir(**over):
         op("External", "External", a, ["hidden"], ["op0.out"])]}])
 
 
+MLA_OK = {"q": 2, "v_dim": 8, "qk_nope": 8, "qk_rope": 4, "q_lora": 4,
+          "kv_lora": 4, "head_dim": 8, "out_dim": 16, "bias": False,
+          "rope_base": 10000, "pairing": "interleaved",
+          "head_gate": "off", "gate_act": "softplus"}
+
+
+def mla_ir(**over):
+    a = dict(MLA_OK)
+    a.update(over)
+    return wrap(GLUE, [{"index": 0, "attrs": {}, "ops": [
+        op("MLA", "MLA", a, ["hidden"], ["op0.out"])]}])
+
+
 # ── 变异表：(id, 规则, 变异, 期望命中的那句话) ───────────────────────
 # **期望命中规则自己的话** —— 断言"报了点什么"太松：一个坏 IR 可能
 # 顺带触发别的规则，那样反例就算过了，而目标规则其实是瞎的。
@@ -185,6 +198,30 @@ MUTATIONS = [
                                       lambda o: o["attrs"].update(
                                           {"rope_pairing": "diagonal"})), b),
      "不在闭集"),
+    # ── 旋转宽度必须是偶数（2026-10-16 外部复现：hello head_dim=31）──
+    # 判据按**旋转宽度**，不是 head_dim；见 by1ir 里那条规则的注释。
+    # 32 基线 / 30 近旁正例 / 31 负例是发现者给的对照设计。
+    ("attn-odd-rope", "Attention：rope 开着时旋转宽度必须是偶数（31 必拒）",
+     lambda b: _mut(lambda ir: _on_op(ir, 0, 1,
+                                      lambda o: o["attrs"].update(
+                                          {"head_dim": 31})), b),
+     "是奇数"),
+    ("attn-odd-rope-partial", "旋转宽度按 rope_partial 折完再判（30×0.5=15 必拒）",
+     lambda b: _mut(lambda ir: _on_op(ir, 0, 1,
+                                      lambda o: o["attrs"].update(
+                                          {"head_dim": 30,
+                                           "rope_partial": 0.5})), b),
+     "是奇数"),
+    ("attn-odd-rope-half", "规则与配对无关（half 配对的奇数旋转宽度同样必拒）",
+     lambda b: _mut(lambda ir: _on_op(ir, 0, 1,
+                                      lambda o: o["attrs"].update(
+                                          {"head_dim": 31,
+                                           "rope_pairing": "half"})), b),
+     "是奇数"),
+    ("mla-odd-qk-rope", "MLA：qk_rope 旋转宽度必须是偶数",
+     lambda b: mla_ir(qk_rope=5), "是奇数"),
+    ("mla-odd-index-dim", "MLA：索引器 index_dim（固定 interleaved）必须是偶数",
+     lambda b: mla_ir(index_dim=31), "是奇数"),
     # ── T22（by1-ir 1.1 STACKS：栈/塔登记表）────────────────────────
     ("stacks-bad-modal", "栈 modality 闭集（未知模态必拒）",
      lambda b: _mut(lambda ir: ir.update({"stacks": [
@@ -212,7 +249,10 @@ CLASSES = {
                    "by1state:state dtype 不在闭集报 E（by1check 管线）"],
     "权重别名断开": ["by1complete:缺共享声明（tie_word_embeddings 摘掉必红）"],
     "不支持的注意力模式": ["by1mutate:attn-bad-pairing",
-                           "by1mutate:attrs-bad-enum"],
+                           "by1mutate:attrs-bad-enum",
+                           "by1mutate:attn-odd-rope",
+                           "by1mutate:attn-odd-rope-partial",
+                           "by1mutate:mla-odd-qk-rope"],
 }
 
 
@@ -247,6 +287,29 @@ def main():
         bad.append("gap-not-error：换宽度没进 gaps")
     else:
         print("     ✓ %-20s %s" % ("gap-not-error", "换宽度进 gaps 不进 errs"))
+
+    # **近旁正例**（发现者的对照设计：32 基线 / 30 近旁 / 31 负例）：
+    # 反例全红而近旁不绿 = 规则过敏。30 必须绿；rope **关着**的 31 也必须绿
+    # （GPT-2 那条路，位置在输入上）—— 不许做成「见奇数就拒」的全局规则。
+    ir30 = _mut(lambda ir: _on_op(
+        ir, 0, 1, lambda o: o["attrs"].update({"head_dim": 30})), base)
+    e30 = bir.validate(ir30)
+    if e30:
+        bad.append("rope-even-nearmiss：head_dim=30 不该报错，实报 %s"
+                   % [e[:40] for e in e30][:2])
+    else:
+        print("     ✓ %-20s %s" % ("rope-even-nearmiss",
+                                   "head_dim=30 近旁正例绿"))
+    ir_off = _mut(lambda ir: _on_op(
+        ir, 0, 1, lambda o: o["attrs"].update({"head_dim": 31,
+                                               "rope": False})), base)
+    e_off = bir.validate(ir_off)
+    if e_off:
+        bad.append("rope-off-odd-ok：rope=false 的 31 不该报错，实报 %s"
+                   % [e[:40] for e in e_off][:2])
+    else:
+        print("     ✓ %-20s %s" % ("rope-off-odd-ok",
+                                   "rope=false 时奇数 head_dim 合法"))
 
     # 正例：基线必须全绿（反例全红而正例不绿 = 检查器只会报错）
     empty = [c for c, items in CLASSES.items() if not items]

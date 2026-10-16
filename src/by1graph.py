@@ -774,7 +774,9 @@ _SPEC = {
                "bound": "reps ≥ 1；axis 合法"},
     "rope": {"shape": "x [n, nh, hd]（exec 视角转置进出）；inv 长度 hd/2",
              "dtype": "浮点逐元",
-             "bound": "n_dims ≤ hd；pairing ∈ {half, interleaved}；"
+             "bound": "n_dims ≤ hd；**n_dims 为偶数**（配对按 2 维一组，"
+                      "奇数宽度没有定义 —— 2026-10-16 外部复现的 head_dim=31）；"
+                      "pairing ∈ {half, interleaved}；"
                       "half=(i,i+h)、interleaved=(2i,2i+1) 且拼接输出"},
     "soft_max": {"shape": "a [头,q,k] -> out 同形；mask [q,k]",
                  "dtype": "浮点逐元",

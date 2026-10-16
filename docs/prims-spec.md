@@ -42,7 +42,7 @@
 | sqrt | 1 | √x | out = ins0 | 浮点逐元 | x ≥ 0 | by1exec 的 1/sqrt(·)（L2 归一 / 输出归一） |
 | l2_norm | 1 | x / √(Σx²+eps)，沿最后轴（**sum 不是 mean**） | out = ins0（沿最后轴） | 浮点逐元 | eps > 0；**sum 不是 mean**（均值那支是现拼的） | by1exec.op_linear 的 q/k 归一 / torch l2norm |
 | repeat | 1 | 沿 ggml 轴 axis 整块重复 reps 次 | 沿 ggml 轴 axis 整块重复 reps 次 | 同 ins0 | reps ≥ 1；axis 合法 | np.repeat / by1exec.op_linear 的 GQA 广播 |
-| rope | 2 | 每对维度转 θ_t = t·inv[i]（inv 见 rope_inv：普通 / YaRN / llama3）；half 配对 (i,i+h)，interleaved 配对 (2i,2i+1)且**拼接输出** | x [n, nh, hd]（exec 视角转置进出）；inv 长度 hd/2 | 浮点逐元 | n_dims ≤ hd；pairing ∈ {half, interleaved}；half=(i,i+h)、interleaved=(2i,2i+1) 且拼接输出 | by1c.rope / by1exec.apply_rope / ggml_rope_ext |
+| rope | 2 | 每对维度转 θ_t = t·inv[i]（inv 见 rope_inv：普通 / YaRN / llama3）；half 配对 (i,i+h)，interleaved 配对 (2i,2i+1)且**拼接输出** | x [n, nh, hd]（exec 视角转置进出）；inv 长度 hd/2 | 浮点逐元 | n_dims ≤ hd；**n_dims 为偶数**（配对按 2 维一组，奇数宽度没有定义 —— 2026-10-16 外部复现的 head_dim=31）；pairing ∈ {half, interleaved}；half=(i,i+h)、interleaved=(2i,2i+1) 且拼接输出 | by1c.rope / by1exec.apply_rope / ggml_rope_ext |
 | soft_max | 2 | softmax(a·scale + mask)，沿 key 轴 | a [头,q,k] -> out 同形；mask [q,k] | 浮点逐元 | scale > 0；掩码规则 j<=i 且 j>i-window（window 取自 mask 名） | by1c.attention / ggml_soft_max_ext |
 | soft_max_sink | 3 | softmax(a·scale + mask)，但尾巴上多一个 sink 槽 | 同 soft_max；sink 为逐头标量（多一槽） | 浮点逐元 | 同 soft_max；sink 槽参与归一 | by1exec.attention 的 concat+softmax / by1c 的 sink 分支 |
 | get_rows | 2 | out[i] = table[ids[i]] | out = ids 形状 + table 行宽 | 出同 table | ids ∈ [0, 行数) | ggml_get_rows / torch nn.Embedding |

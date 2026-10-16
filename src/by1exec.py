@@ -1107,6 +1107,18 @@ def main(argv=None):
     except cg.CodegenError as ex:
         print(f"[不支持] {name}: {ex}")
         return 1
+    # **IR 是合同，run 这条路也要过它。** 这里原来编译完直接开跑 ——
+    # `exec_ir` 有 validate，main 没有，于是「结构合法、算子组合没有定义」
+    # 的声明一路走到 NumPy 广播里裸崩（2026-10-16 外部复现抓的
+    # hello head_dim=31）。拒绝必须发生在前向之前、带诊断、exit 非零 ——
+    # 不是崩给你看（「要么实现，要么拒绝」的第三条路）。
+    import by1ir as _bir
+    _errs = _bir.validate(ir)
+    if _errs:
+        print(f"  [拒绝] {name}: IR 不合法 —— 前向不会开始")
+        for e in _errs[:10]:
+            print("    " + e)
+        return 1
     shapes = shapes_of(ir)
     print(f"\n{'='*72}\n  {name}   ·   NumPy 后端\n{'='*72}")
     n_params = sum(int(np.prod(shape)) for shape in shapes.values())
