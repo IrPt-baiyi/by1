@@ -22,12 +22,21 @@ SHA-256、构建法），但"跑基线那台机器到底是什么"和"logits 对
     python src/checks/by1llama.py gguf-check --dir /root/autodl-fs/gguf
     python src/checks/by1llama.py logits-compare ref.logits got.logits
     python src/checks/by1llama.py logits-run --gguf Qwen3.8-27B-...-Iq3_s.gguf
+    python src/checks/by1llama.py build-gguf <hf-dir> out.gguf \\
+        --ref upstream-f32.gguf --arch qwen3 --n-blocks 28
 """
 
 import os as _os
 import sys as _sys
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 import by1paths  # noqa: E402,F401
+
+# **gguf-py 来自 llama.cpp 的检出，by1 不重写一份命名映射表。**
+# `llamacpp/` 被 gitignore 挡着（可重新下载），所以这里要能容忍它不在 ——
+# 缺了就在 `build-gguf` 那一处报错，而不是让整个检查器 import 不了。
+_GGUF_PY = by1paths.root('llamacpp', 'llama.cpp', 'gguf-py')
+if _os.path.isdir(_GGUF_PY):
+    _sys.path.insert(0, _GGUF_PY)
 
 import argparse
 import datetime
@@ -447,7 +456,7 @@ def build_gguf(hf_dir, out_path, ref_gguf=None, arch="llama", n_blocks=24,
     import glob
     for f in sorted(glob.glob(str(Path(hf_dir) / "*.safetensors"))):
         sd.update(load_file(f))
-    mapper = TensorNameMap(MODEL_ARCH.LLAMA, n_blocks)
+    mapper = TensorNameMap(getattr(MODEL_ARCH, arch.upper()), n_blocks)
     # mapping 方向 = HF 名 -> (MODEL_TENSOR, ggml 名)，直查（我第一版
     # 当成反方向建索引，命中 0 —— 坑账）
     tensors = []
@@ -690,6 +699,19 @@ def main(argv=None):
     w.add_argument('--src', required=True)
     w.add_argument('--out', required=True)
     w.add_argument('--q8-0', action='store_true')
+    # **T23 产物线的入口。** 这个函数原来在库里躺着、**没有调用者** ——
+    # runbook 里写的 `by1llama.py build-gguf ...` 命令跑不通（2026-10-16 发现）。
+    # 它原来的 `arch` 参数也被硬编成 LLAMA、n_blocks 默认 24 ——
+    # 那正是 gap S2「只 qwen2 档实证」的字面来源；现在真按参数走。
+    bb = sub.add_parser('build-gguf',
+                        help='HF 权重 -> 真 .gguf（F32；KV 表驱动，'
+                             'tokenizer 从 --ref 整拷 —— S1 记档）')
+    bb.add_argument('hf_dir')
+    bb.add_argument('out')
+    bb.add_argument('--ref', help='上游 convert 产物：tokenizer KV 来源 + logits 基准')
+    bb.add_argument('--arch', default='llama', help='GGUF 架构名（llama/qwen3/…）')
+    bb.add_argument('--n-blocks', type=int, default=24)
+    bb.add_argument('--q8-0', action='store_true')
     args = ap.parse_args(argv)
     if args.cmd == 'record':
         return record(args.out)
@@ -704,6 +726,11 @@ def main(argv=None):
     if args.cmd == 'rewrite-gguf':
         n, size = rewrite_gguf(args.src, args.out, quant_q8_0=args.q8_0)
         print('  写了 %s：%d 个张量 %.1f GB' % (args.out, n, size / 1e9))
+        return 0
+    if args.cmd == 'build-gguf':
+        ts = build_gguf(args.hf_dir, args.out, args.ref, args.arch,
+                        args.n_blocks, args.q8_0)
+        print('  写了 %s：%d 个张量' % (args.out, len(ts)))
         return 0
     return logits_run(args.gguf, args.prompt, args.out, args.llama_cli)
 

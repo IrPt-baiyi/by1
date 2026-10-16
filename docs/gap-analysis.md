@@ -25,7 +25,7 @@
 | # | 缺口 | 记档位置 | 说明 |
 |---|---|---|---|
 | S1 | build-gguf 的 **tokenizer KV 拿上游产物**，分词器组装线未实现 | docs/convert-diff.md #2 | 产物链只负责模型侧；非缺陷伪装 |
-| S2 | build-gguf **族覆盖只 qwen2 档实证**（TensorNameMap 全族但判据只跑过一档） | docs/convert-diff.md #8 | 不外推；第二族进主线后补判 |
+| S2 | **已销 2026-10-16** · build-gguf 族覆盖原只 qwen2 档实证（TensorNameMap 全族但判据只跑过一档） | 根因 = 判据没跑过第二族，且 `build_gguf` 的 arch 被硬编成 LLAMA。Qwen3-0.6B（qwen3）走完 `build-gguf --arch qwen3 --n-blocks 28`：311 张量全映射、上游 llama-eval-callback **logits 逐位相同（106949 值）**、llama-cli 生成同文 —— 见 docs/p0-loop-report.md | **第二族已实证**；其余族仍不外推（docs/convert-diff.md #8 已更新） |
 | S3 | 量化链只接 **Q8_0**；FP8/MXFP4 = 路线图阶段 C/D | by1quant/by1llama | Q3 未开 |
 | S4 | **换宽度**类只进 gaps 不进 errs（宽度推导换宽没验，49 份原宽回归绿） | by1fast ③ 报文 | 换宽夹具进 gaps 是设计决定 |
 | S5 | **by1langspec 未进门禁表**（独立判卷人，绿例/红例/selftest 基线 9 错都验过） | src/checks/by1langspec.py | 并入 by1all 判卷人段 |
@@ -37,7 +37,7 @@
 | # | 缺口 | 证据 | 收口路径 |
 |---|---|---|---|
 | G1 | **GPU 全线**（by1gpu/by1gpusmoke 档 6）：GPU 前向/量化真跑/显存吞吐 | 档 5 实跑 2 项跳过 | 路线图"GPU 日"（租卡一次排完）；量化 Q2 的 FP8 前向依赖此 |
-| G2 | **外部环境复现**（第三方按文档跑通）尚无记录 | 路线图当前基线 | 1.0 发布门前完成一次 |
+| G2 | **已销 2026-10-16** · 外部环境复现原无记录 | 外部复现 #1：Colab 上按 README 跑通 CPU 入门（4 层 1,049,728 / 2 层 557,696 / (1,8,256) 全对），并抓到 `head_dim=31` 缺口（当天已修）—— 报告与全文见 history/external-repro/2026-10-16-colab-hello.md | **已有 1 次记录**；发布门前仍需第二人复现，且这次是"报告级"不是"审计级" |
 
 ## ⑤ 计划级缺口（路线图"当前基线"的下一项）
 

@@ -91,3 +91,4 @@ zai-org/GLM-4.7-Flash	`glm4_moe_lite`（GLM-5.3 的**上一代**）：**已毕�
 #
 # 对拍结论及量化分配语法仍待后续实现；这些清单本身不是 by1 的验证记录。
 stepfun-ai/Step-5-Preview-BF16	Step-5 发布日当天出结构对账 + 转换速查（2449 张量逐项实测，2026-10-15；**非预测**）：Step 家族新旗舰，step5_vl 双塔（perception_encoder 视觉塔 + step5 文本塔），sparse_config 索引器注意力 + MTP；速查见 docs/step5-convert-cheatsheet.md
+Qwen/Qwen3-0.6B	**P0 代表模型**（docs/p0-model-selection.md）：revision c1899de2 · Apache-2.0 · 单文件权重；描述在 models/complete-Qwen3-0.6B.by1（tie_word_embeddings）。T12 真实产物对账需要这份 refs

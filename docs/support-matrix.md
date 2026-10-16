@@ -17,27 +17,32 @@
 | 模型 | 规格检查 | 加载 | 运行 | 产物 | 证据 / 备注 |
 |---|---|---|---|---|---|
 | gpt2 | ✅ | ✅ | ✅ | ✅ | 运行：[六模型对比](gpu-results/gpu-benchmark.json) + [by1gpt2 前向](../history/ir.md)；产物：标准 GGUF 走 llama.cpp（[基线](llama.cpp-baseline.md)） |
-| Qwen3-0.6B | ✅ | ✅ | ✅ | — 未验 | 运行：六模型对比 + [训练步](gpu-results/)；影子冒烟逐位 0.000e+00（接线） |
+| Qwen3-0.6B | ✅ | ✅ | ✅ | ✅ [闭环报告](p0-loop-report.md) | 运行：六模型对比 + [训练步](gpu-results/)；**产物**：by1 从 HF 权重出 F32 GGUF，未修改的上游 llama.cpp 加载后 logits 与官方 convert 产物**逐位相同（106949 值）**、生成同文；T13 真权重数值对拍待（工具 GPU-only） |
 | Qwen2.5-7B-Instruct | ✅ | ✅ | ✅ | — 未验 | 六模型对比；影子冒烟超本机内存（GPU 日补） |
 | Qwen3-8B | ✅ | ✅ | ✅ | — 未验 | 六模型对比 |
 | gpt-oss-20b（MXFP4） | ✅ | ✅ | ✅ | — 未验 | [原生 MXFP4](gpu-results/gpu-benchmark-gptoss-final.json)；量化存储审计过 |
 | Qwen3.8-27B（BF16，含视觉+MTP） | ✅ | ✅ | ✅ | 🟡 实验 | [含图像与 MTP](gpu-results/gpu-benchmark-qwen38-final.json)；产物 = Qwen3.8 IQ3_S GGUF 基线配方**待 GPU 日跑** |
 | Qwen3.8-27B-FP8 | ✅ | 🟡 装载路径已接通 | — 未验 | — 未验 | Q2 **GPU 实测前不标完成**（[量化边界](quantization.md)）；存储审计 407 对 |
 
-## B. refs 语料（32 个真实模型）
+## B. refs 语料（**36** 个 config / **31** 个有逐字段行）
 
-**共同状态：规格检查 ✅**（config 逐字段 + 张量名/形状对官方产物，
-`by1all` 档 3 全绿）。**加载/运行/产物：未验**（要显存与真权重轮次），
-除两处例外：
+**口径**（2026-10-16 重数）：以 `refs/*.config.json` 为准 = **36** 个；
+其中 **31** 个有 `by1all` 档 3 的 config 逐字段行（即逐个证据）。
+剩下 5 个**只有语料、config 逐字段行还没接**：DeepSeek-V4.1-Flash ·
+LLaDA2.2-flash · Laguna-XS_2 · Step-5-Preview-BF16 · Qwen3-0.6B
+（Qwen3-0.6B 的名字/形状契约已由 `by1shadow --smoke-refs` **311/311** 验过，
+见 [P0 闭环报告](p0-loop-report.md)；它的 config 逐字段行待接）。
+
+**加载/运行/产物：未验**（要显存与真权重轮次），除两处例外：
 
 | 例外 | 运行 | 证据 |
 |---|---|---|
 | Instella-3B | ✅ | `by1instella` 前向与官方实现一致（判卷人） |
 | GPT-2 | ✅ | `by1gpt2` 前向与官方实现一致（判卷人） |
 
-32 个的名字以 `refs/*.config.json` 为准（`by1all` 的 config 逐字段行
-即逐个证据）：gpt-oss-120b · gpt-oss-20b · gemma-4-31B · Laguna-XS-2_1 ·
-Instella-3B · Step-3_7-Flash-180B（**25 张量已知缺口**：上游仓库下架）·
+31 个有逐字段行的名字（`by1all` 的 config 行即逐个证据）：gpt-oss-120b ·
+gpt-oss-20b · gemma-4-31B · Laguna-XS-2_1 ·
+Instella-3B ·
 Ling-3.0-tiny · minimind-3 · clef · Qwen3.8-27B · Qwen3.6-35B-A3B ·
 Step-3.7-Flash · gpt2 · NVIDIA-Nemotron-3.5-Lightning · GLM-5.3-Flash ·
 Qwen3-VL-2B/30B/235B-Thinking · Qwen3-Omni-30B-A3B-Thinking ·
@@ -45,11 +50,14 @@ DeepSeek-R1-Distill-Qwen-1.5B/7B · Qwen3.5-0.8B/9B/397B-A17B ·
 gemma-4-12B/26B-A4B/E4B · mamba-130m-hf · Qwen3-Coder-Next ·
 Qwen3.8-Flash-Next · GLM-4.7-Flash · embeddinggemma-2。
 
+**已从语料移除**：Step-3_7-Flash-180B（社区剪枝版，上游仓库下架；
+当年 25 张量缺口的记档保留在 INVENTORY）。
+
 ## C. 功能维度（分开说，不用"模型已支持"糊弄）
 
 | 功能 | 状态 | 证据 / 边界 |
 |---|---|---|
-| 文本前向/生成 | 完整模型 6 个 ✅；refs 32 个规格 ✅ 运行未验 | 见 A/B |
+| 文本前向/生成 | 完整模型 6 个 ✅；refs 36 个有语料 / 31 个 config 逐字段 ✅，运行未验 | 见 A/B |
 | 视觉塔 | **接线级** ✅（qwen3_5 影子含视觉塔，逐位 0）；真权重值 ✅（Qwen3.8 图像对比）；其余塔未验 | [多模态缺口](INVENTORY.txt)【F】 |
 | MTP | ✅（Qwen3.8 含 MTP 对拍 + mtp.* 命名对 refs 15/15） | 六模型对比含图像与 MTP |
 | 音频塔 | 未建模 | INVENTORY【F】：完全没建模 |

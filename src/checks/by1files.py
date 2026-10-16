@@ -182,6 +182,9 @@ OVERRIDE = {
     'product-definition.md': 'T1 产品定义（冻结版）：目标用户/输入输出/支持层级/不做的运行时职责/代表模型',
     'p0-model-selection.md': 'T1 选择记录：P0 代表模型（Qwen3-0.6B）、revision、许可证、'
                              '参考实现、上游运行时与不纳入分支',
+    'p0-loop-report.md': 'P0 闭环报告（Qwen3-0.6B）：声明↔产物 311/311 · GGUF 产物 · '
+                         '上游 logits 逐位（106949 值）· 生成同文；**未跑的（T13 GPU-only）'
+                         '单列，不写成通过**',
     'ir-spec.md': '**生成物**：IR 规格（字段、必填、语义、闭集）。`by1ir.py --spec`',
     'prims-spec.md': '**生成物**：原语数值规格（公式/形状/dtype/边界/出处）。'
                      '`by1graph.py --spec`；键集与原语表 import 时硬断言对账',
