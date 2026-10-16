@@ -31,6 +31,7 @@
 | S5 | **by1langspec 未进门禁表**（独立判卷人，绿例/红例/selftest 基线 9 错都验过） | src/checks/by1langspec.py | 并入 by1all 判卷人段 |
 | S6 | 命名生成率基线 **41%**（refs→emit 反推），只升不降 | 1.0.0-rc0 HISTORY | 长线指标 |
 | S7 | 产品边界**明确不做**：通用运行时/自研 CUDA 量化器/改 GGUF 语义/覆盖计数 | docs/product-definition.md | 是边界不是缺口 —— 列此防误记 |
+| S8 | **Step-5 合同缺判卷人**：上游 transformers（5.15.1 / 5.20.0）与新检出 llama.cpp **都没有 step5 实现**（5.20 有 `Step3p7*`、llama.cpp 有 `step35`） | docs/step5-contract-plan.md ③（实测表） | **停在规格级**（调度有判卷人：config 的 `layer_types`；契约没有）—— watch：上游合入 `Step5*` / `step5` 架构 / 官方 modeling 公开，任一出现就重启 |
 
 ## ④ 环境缺口（跳过 ≠ 通过）
 

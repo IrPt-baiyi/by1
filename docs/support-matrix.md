@@ -34,7 +34,10 @@ LLaDA2.2-flash · Laguna-XS_2 · Step-5-Preview-BF16 · Qwen3-0.6B。
 config 逐字段行（那套映射属于原生 IR 路径）：等价判据是"生成 config → HF 装载
 零 missing/unexpected"与"双 loader 装同一份真权重前向逐位"，两条都已过
 （[P0 闭环报告](p0-loop-report.md) 第五、六节）。Step-5-Preview-BF16 同理但仍是
-`drafts/` 里的反推草稿，**没有判卷人，不算数**。
+`drafts/` 里的反推草稿，**没有判卷人，不算数** —— 而且 2026-10-16 实测：
+上游 transformers（5.15.1 / 5.20.0）与 llama.cpp 检出**都没有 step5 实现**，
+所以连"独立实现当判卷人"这条路也是断的（见
+[Step-5 工作单](step5-contract-plan.md) ③）。
 
 **加载/运行/产物：未验**（要显存与真权重轮次），除两处例外：
 

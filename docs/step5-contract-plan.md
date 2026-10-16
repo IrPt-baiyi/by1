@@ -10,6 +10,9 @@
 >
 > **口径纪律**：Step-5 是**发布日结构对账**，不是预测（见
 > [SOURCES.tsv](../refs/SOURCES.tsv) 那一行的性质标注）。
+>
+> **2026-10-16 结论：停在"规格级"，不升格。** 原因是实测出来的 —— 两条后端
+> 都缺判卷人（见 ③）。本文从此是**"记档等判卷人"**的一份：判卷人一出现就重启。
 
 ---
 
@@ -140,19 +143,44 @@ print(sorted(set(c['rope_theta'])))"
 
 （其余按同法；**换不动的那些**才是真未知，见 ⑤。）
 
-## ③ 后端选择（**要人定**，然后才有 config 映射与 emit 规则）
+## ③ 后端选择 —— **实测后：现在两条都缺判卷人，建议停在规格级**
 
-`complete-*` 走 **Transformers 后端**（`by1full` 直接生成 config，不需要
-field 映射、也不需要 `emit[torch.module]`）；**原生 IR 路径**才需要这两样。
-Step-5 要走哪条，决定了 ③④ 是"补两个表"还是"补一个家族"：
+2026-10-16 实测（这一步把"方向题"变成了"证据题"）：
 
-- **走 Transformers 后端**：要在 `by1full.FAMILIES` 里加 `step5` 家族
-  （sparse indexer + 逐层 rope + 逐层窗口），config 由声明生成后仍可用
-  `by1complete` 的 `official_configs` 对发布方 config 逐字段判；
-- **走 IR 路径**：要写 `emit[torch.module]` 命名规则 + config field 映射，
-  判据是 `by1verify` 的 [1]/[3] 两格（现在对 Step-5 是 [跳过]）。
+| 运行时 | Step-5（`step5` / `step5_vl`） | 证据 |
+|---|---|---|
+| transformers **5.15.1**（本机 CPU 腿） | **没有**：`Step*` 类 0 个、`models/step*` 包 0 个、`CONFIG_MAPPING` 无 `step` 键 | `python -c "import transformers as T; [n for n in dir(T) if 'Step' in n]"` |
+| transformers **5.20.0**（`.[full]` 今天解析到的） | **仍然没有 Step5** —— 有的是 **`Step3p7*`**（上一代 Step-3.7：Config/ForConditionalGeneration/Processor/…） | 克隆 venv 实测 |
+| llama.cpp（本地检出） | **没有 step5**；架构表里只有 `LLM_ARCH_STEP35`（`"step35"`） | `llamacpp/llama.cpp/src/llama-arch.cpp:152` |
 
-**这是一个方向题，不是实现题** —— 先定它，再动 ④。
+**两条后端都缺判卷人**，于是：
+
+- **走 Transformers 后端**：得先在 `by1full` 里自己写一个 `step5` 家族，
+  而**没有任何官方实现可以当判卷人** —— 正是这个仓库最忌讳的那条
+  （"没有独立判据的标实验，不计入稳定覆盖数"）。
+- **走原生 IR 路径**：写 `emit[torch.module]` + field 映射，判据是 `by1verify`
+  的 [1]/[3] —— 但 [3] 的"对不对"最终仍要**独立实现**来判；
+  没有它，我们只能自证（`refs/` 判 by1，见
+  [criteria-review.md](criteria-review.md) 第四节）。
+
+### 结论与建议
+
+**现在就停在"规格级"**，不再往上堆：
+
+| 已经成立的（有判卷人） | 判卷人 |
+|---|---|
+| 95 层调度（`drafts/step5-schedule-probe.by1`） | **config 自己的 `layer_types`**（`by1verify [2]` PASS） |
+| 逐层张量数四档 / 总量 2449 对账 | **发布方产物**（tensors.json） |
+| 专家 3D 打包、bias 三处、`ssmax_s`、MTP 自带 shared_head | **发布方产物** |
+| 转换器要改的 9 处 | [速查](step5-convert-cheatsheet.md)（对外产物，已按"发布日对账"口径标注） |
+
+**触发条件（watch）**：任一出现就重启本合同 —— ① 上游 transformers 合入
+`Step5*`；② llama.cpp 合入 `step5` 架构；③ 官方 modeling 代码公开
+（`# ?` 里最后那个"门控激活"也一起解）。在那之前，**不升格进 `models/`**。
+
+> 这条决定本身是可被推翻的：谁要是找到 Step-5 的独立实现（哪怕是一份官方
+> modeling 文件），上面每一条都该重排 —— 这正是 `OPEN-` 式的"记档等判卷人"，
+> 而不是"做不了所以不做"。
 
 ## ④ emit / 命名规则（待做，随 ③）
 
@@ -186,8 +214,8 @@ Step-5 要走哪条，决定了 ③④ 是"补两个表"还是"补一个家族"�
 | 1 | ① 写成 `stack` / `pattern` | `by1check` 展开层表（95 层）+ `by1verify --layer_types` | **✅ 已落笔并 PASS**（`drafts/step5-schedule-probe.by1`） |
 | 2 | ⑤ 里"产物可判"的两项 | 直接对 `refs/stepfun-ai__Step-5-Preview-BF16.tensors.json` 判（名字与形状） | **✅ 已结**（专家 3D 打包 + bias 三处，见 ⑤） |
 | 3 | ② 符号化 | `by1check` 换算；换不动的登记为未知 | 待做 |
-| 4 | ③ 后端选择 | 人定；然后再排 ④ | **等决定** |
-| 5 | 升格 `models/` + 过档 3 | `by1all --tier 3` | 待做 |
+| 4 | ③ 后端选择 | ~~人定~~ → **实测后定**：两条都缺判卷人 → 停在规格级，记 watch 触发条件 | **✅ 已决定（见 ③）** |
+| 5 | 升格 `models/` + 过档 3 | `by1all --tier 3` | **暂缓**：等 ③ 的触发条件之一出现 |
 
 **不许做的**：把 `drafts/` 那份直接复制进 `models/` —— 它没有判卷人，
 `by1check` 0/0/0 只是因为它是"形状清单"而不是"架构声明"（`.by1` 里没有层）。
