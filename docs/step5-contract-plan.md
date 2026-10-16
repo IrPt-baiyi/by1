@@ -108,7 +108,26 @@ print(sorted(set(c['rope_theta'])))"
 ## ② 703 条字面形状 → 符号（待做）
 
 草稿里的形状是**从 safetensors 头抄下来的字面值**。换成符号才是"我理解了这个模型"，
-而 `by1check` 会告诉你换得对不对。现成换算（从 config 推，可直接用）：
+而 `by1check` 会告诉你换得对不对。
+
+### 单层清单只有**四档**（产物实测，`refs/stepfun-ai__Step-5-Preview-BF16.tensors.json`）
+
+| 档 | 层 | 张量数 | 构成 |
+|---|---|---|---|
+| 稠密 · 滑窗 | 0, 1, 2 | **12** | 2 norm + 7 attn（`q/k/v/o/g_proj` + `q_norm/k_norm`）+ 3 稠密 mlp |
+| MoE · 滑窗 | 69 层 | **17** | 上行 + `moe.{gate,up,down}_proj`(3D) + `share_expert.{gate,up,down}` + `moe.gate.weight` + `moe.router_bias` |
+| MoE · 全量 | 22 层 | **25** | 上行 + 7 索引器/`ssmax_s` |
+| 稠密 · 全量 | 91 | **20** | 12 + 8 索引器/`ssmax_s` |
+
+**这张表是调度的第二个独立判据**：逐层张量数分布实测
+`{12: 3, 17: 69, 25: 22, 20: 1}` —— 3 稠密滑窗 / 69 MoE 滑窗 / 22 MoE 全量 /
+1 稠密全量，与 `layer_types` + `moe_layer_list` 的推算**逐层吻合**。
+
+**总量对账**：2449 = 视觉塔 `vision_model.*` **666** + 主干 `model.*` **1781**
++ 全局 2（`lm_head.weight`、`vit_large_projector.weight`）；
+1781 = 95 层的逐层张量 + `model.embed_tokens.weight` + `model.norm.weight` ✓。
+
+### 现成换算（从 config 推，可直接用）
 
 | 草稿里的字面 | 符号 |
 |---|---|
@@ -116,6 +135,8 @@ print(sorted(set(c['rope_theta'])))"
 | `self_attn.k_proj.weight (768, 4096)` | `(kv * head_dim, d_model)`，kv=4 |
 | `self_attn.o_proj.weight (4096, 12288)` | `(d_model, q * head_dim)` |
 | `mlp.gate_proj.weight (13824, 4096)` | `(intermediate, d_model)` |
+| `moe.gate_proj.weight (352, 1536, 4096)` | `(experts, moe_hidden, d_model)`，**3D 打包** |
+| `self_attn.ssmax_s (64,)` | `(q,)`，每 full 层一个 |
 
 （其余按同法；**换不动的那些**才是真未知，见 ⑤。）
 
@@ -135,19 +156,26 @@ Step-5 要走哪条，决定了 ③④ 是"补两个表"还是"补一个家族"�
 
 ## ④ emit / 命名规则（待做，随 ③）
 
-## ⑤ 六个语义未知项：现在还剩几个？
+## ⑤ 六个语义未知项：**只剩一个**（2026-10-16 用产物结掉两项）
 
-| 未知项 | 现状 | 判卷人 |
+| 未知项 | 现状 | 判卷人 / 证据 |
 |---|---|---|
-| 路由方式 / 打分函数 | **部分已答**：`use_moe_router_bias=true`、`moe_router_scaling_factor=3.0`、`norm_expert_weight=true`、352 专家 top-8 | config（已实测） |
-| 有没有共享专家 | **已答**：`share_expert_dim=1536` → 有 | config |
-| rope 缩放类型 | **已答**：`rope_scaling = llama3`（factor 1.0 / high_freq 32.0） | config |
-| 门控激活（head gate 的 act） | **未答** | 官方 modeling 代码 |
-| 专家打包（3D 打包 vs 逐专家） | **产物可判**：tensors.json 里那 88×3 个张量的形状 | 产物 |
-| bias 有无 | **产物可判**：名字里有没有 `.bias` | 产物 |
+| 路由方式 / 打分函数 | **已答**：`use_moe_router_bias=true`、`moe_router_scaling_factor=3.0`、`norm_expert_weight=true`、352 专家选 8 | config |
+| 有没有共享专家 | **已答**：`share_expert_dim=1536`，产物里**独立命名** `share_expert.{gate,up,down}_proj.weight`（2D，88 层 × 3） | config + 产物 |
+| rope 缩放类型 | **已答**：`rope_scaling = llama3`（factor 1.0 / high_freq 32.0）+ 逐层 `rope_theta` | config |
+| **专家打包方式** | **已答（产物）**：`moe.{gate,up,down}_proj.weight` 是 **3D 打包**（352, ·, ·），**没有**逐专家命名（`experts.N.` 命中 0 条）；88 层 × 3 = **264** 条 3D | 产物 |
+| **bias 有无** | **已答（产物）**：全库 261 条 `.bias` 只落在三处 —— `moe.router_bias (352,)`（88 层，对上 `use_moe_router_bias`）、`sparse_indexer_k_norm.bias (256,)`（23 层）、视觉塔 238 条；**注意力 7 个投影与主干 norm 一律无 bias** | 产物 |
+| 门控激活（head gate 的 act） | **仍未答** | 官方 modeling 代码 |
 
-**结论**：六个里三个已经从 config 结掉，两个产物可判，**只剩"门控激活"** 需要
-官方 modeling 代码 —— 也就是说，"没有判卷人"的那一格比草稿头部写的要小得多。
+**顺带两处硬事实（写合同前必须先知道）**：
+
+1. **`ssmax_s (64,)` 是每 full 层一个** —— 索引器张量族共
+   **8 种 × 23 层 = 184 条**（`sparse_indexer_{q,k,k_norm.bias,k_norm,q_norm,w,z}` + `ssmax_s`）。
+   > 这一条同时**核实了**转换速查里那句"8 种张量 × 23 层"
+   > （只数含 `sparse` 的名字会得 7 种 —— `ssmax_s` 不含这个子串）。
+2. **每个 MTP 层自带一份 `transformer.shared_head.{norm,output}`**
+   （`output` 是 `(128896, 4096)`，3 层各一份）—— 合同里**不能**把它写成
+   全局唯一的那一份，否则张量数会对不上（这正是差距表里那类"同名不同义"）。
 
 ---
 
@@ -156,7 +184,7 @@ Step-5 要走哪条，决定了 ③④ 是"补两个表"还是"补一个家族"�
 | 步 | 做什么 | 判据 | 状态 |
 |---|---|---|---|
 | 1 | ① 写成 `stack` / `pattern` | `by1check` 展开层表（95 层）+ `by1verify --layer_types` | **✅ 已落笔并 PASS**（`drafts/step5-schedule-probe.by1`） |
-| 2 | ⑤ 里"产物可判"的两项 | 直接对 `refs/stepfun-ai__Step-5-Preview-BF16.tensors.json` 判（名字与形状） | 待做 |
+| 2 | ⑤ 里"产物可判"的两项 | 直接对 `refs/stepfun-ai__Step-5-Preview-BF16.tensors.json` 判（名字与形状） | **✅ 已结**（专家 3D 打包 + bias 三处，见 ⑤） |
 | 3 | ② 符号化 | `by1check` 换算；换不动的登记为未知 | 待做 |
 | 4 | ③ 后端选择 | 人定；然后再排 ④ | **等决定** |
 | 5 | 升格 `models/` + 过档 3 | `by1all --tier 3` | 待做 |
