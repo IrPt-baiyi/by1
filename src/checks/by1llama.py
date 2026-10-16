@@ -489,6 +489,10 @@ def build_gguf(hf_dir, out_path, ref_gguf=None, arch="llama", n_blocks=24,
             raw = fh.read()
         _ver, kv_raw, _ts, _off, _al, kv_count = _gguf_parse(raw)
         tensors.sort(key=lambda kv: kv[0])
+        # **输出目录要自己建。** 干净克隆里没有 `build/` —— 2026-10-16 实测：
+        # 文档里那条命令会吐裸 `FileNotFoundError: build/xxx.gguf`。
+        # 第一次用它的人不该需要先猜"是不是要先 mkdir"。
+        pathlib.Path(out_path).parent.mkdir(parents=True, exist_ok=True)
         _gguf_write(kv_raw, kv_count, tensors, out_path)
     return tensors
 
