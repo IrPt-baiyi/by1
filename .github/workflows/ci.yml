@@ -144,8 +144,26 @@ jobs:
       - name: 装 [full]（torch + transformers）
         run: python -m pip install -e ".[full]"
 
+      # **失败时把尾行写成 GitHub 注解。** 注解是**公开可读**的（check-runs
+      # annotations API），而 job 日志要管理员权限 —— 换句话说：CI 红了的时候，
+      # 从外面能看见的只有"哪个 job 红了"。这个包装让**失败原因也可见**：
+      # 谁都能用一条 API 调用把病根读出来，不用等作者登进去复制粘贴。
+      #
+      # 这不是为了我自己方便：**外部复核者读得到的东西，才算真的公开。**
       - name: 完整模型判据
-        run: python src/checks/by1complete.py
+        run: |
+          python - <<'PY'
+          import subprocess, sys
+          r = subprocess.run([sys.executable, "src/checks/by1complete.py"],
+                             capture_output=True, text=True)
+          out = (r.stdout or "") + (r.stderr or "")
+          print(out)
+          if r.returncode:
+              tail = [l for l in out.strip().splitlines() if l.strip()][-15:]
+              for line in tail:
+                  print("::error::" + line[:900])
+          sys.exit(r.returncode)
+          PY
 
       - name: 转换期改写表（每条规则的上游出处 + 探针）
         run: python src/checks/by1rules.py
