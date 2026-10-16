@@ -1,0 +1,516 @@
+% ═══════════════════════════════════════════════════════════════════════
+% by1-zh.tex — 中文全文。编译：XeLaTeX（Overleaf 选 XeLaTeX 即可）。
+% 英文对应稿：by1-en.tex。共享参考文献：by1-refs.bib。
+% ═══════════════════════════════════════════════════════════════════════
+\documentclass[11pt,a4paper]{ctexart}
+
+\usepackage[margin=2.6cm]{geometry}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{amsmath}
+\usepackage{listings}
+\usepackage{microtype}
+\usepackage[hidelinks]{hyperref}
+
+\lstset{
+  basicstyle=\ttfamily\small,
+  columns=fullflexible,
+  keepspaces=true,
+  frame=single,
+  framerule=0.4pt,
+  xleftmargin=1.2em,
+  xrightmargin=1.2em,
+  aboveskip=0.9em,
+  belowskip=0.9em
+}
+
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\byone}{\textsc{by1}}
+\newcommand{\ir}{\textsc{by1-ir}}
+\newcommand{\q}[1]{「#1」}
+
+\title{\byone{}：面向大模型架构的声明式描述\\与机器可验证合同}
+\author{草稿 v0.1 —— 作者与单位待补}
+\date{2026 年 10 月}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+今天发布一个大模型，等于同时发布一堆互相冗余的载体：配置文件、张量名、
+转换代码、运行时代码和一份散文文档。同一个架构事实——某一层有几个
+key--value 头、哪些参数是共享的、归一化的 epsilon 取多少——必须在每个载体里
+各写一遍，而载体之间会悄悄漂移。本文提出 \byone{}：一种描述模型架构与
+checkpoint 合同的小型声明式语言，配以后端无关的中间表示（\ir{}）和一套
+验证流水线。该流水线用「不是这份描述生成的产物」给描述判卷：发布方自己的
+配置文件与张量清单，以及独立维护的运行时。\byone{} 拒绝猜测：未知机制与
+矛盾配置一律报错，任何后端算不了的组合直接拒绝而不是近似降级。支持程度按
+四个分别举证的状态报告——规格检查、权重加载、数值运行、产物导出——使接线
+证据永远不会被冒充为运行证据。在六个已发布 checkpoint（GPT-2、Qwen3-0.6B、
+Qwen2.5-7B-Instruct、Qwen3-8B、MXFP4 的 \code{gpt-oss-20b}、含视觉塔与
+MTP 的 Qwen3.8-27B）上，由 \byone{} 描述编译出的模型与参考 Transformers
+实现的最大 logits 绝对误差为 \textbf{0}，贪心生成序列逐 token 一致；一次
+真实训练步中 596{,}049{,}920 个梯度及同数量的更新后参数逐元素精确一致。
+我们把这些作为「描述、转换、加载是忠实的」的证据；由于实验复用参考实现的
+算子，它们对内核正确性与速度不置一词。本文给出语言设计、检查方法学，以及
+塑造了这两者的一批失败案例——其中一个是「一份错误的描述通过了全部检查」。
+\end{abstract}
+
+\section{引言}
+
+一次现代模型发布，实际交付的是若干互相冗余的载体：一份几十个超参数的
+\code{config.json}；一个用张量名隐式编码架构的权重文件；一到多个把这些名字
+映射到某运行时约定的转换器；一个写明「实际算了什么」的模型类；以及一份用
+散文说明作者自认为造了什么的 README 或模型卡。每个载体都是同一个对象的
+局部描述，没有任何一个对其它载体具有权威性。
+
+这种冗余不是趣味问题，而是昂贵且不可见的错误的主要来源。query 投影与输出
+投影的 bias 标志不同，张量清单就不同；某个转换器把归一化 epsilon 写成本地
+常量，就会与 checkpoint 不一致。参数共享——输出头字面上就是输入 embedding
+的同一个张量——在形状清单里完全看不出来。视觉塔、多 token 预测头（MTP）、
+滑窗排期、MoE 路由又各自带来新的载体。载体一旦分歧，并不会有人大声报错：
+模型能加载、能跑、能吐出像样的文本，只是悄悄地错了。
+
+\byone{} 的立场是：架构本身值得一份单一的、小型的、机器可检查的描述。它的
+表层语言（\code{.by1} 文件）声明超参数、层排布、机制、张量合同、共享关系、
+位置编码方案、状态合同与导出规则；声明被编译为后端无关的中间表示 \ir{}，
+其合法性由闭合的算子种类集合与逐种类属性表定义。随后验证流水线用\emph{外部}
+产物给描述判卷——发布方自己的配置与张量清单、独立维护的实现——而不是自证。
+
+三条设计承诺完成了大部分工作：
+
+\begin{itemize}
+  \item \textbf{要么实现，要么拒绝。}没有第三条路。任何后端都算不了的机制，
+  必须被检查器拒绝，而不是悄悄降到某个恰好能跑的东西上。这条规则之所以存在，
+  是因为本项目违反过一次（第~\ref{sec:lessons} 节），并且让一份算错模型的
+  描述通过了全部检查。
+  \item \textbf{证据分级，而不是计数。}\q{支持}被拆成四个状态——规格检查、
+  权重加载、数值运行、产物导出——每个状态各有各的证据。随机权重的影子对拍
+  只记为接线证据，永不升格为运行证据。数字只随证据一起涨。
+  \item \textbf{规格尽量由程序生成。}\ir{} 的参考文档由校验器真正执行的同一批
+  表生成；语言规范里的示例被回喂给检查器，绿例必须通过、红例必须以指定诊断
+  失败。手写的、会过期的规格比没有规格更坏。
+\end{itemize}
+
+本文贡献如下：
+\begin{enumerate}
+  \item 一种声明式架构语言与后端无关 IR，其合法性是闭合的、表驱动的
+  （第~\ref{sec:lang}、\ref{sec:ir} 节）；
+  \item 一套把主张锚定在发布方产物与外部运行时上的验证方法学，含显式的
+  支持状态与负例纪律（第~\ref{sec:verify} 节）；
+  \item 一个实现：四个互相对拍的后端——NumPy、PyTorch、生成的 C、生成的
+  \code{ggml}——外加执行完整发布模型的 Transformers 后端（第~\ref{sec:impl} 节）；
+  \item 在六个真实 checkpoint 上的评测，包括 MXFP4 的 MoE 模型与带 MTP 的
+  27B 多模态模型，取得精确 logits 对齐与一次逐梯度一致的真实训练步
+  （第~\ref{sec:eval} 节）；
+  \item 对负结果与过程教训的记录，包括那次误报事故与代码的来源
+  （第~\ref{sec:lessons} 节）。
+\end{enumerate}
+
+\section{问题与边界}
+\label{sec:problem}
+
+\subsection{今天架构知识住在哪}
+
+表~\ref{tab:carriers} 概括了各载体及其典型失败。模式是一致的：每个载体持有
+部分真相，而载体之间的绑定靠约定，不靠合同。
+
+\begin{table}[t]
+\centering
+\caption{架构知识及其载体。\byone{} 把「绑定」一列换成了显式合同。}
+\label{tab:carriers}
+\begin{tabular}{@{}p{2.8cm}p{4.6cm}p{5.6cm}@{}}
+\toprule
+载体 & 持有 & 典型失败 \\
+\midrule
+配置文件 & 超参数、部分标志 & 没人读的字段；消费者自己发明的字段 \\
+张量名/形状 & 隐式结构 & 共享权重看似重复；不存在的 bias 看似存在 \\
+转换代码 & 命名与布局规则 & 逐运行时重复实现；静默补默认值 \\
+模型类 & 实际计算内容 & 与配置不一致；无记录的覆盖 \\
+散文文档 & 意图 & 与以上全部漂移 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{我们要打的两种失败}
+
+\paragraph{静默补默认。}转换器遇到未知或缺失字段时，阻力最小的路是挑一个
+看似合理值。项目记录里有具体实例：归一化 epsilon 在成为 IR 必填字段之前，
+曾在三个不同位置被写死。这种失败很安静，因为错的 epsilon 很少改变短贪心
+解码的 token 序列；它只把数值改到刚好可以抵赖的程度。
+
+\paragraph{名字与形状对上，不等于算的东西对上。}项目早期，
+\code{gpt2.by1} 与 \code{llama-shaped.by1} 编译出了逐字节相同的 IR——一份
+GPT-2 描述与一份 Llama 风格描述产出同一个中间表示。所有后端、校验器和
+整个检查套件都报「通过」：张量合同只核对名字与形状，不核对算的是什么。
+学习式位置嵌入被降级进了一个同时容纳旋转位置的抽象。修复不是「加一个
+更好的检查」，而是改规则：IR 的位置种类是无法同时表达二者的枚举，凡没有
+真实实现的机制一律拒绝。第~\ref{sec:lessons} 节回到这一点。
+
+\subsection{目标与非目标}
+
+目标用户是：(i)~要把 checkpoint 变成可审计标准产物的模型发布方与转换者；
+(ii)~要确认「文档写的、配置说的、权重存的」三者一致的架构审查者；
+(iii)~希望不读 \byone{} 源码、只凭 IR 规格就实现一个后端的二次实现者。
+
+同样重要的是 \byone{} 刻意\emph{不是}什么：不是通用推理运行时，不是训练
+框架，不是服务系统，也不是 CUDA 内核作者。部署使用经过验证的运行时
+（Transformers~\cite{wolf2020transformers}、\code{llama.cpp}~\cite{llamacpp2023}）；
+量化产物使用在维护中的格式而非私有格式；对标准格式的私有扩展必须先证明
+标准表达不了，且读到未知扩展必须拒绝。
+
+\section{语言设计}
+\label{sec:lang}
+
+\subsection{表层语言}
+
+一份完整架构是一个短文档。代码~\ref{lst:hello} 是本项目的 CPU 演示全文，
+只装 NumPy 的笔记本就能用随机权重跑起来。
+
+\begin{lstlisting}[caption={完整的演示架构 \code{models/hello.by1}。},
+label={lst:hello}]
+model Hello {
+  hparams { d_model = 128, vocab = 256 }
+  stack main {
+    pattern = 4 * Attention(q = 4, kv = 2, head_dim = 32)
+    main[:] >> FFN(hidden = 512)
+  }
+}
+\end{lstlisting}
+
+这份声明刻意很小，但它不是有损的摘要：检查器把它解析成完整的张量合同——
+四个 decoder 层、按声明带 bias 的融合 query/key/value 投影、每层挂载的门控
+前馈块，以及缺省的位置、归一化与输出头规则。表~\ref{tab:onechange} 给出
+只改 pattern 行里那一个数字的效果。
+
+\begin{table}[t]
+\centering\small
+\caption{代码~\ref{lst:hello} 里改一个数。层数与参数预算跟随声明；词表与
+序列长度未变，所以输出形状不变。}
+\label{tab:onechange}
+\begin{tabular}{@{}lrr@{}}
+\toprule
+结果 & \code{4 * Attention(...)} & \code{2 * Attention(...)} \\
+\midrule
+decoder 层数 & 4 & 2 \\
+执行器分配参数量 & 1{,}049{,}728 & 557{,}696 \\
+输出形状 & $(1, 8, 256)$ & $(1, 8, 256)$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+除骨架（\code{model}、\code{hparams}、\code{stack}、\code{pattern}、
+\code{position}、\code{state}、\code{optimizer}）之外，这门语言还有两类
+简单配置格式所没有的陈述。
+
+\paragraph{带默认值与不变式的机制。}\emph{机制}是命名的计算单元
+（\code{Attention}、\code{FFN}、\code{KDA}、\code{MLA}、\code{MoE}、
+\code{SSM} 等），各有参数表。机制名来自唯一登记表；写出登记表不认识的名字
+就是错误——这是设计，不是疏漏。
+
+\paragraph{在实例上排期的 pattern。}\code{pattern} 对机制实例做重复与交替
+排期，例如三个门控卷积层配一个注意力层的比例，或滑窗注意力与全注意力交替。
+pattern 元素上的属性按下游影响分三类，因为三类应当有不同规则：
+\begin{enumerate}
+  \item \emph{行为属性}（窗口大小、sink、门控模式）只改实例怎么算，不改
+  张量清单；
+  \item \emph{结构属性}（head 维度、key--value 头数、绑定）改变形状与张量
+  集合，覆盖了结构属性的实例必须重新过形状校验，且张量合同按实例展开；
+  \item \emph{调度属性}指向另一个实例的状态（某层读前一层的缓存）。
+\end{enumerate}
+
+\subsection{张量合同与共享}
+
+描述按模块声明有哪些张量、形状、dtype 与共享关系。共享是一等关系：输入
+embedding 与输出头可以是同一个对象，也可以是带不同 bias 的两个对象；该关系
+对着 checkpoint 的实际张量清单核对，而不是从形状反推。语料里的六个完整模型
+正是为覆盖这些差异而选：共享与独立输出头、Qwen2.5-7B-Instruct 的投影 bias
+不对称、GPT-2 与 Qwen 的学习式/旋转位置之别、\code{gpt-oss-20b} 的 MoE 加
+滑窗交替，以及一个同时含文本塔、视觉塔与 MTP 头的 27B 模型。
+
+\subsection{状态合同}
+
+带递归或缓存的机制显式声明状态：种类（key--value 缓存、递归状态、卷积历史、
+由实现声明）、是否有界及其界、形状与 dtype、以及能否跨请求复用（不复用、
+前缀复用、未知）。把状态从实现细节升为声明，审查者才能只凭描述算出缓存
+尺寸，这也是审计流程里「手算 KV 状态尺寸」任务的基础（第~\ref{sec:verify} 节）。
+
+\section{中间表示}
+\label{sec:ir}
+
+\ir{} 是前端与各后端之间的合同。顶层含全局字段（词表大小、上下文长度、
+残差流宽度、位置种类、归一化种类与 epsilon 等）、栈登记表（文本、视觉、
+MTP）、全局算子序列（embedding、最终归一化、输出头），以及逐层的算子序列
+（属性已解析）与状态声明。
+
+两条规则给出 IR 的纪律：
+
+\paragraph{闭集。}算子 \code{kind} 是十三种的闭集（\code{Add}、
+\code{Attention}、\code{Embed}、\code{External}、\code{FFN}、\code{Head}、
+\code{KDA}、\code{Linear}、\code{MLA}、\code{MoE}、\code{Norm}、\code{Raw}、
+\code{SSM}）；每种 kind 有一张必填/允许属性表。表里没有的属性不合法；表里
+必填而缺失的不合法。状态 dtype 与复用模式同样是枚举：自由字符串会让「未知
+值」成为测不了的状态，项目已经被咬过一次。
+
+\paragraph{生成的规格。}\ir{} 的参考文档由校验器真正执行的同一批表生成
+（\code{python src/by1ir.py --spec}）。理由就写在那份文档里：手写的规格会
+过期，而过期的规格比没有规格更坏——它让读的人以为自己知道。读的一方必须
+拒绝不认识的 IR 主版本；版本历史只追加不改写，已有的 \code{1.0} 文件在
+\code{1.1} 下继续有效。
+
+\subsection{错误模型与版本}
+
+诊断一行一条，含位置与可行动的原因；有错误则退出码非零。禁止静默回退：
+未知机制、未知 dtype、矛盾配置都是错误，绝不「猜一个相近的」。负例基线
+（\code{models/selftest.by1}）固定钉在恰好九个错误，解析器改动若改变错误
+数目，必须显式改基线并说明原因。语言规范文档同时是测试套件：其中绿例必须
+通过检查器，红例必须以含指定子串的诊断失败。
+
+\section{验证方法学}
+\label{sec:verify}
+
+\subsection{判卷人在外面}
+
+描述由「不是它生成的产物」判卷。语料 \code{refs/} 为每个模型保存发布方
+自己的配置文件与张量清单（名字加形状），可复现抓取，并有出处审计：每个文件
+都必须能追溯到声明的来源——没有出处的参考文件正是本项目要消灭的硬编码
+知识。检查器把这些产物与描述逐字段、逐张量核对。数值判卷用独立实现——由
+发布方配置编译的 Transformers 模型类，以及导出产物对应的上游
+\code{llama.cpp}——而不是与描述编译共用的任何代码路径。
+
+\subsection{四个支持状态}
+
+\begin{table}[t]
+\centering\small
+\caption{支持状态。主张只能随新证据向上走；影子（随机权重）对拍是接线
+证据，永远不算「运行」。}
+\label{tab:states}
+\begin{tabular}{@{}p{2.2cm}p{5.4cm}p{5.2cm}@{}}
+\toprule
+状态 & 含义 & 证据长什么样 \\
+\midrule
+规格检查 & config 逐字段 + 张量名/形状对着发布方产物验过 & 逐模型 diff 报告 \\
+加载 & 真 checkpoint 完整装载，零 missing / 零 unexpected & GPU bench 的装载段报告 \\
+运行 & 真权重前向/生成与独立参考对拍 & 数值对比报告 \\
+产物 & 导出的标准产物被未修改上游加载并短生成 & round-trip 报告 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+表~\ref{tab:states} 是本项目对一种常见营销失败的回答：仅仅「能跑」的模型
+被宣传成「已支持」。支持矩阵按这四个状态逐模型、逐功能登记，无独立判据的
+实验项不计入稳定覆盖数。
+
+\subsection{纪律}
+
+三条规则由检查套件与共识共同维持。\emph{负例必须失败}：每条规则都配有一个
+违反它的描述，且预期被拒。\emph{影子对拍停留在接线证据}：随机权重影子模型
+逐位一致只能证明接线正确，证明不了别的。\emph{数字只随证据上涨}：稳定覆盖数
+由矩阵按规则算出，不靠文字描述。判据本身明确对外开放审计：仓库附一份
+「请人重算」任务单，请外人手数三个不同规模模型的张量总数与 config 命中数、
+手推一个逐 token 的 KV 缓存尺寸并与检查器输出比对。立场写得很直白：原始数据
+来自发布方，结论来自本项目自己的程序——只有\emph{判据}是需要外人来攻的。
+
+\section{实现}
+\label{sec:impl}
+
+\subsection{后端}
+
+\begin{table}[t]
+\centering\small
+\caption{后端与职责。前四个在共同架构上互相对拍；Transformers 后端执行
+完整发布模型。}
+\label{tab:backends}
+\begin{tabular}{@{}p{2.4cm}p{2.4cm}p{7.2cm}@{}}
+\toprule
+后端 & 写在什么上 & 职责 \\
+\midrule
+NumPy & Python & 轻依赖 CPU 执行；首次体验的演示 \\
+PyTorch & Python & 生成可训练模型（build 入口）、训练步 \\
+C & 生成源码 & 低层执行路径，交叉对拍 \\
+ggml & 生成源码 & GGUF 链路的验证后端 \\
+Transformers & Python & 完整发布模型：共享、视觉、MTP、量化 checkpoint \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+表~\ref{tab:backends} 列出执行路径。\q{对拍}的含义是：同一架构在每个声称
+支持它的后端上必须产出相同的前向；IR 刻意不含任何框架概念（没有模块对象、
+没有框架形状对象），这样比较才有意义。Transformers 后端存在的理由是：完整
+发布模型——参数共享、视觉塔、MTP、MXFP4 与 FP8 存储——不该被迫穿过有损的
+串行降级；它从声明编译出 Transformers 配置，并使用该运行时自己的算子。
+
+MTP 值得一提：Transformers 会忽略 checkpoint 里的 \code{mtp.*} 张量，因此
+\byone{} 自己补上 MTP 的计算（embedding 与输出头与主干共享、一个 decoder、
+一个最终归一化），连接公式依 vLLM 实现~\cite{kwon2023vllm}。MTP 输出对着
+独立公式对拍，而不是自证。
+
+\subsection{工具链}
+
+命令行覆盖审查者真正要跑的循环：规格检查、NumPy 执行、生成 PyTorch 模型、
+基于保存 batch 的训练步；另有语言规范、IR 入口、端到端、描述变异测试、GPU
+冒烟与 bench 等检查套件。核心检查路径只用标准库，因此第一级验证在裸 Python
+上就能跑。
+
+\section{评测}
+\label{sec:eval}
+
+\subsection{设置}
+
+数据于 2026 年 10 月 13 日在单台机器上采集：NVIDIA RTX PRO 6000 Blackwell
+Server Edition（96\,GB）、PyTorch 2.8.0、CUDA 12.8、Transformers 5.19.0。
+对比两侧加载同一 checkpoint：参考组加载发布方配置，\byone{} 组从 \code{.by1}
+编译配置；两边使用同一 Transformers 模型实现与算子。设置为 BF16、batch 1、
+eager attention、输入长度 32 与 128、预热 2 次、计时 5 次、贪心生成 16 个
+新 token。原始 JSON 报告随仓库提供。
+
+\subsection{发布方真实权重前向对拍}
+
+\begin{table}[t]
+\centering\small
+\caption{六个已发布 checkpoint。\q{误差}为对参考实现的最大 logits 绝对误差；
+所有模型的贪心生成序列逐 token 一致。耗时比为单机、长度 128 的观测值，
+不是加速主张。}
+\label{tab:parity}
+\begin{tabular}{@{}lrrrc@{}}
+\toprule
+模型 & 耗时比 & 峰值显存 & 误差 & 额外检查 \\
+\midrule
+GPT-2 & 0.990$\times$ & 0.27\,GB & 0 & 16 token 一致 \\
+Qwen3-0.6B & 0.996$\times$ & 1.24\,GB & 0 & 另测真实训练步 \\
+Qwen2.5-7B-Instruct & 0.998$\times$ & 15.28\,GB & 0 & 16 token 一致 \\
+Qwen3-8B & 0.997$\times$ & 16.43\,GB & 0 & 另测更长上下文 \\
+\code{gpt-oss-20b} & 1.054$\times$ & 41.90\,GB & 0 & 两侧同样解量化 MXFP4 \\
+Qwen3.8-27B & 0.991$\times$ & 55.64\,GB & 0 & 含图像输入与 MTP \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+表~\ref{tab:parity} 是核心结果：从 GPT-2 到 27B 多模态模型，横跨 MXFP4
+存储的 MoE 模型（两侧同样解量化为 BF16），编译出的描述与参考实现\emph{精确}
+一致。这里精确比容差更重要：被测的问题是描述、配置转换、权重加载与接线是否
+忠实，对这个问题任何非零差异都是缺陷。
+
+\subsection{更长上下文与显存}
+
+\begin{table}[t]
+\centering\small
+\caption{长上下文运行。最大 logits 绝对误差全部为 0。}
+\label{tab:longctx}
+\begin{tabular}{@{}lrrl@{}}
+\toprule
+模型 & 输入长度 & 峰值显存 & 生成对比 \\
+\midrule
+Qwen2.5-7B-Instruct & 2{,}048 & 16.52\,GB & 8 token 一致 \\
+Qwen2.5-7B-Instruct & 4{,}096 & 20.16\,GB & 8 token 一致 \\
+Qwen3-8B & 2{,}048 & 17.85\,GB & 8 token 一致 \\
+Qwen3-8B & 4{,}096 & 22.01\,GB & 8 token 一致 \\
+Qwen3-8B & 8{,}192 & 38.44\,GB & 4 token 一致 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{一次真实训练步}
+
+Qwen3-0.6B 真实 BF16 权重的单次全参数训练步（前向、反向、一次 AdamW 更新）
+与官方模型逐元素对比：596{,}049{,}920 个梯度与同数量的更新后参数，两项最大
+绝对误差均为 0，峰值显存约 5.98\,GB。这验证了加载、前向、反向与更新接线的
+一步，不代表多步训练或收敛性。
+
+\subsection{视觉与 MTP}
+
+Qwen3.8-27B 路径的文本、MTP、视觉均使用真实 checkpoint 权重。图像用例把一张
+合成的 $128\times128$ 图像经模型 processor 送入，最大 logits 绝对误差为 0。
+合成图像只验证执行与接线，不代表视觉能力。MTP 输出与独立连接公式对拍，
+最大误差 0。
+
+\subsection{覆盖}
+
+按发布门清单口径：37 个模型规格在规格检查态稳定（参考语料 32 个加完整模型
+6 个，GPT-2 重叠），8 个达到运行态，1 个（GPT-2 的标准 GGUF 链）达到产物态。
+原生路径不执行视觉塔与 MTP；音频塔完全没有建模；量化已有验证过的存储合同
+（MXFP4、FP8）与接通的装载路径，但运行态与产物态明确不主张。
+
+\subsection{效度威胁}
+
+对拍结果复用参考实现的算子，因此验证的是描述、转换与加载——不是内核，
+也不是速度。耗时比只是单机、短序列的观测；\code{gpt-oss-20b} 超过 1 的比值
+反映两侧解量化的开销，不是主张。全部数据都是单机、少次数计时。判据
+（阈值、\q{覆盖}的定义、模型选择）由本项目自己写下，并且就是那份随仓库
+发出的审计任务单所针对的对象。写作时，用当前源码重跑真实权重对比的工作
+仍在等待中——一个模型的下载卡在 50\,MiB 不动。
+
+\section{教训与负结果}
+\label{sec:lessons}
+
+\paragraph{可描述不等于可计算。}那次误报事故（第~\ref{sec:problem} 节）是本
+项目最贵的一课，而且它讲的是抽象边界，不是测试覆盖：检查套件只能检查合同
+里提到的东西。治法是收窄 IR 的词表，让错误的降级无法表达，并把未实现的组合
+变成硬错误。
+
+\paragraph{静默回退会累积成虚构。}每处「猜一个默认值」的地方，最后都变成载体
+之间的分歧。禁止猜测换来了更好的报错，偶尔还换来一个发现：某功能其实从来没
+实现过。
+
+\paragraph{生成的规格胜过维护的规格。}IR 文档由可执行的表生成；语言规范的示例
+被执行为测试。两者成本都很低，消掉一整类漂移。
+
+\paragraph{不要升格接线证据。}随机权重影子对拍又便宜又好看，也正最容易被过度
+解读。把它单独放在支持矩阵的一栏里不花任何成本，却能让主张保持诚实。
+
+\paragraph{来源。}本项目的代码、文档与提交信息几乎全部由 AI 编程代理在人工
+指导下写出。说这一点是为了提高审视，不是为了提高信任：正因如此，仓库才钉死
+负例基线、生成自己的规格、并随附请外人重算的说明。代理写的代码让「检查器必须
+有外部判卷人」这个论点更强，而不是更弱。
+
+\section{相关工作}
+
+\paragraph{模型配置与模型库。}Transformers~\cite{wolf2020transformers} 把
+「配置 + 权重」的发布格式变成主流，也正是 \byone{} 判卷所对着的对象；其
+配置对象是我们对比中的参考一侧。Gemma~\cite{gemma2024}、
+Qwen~\cite{qwen2025qwen25}、\code{gpt-oss}~\cite{gptoss2025} 等发布展示了一个
+模型库必须表达的架构多样性——参数共享、GQA~\cite{ainslie2023gqa}、旋转位置
+变体~\cite{su2021roformer, peng2023yarn}、RMSNorm~\cite{zhang2019rmsnorm}、
+门控 FFN~\cite{shazeer2020glu}、MoE~\cite{fedus2022switch}、
+SSM~\cite{daogu2023mamba}——这正是我们的 pattern 与机制设计要处理的表达力
+问题。
+
+\paragraph{交换格式与编译器。}ONNX~\cite{onnx2019}、TVM/Relay~\cite{chen2018tvm}、
+MLIR~\cite{lattner2021mlir}、XLA~\cite{abadi2016tensorflow} 与 \code{jax}
+变换~\cite{jax2018} 描述的是用于编译的\emph{计算图}。\ir{} 站在另一个层面：
+它描述\emph{架构合同}——有哪些张量、怎么共享、持有什么状态、层怎么排期——
+并刻意把图降级留给运行时。这也是它的算子种类是又小又闭合的集合、而非可扩展
+的原因。
+
+\paragraph{运行时与权重格式。}\code{llama.cpp} 与 GGUF~\cite{llamacpp2023}
+为部署标准化元数据与量化；\byone{} 的导出路径面向标准 GGUF、由未修改的上游
+消费，私有扩展只是最后手段。vLLM~\cite{kwon2023vllm} 这类服务系统启发了
+状态合同（缓存复用、前缀共享）与我们对拍所用的 MTP 连接公式。训练系统
+（如 Megatron-LM~\cite{shoeybi2019megatron}）面向规模；\byone{} 的训练面
+只限于加载与梯度接线的单步验证。MTP 作为训练目标在 DeepSeek-V3
+~\cite{deepseekai2024deepseekv3} 中有研究。
+
+\paragraph{量化格式。}MXFP4 与 FP8 的存储合同遵循 OCP microscaling 规范
+~\cite{ocp2023mx}；\byone{} 检查存储合同与清单，不实现量化器。
+
+\paragraph{深度网络的测试与验证。}白盒测试~\cite{pei2017deepxplore} 一系从
+输入攻击模型行为。\byone{} 转而攻击描述层：被测产物是配置、清单与合同，
+判卷人是发布方自己的产物加一个独立运行时。权重共享本身是旧知识
+~\cite{presswolf2017using}；把它从代码约定变成可检查的关系，才是本文的
+贡献。
+
+\section{结论}
+
+\byone{} 试图让大模型的架构有一个机器可检查的居所。我们主张的经验结论是
+窄的，并且我们认为宽度刚刚好：对六个已发布 checkpoint，一份编译到中立 IR、
+以真实权重加载、在成熟运行时上执行的描述，精确复现了参考数值——包括带视觉
+塔与 MTP 的 27B 模型、MXFP4 的 MoE 模型——并且一次真实训练步逐梯度一致。
+更宽的主张是方法论层面的：支持应当按证据状态报告，判卷人应当住在项目外面，
+未实现的组合应当被拒绝，规格应当尽可能由程序生成。同样清楚的是未竟之事：
+其余模型走到产物态、量化路径的运行态验证、音频塔的建模，以及最重要的——
+由外部重算我们自己写下的判据。
+
+\bibliographystyle{plainnat}
+\bibliography{by1-refs}
+
+\end{document}

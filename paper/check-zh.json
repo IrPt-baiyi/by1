@@ -1,0 +1,76 @@
+{
+  "format": "docx",
+  "verdict": "pass",
+  "checks": [
+    {
+      "id": "package",
+      "status": "pass"
+    },
+    {
+      "id": "contains",
+      "status": "pass",
+      "text": "\u8f6c\u6362\u5668\u9047\u5230\u672a\u77e5\u6216\u7f3a\u5931\u5b57\u6bb5\u65f6"
+    },
+    {
+      "id": "contains",
+      "status": "pass",
+      "text": "\u53ef\u63cf\u8ff0\u4e0d\u7b49\u4e8e\u53ef\u8ba1\u7b97"
+    },
+    {
+      "id": "contains",
+      "status": "pass",
+      "text": "596,049,920"
+    },
+    {
+      "id": "contains",
+      "status": "pass",
+      "text": "\u53c2\u8003\u6587\u732e"
+    }
+  ],
+  "summary": {
+    "paragraphs": 258,
+    "tables": [
+      {
+        "rows": 6,
+        "columns": 3
+      },
+      {
+        "rows": 4,
+        "columns": 3
+      },
+      {
+        "rows": 5,
+        "columns": 3
+      },
+      {
+        "rows": 6,
+        "columns": 3
+      },
+      {
+        "rows": 7,
+        "columns": 5
+      },
+      {
+        "rows": 6,
+        "columns": 4
+      }
+    ],
+    "sections": [
+      {
+        "page_twips": {
+          "w": "11906",
+          "h": "16838"
+        },
+        "margins_twips": {
+          "top": "1474",
+          "right": "1474",
+          "bottom": "1474",
+          "left": "1474",
+          "header": "720",
+          "footer": "720",
+          "gutter": "0"
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "backend": "native",
+  "rasterEngine": "libreoffice",
+  "source": "saved",
+  "inputPath": "D:\\Desktop\\game\\LLM\\By1\\paper\\by1-zh.docx",
+  "sourceSha256": "0aa817c8f7ae9a34d8d51509494c57c40111168421e9fab4fc823e8bd61ef801",
+  "dpi": 144,
+  "pageCount": 11,
+  "images": [
+    {
+      "index": 1,
+      "page": 1,
+      "path": "D:\\Desktop\\game\\LLM\\By1\\paper\\preview-zh\\page-0001.png",
+      "width": 1191,
+      "height": 1684,
+      "rectangle": {
+        "x": 0,
+        "y": 0,
+        "width": 793.7333333333333,
+        "height": 1122.5333333333333
+      },
+      "byteLength": 417765
+    },
+    {
+      "index": 2,
+      "page": 2,
+      "path": "D:\\Desktop\\game\\LLM\\By1\\paper\\preview-zh\\page-0002.png",
+      "width": 1191,
+      "height": 1684,
+      "rectangle": {
+        "x": 0,
+        "y": 0,
+        "width": 793.7333333333333,
+        "height": 1122.5333333333333
+      },
+      "byteLength": 329598
+    },
+    {
+      "index": 3,
+      "page": 3,
+      "path": "D:\\Desktop\\game\\LLM\\By1\\paper\\preview-zh\\page-0003.png",
+      "width": 1191,
+      "height": 1684,
+      "rectangle": {
+        "x": 0,
+        "y": 0,
+        "width": 793.7333333333333,
+        "height": 1122.5333333333333
+      },
+      "byteLength": 290018
+    }
+  ],
+  "missingFonts": [
+    "Courier"
+  ]
+}
