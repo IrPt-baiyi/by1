@@ -41,7 +41,7 @@
 | `hello.by1` | `full` | 完整后端的 arch 必须是 qwen3, qwen2, gpt2, gpt_oss, qwen3_5, mamba, granitemoehybrid, falcon_h1 |
 | `attn-fused-shaped.by1` | `full` | 完整后端的 arch 必须是 qwen3, qwen2, gpt2, gpt_oss, qwen3_5, mamba, granitemoehybrid, falcon_h1 |
 | `mla-shaped.by1` | `full` | 完整后端的 arch 必须是 qwen3, qwen2, gpt2, gpt_oss, qwen3_5, mamba, granitemoehybrid, falcon_h1 |
-| `mla-sparse-shaped.by1` | `ggml` | 第 0 层 op1（MLA）：index_heads（SparseMLA/DSA 索引）还没实现 —— 要 top-k/比较算子，这版 ggml 没有；第 1 层 op1（MLA）：index_heads（SparseMLA/DSA 索引）还没实现 —— 要 top-k/比较算子，这版 ggml 没有；第 2 层 op1（MLA）：index_heads（SparseMLA/DSA 索引）还没实现 —— 要 top-k/比较算子，这版 ggml 没有；第 2 层 op1（MLA）：index_kpool=4 ≠ 1（k 池化）还没实现；第 3 层 op1（MLA）：index_heads（Sp |
+| `mla-sparse-shaped.by1` | `ggml` | 第 0 层 op1（MLA）：index_heads（SparseMLA/DSA 索引）还没实现 —— 原语 ggml 有（TOP_K/LIGHTNING_INDEXER），缺的是映射实现；第 1 层 op1（MLA）：index_heads（SparseMLA/DSA 索引）还没实现 —— 原语 ggml 有（TOP_K/LIGHTNING_INDEXER），缺的是映射实现；第 2 层 op1（MLA）：index_heads（SparseMLA/DSA 索引）还没实现 —— 原语 ggml 有（TOP_K/LIGHTNING_INDEXER），缺的是映射实现；第 2 层 op1（MLA）： |
 | `mla-sparse-shaped.by1` | `full` | 完整后端的 arch 必须是 qwen3, qwen2, gpt2, gpt_oss, qwen3_5, mamba, granitemoehybrid, falcon_h1 |
 | `moe-routing-shaped.by1` | `ggml` | 第 0 层 op4（MoE）：算子 MoE 还没有 ggml 映射；第 1 层 op4（MoE）：算子 MoE 还没有 ggml 映射；第 2 层 op4（MoE）：算子 MoE 还没有 ggml 映射 |
 | `moe-routing-shaped.by1` | `full` | 完整后端的 arch 必须是 qwen3, qwen2, gpt2, gpt_oss, qwen3_5, mamba, granitemoehybrid, falcon_h1 |
@@ -68,7 +68,7 @@
 | `qwen3-next-shaped.by1` | `full` | 完整后端的 arch 必须是 qwen3, qwen2, gpt2, gpt_oss, qwen3_5, mamba, granitemoehybrid, falcon_h1 |
 | `ling-tiny.by1` | `ggml` | 第 0 层 op1（KDA）：算子 KDA 还没有 ggml 映射；第 1 层 op1（KDA）：算子 KDA 还没有 ggml 映射；第 1 层 op4（MoE）：算子 MoE 还没有 ggml 映射；第 2 层 op1（KDA）：算子 KDA 还没有 ggml 映射；第 2 层 op4（MoE）：算子 MoE 还没有 ggml 映射；第 3 层 op4（MoE）：算子 MoE 还没有 ggml 映射 |
 | `ling-tiny.by1` | `full` | 完整后端的 arch 必须是 qwen3, qwen2, gpt2, gpt_oss, qwen3_5, mamba, granitemoehybrid, falcon_h1 |
-| `glm-text-tiny.by1` | `ggml` | 第 0 层 op1（KDA）：算子 KDA 还没有 ggml 映射；第 1 层 op1（KDA）：算子 KDA 还没有 ggml 映射；第 2 层 op1（KDA）：算子 KDA 还没有 ggml 映射；第 3 层 op1（MLA）：index_heads（SparseMLA/DSA 索引）还没实现 —— 要 top-k/比较算子，这版 ggml 没有；第 3 层 op4（MoE）：算子 MoE 还没有 ggml 映射 |
+| `glm-text-tiny.by1` | `ggml` | 第 0 层 op1（KDA）：算子 KDA 还没有 ggml 映射；第 1 层 op1（KDA）：算子 KDA 还没有 ggml 映射；第 2 层 op1（KDA）：算子 KDA 还没有 ggml 映射；第 3 层 op1（MLA）：index_heads（SparseMLA/DSA 索引）还没实现 —— 原语 ggml 有（TOP_K/LIGHTNING_INDEXER），缺的是映射实现；第 3 层 op4（MoE）：算子 MoE 还没有 ggml 映射 |
 | `glm-text-tiny.by1` | `full` | 完整后端的 arch 必须是 qwen3, qwen2, gpt2, gpt_oss, qwen3_5, mamba, granitemoehybrid, falcon_h1 |
 | `clef-tiny.by1` | `ggml` | 第 0 层 op1（Linear）：算子 Linear 还没有 ggml 映射；第 1 层 op1（Linear）：算子 Linear 还没有 ggml 映射；第 2 层 op1（Linear）：算子 Linear 还没有 ggml 映射；第 3 层 op1（Attention）：q_gate 还没实现；第 4 层 op1（Linear）：算子 Linear 还没有 ggml 映射；第 5 层 op1（Linear）：算子 Linear 还没有 ggml 映射；第 6 层 op1（Linear）：算子 Linear 还没有 ggml 映射；第 7 层 op1（Attention）：q_gate |
 | `clef-tiny.by1` | `full` | 完整后端不能忽略这些块：['tensors', 'emit'] |
@@ -98,23 +98,23 @@
 > **可补** = 我们的工程活；**卡上游** = 缺 ggml/上游原语；
 > **设计如此** = 边界而非缺口。
 
-### 可补（0 格）
+### 可补（11 格）
+
+- `mla-sparse-shaped.by1` × `ggml` —— ggml 有 `TOP_K`/`ARGSORT`/`LIGHTNING_INDEXER`（2026-10-17 逐个数过 enum ggml_op，101 个）—— 缺的是路由语义到这些原语的映射实现
+- `moe-routing-shaped.by1` × `ggml` —— ggml 有 `TOP_K`/`ARGSORT`/`LIGHTNING_INDEXER`（2026-10-17 逐个数过 enum ggml_op，101 个）—— 缺的是路由语义到这些原语的映射实现
+- `kda-shaped.by1` × `ggml` —— ggml 有 `GATED_DELTA_NET`/`GATED_LINEAR_ATTN`（delta-rule/GDN 族原语）—— 与 by1 的 KDA/Linear 对表是实现工作（可能要折算）
+- `kda-gva-shaped.by1` × `ggml` —— ggml 有 `GATED_DELTA_NET`/`GATED_LINEAR_ATTN`（delta-rule/GDN 族原语）—— 与 by1 的 KDA/Linear 对表是实现工作（可能要折算）
+- `kda-lowrank-shaped.by1` × `ggml` —— ggml 有 `GATED_DELTA_NET`/`GATED_LINEAR_ATTN`（delta-rule/GDN 族原语）—— 与 by1 的 KDA/Linear 对表是实现工作（可能要折算）
+- `mixtral-shaped.by1` × `ggml` —— ggml 有 `TOP_K`/`ARGSORT`/`LIGHTNING_INDEXER`（2026-10-17 逐个数过 enum ggml_op，101 个）—— 缺的是路由语义到这些原语的映射实现
+- `gpt-oss-shaped.by1` × `ggml` —— ggml 有 `TOP_K`/`ARGSORT`/`LIGHTNING_INDEXER`（2026-10-17 逐个数过 enum ggml_op，101 个）—— 缺的是路由语义到这些原语的映射实现
+- `qwen3-next-shaped.by1` × `ggml` —— ggml 有 `TOP_K`/`ARGSORT`/`LIGHTNING_INDEXER`（2026-10-17 逐个数过 enum ggml_op，101 个）—— 缺的是路由语义到这些原语的映射实现
+- `ling-tiny.by1` × `ggml` —— ggml 有 `TOP_K`/`ARGSORT`/`LIGHTNING_INDEXER`（2026-10-17 逐个数过 enum ggml_op，101 个）—— 缺的是路由语义到这些原语的映射实现
+- `glm-text-tiny.by1` × `ggml` —— ggml 有 `TOP_K`/`ARGSORT`/`LIGHTNING_INDEXER`（2026-10-17 逐个数过 enum ggml_op，101 个）—— 缺的是路由语义到这些原语的映射实现
+- `clef-tiny.by1` × `ggml` —— ggml 有 `GATED_DELTA_NET`/`GATED_LINEAR_ATTN`（delta-rule/GDN 族原语）—— 与 by1 的 KDA/Linear 对表是实现工作（可能要折算）
+
+### 卡上游（0 格）
 
 **没有。**
-
-### 卡上游（11 格）
-
-- `mla-sparse-shaped.by1` × `ggml` —— 要 top-k/比较算子 —— 这版 ggml 没有（等上游或自研 kernel）
-- `moe-routing-shaped.by1` × `ggml` —— 缺的是 ggml 原语（MoE 路由要 top-k、KDA 要 delta_rule），不是我们这边的活
-- `kda-shaped.by1` × `ggml` —— 缺的是 ggml 原语（MoE 路由要 top-k、KDA 要 delta_rule），不是我们这边的活
-- `kda-gva-shaped.by1` × `ggml` —— 缺的是 ggml 原语（MoE 路由要 top-k、KDA 要 delta_rule），不是我们这边的活
-- `kda-lowrank-shaped.by1` × `ggml` —— 缺的是 ggml 原语（MoE 路由要 top-k、KDA 要 delta_rule），不是我们这边的活
-- `mixtral-shaped.by1` × `ggml` —— 缺的是 ggml 原语（MoE 路由要 top-k、KDA 要 delta_rule），不是我们这边的活
-- `gpt-oss-shaped.by1` × `ggml` —— 缺的是 ggml 原语（MoE 路由要 top-k、KDA 要 delta_rule），不是我们这边的活
-- `qwen3-next-shaped.by1` × `ggml` —— 缺的是 ggml 原语（MoE 路由要 top-k、KDA 要 delta_rule），不是我们这边的活
-- `ling-tiny.by1` × `ggml` —— 缺的是 ggml 原语（MoE 路由要 top-k、KDA 要 delta_rule），不是我们这边的活
-- `glm-text-tiny.by1` × `ggml` —— 要 top-k/比较算子 —— 这版 ggml 没有（等上游或自研 kernel）
-- `clef-tiny.by1` × `ggml` —— 缺的是 delta_rule 递推原语（Linear = GDN 线性注意力，和 KDA 同一族）—— 这版 ggml 没有
 
 ### 设计如此（24 格）
 

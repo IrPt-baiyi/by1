@@ -127,11 +127,15 @@ def check_support(ir):
                                "（参照实现也没有它，不猜语义）")
             elif k == "MLA":
                 # **语义唯一在 `by1exec.op_mla`**（判卷人 `src/modelcheck/by1mla.py`
-                # 对官方 MLA 验过）。SparseMLA 的 DSA 索引要 top-k/比较算子 ——
-                # **这版 ggml 没有**（和 MoE 路由同一个摸底结论），索引路整体拒绝。
+                # 对官方 MLA 验过）。
+                # ~~SparseMLA 的 DSA 索引要 top-k/比较算子 —— 这版 ggml 没有~~
+                # **上面这句是过时的摸底结论**（2026-10-17 逐个数过
+                # `enum ggml_op`：`TOP_K`/`ARGSORT`/`LIGHTNING_INDEXER` 都在）。
+                # 现状仍是拒绝，但理由变了：**缺的是映射实现，不是上游能力**。
                 if a.get("index_heads"):
                     bad.append(f"{where}：index_heads（SparseMLA/DSA 索引）"
-                               "还没实现 —— 要 top-k/比较算子，这版 ggml 没有")
+                               "还没实现 —— 原语 ggml 有（TOP_K/LIGHTNING_INDEXER），"
+                               "缺的是映射实现")
                 if int(a.get("index_kpool", 1)) != 1 or a.get("index_kpool_tail"):
                     bad.append(f"{where}：index_kpool={a.get('index_kpool')} "
                                "≠ 1（k 池化）还没实现")
@@ -659,12 +663,17 @@ def emit_model_c_graph(g, ir, order, params):
             body.append(f"    int64_t {u}_s = {a[0]}->ne[1];")
             _put(body, prim, node, f"sl_ax(ctx, {u}_b, 1, 0, {u}_s)")
         else:
-            # **要么实现，要么拒绝** —— 这几族不是忘了，是对上游 ggml
-            # 的摸底结论（2026-10-14 对 ggml.h 逐个查过）：
-            #   top_k / gather / one_hot / masked_fill / le —— MoE 路由族：
-            #     **这版 ggml 没有 top_k 和比较算子**，要等上游或自研 kernel
-            #   delta_rule / ssm_scan —— 递推原语：融合 C 核在管
-            #     （by1c 的 KDA / SSM 路径），图路径等递推展开方案
+            # **要么实现，要么拒绝。** 这几族现在仍然拒绝，但 2026-10-17
+            # **修正了一条过时的摸底结论** —— 原来写"这版 ggml 没有 top_k
+            # 和比较算子（2026-10-14 逐个查过）"，而当天逐个数
+            # `enum ggml_op`（101 个）之后：
+            #   top_k / gather  -> `GGML_OP_TOP_K`、`ARGSORT`、`GET_ROWS`
+            #   delta_rule      -> `GGML_OP_GATED_DELTA_NET`、
+            #                      `GATED_LINEAR_ATTN`、`RWKV_WKV7`
+            #   DSA 索引        -> `GGML_OP_LIGHTNING_INDEXER`
+            # **原语都在**；缺的是 by1 语义到它们的映射实现（可能要折算，
+            # 像 SSM 那次）。教训：**摸底结论也要有判据** —— 一句
+            # "我查过"写在注释里没人复核，就烂成了错误的前提。
             raise SystemExit(
                 "  [不支持] 图的 %r 原语还没有 ggml 映射 —— "
                 "**要么实现、要么在 check_support 里拒绝**" % prim)

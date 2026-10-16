@@ -349,19 +349,26 @@ def classify(probe, backend, msg):
             or "完整后端不能忽略这些块" in msg):
         return "设计如此", ("两扇门：`full` 吃官方家族的 arch；`tensors{}` / "
                           "`emit{}` 是 IR 路的契约块 —— 不是缺口")
-    if ("top-k" in msg or "top_k" in msg or "比较算子" in msg):
-        return "卡上游", "要 top-k/比较算子 —— 这版 ggml 没有（等上游或自研 kernel）"
-    if "delta_rule" in msg or ("递推" in msg and backend == "ggml"):
-        return "卡上游", "要 delta_rule 递推原语 —— 这版 ggml 没有"
-    if ("算子 MoE 还没有 ggml 映射" in msg
-            or "算子 KDA 还没有 ggml 映射" in msg):
-        return "卡上游", ("缺的是 ggml 原语（MoE 路由要 top-k、"
-                        "KDA 要 delta_rule），不是我们这边的活")
-    if "算子 Linear 还没有 ggml 映射" in msg:
-        # `Linear` = 线性注意力（qwen3-next/clef 的 GDN 那一族）——
-        # 递推也是 delta-rule 族，和 KDA 同一个缺口。
-        return "卡上游", ("缺的是 delta_rule 递推原语（Linear = GDN 线性注意力，"
-                        "和 KDA 同一族）—— 这版 ggml 没有")
+    if ("top-k" in msg or "top_k" in msg or "比较算子" in msg
+            or "算子 MoE 还没有 ggml 映射" in msg
+            or "index_heads" in msg):
+        # **2026-10-17 实测打脸一条摸底结论**：by1ggml 里写过"这版 ggml
+        # 没有 top_k 和比较算子"（2026-10-14 摸底）—— 逐个数 ggml.h 的
+        # `enum ggml_op`（101 个）之后发现 **`GGML_OP_TOP_K`、
+        # `GGML_OP_ARGSORT`、`GGML_OP_LIGHTNING_INDEXER`（DSA 索引器）
+        # 全在**。缺的是映射实现，不是上游能力 —— 归"可补"。
+        return "可补", ("ggml 有 `TOP_K`/`ARGSORT`/`LIGHTNING_INDEXER`"
+                       "（2026-10-17 逐个数过 enum ggml_op，101 个）—— "
+                       "缺的是路由语义到这些原语的映射实现")
+    if ("delta_rule" in msg or "算子 KDA 还没有 ggml 映射" in msg
+            or "算子 Linear 还没有 ggml 映射" in msg
+            or ("递推" in msg and backend == "ggml")):
+        # 同上：`GGML_OP_GATED_DELTA_NET` 与 `GGML_OP_GATED_LINEAR_ATTN`
+        # 就是 delta-rule / GDN 族的原语（`RWKV_WKV7` 也在）。与 by1 的
+        # KDA/Linear 逐项对表是**实现工作**（可能要折算，像 SSM 那次）。
+        return "可补", ("ggml 有 `GATED_DELTA_NET`/`GATED_LINEAR_ATTN`"
+                       "（delta-rule/GDN 族原语）—— 与 by1 的 KDA/Linear "
+                       "对表是实现工作（可能要折算）")
     if ("yarn" in msg or "llama3" in msg.lower()) and backend == "ggml":
         # **顺序要紧**：这条排在"缺算子"后面 —— 一个格子同时有 yarn 和 MoE
         # 时（gpt-oss 就是），硬阻塞（卡上游）才算数，yarn 是"顺手能补"。
