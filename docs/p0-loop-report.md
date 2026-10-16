@@ -205,14 +205,20 @@ python src/checks/by1gputrain.py --device cpu --dtype bfloat16 \
 - **G2**（外部环境复现无记录）：**外部复现 #1** 已在
   `history/external-repro/2026-10-16-colab-hello.md`（Colab CPU 入门全对，
   并抓到 `head_dim=31` 缺口）。
+- **T15 干净克隆**（by1 侧）：从零克隆 → `.[run]` / `.[full]` 两套装法 →
+  README 入门 + 档 1 + T13 + T14 + 产物线全部跑通（第七节）。
+  **边界**：权重、llama.cpp/gguf-py、`llama-eval-callback` 来自克隆之外
+  —— 上游侧按 upstream-first 纪律另取。
+- **P0 闭环判据齐了**：T12 / T13 / T14 / T16 / T17 / T39 **全部有可重跑证据，
+  且全部能在一台无显卡的机器上跑出来**（本报告所有数字都是这么来的）。
 
 ## 四、没跑的（**不是通过**）
 
 | 项 | 状态 | 原因 / 收口路径 |
 |---|---|---|
 | **S1 tokenizer 组装线** | 仍未实现 | 本次 GGUF 的 tokenizer KV 从上游 ref 整拷 —— 按记档，非缺陷伪装 |
-| **T15 干净克隆** | **✅（by1 侧）** | 从零克隆 → `.[run]`/`.[full]` 两套装法 → README 入门 + 档 1 + T13 + T14 + 产物线全部跑通（第七节）。**边界**：权重、llama.cpp/gguf-py、llama-eval-callback 来自克隆之外（上游侧，按纪律另取） |
 | 其余模型族 | 不外推 | Qwen3-0.6B 一个新档，不代表别的族 |
+| 第三方按**本报告**重跑 | 未验 | 外部复现 #1 跑的是 README 入门（T15 的第一段）；本报告这份五段闭环**还没有第二个环境重跑过** —— 这是 1.0 发布门（T47）要的 |
 
 ## 五、复现（按顺序，全程 CPU）
 
@@ -238,7 +244,7 @@ python src/checks/by1gputrain.py --device cpu --dtype bfloat16 \
 > 数字跟着机器走；本报告的值出自上面这台机器的那次运行。
 > 上游版本与构建参数仍按 [llama.cpp 基线](llama.cpp-baseline.md) 钉。
 
-## 六、判据归属：为什么这里**没有** `config 逐字段行`
+## 六、判据归属：`by1verify` 的 `config 逐字段行` 在这里为什么是 [跳过]
 
 `by1verify … --config --tensors` 对 P0 声明会打出两个 **[跳过]**：
 
