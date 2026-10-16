@@ -29,9 +29,12 @@
 **口径**（2026-10-16 重数）：以 `refs/*.config.json` 为准 = **36** 个；
 其中 **31** 个有 `by1all` 档 3 的 config 逐字段行（即逐个证据）。
 剩下 5 个**只有语料、config 逐字段行还没接**：DeepSeek-V4.1-Flash ·
-LLaDA2.2-flash · Laguna-XS_2 · Step-5-Preview-BF16 · Qwen3-0.6B
-（Qwen3-0.6B 的名字/形状契约已由 `by1shadow --smoke-refs` **311/311** 验过，
-见 [P0 闭环报告](p0-loop-report.md)；它的 config 逐字段行待接）。
+LLaDA2.2-flash · Laguna-XS_2 · Step-5-Preview-BF16 · Qwen3-0.6B。
+其中 **Qwen3-0.6B 是 `complete-*`（Transformers 后端）** —— 它**不该有**
+config 逐字段行（那套映射属于原生 IR 路径）：等价判据是"生成 config → HF 装载
+零 missing/unexpected"与"双 loader 装同一份真权重前向逐位"，两条都已过
+（[P0 闭环报告](p0-loop-report.md) 第五、六节）。Step-5-Preview-BF16 同理但仍是
+`drafts/` 里的反推草稿，**没有判卷人，不算数**。
 
 **加载/运行/产物：未验**（要显存与真权重轮次），除两处例外：
 

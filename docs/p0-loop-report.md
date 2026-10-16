@@ -168,3 +168,25 @@ python src/checks/by1llama.py logits-compare ref.logits by1.logits
 
 > 数字跟着机器走；本报告的值出自上面这台机器的那次运行。
 > 上游版本与构建参数仍按 [llama.cpp 基线](llama.cpp-baseline.md) 钉。
+
+## 六、判据归属：为什么这里**没有** `config 逐字段行`
+
+`by1verify … --config --tensors` 对 P0 声明会打出两个 **[跳过]**：
+
+```
+[1] config 逐字段对拍   [跳过] by1 里没有 transformers.config 的 field 映射
+[3] tensor names+shapes [跳过] by1 里没有 emit[torch.module] 规则
+```
+
+**这不是缺口，是后端分工**：`complete-*` 声明走 **Transformers 后端** ——
+config 由 `by1full.compile_config` 直接生成、权重由 HF 自己的 loader 装载，
+所以既不需要 `emit[torch.module]` 命名规则、也不需要 field 映射表
+（那两样是**原生 IR 路径**的机制）。这两格的等价判据是：
+
+| IR 路径的格子 | Transformers 后端的等价判据 | 本报告里的证据 |
+|---|---|---|
+| config 逐字段 | 生成 config → HF 装载**零 missing/unexpected** | ① / ⑤（311/311，零缺失） |
+| emit + 张量名/形状 | 双 loader 装载同一份真权重 + 前向逐位 | ⑤（max\|Δ\| = 0.000e+00） |
+
+换句话说：**同一件事有两种判据，别把"跳过"读成"没验"** ——
+跳过的是不适用的那套机制。
