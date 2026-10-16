@@ -155,6 +155,30 @@ embedding 得到层输入，numpy 复算到 q3/k3，与 C 打印的 `before` 对
 与 C 的 `y4`/`v_op1_out` 对拍 —— 定位到 GDN 调用还是后续。
 （注意复算脚本的递推那段还有索引没写完：`beta[i]` 不是 `beta[:, i]`。）
 
+### 2026-10-17 早：**定位到最后一步 —— `out_proj` 的乘法**
+
+完整同轴对拍（C 桩 vs numpy 复算，同一套权重与输入）：
+
+| 量 | 一致？ |
+|---|---|
+| x 嵌入 / h rms×w / pj3 投影 / cv 卷积+silu / q3 切分+广播 | ✅ |
+| k3 / v3 / beta / g（GDN 的五个输入） | ✅ |
+| **y4（GDN 输出）** | ✅ **逐位一致** |
+| **y3（RMS × norm.w × silu(z) 之后）** | ✅ **逐位一致** |
+| **out（`out_proj` 之后）** | ❌ **不一致** |
+
+**结论：分歧只剩 `out_proj` 的矩阵乘这一步** —— 三个上游步骤
+（GDN 递推、RMS/norm.w/silu(z)、以及全部投影与卷积）都洗清了。
+权重也验过：`params['layers.0.op1.out_proj']` 与 `w.bin[OFF_L0_OP1_OUT_PROJ:]`
+**逐位一致** ✓ —— 所以不是权重问题，是**乘法的布局/视图**。
+
+嫌疑（按优先级，下一轮一刀）：
+1. `ggml_cont_2d(y3, vd, n)` 对 (dv, nv, n) 的重排 —— `cont_4d` 内部
+   用 `a->nb[1]` 作 nb1，对 3D 输入可能错位；
+2. `wt2` 把 `(out_dim, vd)` 载成 `(vd, out_dim)` 的转置约定，
+   与 `ggml_mul_mat` 的 `a^T @ b` 组合出的行列关系；
+3. my numpy 的 `yn.reshape(8, vd)` 与 C 的 [t][nv][dv] 扁平序在 vd=32 时的对齐。
+
 **收口判据**：`python src/by1ggml.py --from-ir linear-gdn-shaped.by1`
 对拍进 1e-6 以内，且 `clef-tiny` 同绿（那时 `check_support` 的拒绝一起撤）。
 
