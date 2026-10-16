@@ -1,0 +1,86 @@
+# 完整 granite-4.0-h-350m（T27）：**混合栈** —— 同一个主干里既有注意力层、
+# 又有状态空间层。
+#
+# 32 层 = 28 × SSM2 + 4 × Attention，注意力层在 0 基 [10, 13, 17, 27]
+# （实测：张量数在那些层上是 8 个，其余层 12 个）。
+#
+# SSM 那一侧是 **Mamba2 参数化**（`n_heads × d_head = d_inner`；
+# `A_log`/`D`/`dt_bias` 的长度是 **heads** 不是 state）——
+# 与 T26 的 mamba-130m（Mamba1：`(d_inner, state)`）**不是一套**。
+#
+# **四处"改数值"的字段在 hparams 里必须显式写出**（μP 的缩放）：
+# `embedding_multiplier` / `residual_multiplier` / `logits_scaling` /
+# `attention_multiplier`。少一个，张量一个不差、算出来是另一个模型。
+#
+# 判卷人（两侧都实测过）：
+#   · transformers 5.15.1 `GraniteMoeHybridForCausalLM`（**顶层有导出**，
+#     所以不需要 T26 那个 `_tclass` 回退）
+#   · llama.cpp `MODEL_ARCH.GRANITE_HYBRID`（产物腿还没实测，见 docs/t27-plan.md）
+model Granite4Hybrid350M {
+  backend transformers
+  arch granitemoehybrid
+  ctx 32768
+
+  hparams {
+    d_model = 768
+    vocab = 100352
+    n_layer = 32
+    rms_eps = 1e-05
+    max_pos = 32768
+    tie_word_embeddings = true
+    bos_token_id = 100257
+    eos_token_id = 100257
+    pad_token_id = 100256
+    init_method = mup
+    # `shared_intermediate_size = intermediate_size = 2048`：每层的 dense 前馈。
+    # 名字叫 shared_mlp，但张量是**逐层**的（`model.layers.N.shared_mlp.*`）。
+    shared_hidden = 2048
+    embedding_multiplier = 12
+    residual_multiplier = 0.246
+    logits_scaling = 3
+    # = 1 / head_dim(64)
+    attention_multiplier = 0.015625
+  }
+
+  # 注意力层：12 个查询头 / 4 个 KV 头，头维 64（12 × 64 = 768 = d_model）。
+  # **不加位置编码**（`position_embedding_type = nope`）—— 见下面的 position 块。
+  mech Attn : Attention {
+    q = 12
+    kv = 4
+    head_dim = 64
+  }
+
+  # 状态空间层：Mamba2 那一代。
+  mech Mixer : SSM2 {
+    n_heads = 48
+    d_head = 32
+    d_state = 128
+    n_groups = 1
+    chunk_size = 256
+    d_conv = 4
+    conv_bias = true
+    proj_bias = false
+    expand = 2
+    act = silu
+    structural = [n_heads, d_head, d_state, n_groups, d_conv]
+  }
+
+  # 每层都挂同一个形状的 dense 前馈（350m 形态里专家数为 0，不是 MoE）。
+  mech MLP : FFN {
+    hidden = 2048
+    act = silu
+    gate = true
+    bias = false
+  }
+
+  stack main {
+    # 逐层类型表 —— **这就是混合栈**：`+` 把三段拼起来，段内用 `*` 重复。
+    pattern = 10*Mixer + 1*Attn + 2*Mixer + 1*Attn + 3*Mixer + 1*Attn + 9*Mixer + 1*Attn + 4*Mixer
+    main[:] >> MLP
+  }
+
+  position {
+    # 这个模型的注意力层不加位置（NoPE）；SSM 那一侧本来就不转位置。
+    default = none
+  }
+}

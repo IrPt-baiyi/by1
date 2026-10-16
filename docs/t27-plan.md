@@ -97,12 +97,33 @@ M M M M M M M M M M A M M A M M M A M M M M M M M M M A M M M M
 
 ## 五、完成定义
 
-- [ ] complete 声明过 `by1check` + `by1complete`（含 config 逐字段）；
-- [ ] 真权重双 loader：零 missing/unexpected + 前向 max|Δ| ≤ 2e-3（争取 0）；
+- [x] complete 声明过 `by1check` + `by1complete`（含 config 逐字段）；
+- [x] 真权重双 loader：零 missing/unexpected + 前向 max|Δ| **0.000e+00**；
 - [ ] 混合状态的增量 == 全量（KV 与递归两本账在同一个模型里）；
 - [ ] 上游加载 + logits 逐位（若 llama.cpp 的 granite_hybrid 跑不通这个 350m 形态，
       **如实记录为"未验"**，并按 [Step-5 那条纪律](step5-contract-plan.md)停在规格层）；
 - [ ] 报告进 `docs/`，更新[支持矩阵](support-matrix.md)与[精度预算](precision-budget.md)。
+
+### 进度（2026-10-16 当天）
+
+| 步 | 状态 | 证据 |
+|---|---|---|
+| 1 | **✅** | `by1full`：`FAMILIES` 加 `granitemoehybrid` · `MECH_FIELDS` 加 **`SSM2`**（Mamba2 参数化：`n_heads × d_head`，与 T26 的 `SSM` 并存）· 新增 `_compile_moe_hybrid` —— **第一次按逐层类型表建配置**（`layer_types` 由逐层机制映射而来，不再"一个家族一种机制"） |
+| 2 | **✅** | 声明入库（`models/` 下 `complete-granite-4.0-h-350m`，`models.tsv` 加了行，`by1fetch` 抓回 refs）：`by1check` **0 错 0 警** · `compile_config` 出 **40 个字段** · meta 建模 `GraniteMoeHybridForCausalLM` **340.3 M**（与真权重同）· 真权重装载 **370/370 零 missing** · `by1complete` 的 config 逐字段已接上（**PASS**） |
+| 3 | **✅（前向那半）** | `by1shadow --smoke-refs` → **370 个真名 · 双 loader 零 missing/unexpected · 前向 max\|Δ\| = 0.000e+00（逐位）** |
+| 3' | 待做 | 混合状态的"增量 == 全量"：**KV cache 与定长递归状态在同一个模型里**，两本账要分开报 |
+| 4 | 待做 | `--arch granite_hybrid` 产物 + 上游 logits 逐位 |
+| — | 待做 | 把 granite 接进 `by1complete` 的 **GALLERY**（要为它写 `tiny`/`config_of`/`reference` 三条分支）；以及 `SSM2` / 混合栈那几条新规则的**必红反例** |
+
+**这一轮踩过的两个坑（都记进代码注释了）**：
+
+1. **`layer_types` 在 transformers 里被规范化**：发布方 `config.json` 写的是
+   `'mamba'`，而 `to_dict()` 给的是 **`'linear_attention'`** —— 逐字段对拍要比的是
+   规范化后的那一份（差一个字符串就红）。
+2. **`time_step_limit` 故意不声明**：它是 dataclass 的 `tuple[float, float]`，
+   而 `to_dict()` 给 **list** —— 声明进去要同时满足"构造时 tuple、比对时等于 list"，
+   而且 `inf` 在生成的 Python 里不是个名字。实测类默认值就是 checkpoint 里的
+   `(0.0, inf)`，所以不碰它最干净。
 
 ## 六、边界（先说清楚，免得后面含糊）
 

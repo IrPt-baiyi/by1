@@ -70,6 +70,7 @@ Qwen3.5-0.8B	Qwen3.5-0.8B	Qwen/Qwen3.5-0.8B	Qwen3.6 同族最小号：稠密 FFN
 gemma-4-12B	gemma-4-12B	google/gemma-4-12B	gemma4_unified 中间号：**没有视觉 transformer 塔**，只有 9 个 vision_embedder 全局张量
 mamba-130m-hf	mamba-130m-hf	state-spaces/mamba-130m-hf	Mamba1 参数化（≠ 仓库里的 Mamba2）：`d_inner` 逐通道 + 单独 `dt_proj`
 Qwen3.5-9B	Qwen3.5-9B	Qwen/Qwen3.5-9B	Qwen3.5 中间号：与 0.8B 逐张量同名，只差尺寸；Lin v 头 16→32、tie 转 false
+granite-4.0-h-350m	granite-4.0-h-350m	ibm-granite/granite-4.0-h-350m	混合栈（28 × Mamba2 + 4 × Attention @ [10,13,17,27]）：μP 四个缩放 + NoPE
 Qwen3.5-397B-A17B	Qwen3.5-397B-A17B	Qwen/Qwen3.5-397B-A17B	Qwen3.5 家族唯一 MoE 号：主干专家**融合**、MTP 专家**逐专家**（两个机制声明）
 Qwen3-Coder-Next	Qwen3-Coder-Next	Qwen/Qwen3-Coder-Next	`qwen3_next` 扁平 config：**逐专家 MoE** + `in_proj_qkvz`/`in_proj_ba` 两块融合，无 MTP / 无视觉塔
 DeepSeek-R1-Distill-Qwen-7B	DeepSeek-R1-Distill-Qwen-7B	deepseek-ai/DeepSeek-R1-Distill-Qwen-7B	Qwen2 架构（同 1.5B）：**q/k/v 带 bias 而 o_proj 不带**

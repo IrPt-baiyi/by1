@@ -22,6 +22,9 @@ FAMILIES = {
     # **第二个机制族（T26）**：选择性状态空间，没有 KV cache。
     # 注意这两个类在 transformers 里**没导出到顶层** —— 见 `_tclass`。
     "mamba": ("MambaConfig", "MambaForCausalLM"),
+    # **第三个机制族（T27）**：混合栈 —— 同一份声明里 Attention 与 SSM 混排。
+    # 这一类把 config 生成从"一个家族一种机制"推到"逐层类型表"。
+    "granitemoehybrid": ("GraniteMoeHybridConfig", "GraniteMoeHybridForCausalLM"),
 }
 MECH_FIELDS = {
     "Attention": {"q", "kv", "head_dim", "out_dim", "window", "qk_norm", "bias",
@@ -35,6 +38,12 @@ MECH_FIELDS = {
     # 在这里没有对应物 —— 见 models/mamba-130m-hf.by1 的长注释）。
     "SSM": {"expand", "conv_kernel", "ssm_state", "conv_bias", "proj_bias",
             "act", "structural"},
+    # **Mamba2 那一代的参数化（T27）**：宽度按 `n_heads × d_head` 算，
+    # `A_log` / `D` / `dt_bias` 的长度是 **heads** 而不是 state，
+    # 另有 `n_groups`（B/C 的组数）与 `chunk_size`（分块扫描）。
+    # **和 `SSM` 不是一套** —— 两者并存，因为两个模型都在。
+    "SSM2": {"n_heads", "d_head", "d_state", "n_groups", "chunk_size",
+             "d_conv", "conv_bias", "proj_bias", "expand", "act", "structural"},
 }
 
 
@@ -232,6 +241,118 @@ def _compile_mamba(info, hp):
     return 'mamba', cfg, {}
 
 
+def _compile_moe_hybrid(info, hp):
+    """granite 4.0-h 那一类**混合栈**：逐层在 Attention 与 SSM2 之间切换。
+
+    **这是 by1full 第一次不按"一个家族一种机制"建配置。** 形状来自
+    **逐层类型表**（`layer_types`）而不是家族名 —— T26 的 mamba 分支是
+    "主干全是 SSM"的早退路；这一条要求两种机制**同时**出现在一个主干里，
+    而且每层都还挂着一个 dense FFN（这个 350m 形态里 `num_local_experts = 0`，
+    名字叫 `shared_mlp` 但它是逐层的普通前馈）。
+
+    四条"必须显式声明、不许有默认值"的量（μP 的四个缩放）：
+    `embedding_multiplier` / `residual_multiplier` / `logits_scaling` /
+    `attention_multiplier`。**它们改数值、不改形状** —— 少一个，张量一个不差，
+    算出来是另一个模型（T26 在 `A_log → -exp(A_log)` 上踩过同型的坑）。
+    """
+    stacks = _layers(info)
+    main_names = [s for s in stacks if not info.get('stack_aux', {}).get(s)]
+    _fail(len(main_names) == 1, "完整后端需要一个主干栈；辅助栈请声明 aux = true")
+    _fail(not (set(stacks) - set(main_names)), "granite 混合族没有视觉/MTP 分支")
+    main = stacks[main_names[0]]
+    kinds = [mix[0] for mix, _feed in main]
+    _fail(set(kinds) <= {'Attention', 'SSM2'},
+          "混合栈的逐层机制只能是 Attention 或 SSM2")
+    _fail('Attention' in kinds and 'SSM2' in kinds,
+          "两种机制都要出现；只有一种的话，用对应的单机制家族")
+    _fail(all(feed is not None for _mix, feed in main), "混合栈每层都要挂一个 FFN")
+    feed_kinds = {feed[0] for _mix, feed in main}
+    _fail(feed_kinds == {'FFN'}, "这个 350m 形态每层挂的是 dense FFN，不是 MoE/MoE2")
+
+    attn = _uniform([mix[1] for mix, _ in main if mix[0] == 'Attention'], 'Attention')
+    ssm = _uniform([mix[1] for mix, _ in main if mix[0] == 'SSM2'], 'SSM2')
+    feed = _uniform([feed[1] for _mix, feed in main], 'FFN')
+
+    d = _number(hp, 'd_model')
+    vocab = _number(hp, 'vocab')
+    eps = _number(hp, 'rms_eps', 1e-5, False)
+    _fail(0 < eps < 1, 'norm eps 必须在 (0,1) 内')
+    q, kv, hd = (_number(attn, k) for k in ('q', 'kv', 'head_dim'))
+    _fail(q % kv == 0, "q 必须是 kv 的整数倍")
+    _fail(_number(attn, 'out_dim', q * hd) == q * hd, "out_dim 必须等于 q × head_dim")
+    _fail(q * hd == d, "这一族的注意力：q × head_dim 必须等于 d_model（没有独立的投影宽度）")
+    _fail(not _bool(attn.get('bias', attn.get('qkv_bias')))
+          and not _bool(attn.get('out_bias')), "granite 的注意力没有 bias")
+    _fail(attn.get('qk_norm', 'off') == 'off', "这个家族不做 qk_norm")
+    _fail(not _bool(attn.get('q_gate')) and not _bool(attn.get('sink')),
+          "没有 q_gate / sink")
+
+    n_heads = _number(ssm, 'n_heads')
+    dh = _number(ssm, 'd_head')
+    expand = _number(ssm, 'expand')
+    _fail(expand * d == n_heads * dh,
+          "SSM2：expand × d_model 必须等于 n_heads × d_head（实测 2 × 768 = 48 × 32）")
+    _fail(ssm.get('act', 'silu') == 'silu', "SSM2 的激活实测为 silu")
+    _fail(not _bool(ssm.get('proj_bias')), "这个形态的 SSM 投影没有 bias")
+    hidden = _number(feed, 'hidden')
+    _fail(feed.get('act', 'silu') == 'silu', "前馈激活实测为 silu")
+    _fail(_bool(feed.get('gate'), True), "这个前馈是有门控的（SwiGLU）")
+
+    # **μP 四个缩放：没有默认值。** 缺了就报错，而不是悄悄按 1.0 建一个
+    # "形状对、数值错"的模型。
+    for key in ('embedding_multiplier', 'residual_multiplier',
+                'logits_scaling', 'attention_multiplier'):
+        _fail(key in hp, f"混合栈必须显式声明 {key}（改数值的字段，不能有默认值）")
+    cfg = dict(
+        vocab_size=vocab, hidden_size=d, num_hidden_layers=len(main),
+        num_attention_heads=q, num_key_value_heads=kv,
+        layer_types=['full_attention' if k == 'Attention' else 'linear_attention'
+                     for k in kinds],
+        max_position_embeddings=_number(hp, 'max_pos'),
+        rms_norm_eps=eps, hidden_act='silu',
+        attention_bias=False, attention_dropout=0.0,
+        attention_multiplier=_number(hp, 'attention_multiplier', None, False),
+        embedding_multiplier=_number(hp, 'embedding_multiplier', None, False),
+        residual_multiplier=_number(hp, 'residual_multiplier', None, False),
+        logits_scaling=_number(hp, 'logits_scaling', None, False),
+        # 这个 350m 形态是 dense：专家数为 0，走 `shared_mlp`。
+        intermediate_size=hidden,
+        shared_intermediate_size=_number(hp, 'shared_hidden', hidden),
+        num_local_experts=0, num_experts_per_tok=0,
+        output_router_logits=_bool(hp.get('output_router_logits'), False),
+        router_aux_loss_coef=_number(hp, 'router_aux_loss_coef', 0.01, False),
+        # Mamba2 那一套（前缀 `mamba_`）。
+        mamba_n_heads=n_heads, mamba_d_head=dh,
+        mamba_d_state=_number(ssm, 'd_state'),
+        mamba_n_groups=_number(ssm, 'n_groups', 1),
+        mamba_chunk_size=_number(ssm, 'chunk_size', 256),
+        mamba_d_conv=_number(ssm, 'd_conv', 4),
+        mamba_expand=expand,
+        mamba_conv_bias=_bool(ssm.get('conv_bias'), True),
+        mamba_proj_bias=_bool(ssm.get('proj_bias'), False),
+        # **`time_step_limit` 故意不声明**：这个类的默认值实测就是 checkpoint 里的
+        # `(0.0, inf)`。而它是 dataclass 里的 `tuple[float, float]`，`to_dict()`
+        # 又给 **list** —— 声明进去要同时满足"构造时是 tuple、比对时等于 list"，
+        # 而且 `inf` 在生成的 Python 里也不是个名字（`render()` 会吐出一个
+        # NameError 的文件）。默认值相同，就不去碰它。
+        # **NoPE**：这个模型的注意力层不加位置编码，但 rope 参数仍在配置里。
+        position_embedding_type='nope',
+        rope_parameters={'rope_type': 'default',
+                         'rope_theta': _number(hp, 'rope_theta', 10000.0, False)},
+        normalization_function='rmsnorm',
+        init_method=hp.get('init_method', 'mup'),
+        initializer_range=_number(hp, 'initializer_range', 0.1, False),
+        use_cache=True,
+        bos_token_id=int(_json(hp.get('bos_token_id', 0))),
+        eos_token_id=int(_json(hp.get('eos_token_id', 0))),
+        pad_token_id=int(_json(hp.get('pad_token_id', 0))),
+        tie_word_embeddings=_bool(hp['tie_word_embeddings']),
+    )
+    _fail(cfg['mamba_d_state'] > 0 and cfg['mamba_chunk_size'] > 0,
+          "SSM2 的状态维与分块大小必须为正")
+    return 'granitemoehybrid', cfg, {}
+
+
 def compile_config(info):
     """声明 -> (家族, 完整配置, MTP 规格)。不下载配置、不导入 torch。"""
     family = info.get('arch')
@@ -245,10 +366,18 @@ def compile_config(info):
                 'tie_word_embeddings', 'bos_token_id', 'eos_token_id', 'pad_token_id',
                 'attention_dropout', 'resid_dropout', 'embed_dropout', 'initializer_range',
                 # mamba 独有（T26）：都不是从 d_model 推的，各自是独立字段。
-                'd_inner', 'dt_rank'}, 'hparams')
+                'd_inner', 'dt_rank',
+                # 混合栈独有（T27）：μP 的四个缩放 **必须显式声明**（改数值，
+                # 不改形状 —— 少一个就是"算的是另一个模型"），以及上下文长度。
+                'max_pos', 'embedding_multiplier', 'residual_multiplier',
+                'logits_scaling', 'attention_multiplier', 'shared_hidden',
+                'init_method', 'router_aux_loss_coef', 'output_router_logits',
+                'rope_theta'}, 'hparams')
     _fail('tie_word_embeddings' in hp, "完整架构必须显式声明 tie_word_embeddings")
     if family == 'mamba':
         return _compile_mamba(info, hp)
+    if family == 'granitemoehybrid':
+        return _compile_moe_hybrid(info, hp)
     stacks = _layers(info)
     main_names = [s for s in stacks if not info.get('stack_aux', {}).get(s)]
     _fail(len(main_names) == 1, "完整后端需要一个主干栈；视觉/MTP 栈请声明 aux = true")

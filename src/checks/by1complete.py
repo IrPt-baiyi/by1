@@ -33,6 +33,7 @@ GPT2 = 'complete-gpt2.by1'
 GPT_OSS = 'complete-gpt-oss-20b.by1'
 QWEN38 = 'complete-Qwen3.8-27B.by1'
 MAMBA = 'complete-mamba-130m-hf.by1'
+GRANITE = 'complete-granite-4.0-h-350m.by1'
 
 #: 夹具用的 norm eps —— **`tiny()` 与 `config_of()` 必须取同一个值**：
 #: 一个是"声明编译出来的配置"，一个是"独立写出来的参考配置"，
@@ -294,7 +295,12 @@ def main():
                                      # T26：第二架构（SSM）。它的两条 family 用例
                                      # （tiny 的缩尺寸 + config_of 的独立参考配置）
                                      # 与家族无关的那部分见 tiny()/config_of() 的 mamba 分支。
-                                     (MAMBA, 'state-spaces__mamba-130m-hf.config.json')]:
+                                     (MAMBA, 'state-spaces__mamba-130m-hf.config.json'),
+                                     # T27：第三架构（**混合栈**：Attention 与 SSM2 同栈）。
+                                     # **还没进 GALLERY** —— 那张表要写 tiny/config_of/
+                                     # reference 三条分支，下一步做（见 docs/t27-plan.md）。
+                                     # config 逐字段与家族无关，先接上。
+                                     (GRANITE, 'ibm-granite__granite-4.0-h-350m.config.json')]:
             family, cfg, _ = by1full.compile_config(description(name))
             raw = json.loads(pathlib.Path(by1paths.REFS, reference_file).read_text(encoding='utf-8'))
             # **用 by1full._tclass**：mamba 系的两个类没导出到顶层，
@@ -305,7 +311,7 @@ def main():
                     by1full._check_config(cfg[section], getattr(actual, section).to_dict(), section)
             by1full._check_config({k: v for k, v in cfg.items() if k not in ('text_config', 'vision_config')},
                                  actual.to_dict(), 'config')
-    case('Qwen3-0.6B/GPT-2/gpt-oss/Qwen3.8/mamba 官方配置的有效语义', official_configs)
+    case('Qwen3-0.6B/GPT-2/gpt-oss/Qwen3.8/mamba/granite 官方配置的有效语义', official_configs)
 
     for filename in GALLERY:
         def numerical(filename=filename):

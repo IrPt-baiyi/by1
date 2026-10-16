@@ -1,6 +1,6 @@
 # 这个仓库里每个文件是干什么的
 
-> 399 个跟踪文件。按"你会想找什么"分组，不按字母表。
+> 402 个跟踪文件。按"你会想找什么"分组，不按字母表。
 >
 > **这份文档是生成的**：`python src/by1files.py --write`。
 > 文件清单、每组的个数、每个文件的一句话都从目录树和 docstring 来 ——
@@ -327,7 +327,7 @@
 |---|---|
 | `2026-10-16-colab-hello.md` | 外部复现 #1 —— Colab CPU quickstart（John6666） |
 
-## `models/` —— 62 个
+## `models/` —— 63 个
 
 命名规矩：**文件名 = 长名 = HF 的模型名（去掉 owner）**，
 `model` 声明 = 短名（手写的）。两列的对照见 `models.tsv`。
@@ -365,6 +365,7 @@
 | `complete-Qwen3.8-27B.by1` | 完整 Qwen3.8-27B：文本、视觉、MTP 三个分支，包含共享参数关系 |
 | `complete-gpt-oss-20b.by1` | 完整 gpt-oss-20b：MoE、路由/专家 bias、sink、交替滑窗、YaRN |
 | `complete-gpt2.by1` | 完整 GPT-2：共享词嵌入/输出头、学习位置、LayerNorm、dropout |
+| `complete-granite-4.0-h-350m.by1` | 完整 granite-4.0-h-350m（T27）：**混合栈** —— 同一个主干里既有注意力层、 |
 | `complete-mamba-130m-hf.by1` | 完整 mamba-130m-hf（T26 第二架构毕业）：**没有 Attention、没有 KV cache** |
 | `embeddinggemma-2.by1` | 真实模型 · HF id `google/embeddinggemma-2` |
 | `gate-probe.by1` | 取值门的**反例**：故意写一个 codegen 没实现的取值 |
@@ -459,16 +460,16 @@
 | `manifest.json` | "schemaVersion": 1, |
 | `page-0001.png` | 论文页面预览图（paper/preview-*/ 里的 PNG 快照，按目录分语言和版本） |
 
-## `refs/` —— 88 个
+## `refs/` —— 90 个
 
 从 HuggingFace / ModelScope 抓的**模型元数据**（配置 + 张量名/形状清单），
 **不是权重**。版权属各发布方，各自适用各自的许可证。
 
 | 种类 | 个数 | 是什么 |
 |---|---|---|
-| `*.config.json` | 36 | |
+| `*.config.json` | 37 | |
 | `*.gguf.json` | 3 | |
-| `*.tensors.json` | 35 | |
+| `*.tensors.json` | 36 | |
 | `ISTA-DASLab__Qwen3.8-27B-GSQ-RCO-GGUF.IQ2_S-mtp.alloc.txt` | 14 | |
 
 
