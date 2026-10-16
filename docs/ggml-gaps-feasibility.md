@@ -300,6 +300,28 @@ rms t=1: -0.00084566 -0.01072154  0.00252854 -0.02554772 -0.00067595 -0.02504279
 若 y3_expected ≠ C 的 y3 ⇒ **ggml 的 `rms_norm` 语义与公式不符**（那是真 bug）；
 若相等 ⇒ 我的 rms 读数有假象、而 y3 本身没问题（那时问题在别处）。
 
+### 2026-10-17 早（第十四刀）：**两个微测定案** —— rms 语义对、复算对，错在 `y3` 的构造
+
+**手算**（用上轮打出来的 C 侧 y4/z 整行 + `params['norm.w']`）：
+
+```
+rms 标量      : 308.694629
+rms_expected :  0.06560996 -0.01902794  0.13432538 …
+y3_expected  : -5.312e-05 -5.592e-05  1.739e-05   ← 与 numpy 侧完全一致 ✓
+y3 C 侧      :  6.800e-07 -3.151e-05  3.300e-07   ← 不同 ✗
+```
+
+**微测 `build/dbg-rms.c`**：`ggml_rms_norm` 对已知向量的输出 =
+`x/√(mean(x²)+ε)` **逐位**（expect == ggml ✓）—— **rms 语义洗清**。
+
+⇒ **结论：`ggml_rms_norm` 是对的、numpy 复算是对的、公式是对的，
+错在模型里 `y3` 那一行的构造**（`mul(mul(rms, norm.w_view), silu(z_view))`
+的某个环节：乘法的操作数顺序/广播、`norm.w` 的 `reshape_3d(w, dv, 1, 1)`、
+或 `z` 的 `reshape_3d(z0, dv, nv, n)`）。
+
+**下一轮一刀**：把 y3 那一行**拆成三个节点**（rms / ×norm.w / ×silu(z)），
+逐个打印与手算对 —— 三步里必有一步现形。
+
 **收口判据**：`python src/by1ggml.py --from-ir linear-gdn-shaped.by1`
 对拍进 1e-6 以内，且 `clef-tiny` 同绿（那时 `check_support` 的拒绝一起撤）。
 
