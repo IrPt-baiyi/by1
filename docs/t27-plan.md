@@ -99,7 +99,7 @@ M M M M M M M M M M A M M A M M M A M M M M M M M M M A M M M M
 
 - [x] complete 声明过 `by1check` + `by1complete`（含 config 逐字段）；
 - [x] 真权重双 loader：零 missing/unexpected + 前向 max|Δ| **0.000e+00**；
-- [ ] 混合状态的增量 == 全量（KV 与递归两本账在同一个模型里）；
+- [x] 混合状态的增量 == 全量（KV 与递归两本账在同一个模型里，**分开报**：9.918e-05）；
 - [ ] 上游加载 + logits 逐位（若 llama.cpp 的 granite_hybrid 跑不通这个 350m 形态，
       **如实记录为"未验"**，并按 [Step-5 那条纪律](step5-contract-plan.md)停在规格层）；
 - [ ] 报告进 `docs/`，更新[支持矩阵](support-matrix.md)与[精度预算](precision-budget.md)。
@@ -111,7 +111,7 @@ M M M M M M M M M M A M M A M M M A M M M M M M M M M A M M M M
 | 1 | **✅** | `by1full`：`FAMILIES` 加 `granitemoehybrid` · `MECH_FIELDS` 加 **`SSM2`**（Mamba2 参数化：`n_heads × d_head`，与 T26 的 `SSM` 并存）· 新增 `_compile_moe_hybrid` —— **第一次按逐层类型表建配置**（`layer_types` 由逐层机制映射而来，不再"一个家族一种机制"） |
 | 2 | **✅** | 声明入库（`models/` 下 `complete-granite-4.0-h-350m`，`models.tsv` 加了行，`by1fetch` 抓回 refs）：`by1check` **0 错 0 警** · `compile_config` 出 **40 个字段** · meta 建模 `GraniteMoeHybridForCausalLM` **340.3 M**（与真权重同）· 真权重装载 **370/370 零 missing** · `by1complete` 的 config 逐字段已接上（**PASS**） |
 | 3 | **✅（前向那半）** | `by1shadow --smoke-refs` → **370 个真名 · 双 loader 零 missing/unexpected · 前向 max\|Δ\| = 0.000e+00（逐位）** |
-| 3' | 待做 | 混合状态的"增量 == 全量"：**KV cache 与定长递归状态在同一个模型里**，两本账要分开报 |
+| 3' | **✅** | `by1shadow --smoke-state-hybrid`（新加的第三条判据）：**一个 `DynamicCache` 里 28 个递归层 + 4 个注意力层** · 官方 **9.918e-05** · by1 **9.918e-05**（判据 2e-3，余量约 20×）· 逐位置曲线 **不随序列增长**（1e-5 ~ 1e-4 平着走）—— 比 T26 的纯递归（1.497e-03）还小 15 倍，所以**别把纯递归的余量外推给别的递归形态**（已登记进[精度预算](precision-budget.md)） |
 | 4 | 待做 | `--arch granite_hybrid` 产物 + 上游 logits 逐位 |
 | — | 待做 | 把 granite 接进 `by1complete` 的 **GALLERY**（要为它写 `tiny`/`config_of`/`reference` 三条分支）；以及 `SSM2` / 混合栈那几条新规则的**必红反例** |
 

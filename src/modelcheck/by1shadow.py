@@ -945,6 +945,87 @@ def smoke_state_ssm(by1_name='complete-mamba-130m-hf.by1', weights_dir=None,
     return {'official_max_abs': d_ref, 'by1_max_abs': d_by1, 'length': length}
 
 
+def smoke_state_hybrid(by1_name='complete-granite-4.0-h-350m.by1', weights_dir=None,
+                       length=16, seed=20261016):
+    """T27：**混合状态**的"增量 == 全量" —— 一个模型里两本账。
+
+    这一族的 cache 是**混的**：实测 `DynamicCache.layers` 里同时有
+      · `LinearAttentionLayer`（SSM2 层：卷积状态 + 递归状态，**定长**）
+      · `DynamicLayer`（注意力层：KV，**随序列增长**）
+
+    所以判据虽然还是同一把尺（2e-3），**余量不能照抄任何一边**：
+    T14（纯 KV）是 2.289e-05、T26（纯递归）是 1.497e-03 —— 相差 65 倍。
+    这里除了总数，还要把**逐位置的曲线**打出来：误差沿序列怎么长，
+    是判断"差来自哪本账"的直接证据（递归那本会随步数累积）。
+    """
+    import gc
+    import torch
+    import transformers as T
+    import by1check
+    import by1full
+
+    if not weights_dir:
+        raise RuntimeError('--smoke-state-hybrid 需要 --weights-dir（真 checkpoint 目录）')
+    report, info = by1check.check(by1paths.model(by1_name))
+    if report.count(by1check.E):
+        raise RuntimeError('%s 没过检查：%s' % (by1_name, report.items[:3]))
+    family, declared, mtp = by1full.compile_config(info)
+
+    generator = torch.Generator().manual_seed(seed)
+    ids = torch.randint(0, 10000, (1, length), generator=generator)
+
+    def run(model):
+        with torch.no_grad():
+            full = model(input_ids=ids, use_cache=False).logits
+            cache, parts, kinds = None, [], None
+            for t in range(length):
+                step = model(input_ids=ids[:, t:t + 1], past_key_values=cache,
+                             use_cache=True)
+                cache = step.past_key_values
+                parts.append(step.logits)
+                if kinds is None and cache is not None:
+                    kinds = [type(layer).__name__ for layer in list(cache.layers)]
+        inc = torch.cat(parts, dim=1)
+        if inc.shape != full.shape:
+            raise RuntimeError('增量与全量的形状不一致：%s vs %s'
+                               % (tuple(inc.shape), tuple(full.shape)))
+        diff = (inc.float() - full.float()).abs()
+        per_pos = [diff[0, p].max().item() for p in range(length)][::max(1, length // 4)]
+        cache_name = type(cache).__name__ if cache is not None else '?'
+        return diff.max().item(), per_pos, kinds, cache_name
+
+    kwargs = {'dtype': torch.float32, 'local_files_only': True}
+    out = str(weights_dir)
+    print('  真权重 %s：混合状态 增量 vs 全量（长 %d）' % (out, length))
+    reference = T.AutoModelForCausalLM.from_pretrained(out, **kwargs).eval()
+    d_ref, curve_ref, kinds, cache_name = run(reference)
+    del reference
+    gc.collect()
+    candidate = by1full.load_model(family, declared, mtp, out, **kwargs).eval()
+    d_by1, curve_by1, _, _ = run(candidate)
+    del candidate
+    gc.collect()
+
+    mixed = kinds or []
+    n_linear = sum(1 for k in mixed if 'LinearAttention' in k)
+    n_dyn = sum(1 for k in mixed if k == 'DynamicLayer')
+    print('  cache 里的两本账：递归层 %d 个 · 注意力层 %d 个（`%s`）'
+          % (n_linear, n_dyn, cache_name))
+    print('  官方 loader：max|Δ| = %.3e  逐位置 %s'
+          % (d_ref, ' '.join('%.1e' % x for x in curve_ref)))
+    print('  by1 模型   ：max|Δ| = %.3e  逐位置 %s'
+          % (d_by1, ' '.join('%.1e' % x for x in curve_by1)))
+    print('  参照那两本账：纯 KV 2.289e-05 · 纯递归 1.497e-03 —— 混合栈的余量'
+          '**不能照抄**任何一边')
+    if not (d_ref <= 2e-3 and d_by1 <= 2e-3):
+        raise RuntimeError('混合状态：增量与全量对不上（判据 2e-3）：官方 %.3e · by1 %.3e'
+                           % (d_ref, d_by1))
+    print('  [PASS] 混合状态：增量 == 全量（两个 loader 都在 2e-3 内）')
+    return {'official_max_abs': d_ref, 'by1_max_abs': d_by1,
+            'official_per_pos': curve_ref, 'by1_per_pos': curve_by1,
+            'linear_layers': n_linear, 'attention_layers': n_dyn}
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--by1', help='.by1 完整架构声明（取家族与 mtp 规格）')
@@ -974,11 +1055,21 @@ def main(argv=None):
     parser.add_argument('--smoke-state-ssm', action='store_true',
                         help='T26：**递归状态**（SSM/mamba）的「增量 vs 全量」对照 '
                              '—— 走 `cache_params`，判据同一把尺（要 --weights-dir）')
+    parser.add_argument('--smoke-state-hybrid', action='store_true',
+                        help='T27：**混合状态**（注意力 KV + SSM 递归在同一个模型里）的'
+                             '「增量 vs 全量」对照 —— 走 `past_key_values`（要 --weights-dir）')
     parser.add_argument('--fetch-config', metavar='REPO',
                         help='冒烟前只拉该仓库的 config.json（几 KB）')
     args = parser.parse_args(argv)
     if args.refs_check is not None:
         return refs_check(args.refs_check)
+    if args.smoke_state_hybrid:
+        try:
+            smoke_state_hybrid(by1_name=args.by1 or 'complete-granite-4.0-h-350m.by1',
+                               weights_dir=args.weights_dir)
+        except Exception as exc:
+            return by1skip.broken('T27 混合状态对拍失败：%s' % exc)
+        return 0
     if args.smoke_state_ssm:
         try:
             smoke_state_ssm(by1_name=args.by1 or 'complete-mamba-130m-hf.by1',

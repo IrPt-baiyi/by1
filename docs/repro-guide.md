@@ -88,6 +88,7 @@ python3 -m venv --without-pip .venv && python3 -m pip --python .venv install -e 
 |---|---|---|
 | Qwen3-0.6B | 1.40 GB | `Qwen/Qwen3-0.6B` |
 | mamba-130m-hf | 0.48 GB | `state-spaces/mamba-130m-hf` |
+| granite-4.0-h-350m（**混合栈**） | 0.64 GB | `ibm-granite/granite-4.0-h-350m` |
 
 ```bash
 # A) 双 loader 前向逐位（Qwen3-0.6B）
@@ -105,9 +106,17 @@ python3 -m venv --without-pip .venv && python3 -m pip --python .venv install -e 
 # D) 增量 == 全量（**递归状态**，不是 KV cache）
 .venv/bin/python src/modelcheck/by1shadow.py --smoke-state-ssm \
     --by1 complete-mamba-130m-hf.by1 --weights-dir /path/to/mamba-130m-hf
+
+# E) 双 loader 前向逐位（granite 混合栈：28 个 Mamba2 层 + 4 个注意力层）
+.venv/bin/python src/modelcheck/by1shadow.py --smoke-refs \
+    --by1 complete-granite-4.0-h-350m.by1 --weights-dir /path/to/granite-4.0-h-350m
+
+# F) 增量 == 全量（**混合状态**：两本账在同一个 cache 里）
+.venv/bin/python src/modelcheck/by1shadow.py --smoke-state-hybrid \
+    --by1 complete-granite-4.0-h-350m.by1 --weights-dir /path/to/granite-4.0-h-350m
 ```
 
-**四条各自的实测值**（2026-10-16 重跑）：
+**六条各自的实测值**（2026-10-16 重跑）：
 
 | | 你应该看到 |
 |---|---|
@@ -115,11 +124,15 @@ python3 -m venv --without-pip .venv && python3 -m pip --python .venv install -e 
 | B | `官方 loader：max\|Δ\| = 2.289e-05` · `by1 模型：max\|Δ\| = 2.289e-05` · `[PASS] 增量 == 全量` |
 | C | `真权重 …：242 个真名` · `前向 max\|Δ\| = 0.000e+00` |
 | D | `官方 loader：max\|Δ\| = 1.497e-03` · `by1 模型：max\|Δ\| = 1.497e-03` · `[PASS] 递归状态：增量 == 全量` |
+| E | `真权重 …：370 个真名` · `前向 max\|Δ\| = 0.000e+00` |
+| F | `cache 里的两本账：递归层 28 个 · 注意力层 4 个（DynamicCache）` · `官方 loader：max\|Δ\| = 9.918e-05` · `by1 模型：max\|Δ\| = 9.918e-05` · `[PASS] 混合状态：增量 == 全量` |
 
 **D 的那个数字要单独说**：判据是 2e-3，而实测 **1.497e-03 —— 余量只有 1.3 倍**，
 是[精度预算表](precision-budget.md)里最薄的一格。原因不是接线错：递归状态每步乘 A
 再累加，16 步下来 fp32 的归约序差异会被放大；**两个 loader 给出同一个数**，
 说明差来自"增量 vs 全量"两条路径本身。B 的余量是 87 倍，两者不可类比。
+**F 也不能拿 D 的余量类推**：混合栈实测 9.918e-05（余量 20 倍），
+比纯递归好 15 倍——"递归就一定更差"不是规律。
 
 ## 六、第 ⑤ 步（可选）：产物线 —— 让上游加载 by1 出的文件
 
