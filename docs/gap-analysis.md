@@ -28,7 +28,7 @@
 | S2 | **已销 2026-10-16** · build-gguf 族覆盖原只 qwen2 档实证（TensorNameMap 全族但判据只跑过一档） | 根因 = 判据没跑过第二族，且 `build_gguf` 的 arch 被硬编成 LLAMA。Qwen3-0.6B（qwen3）走完 `build-gguf --arch qwen3 --n-blocks 28`：311 张量全映射、上游 llama-eval-callback **logits 逐位相同（106949 值）**、llama-cli 生成同文 —— 见 docs/p0-loop-report.md | **第二族已实证**；其余族仍不外推（docs/convert-diff.md #8 已更新） |
 | S3 | 量化链只接 **Q8_0**；FP8/MXFP4 = 路线图阶段 C/D | by1quant/by1llama | Q3 未开 |
 | S4 | **换宽度**类只进 gaps 不进 errs（宽度推导换宽没验，49 份原宽回归绿） | by1fast ③ 报文 | 换宽夹具进 gaps 是设计决定 |
-| S5 | **by1langspec 未进门禁表**（独立判卷人，绿例/红例/selftest 基线 9 错都验过） | src/checks/by1langspec.py | 并入 by1all 判卷人段 |
+| S5 | **已销 2026-10-17** · by1langspec 未进门禁表 | 它是独立判卷人（绿例/红例/selftest 基线 9 错都验过），但不在 by1all 的判卷人表 —— 和 by1sample 那次同一类欠账 | **已并入 by1all 档 2**（纯标准库）：档 2 = 42 项 0 失败 · 档 3 = **104 项** 0 失败。**不入表的检查会烂** —— 这条纪律现在销了三笔账（by1sample / by1rules / by1langspec） |
 | S6 | 命名生成率基线 **41%**（refs→emit 反推），只升不降 | 1.0.0-rc0 HISTORY | 长线指标 |
 | S7 | 产品边界**明确不做**：通用运行时/自研 CUDA 量化器/改 GGUF 语义/覆盖计数 | docs/product-definition.md | 是边界不是缺口 —— 列此防误记 |
 | S8 | **Step-5 合同缺判卷人**：上游 transformers（5.15.1 / 5.20.0）与新检出 llama.cpp **都没有 step5 实现**（5.20 有 `Step3p7*`、llama.cpp 有 `step35`） | docs/step5-contract-plan.md ③（实测表） | **停在规格级**（调度有判卷人：config 的 `layer_types`；契约没有）—— watch：上游合入 `Step5*` / `step5` 架构 / 官方 modeling 公开，任一出现就重启 |
