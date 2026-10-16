@@ -12,7 +12,7 @@
 > **没有独立判据的标「实验」，不计入稳定覆盖数。** 影子（随机值）对拍
 > 是**接线证据**，记在备注里，**不升"运行"态** —— 混了就是夸大。
 
-## A. 完整模型（GPU 对拍对象，6 个）
+## A. 完整模型（**真实权重对拍过**：6 个走 GPU 轮次 + mamba-130m 纯 CPU）
 
 | 模型 | 规格检查 | 加载 | 运行 | 产物 | 证据 / 备注 |
 |---|---|---|---|---|---|
@@ -23,6 +23,7 @@
 | gpt-oss-20b（MXFP4） | ✅ | ✅ | ✅ | — 未验 | [原生 MXFP4](gpu-results/gpu-benchmark-gptoss-final.json)；量化存储审计过 |
 | Qwen3.8-27B（BF16，含视觉+MTP） | ✅ | ✅ | ✅ | 🟡 实验 | [含图像与 MTP](gpu-results/gpu-benchmark-qwen38-final.json)；产物 = Qwen3.8 IQ3_S GGUF 基线配方**待 GPU 日跑** |
 | Qwen3.8-27B-FP8 | ✅ | 🟡 装载路径已接通 | — 未验 | — 未验 | Q2 **GPU 实测前不标完成**（[量化边界](quantization.md)）；存储审计 407 对 |
+| **mamba-130m-hf**（**第二架构**：SSM，无 KV cache） | ✅ | ✅ | ✅ | ✅ [T26 记录](t26-plan.md) | 真权重双 loader 前向**逐位（max\|Δ\|=0，纯 CPU）**；递归状态增量 == 全量 **1.497e-03**（判据 2e-3，余量 1.3× 已登记进[精度预算](precision-budget.md)）；**产物**：by1 出 GGUF 被未修改的上游 llama.cpp 加载，logits **逐位（30604 值）** |
 
 ## B. refs 语料（**36** 个 config / **31** 个有逐字段行）
 
@@ -63,7 +64,8 @@ Qwen3.8-Flash-Next · GLM-4.7-Flash · embeddinggemma-2。
 
 | 功能 | 状态 | 证据 / 边界 |
 |---|---|---|
-| 文本前向/生成 | 完整模型 6 个 ✅；refs 36 个有语料 / 31 个 config 逐字段 ✅，运行未验 | 见 A/B |
+| 文本前向/生成 | 完整模型 **7** 个 ✅（含第二架构 mamba-130m，**纯 CPU**）；refs 36 个有语料 / 31 个 config 逐字段 ✅，运行未验 | 见 A/B |
+| **状态契约** | **两种都验过**：KV cache ✅（Qwen3-0.6B 增量 == 全量 **2.289e-05**）· **递归状态 ✅**（mamba 增量 == 全量 **1.497e-03**，判据 2e-3，**余量 1.3× 已登记**） | `by1shadow --smoke-state` / `--smoke-state-ssm`；[精度预算](precision-budget.md) |
 | 视觉塔 | **接线级** ✅（qwen3_5 影子含视觉塔，逐位 0）；真权重值 ✅（Qwen3.8 图像对比）；其余塔未验 | [多模态缺口](INVENTORY.txt)【F】 |
 | MTP | ✅（Qwen3.8 含 MTP 对拍 + mtp.* 命名对 refs 15/15） | 六模型对比含图像与 MTP |
 | 音频塔 | 未建模 | INVENTORY【F】：完全没建模 |

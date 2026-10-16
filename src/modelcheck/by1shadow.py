@@ -884,6 +884,67 @@ def smoke_state(by1_name='complete-Qwen3-0.6B.by1', weights_dir=None,
             'length': length, 'prefill': prefill}
 
 
+def smoke_state_ssm(by1_name='complete-mamba-130m-hf.by1', weights_dir=None,
+                    length=16, seed=20261016):
+    """T26：**递归状态**的"增量 == 全量"（判据同 P0 那把尺，账不是同一本）。
+
+    mamba 没有 KV cache —— 状态是**定长递归状态**（`cache_params`，实测是
+    `DynamicCache`），每步更新、不随序列增长。所以：
+      · KV 版走 `past_key_values`，这里走 `cache_params`；
+      · 但判据一个字不改：同一模型两条路的 logits 一致（2e-3）。
+    两个 loader 各跑两遍：全量（`use_cache=False`） vs 逐步（带 cache）。
+    """
+    import gc
+    import torch
+    import transformers as T
+    import by1check
+    import by1full
+
+    if not weights_dir:
+        raise RuntimeError('--smoke-state-ssm 需要 --weights-dir（真 checkpoint 目录）')
+    report, info = by1check.check(by1paths.model(by1_name))
+    if report.count(by1check.E):
+        raise RuntimeError('%s 没过检查：%s' % (by1_name, report.items[:3]))
+    family, declared, mtp = by1full.compile_config(info)
+
+    generator = torch.Generator().manual_seed(seed)
+    ids = torch.randint(0, 10000, (1, length), generator=generator)
+
+    def run(model):
+        with torch.no_grad():
+            full = model(input_ids=ids, use_cache=False).logits
+            cache, parts = None, []
+            for t in range(length):
+                step = model(input_ids=ids[:, t:t + 1], use_cache=True,
+                             cache_params=cache)
+                cache = step.cache_params
+                parts.append(step.logits)
+        inc = torch.cat(parts, dim=1)
+        if inc.shape != full.shape:
+            raise RuntimeError('增量与全量的形状不一致：%s vs %s'
+                               % (tuple(inc.shape), tuple(full.shape)))
+        return (inc.float() - full.float()).abs().max().item()
+
+    kwargs = {'dtype': torch.float32, 'local_files_only': True}
+    out = str(weights_dir)
+    print('  真权重 %s：递归状态 增量 vs 全量（长 %d）' % (out, length))
+    reference = T.AutoModelForCausalLM.from_pretrained(out, **kwargs).eval()
+    d_ref = run(reference)
+    del reference
+    gc.collect()
+    candidate = by1full.load_model(family, declared, mtp, out, **kwargs).eval()
+    d_by1 = run(candidate)
+    del candidate
+    gc.collect()
+    print('  官方 loader：max|Δ| = %.3e' % d_ref)
+    print('  by1 模型   ：max|Δ| = %.3e' % d_by1)
+    if not (d_ref <= 2e-3 and d_by1 <= 2e-3):
+        raise RuntimeError('递归状态：增量与全量对不上（判据 2e-3）：官方 %.3e · by1 %.3e'
+                           % (d_ref, d_by1))
+    print('  [PASS] 递归状态：增量 == 全量（两个 loader 都在 2e-3 内）')
+    return {'official_max_abs': d_ref, 'by1_max_abs': d_by1, 'length': length}
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--by1', help='.by1 完整架构声明（取家族与 mtp 规格）')
@@ -910,11 +971,21 @@ def main(argv=None):
     parser.add_argument('--smoke-state', action='store_true',
                         help='T14：真权重下「增量（cache）vs 全量重算」逐位对照 '
                              '（要 --weights-dir）')
+    parser.add_argument('--smoke-state-ssm', action='store_true',
+                        help='T26：**递归状态**（SSM/mamba）的「增量 vs 全量」对照 '
+                             '—— 走 `cache_params`，判据同一把尺（要 --weights-dir）')
     parser.add_argument('--fetch-config', metavar='REPO',
                         help='冒烟前只拉该仓库的 config.json（几 KB）')
     args = parser.parse_args(argv)
     if args.refs_check is not None:
         return refs_check(args.refs_check)
+    if args.smoke_state_ssm:
+        try:
+            smoke_state_ssm(by1_name=args.by1 or 'complete-mamba-130m-hf.by1',
+                            weights_dir=args.weights_dir)
+        except Exception as exc:
+            return by1skip.broken('T26 递归状态对拍失败：%s' % exc)
+        return 0
     if args.smoke_state:
         try:
             smoke_state(by1_name=args.by1 or 'complete-Qwen3-0.6B.by1',
