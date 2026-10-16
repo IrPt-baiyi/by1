@@ -55,6 +55,19 @@ PROBES = [
     ('raw-escape.by1', 'Raw（逃生舱）'),
     ('complete-granite-4.0-h-350m.by1', 'SSM2 + Attention（逐层混排）'),
     ('complete-Falcon-H1-0.5B-Instruct.by1', 'Parallel（层内并行：SSM2 + Attention）'),
+    # ── 第二批（2026-10-17 扩探针）：SHAPED 剩下的九个 ──────────────
+    # 把"缺口清单"做细的前提是**量得够全** —— 有几个机制（Linear 线性注意力、
+    # LLaMA3 的 RoPE 缩放、learned 位置）原来只在三后端对拍里出现过，
+    # 后端矩阵从来没量过它们。
+    ('llama-shaped.by1', 'Attention + FFN（RoPE）'),
+    ('llama3-shaped.by1', 'Attention + FFN（LLaMA3 RoPE 缩放）'),
+    ('mixtral-shaped.by1', 'Attention + MoE'),
+    ('gpt-oss-shaped.by1', 'Attention + MoE（sigmoid 路由）'),
+    ('qwen3-next-shaped.by1', 'Linear + MoE + Attention（线性注意力）'),
+    ('ling-tiny.by1', 'KDA + MLA + MoE（Ling 结构的机械缩小版）'),
+    ('glm-text-tiny.by1', 'KDA（低秩门）+ SparseMLA + MoE'),
+    ('clef-tiny.by1', 'Linear + FFN + Attention（视觉塔布局）'),
+    ('gpt2-tiny.by1', 'Attention + FFN（learned 位置）'),
 ]
 
 BACKEND_NAMES = ('codegen', 'c', 'ggml', 'exec', 'full')
@@ -332,9 +345,16 @@ BUCKETS = ("可补", "卡上游", "设计如此")
 def classify(probe, backend, msg):
     """给一个拒绝格归档。返回 (档, 一句理由)；归不了返回 (None, '')。"""
     if ("完整后端的 arch 必须是" in msg
-            or "完整模型使用 transformers 后端" in msg):
-        return "设计如此", ("两扇门：`full` 吃官方家族的 arch，"
-                          "串行 IR 后端吃机制组合 —— 不是缺口")
+            or "完整模型使用 transformers 后端" in msg
+            or "完整后端不能忽略这些块" in msg):
+        return "设计如此", ("两扇门：`full` 吃官方家族的 arch；`tensors{}` / "
+                          "`emit{}` 是 IR 路的契约块 —— 不是缺口")
+    if ("yarn" in msg or "llama3" in msg.lower()) and backend == "ggml":
+        # **真·可补**：LLaMA3 的 RoPE 缩放是 yarn 风格（beta_fast/beta_slow/
+        # factor），而 `ggml_rope_ext` 的参数位就摆在那里 —— 缺的是我们
+        # 把 low/high_freq_factor 折成那几个参数的实现，不是上游能力。
+        return "可补", ("LLaMA3 的 RoPE 缩放（yarn 风格 beta_fast/beta_slow/factor）"
+                       "—— `ggml_rope_ext` 的参数位就有，缺的是折算实现")
     if ("top-k" in msg or "top_k" in msg or "比较算子" in msg):
         return "卡上游", "要 top-k/比较算子 —— 这版 ggml 没有（等上游或自研 kernel）"
     if "delta_rule" in msg or ("递推" in msg and backend == "ggml"):
@@ -343,6 +363,11 @@ def classify(probe, backend, msg):
             or "算子 KDA 还没有 ggml 映射" in msg):
         return "卡上游", ("缺的是 ggml 原语（MoE 路由要 top-k、"
                         "KDA 要 delta_rule），不是我们这边的活")
+    if "算子 Linear 还没有 ggml 映射" in msg:
+        # `Linear` = 线性注意力（qwen3-next/clef 的 GDN 那一族）——
+        # 递推也是 delta-rule 族，和 KDA 同一个缺口。
+        return "卡上游", ("缺的是 delta_rule 递推原语（Linear = GDN 线性注意力，"
+                        "和 KDA 同一族）—— 这版 ggml 没有")
     if "Raw" in msg and backend in ("c", "exec"):
         # **两层逃生舱的分工**（2026-10-17 核对过代码）：
         #   第一层 `Raw` = `raw.py` 的工厂，**契约就是 PyTorch**（返回 nn.Module）；

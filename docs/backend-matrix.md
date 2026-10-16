@@ -20,6 +20,15 @@
 | `raw-escape.by1` | Raw（逃生舱） | ✅ | ✗ | ✗ | ✗ | ✗ |
 | `complete-granite-4.0-h-350m.by1` | SSM2 + Attention（逐层混排） | ✗ | — | — | — | ✅ |
 | `complete-Falcon-H1-0.5B-Instruct.by1` | Parallel（层内并行：SSM2 + Attention） | ✗ | — | — | — | ✅ |
+| `llama-shaped.by1` | Attention + FFN（RoPE） | ✅ | ✅ | ✅ | ✅ | ✗ |
+| `llama3-shaped.by1` | Attention + FFN（LLaMA3 RoPE 缩放） | ✅ | ✅ | ✗ | ✅ | ✗ |
+| `mixtral-shaped.by1` | Attention + MoE | ✅ | ✅ | ✗ | ✅ | ✗ |
+| `gpt-oss-shaped.by1` | Attention + MoE（sigmoid 路由） | ✅ | ✅ | ✗ | ✅ | ✗ |
+| `qwen3-next-shaped.by1` | Linear + MoE + Attention（线性注意力） | ✅ | ✅ | ✗ | ✅ | ✗ |
+| `ling-tiny.by1` | KDA + MLA + MoE（Ling 结构的机械缩小版） | ✅ | ✅ | ✗ | ✅ | ✗ |
+| `glm-text-tiny.by1` | KDA（低秩门）+ SparseMLA + MoE | ✅ | ✅ | ✗ | ✅ | ✗ |
+| `clef-tiny.by1` | Linear + FFN + Attention（视觉塔布局） | ✅ | ✅ | ✗ | ✅ | ✗ |
+| `gpt2-tiny.by1` | Attention + FFN（learned 位置） | ✅ | ✅ | ✅ | ✅ | ✗ |
 
 **读法**：✅ = 后端接受并给出产物；✗ = 明确拒绝（原文见第二节）；— = 根本没走到（上游 `codegen` 先拒，本后端无从表态）；? = 没验（缺依赖，**不算通过**）。
 
@@ -49,6 +58,22 @@
 | `raw-escape.by1` | `full` | 完整后端的 arch 必须是 qwen3, qwen2, gpt2, gpt_oss, qwen3_5, mamba, granitemoehybrid, falcon_h1 |
 | `complete-granite-4.0-h-350m.by1` | `codegen` | 完整模型使用 transformers 后端；请用 by1 build，不能把多分支模型降成串行 IR |
 | `complete-Falcon-H1-0.5B-Instruct.by1` | `codegen` | 完整模型使用 transformers 后端；请用 by1 build，不能把多分支模型降成串行 IR |
+| `llama-shaped.by1` | `full` | 完整后端的 arch 必须是 qwen3, qwen2, gpt2, gpt_oss, qwen3_5, mamba, granitemoehybrid, falcon_h1 |
+| `llama3-shaped.by1` | `ggml` | 第 1 层 op1（Attention）：yarn={'type': 'llama3', 'factor': 2.0, 'original': 4096, 'beta_fast': 32.0, 'beta_slow': 1.0, 'high_freq': 32.0, 'low_freq': 1.0, 'truncate': True} 还没实现（M3）；第 2 层 op1（Attention）：yarn={'type': 'llama3', 'factor': 2.0, 'original': 4096, 'beta_fast': 32.0, 'beta_slow': 1.0, 'high_f |
+| `llama3-shaped.by1` | `full` | 完整后端的 arch 必须是 qwen3, qwen2, gpt2, gpt_oss, qwen3_5, mamba, granitemoehybrid, falcon_h1 |
+| `mixtral-shaped.by1` | `ggml` | 第 0 层 op4（MoE）：算子 MoE 还没有 ggml 映射；第 1 层 op4（MoE）：算子 MoE 还没有 ggml 映射；第 2 层 op4（MoE）：算子 MoE 还没有 ggml 映射；第 3 层 op4（MoE）：算子 MoE 还没有 ggml 映射 |
+| `mixtral-shaped.by1` | `full` | 完整后端的 arch 必须是 qwen3, qwen2, gpt2, gpt_oss, qwen3_5, mamba, granitemoehybrid, falcon_h1 |
+| `gpt-oss-shaped.by1` | `ggml` | 第 0 层 op1（Attention）：sink 还没实现（M3）；第 0 层 op1（Attention）：yarn={'type': 'yarn', 'factor': 32.0, 'original': 4096, 'beta_fast': 32.0, 'beta_slow': 1.0, 'high_freq': 4.0, 'low_freq': 1.0, 'truncate': False} 还没实现（M3）；第 0 层 op4（MoE）：算子 MoE 还没有 ggml 映射；第 1 层 op1（Attention）：sink 还没实现（M3）；第 1 层 op1（Attention |
+| `gpt-oss-shaped.by1` | `full` | 完整后端的 arch 必须是 qwen3, qwen2, gpt2, gpt_oss, qwen3_5, mamba, granitemoehybrid, falcon_h1 |
+| `qwen3-next-shaped.by1` | `ggml` | 第 0 层 op1（Linear）：算子 Linear 还没有 ggml 映射；第 0 层 op4（MoE）：算子 MoE 还没有 ggml 映射；第 1 层 op1（Linear）：算子 Linear 还没有 ggml 映射；第 1 层 op4（MoE）：算子 MoE 还没有 ggml 映射；第 2 层 op1（Linear）：算子 Linear 还没有 ggml 映射；第 2 层 op4（MoE）：算子 MoE 还没有 ggml 映射；第 3 层 op1（Attention）：q_gate 还没实现；第 3 层 op4（MoE）：算子 MoE 还没有 ggml 映射 |
+| `qwen3-next-shaped.by1` | `full` | 完整后端的 arch 必须是 qwen3, qwen2, gpt2, gpt_oss, qwen3_5, mamba, granitemoehybrid, falcon_h1 |
+| `ling-tiny.by1` | `ggml` | 第 0 层 op1（KDA）：算子 KDA 还没有 ggml 映射；第 1 层 op1（KDA）：算子 KDA 还没有 ggml 映射；第 1 层 op4（MoE）：算子 MoE 还没有 ggml 映射；第 2 层 op1（KDA）：算子 KDA 还没有 ggml 映射；第 2 层 op4（MoE）：算子 MoE 还没有 ggml 映射；第 3 层 op4（MoE）：算子 MoE 还没有 ggml 映射 |
+| `ling-tiny.by1` | `full` | 完整后端的 arch 必须是 qwen3, qwen2, gpt2, gpt_oss, qwen3_5, mamba, granitemoehybrid, falcon_h1 |
+| `glm-text-tiny.by1` | `ggml` | 第 0 层 op1（KDA）：算子 KDA 还没有 ggml 映射；第 1 层 op1（KDA）：算子 KDA 还没有 ggml 映射；第 2 层 op1（KDA）：算子 KDA 还没有 ggml 映射；第 3 层 op1（MLA）：index_heads（SparseMLA/DSA 索引）还没实现 —— 要 top-k/比较算子，这版 ggml 没有；第 3 层 op4（MoE）：算子 MoE 还没有 ggml 映射 |
+| `glm-text-tiny.by1` | `full` | 完整后端的 arch 必须是 qwen3, qwen2, gpt2, gpt_oss, qwen3_5, mamba, granitemoehybrid, falcon_h1 |
+| `clef-tiny.by1` | `ggml` | 第 0 层 op1（Linear）：算子 Linear 还没有 ggml 映射；第 1 层 op1（Linear）：算子 Linear 还没有 ggml 映射；第 2 层 op1（Linear）：算子 Linear 还没有 ggml 映射；第 3 层 op1（Attention）：q_gate 还没实现；第 4 层 op1（Linear）：算子 Linear 还没有 ggml 映射；第 5 层 op1（Linear）：算子 Linear 还没有 ggml 映射；第 6 层 op1（Linear）：算子 Linear 还没有 ggml 映射；第 7 层 op1（Attention）：q_gate |
+| `clef-tiny.by1` | `full` | 完整后端不能忽略这些块：['tensors', 'emit'] |
+| `gpt2-tiny.by1` | `full` | 完整后端不能忽略这些块：['tensors'] |
 
 ## 三、**公共子集**（两扇门分开算）
 
@@ -60,6 +85,8 @@
 - `attn-fused-shaped.by1` —— Attention（融合 qkv + 门）
 - `mla-shaped.by1` —— MLA
 - `ssm-shaped.by1` —— SSM（Mamba2/Nemotron-H 参数化）
+- `llama-shaped.by1` —— Attention + FFN（RoPE）
+- `gpt2-tiny.by1` —— Attention + FFN（learned 位置）
 
 ### 3.2 五后端交集（含 `full`）
 
@@ -71,34 +98,49 @@
 > **可补** = 我们的工程活；**卡上游** = 缺 ggml/上游原语；
 > **设计如此** = 边界而非缺口。
 
-### 可补（0 格）
+### 可补（2 格）
 
-**没有。**
+- `llama3-shaped.by1` × `ggml` —— LLaMA3 的 RoPE 缩放（yarn 风格 beta_fast/beta_slow/factor）—— `ggml_rope_ext` 的参数位就有，缺的是折算实现
+- `gpt-oss-shaped.by1` × `ggml` —— LLaMA3 的 RoPE 缩放（yarn 风格 beta_fast/beta_slow/factor）—— `ggml_rope_ext` 的参数位就有，缺的是折算实现
 
-### 卡上游（5 格）
+### 卡上游（10 格）
 
 - `mla-sparse-shaped.by1` × `ggml` —— 要 top-k/比较算子 —— 这版 ggml 没有（等上游或自研 kernel）
 - `moe-routing-shaped.by1` × `ggml` —— 缺的是 ggml 原语（MoE 路由要 top-k、KDA 要 delta_rule），不是我们这边的活
 - `kda-shaped.by1` × `ggml` —— 缺的是 ggml 原语（MoE 路由要 top-k、KDA 要 delta_rule），不是我们这边的活
 - `kda-gva-shaped.by1` × `ggml` —— 缺的是 ggml 原语（MoE 路由要 top-k、KDA 要 delta_rule），不是我们这边的活
 - `kda-lowrank-shaped.by1` × `ggml` —— 缺的是 ggml 原语（MoE 路由要 top-k、KDA 要 delta_rule），不是我们这边的活
+- `mixtral-shaped.by1` × `ggml` —— 缺的是 ggml 原语（MoE 路由要 top-k、KDA 要 delta_rule），不是我们这边的活
+- `qwen3-next-shaped.by1` × `ggml` —— 缺的是 ggml 原语（MoE 路由要 top-k、KDA 要 delta_rule），不是我们这边的活
+- `ling-tiny.by1` × `ggml` —— 缺的是 ggml 原语（MoE 路由要 top-k、KDA 要 delta_rule），不是我们这边的活
+- `glm-text-tiny.by1` × `ggml` —— 要 top-k/比较算子 —— 这版 ggml 没有（等上游或自研 kernel）
+- `clef-tiny.by1` × `ggml` —— 缺的是 delta_rule 递推原语（Linear = GDN 线性注意力，和 KDA 同一族）—— 这版 ggml 没有
 
-### 设计如此（15 格）
+### 设计如此（24 格）
 
-- `hello.by1` × `full` —— 两扇门：`full` 吃官方家族的 arch，串行 IR 后端吃机制组合 —— 不是缺口
-- `attn-fused-shaped.by1` × `full` —— 两扇门：`full` 吃官方家族的 arch，串行 IR 后端吃机制组合 —— 不是缺口
-- `mla-shaped.by1` × `full` —— 两扇门：`full` 吃官方家族的 arch，串行 IR 后端吃机制组合 —— 不是缺口
-- `mla-sparse-shaped.by1` × `full` —— 两扇门：`full` 吃官方家族的 arch，串行 IR 后端吃机制组合 —— 不是缺口
-- `moe-routing-shaped.by1` × `full` —— 两扇门：`full` 吃官方家族的 arch，串行 IR 后端吃机制组合 —— 不是缺口
-- `kda-shaped.by1` × `full` —— 两扇门：`full` 吃官方家族的 arch，串行 IR 后端吃机制组合 —— 不是缺口
-- `kda-gva-shaped.by1` × `full` —— 两扇门：`full` 吃官方家族的 arch，串行 IR 后端吃机制组合 —— 不是缺口
-- `kda-lowrank-shaped.by1` × `full` —— 两扇门：`full` 吃官方家族的 arch，串行 IR 后端吃机制组合 —— 不是缺口
-- `ssm-shaped.by1` × `full` —— 两扇门：`full` 吃官方家族的 arch，串行 IR 后端吃机制组合 —— 不是缺口
+- `hello.by1` × `full` —— 两扇门：`full` 吃官方家族的 arch；`tensors{}` / `emit{}` 是 IR 路的契约块 —— 不是缺口
+- `attn-fused-shaped.by1` × `full` —— 两扇门：`full` 吃官方家族的 arch；`tensors{}` / `emit{}` 是 IR 路的契约块 —— 不是缺口
+- `mla-shaped.by1` × `full` —— 两扇门：`full` 吃官方家族的 arch；`tensors{}` / `emit{}` 是 IR 路的契约块 —— 不是缺口
+- `mla-sparse-shaped.by1` × `full` —— 两扇门：`full` 吃官方家族的 arch；`tensors{}` / `emit{}` 是 IR 路的契约块 —— 不是缺口
+- `moe-routing-shaped.by1` × `full` —— 两扇门：`full` 吃官方家族的 arch；`tensors{}` / `emit{}` 是 IR 路的契约块 —— 不是缺口
+- `kda-shaped.by1` × `full` —— 两扇门：`full` 吃官方家族的 arch；`tensors{}` / `emit{}` 是 IR 路的契约块 —— 不是缺口
+- `kda-gva-shaped.by1` × `full` —— 两扇门：`full` 吃官方家族的 arch；`tensors{}` / `emit{}` 是 IR 路的契约块 —— 不是缺口
+- `kda-lowrank-shaped.by1` × `full` —— 两扇门：`full` 吃官方家族的 arch；`tensors{}` / `emit{}` 是 IR 路的契约块 —— 不是缺口
+- `ssm-shaped.by1` × `full` —— 两扇门：`full` 吃官方家族的 arch；`tensors{}` / `emit{}` 是 IR 路的契约块 —— 不是缺口
 - `raw-escape.by1` × `c` —— 两层分工：`Raw`（第一层）的契约是 PyTorch 工厂；c/exec 的逃生舱走**第二层 `External`（.so）** —— 已由 by1extdemo 三后端验过，不是缺口
 - `raw-escape.by1` × `ggml` —— ggml 是**图发射**，装不下任意外部调用（进图要 custom op）—— 两层逃生舱在 ggml 上没有对应的门，这是结构边界
 - `raw-escape.by1` × `exec` —— 两层分工：`Raw`（第一层）的契约是 PyTorch 工厂；c/exec 的逃生舱走**第二层 `External`（.so）** —— 已由 by1extdemo 三后端验过，不是缺口
-- `raw-escape.by1` × `full` —— 两扇门：`full` 吃官方家族的 arch，串行 IR 后端吃机制组合 —— 不是缺口
-- `complete-granite-4.0-h-350m.by1` × `codegen` —— 两扇门：`full` 吃官方家族的 arch，串行 IR 后端吃机制组合 —— 不是缺口
-- `complete-Falcon-H1-0.5B-Instruct.by1` × `codegen` —— 两扇门：`full` 吃官方家族的 arch，串行 IR 后端吃机制组合 —— 不是缺口
+- `raw-escape.by1` × `full` —— 两扇门：`full` 吃官方家族的 arch；`tensors{}` / `emit{}` 是 IR 路的契约块 —— 不是缺口
+- `complete-granite-4.0-h-350m.by1` × `codegen` —— 两扇门：`full` 吃官方家族的 arch；`tensors{}` / `emit{}` 是 IR 路的契约块 —— 不是缺口
+- `complete-Falcon-H1-0.5B-Instruct.by1` × `codegen` —— 两扇门：`full` 吃官方家族的 arch；`tensors{}` / `emit{}` 是 IR 路的契约块 —— 不是缺口
+- `llama-shaped.by1` × `full` —— 两扇门：`full` 吃官方家族的 arch；`tensors{}` / `emit{}` 是 IR 路的契约块 —— 不是缺口
+- `llama3-shaped.by1` × `full` —— 两扇门：`full` 吃官方家族的 arch；`tensors{}` / `emit{}` 是 IR 路的契约块 —— 不是缺口
+- `mixtral-shaped.by1` × `full` —— 两扇门：`full` 吃官方家族的 arch；`tensors{}` / `emit{}` 是 IR 路的契约块 —— 不是缺口
+- `gpt-oss-shaped.by1` × `full` —— 两扇门：`full` 吃官方家族的 arch；`tensors{}` / `emit{}` 是 IR 路的契约块 —— 不是缺口
+- `qwen3-next-shaped.by1` × `full` —— 两扇门：`full` 吃官方家族的 arch；`tensors{}` / `emit{}` 是 IR 路的契约块 —— 不是缺口
+- `ling-tiny.by1` × `full` —— 两扇门：`full` 吃官方家族的 arch；`tensors{}` / `emit{}` 是 IR 路的契约块 —— 不是缺口
+- `glm-text-tiny.by1` × `full` —— 两扇门：`full` 吃官方家族的 arch；`tensors{}` / `emit{}` 是 IR 路的契约块 —— 不是缺口
+- `clef-tiny.by1` × `full` —— 两扇门：`full` 吃官方家族的 arch；`tensors{}` / `emit{}` 是 IR 路的契约块 —— 不是缺口
+- `gpt2-tiny.by1` × `full` —— 两扇门：`full` 吃官方家族的 arch；`tensors{}` / `emit{}` 是 IR 路的契约块 —— 不是缺口
 
 生成时间：2026-10-17（仅作记录，判据不看它）

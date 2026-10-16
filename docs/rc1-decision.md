@@ -56,7 +56,7 @@
 
 | 项 | 为什么不定 |
 |---|---|
-| ~~**承诺的公共子集有多大**~~ → **已量（2026-10-17）** | 原来"未定"，因为没人量过。现在有机器判的矩阵（[`docs/backend-matrix.md`](backend-matrix.md)，由 `by1backends.py` 生成并进档 3）：**IR 路公共子集 = 4/12**（`hello` = Attention + FFN；`attn-fused` = 融合 q/k/v；`ssm-shaped` = SSM 递推（Mamba2 参数化）；`mla-shaped` = MLA 低秩注意力 —— 后三个都是逐日在 ggml 侧补齐的，各有 ggml vs NumPy 数值对拍 6.6e-08 / 8.2e-08 / 2.1e-07）；**五后端交集 = 0**（`full` 是另一扇门）。**对外措辞只有一个说法："机制组合的多后端承诺目前到 Attention（含融合 q/k/v）、SSM、MLA"**，"多后端已支持"不成立。剩余缺口逐条记在矩阵的"拒绝原文"里（MoE/KDA 缺 ggml 原语、SparseMLA 缺 top-k、Raw 是逃生舱） |
+| ~~**承诺的公共子集有多大**~~ → **已量（2026-10-17）** | 原来"未定"，因为没人量过。现在有机器判的矩阵（[`docs/backend-matrix.md`](backend-matrix.md)，由 `by1backends.py` 生成并进档 3，**21 个探针 × 5 个后端**）：**IR 路公共子集 = 6/21**（hello / attn-fused / mla / ssm / llama-shaped / gpt2-tiny）；**五后端交集 = 0**（`full` 是另一扇门）。每个 ✗ 格还要**分类**（判据红出未分类的拒绝）：**可补 2**（llama3/gpt-oss 的 RoPE 缩放折算，`ggml_rope_ext` 参数位就有）· **卡上游 10**（MoE/KDA/Linear/SparseMLA × ggml，缺 top-k/比较/delta_rule）· **设计如此 24**（两扇门 21 + 逃生舱两层分工 3）。**对外措辞只有一个说法："机制组合的多后端承诺目前到 Attention（含融合 q/k/v）、SSM、MLA、标准 FFN"** |
 | **100B 级 / 真尺寸大模型** | 无卡、无证据；"能描述"不等于"能算"（本项目的第一条纪律） |
 | **量化 Q3** | 未开；无任何证据 |
 | **发布包的对外承诺** | 现在它是"能跑门禁的产物"，**不是**"稳定发布物" —— 冻结为现状，直到有第二人独立复现 |

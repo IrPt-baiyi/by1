@@ -360,10 +360,10 @@ JUDGES = [
     # 档 3：要 numpy；torch / gguf-py / 上游检出缺哪样就**如实报"没验"**。
     ('by1rules.py', 3),
     # 后端 × 机制矩阵：**承诺的公共子集到底有多大**（T30 那条"未定"）。
-    # 12 个探针 × 5 个后端；拒绝必须带理由；docs/backend-matrix.md 是生成物。
-    # 实测（2026-10-17）：IR 路公共子集 = **4/12**（hello：Attention + FFN；
-    # attn-fused：融合 q/k/v；ssm-shaped：SSM 递推；mla-shaped：MLA 低秩注意力
-    # —— 后三个是逐日在 ggml 侧补齐的，各有数值对拍），
+    # 21 个探针 × 5 个后端；拒绝必须带理由且**必须分类**（可补/卡上游/设计如此）；
+    # docs/backend-matrix.md 是生成物。
+    # 实测（2026-10-17，扩到 21 探针后）：IR 路公共子集 = **6/21**
+    # （hello / attn-fused / mla / ssm / llama-shaped / gpt2-tiny），
     # 五后端交集 = 0 —— 这些数字是量出来的，不是宣传出来的。
     ('by1backends.py', 3),
 
