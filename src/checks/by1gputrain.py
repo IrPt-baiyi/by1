@@ -79,7 +79,8 @@ def snapshot_step(model, torch, ids, labels, lr):
 
     updated = {name: parameter.detach().cpu().clone()
                for name, parameter in model.named_parameters()}
-    peak_allocated = torch.cuda.max_memory_allocated()
+    peak_allocated = (torch.cuda.max_memory_allocated()
+                      if torch.cuda.is_available() else None)
     del output, optimizer
     return {'loss': loss, 'logits': logits, 'gradients': gradients, 'updated': updated,
             'gradient_l2': math.sqrt(grad_square), 'gradient_values': grad_count,
@@ -125,6 +126,16 @@ def main(argv=None):
     parser.add_argument('--shadow-config',
                         help='影子用的真品 config.json（默认 refs/，再不行只拉 config）')
     parser.add_argument('--shadow-seed', type=int, default=20261013)
+    # **CPU 腿（2026-10-16）**：原来这里第一条就是 `if not cuda: skip`，
+    # 于是"真权重训练步"这条判据在本机（无显卡）永远只显示"跳过"。
+    # 内存账：0.6B fp32 全参数一步 = params 2.4 + grads 2.4 + AdamW 两态 4.8
+    # ≈ 9.6 GB（本机可用 10.3 GB，太紧）；**bf16 减半 ≈ 4.8 GB**，放得下。
+    parser.add_argument('--device', default='auto', choices=['auto', 'cpu', 'cuda'],
+                        help='auto = 有卡用卡、没卡用 CPU')
+    parser.add_argument('--dtype', default=None, choices=['bfloat16', 'float32'],
+                        help='不给：cuda -> bfloat16；cpu -> float32（CPU 想省内存给 bfloat16）')
+    parser.add_argument('--checkpoint',
+                        help='本地 HF checkpoint 目录。不给：按 cgen/gpu-benchmark.json 的钉住 revision 现下')
     args = parser.parse_args(argv)
     target = pathlib.Path(args.report)
     report = {'schema': 1, 'status': 'running', 'started_at':
@@ -146,19 +157,27 @@ def main(argv=None):
         import torch
         import transformers as T
         import huggingface_hub as hub
-        if not torch.cuda.is_available():
-            report.update(status='skipped', reason='CUDA unavailable')
+        if args.device == 'cuda' and not torch.cuda.is_available():
+            report.update(status='skipped', reason='CUDA requested but unavailable')
             save()
-            return by1skip.skip('CUDA unavailable; no real-weight GPU training step was run')
+            return by1skip.skip('CUDA requested but unavailable; no real-weight training step was run')
+        device = 'cuda' if (args.device == 'cuda'
+                            or (args.device == 'auto' and torch.cuda.is_available())) else 'cpu'
+        dtype = getattr(torch, args.dtype or ('bfloat16' if device == 'cuda' else 'float32'))
         require(args.length >= 2 and args.lr > 0, 'Length and learning rate must be positive')
         torch.set_num_threads(4)
-        torch.backends.cuda.matmul.allow_tf32 = False
-        torch.backends.cudnn.allow_tf32 = False
-        torch.cuda.reset_peak_memory_stats()
+        if device == 'cuda':
+            torch.backends.cuda.matmul.allow_tf32 = False
+            torch.backends.cudnn.allow_tf32 = False
+            torch.cuda.reset_peak_memory_stats()
+        report['dtype'] = str(dtype).replace('torch.', '')
+        report['device'] = device
         report['environment'] = {'torch': torch.__version__, 'transformers': T.__version__,
-                                 'cuda': torch.version.cuda,
-                                 'gpu': torch.cuda.get_device_name(),
-                                 'gpu_memory_bytes': torch.cuda.get_device_properties(0).total_memory}
+                                 'device': device,
+                                 'cuda': torch.version.cuda if device == 'cuda' else None,
+                                 'gpu': torch.cuda.get_device_name() if device == 'cuda' else None,
+                                 'gpu_memory_bytes': (torch.cuda.get_device_properties(0).total_memory
+                                                      if device == 'cuda' else None)}
 
         check, info = by1check.check(MODEL_FILE)
         require(not check.count(by1check.E), str(check.items))
@@ -181,23 +200,28 @@ def main(argv=None):
             report.update(revision='synthetic', checkpoint_bytes=manifest['bytes'],
                           download_endpoint='none', shadow=manifest)
         else:
-            benchmark_report = json.loads(
-                pathlib.Path('cgen/gpu-benchmark.json').read_text(encoding='utf-8'))
-            row = next(item for item in benchmark_report['models']
-                       if item.get('repo') == REPO)
-            revision = row['revision']
-            checkpoint = hub.snapshot_download(REPO, revision=revision,
-                allow_patterns=['*.json', '*.safetensors', '*.txt', '*.model',
-                                '*.jinja', '*.tiktoken'],
-                max_workers=4)
-            report.update(revision=revision, checkpoint_bytes=row['checkpoint_bytes'],
-                          download_endpoint=row['download_endpoint'])
+            if args.checkpoint:
+                checkpoint = args.checkpoint
+                report.update(revision='local:' + pathlib.Path(checkpoint).name,
+                              download_endpoint='none')
+            else:
+                benchmark_report = json.loads(
+                    pathlib.Path('cgen/gpu-benchmark.json').read_text(encoding='utf-8'))
+                row = next(item for item in benchmark_report['models']
+                           if item.get('repo') == REPO)
+                revision = row['revision']
+                checkpoint = hub.snapshot_download(REPO, revision=revision,
+                    allow_patterns=['*.json', '*.safetensors', '*.txt', '*.model',
+                                    '*.jinja', '*.tiktoken'],
+                    max_workers=4)
+                report.update(revision=revision, checkpoint_bytes=row['checkpoint_bytes'],
+                              download_endpoint=row['download_endpoint'])
         cfg = T.AutoConfig.from_pretrained(checkpoint, local_files_only=True)
         generator = torch.Generator().manual_seed(20261013)
         ids = torch.randint(0, min(cfg.vocab_size, 10000), (1, args.length), generator=generator,
-                            dtype=torch.long).cuda()
+                            dtype=torch.long).to(device)
         labels = ids.clone()
-        kwargs = {'dtype': torch.bfloat16, 'device_map': {'': 'cuda:0'},
+        kwargs = {'dtype': dtype, 'device_map': {'': device},
                   'attn_implementation': 'eager', 'local_files_only': True}
 
         report['phase'] = 'original-step'
@@ -215,7 +239,8 @@ def main(argv=None):
                                'peak_allocated_bytes')}
         del original
         gc.collect()
-        torch.cuda.empty_cache()
+        if device == 'cuda':
+            torch.cuda.empty_cache()
 
         report['phase'] = 'by1-step'
         save()

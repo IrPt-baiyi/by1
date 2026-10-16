@@ -19,11 +19,13 @@
 ## 结论（一句话）
 
 `.by1 声明 → 真实产物对账 → 真权重独立数值对拍 → 标准 GGUF → 未修改的上游
-llama.cpp 加载与生成` 五段，加上**增量状态**（T14）与 **tie 语义**两笔结案，
+llama.cpp 加载与生成` 五段，加上**增量状态**（T14）、**tie 语义**、
+**真权重训练步**（T39，CPU/bf16）三笔结案，
 在 Qwen3-0.6B 上都有可重跑证据：**311/311 张量命中**、
 **真权重前向 max|Δ| = 0.000e+00（CPU，两个独立 loader）**、
 **上游 logits 逐位相同（106949 个值）**、**生成文本完全相同**、
-**增量 == 全量（2.289e-05，判据 2e-3）**。
+**增量 == 全量（2.289e-05，判据 2e-3）**、
+**梯度与 AdamW 更新 596,049,920 个值 max|Δ| = 0.0**。
 
 ## 一、输入（每项可核对）
 
@@ -169,6 +171,33 @@ by1 模型   ：max|Δ| = 2.289e-05
 ③ 因为两份值相同，**绑与不绑在数值上等价** —— 这也是两个 loader 逐位相同的一个前提。
 （换成一个真·untied 模型时，这条要重验 —— 届时"绑不绑"就不再等价了。）
 
+### ⑧ 真权重训练步（T39）—— **CPU/bf16 也能跑**
+
+```bash
+python src/checks/by1gputrain.py --device cpu --dtype bfloat16 \
+    --checkpoint model-cache/qwen3-0.6b --length 8 \
+    --report cgen/p0-traincheck-cpu.json
+```
+
+```
+[PASS] Qwen3-0.6B real-weight BF16 backward + AdamW step;
+       full gradients and updated parameters match the official model
+```
+
+| 量 | 官方模型 | by1 模型 |
+|---|---|---|
+| loss | 12.989494323730469 | 12.989494323730469 |
+| 梯度 L2 | 174.48894862380965 | 174.48894862380965 |
+| 梯度值数 | 596,049,920 | 596,049,920 |
+| 梯度 max\|Δ\| / relative_l2 | — | **0.0 / 0.0** |
+| AdamW 更新后参数 max\|Δ\| | — | **0.0**（同 596,049,920 个值） |
+
+**内存账（这是它原来被列成"要卡"的原因）**：0.6B 全参数一步 fp32
+= params 2.4 + grads 2.4 + AdamW 两态 4.8 ≈ **9.6 GB**，而本机可用 10.3 GB ——
+太紧；**bf16 减半 ≈ 4.8 GB**，放得下。所以给 `by1gputrain` 加了
+`--device / --dtype / --checkpoint`（原来第一条就是 `if not cuda: skip`）。
+**与 GPU 那次同精度（bf16）、同判据**，结果逐位相同。
+
 ## 三、这次销掉的缺口（docs/gap-analysis.md 已同步）
 
 - **S2**（build-gguf 族覆盖只 qwen2）：**qwen3 档已实证** —— 311 张量全映射、
@@ -181,7 +210,6 @@ by1 模型   ：max|Δ| = 2.289e-05
 
 | 项 | 状态 | 原因 / 收口路径 |
 |---|---|---|
-| **T39 真权重训练步**（梯度 + AdamW 一步） | **未跑** | `by1gputrain.py` 硬要 CUDA；即便加 CPU 路径，本机可用内存 10.3 GB < 全参数 fp32 训练步需要的约 10–12 GB（params 2.4 + grads 2.4 + 两个优化器状态 4.8）。留租卡日，或换更小模型/梯度检查点 |
 | **S1 tokenizer 组装线** | 仍未实现 | 本次 GGUF 的 tokenizer KV 从上游 ref 整拷 —— 按记档，非缺陷伪装 |
 | **T15 干净克隆** | **✅（by1 侧）** | 从零克隆 → `.[run]`/`.[full]` 两套装法 → README 入门 + 档 1 + T13 + T14 + 产物线全部跑通（第七节）。**边界**：权重、llama.cpp/gguf-py、llama-eval-callback 来自克隆之外（上游侧，按纪律另取） |
 | 其余模型族 | 不外推 | Qwen3-0.6B 一个新档，不代表别的族 |
@@ -202,6 +230,9 @@ python src/checks/by1llama.py build-gguf <hf-dir> by1-f32.gguf --ref ref-f32.ggu
 python src/checks/by1llama.py logits-run --gguf ref-f32.gguf -o ref.logits --llama-cli <eval-callback>
 python src/checks/by1llama.py logits-run --gguf by1-f32.gguf -o by1.logits --llama-cli <eval-callback>
 python src/checks/by1llama.py logits-compare ref.logits by1.logits
+python src/checks/by1gputrain.py --device cpu --dtype bfloat16 \
+    --checkpoint <真 checkpoint 目录> --length 8 \
+    --report cgen/p0-traincheck-cpu.json       # T39：梯度 + AdamW 一步（CPU 可跑）
 ```
 
 > 数字跟着机器走；本报告的值出自上面这台机器的那次运行。
