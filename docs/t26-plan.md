@@ -67,15 +67,15 @@
 | 2 | **✅** | `models/complete-mamba-130m-hf.by1`：`by1check` **0 错 0 警** · `compile_config` 出 **32 个 config 字段** · `build_model(meta)` → `MambaForCausalLM` **129.1 M**（与真权重同）· `load_model` 真权重**零 missing/unexpected** · `by1complete` 的 `official_configs` 已把 mamba 接进逐字段判据（**PASS**） |
 | 3 | **✅（前向那半）** | `by1shadow --smoke-refs --by1 complete-mamba-130m-hf.by1 --weights-dir model-cache/mamba-130m-hf` → **242 个真名 · 双 loader 零 missing/unexpected · 前向 max\|Δ\| = 0.000e+00** |
 | 3' | 待做 | 递归状态的"**增量 == 全量**"等价判据（写法与 KV cache 那条不同：状态定长） |
-| 4 | 待做 | `build-gguf --arch mamba` + 上游 `llama-eval-callback` logits 逐位 |
+| 4 | **✅** | `by1llama build-gguf --arch mamba` → 242 张量；**上游未修改的 llama.cpp 加载**后 logits **逐位相同（30604 值）**。路上补了两条转换期改写（`A_log → -exp(A_log)` 改值、`conv1d` squeeze 改形状），记在 [convert-diff](convert-diff.md) 第 9 行 |
 | — | 待做 | 把 mamba 接进 `by1complete` 的 **GALLERY**（那张表的用例是按 Attention/FFN 家族写的，mamba 入场要另一套夹具） |
 
 ## 四、完成定义
 
 - [x] complete 声明过 `by1check` + `by1complete`（含 config 逐字段）；
 - [x] 真权重双 loader：零 missing/unexpected + 前向 max|Δ| **0.000e+00**；
+- [x] **上游加载 + logits 逐位**：242/242 张量同、上游 logits **逐位（30604 值）**；
 - [ ] 递归状态的"增量 == 全量"等价判据；
-- [ ] 上游加载 + logits 逐位（`build-gguf --arch mamba`）；
 - [ ] 报告进 `docs/`，并更新 [支持矩阵](support-matrix.md) 的"第二架构"一行。
 
 ## 五、不许做的

@@ -436,6 +436,34 @@ def selftest_kv_map(gguf_path):
     return missing
 
 
+def _modify_tensor(arch, hf_name, ggml_name, arr):
+    """转换期的张量改写 —— **照上游 `conversion/<arch>.py` 的 `modify_tensors`**。
+
+    名字映射（`TensorNameMap`）只解决"叫什么"。有些架构还要改**值或形状**，
+    那一步不在 gguf-py 的映射表里 —— 少了它，产物要么装不上（形状错），
+    要么装上了而**算的是另一个东西**（值错）。
+
+    判据纪律：每加一条都要写出上游那一行；没有上游出处的改写不许加。
+    """
+    import numpy as np
+    if arch == 'mamba':
+        # conversion/mamba.py: `if name.endswith(".A_log"): data_torch = -torch.exp(data_torch)`
+        # **这是改值**：GGML 的 `ssm_a` 存的是 A（= -exp(A_log)），不是 A_log。
+        # 少了这一条，by1 的产物会把 log 值当 A 用 —— 形状全对、算的是另一个模型。
+        #
+        # **必须用 torch.exp**（不是 numpy.exp）：实测两者差 ~1 ulp，而
+        # 逐位判据容不下 1 ulp（SSM 是递推，误差会一路放大）。判卷人就是上游
+        # 那一行，所以算子也要是同一个。
+        if hf_name.endswith('.A_log'):
+            import torch
+            return -torch.exp(torch.as_tensor(arr))
+        # conversion/mamba.py: `if match(... SSM_CONV1D ...): data_torch = data_torch.squeeze()`
+        # HF 是 `(d_inner, 1, kernel)`，GGML 要 2D `(kernel, d_inner)`（写盘时反序）。
+        if hf_name.endswith('conv1d.weight'):
+            return np.squeeze(arr)
+    return arr
+
+
 def build_gguf(hf_dir, out_path, ref_gguf=None, arch="llama", n_blocks=24,
                quantize=False):
     """T23 产物线：HF 权重 -> 真 .gguf（F32），by1 表驱动 KV。
@@ -477,6 +505,7 @@ def build_gguf(hf_dir, out_path, ref_gguf=None, arch="llama", n_blocks=24,
         if g is None:
             continue
         arr = val.to(torch.float32).numpy() if hasattr(val, "to") else np.asarray(val)
+        arr = _modify_tensor(arch, name, g, arr)
         arr = np.ascontiguousarray(arr)
         vshape = arr.shape
         if quantize and arr.ndim >= 2:

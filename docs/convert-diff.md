@@ -24,12 +24,32 @@ llama-cli logits 逐位 max|Δ|=0 —— **产物等价，差异全在过程**�
 | 5 | **量化块语义** | 1D 张量保留 F32、2D+ 逐块（32 值/块） | 同（实测 181 张 1D 保 F32） | 与 llama-quantize 行为逐位对齐（290/290） |
 | 6 | **张量 info 形状** | 逻辑形单传（块数组形不入 info） | 逻辑形 | 初版坑：块数组形入 info = 168 张量假异（已修，坑账在提交 9317ec8→38800fd） |
 | 7 | **旋转频率** | 不生成（ref 有 inv_freq 则拷贝） | 生成 `rope_freqs` | by1 的产物链以 ref 为 KV 底座；自生成是待接线项 |
-| 8 | **模型族覆盖** | Qwen2.5-0.5B（qwen2）+ **Qwen3-0.6B（qwen3，2026-10-16）** 实证 | 全族 | 两族已跑：qwen3 档 311 张量全映射、上游 logits **逐位相同（106949 值）**、llama-cli 生成同文（docs/p0-loop-report.md）；**其余族仍不外推** |
+| 8 | **模型族覆盖** | Qwen2.5-0.5B（qwen2）+ **Qwen3-0.6B（qwen3，2026-10-16）** + **mamba-130m（mamba，2026-10-16）** 实证 | 全族 | 三族已跑：qwen3 档 311 张量、mamba 档 242 张量，上游 logits 均**逐位相同**（见 docs/p0-loop-report.md、docs/t26-plan.md）；**其余族仍不外推** |
+| 9 | **转换期改写**（`modify_tensors`） | 按 arch 的表内规则改**值或形状**（mamba 两条，见下） | `conversion/<arch>.py` 里的同名钩子 | **名字映射只解决"叫什么"**；这两件事不同。少了改写，产物要么装不上、要么**形状全对而算的是另一个东西** |
 
 ## 反例必红
 
 - KV 合成表对未知 arch 必红（垃圾文件 → `未知 arch 前缀`）；
 - qwen3vl 产物过表绿（跨架构建绿 9/9）——表的边界即判据。
+
+## 转换期改写（`modify_tensors`）：mamba 这一族逼出来的第 9 行
+
+**名字映射不等于搬运。** 上游 `conversion/<arch>.py` 里有一个 `modify_tensors` 钩子，
+它会在写盘前**改值或改形状**；`gguf-py` 的 `TensorNameMap` 只给名字，不给这个。
+2026-10-16 实测（`--arch mamba`，242 张量）：
+
+| 规则 | 上游出处 | 少了它的后果 |
+|---|---|---|
+| `A_log → A = -exp(A_log)`（**改值**） | `conversion/mamba.py:84-86` | 形状全对、装得上、**算的是另一个模型**（把 log 值当 A 用） |
+| `ssm_conv1d.weight` → `squeeze()`（**改形状**） | `conversion/mamba.py:89-90` | llama.cpp 拒绝加载：`check_tensor_dims: ... expected 4, 1536, got 4, 1, 1536, 1` |
+
+**一条算子级的教训**：第一版用 `numpy.exp`，与上游 `torch.exp` 差 ~1 ulp，
+于是 `ssm_a` 在 24 层上各差一点点、logits 首个分歧 @1034（max\|Δ\|=0.625）。
+**判卷人是上游那一行，算子也得是同一个** —— 换成 `torch.exp` 后：
+242/242 张量逐位相同、上游 logits **逐位相同（30604 值）**。
+
+（**递归模型对这个尤其敏感**：SSM 每步都乘 A，1 ulp 会沿序列放大；
+KV-cache 那类模型没有这条放大链。）
 
 ## 判卷人
 
