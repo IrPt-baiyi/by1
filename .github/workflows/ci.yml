@@ -50,6 +50,10 @@
 # 上面那句失败详情就是这么读出来的（不用登进去复制粘贴）。
 # **外部复核者读得到的东西，才算真的公开。**
 #
+# 这套东西现在用在**诊断腿 `diag-complete`** 上（`continue-on-error: true`）：
+# 它只测量、不判门 —— 把 G3 那条 Linux 独有红的 `max|Δ|` / NaN 从公开注解里
+# 读出来。判据不看它，它负责把"为什么红"变成可见的测量值。
+#
 # ## 不跑什么（**不假装覆盖**）
 #
 #   档 5 的真权重前向、档 6 的显卡腿**不在 CI 里** —— 它们的证据在 docs/ 的报告
@@ -142,6 +146,43 @@ jobs:
       # 它是"改规则必须配反例"这条纪律在 CI 里的执行者：
       # 一条新规则没有反例，档 2 的 by1mutate 不会红 —— 但**规则本身跑错**
       # 会在档 3 的 refs 契约里红出来。
+
+  # ── 诊断腿：**只测量，不判门**（G3）────────────────────────────
+  # T30 的 E4 延期原因是一条 Linux 独有红：`torch.equal(存盘前, 读回后)`
+  # 不成立（Windows 上成立），本机复刻不出，而 job 日志要管理员权限。
+  # 这条腿用 `continue-on-error: true` —— **它红了不算 CI 红**；
+  # 失败时把 `max|Δ|` 与 NaN 打成**公开注解**，从外面就能读到数字。
+  # 判据不看它；它负责把"为什么红"变成可见的测量值。
+  diag-complete:
+    name: 诊断：完整模型判据（只测量，不判门 · G3）
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 装 [full]（torch + transformers）
+        run: python -m pip install -e ".[full]"
+
+      - name: 跑完整模型判据（失败把 max|Δ| / NaN 打成注解）
+        run: |
+          python - <<'PY'
+          import subprocess, sys
+          r = subprocess.run([sys.executable, "src/checks/by1complete.py"],
+                             capture_output=True, text=True)
+          out = (r.stdout or "") + (r.stderr or "")
+          print(out)
+          detail = [l for l in out.splitlines()
+                    if l.strip().startswith("!!") or "Traceback" in l
+                    or "max" in l or "NaN" in l]
+          for line in (detail[:14] + [l for l in out.strip().splitlines()
+                                      if l.strip()][-10:]):
+              print("::error::" + line[:900])
+          sys.exit(r.returncode)
+          PY
 
   pack:
     name: 发布包（打包 -> 解到仓外 -> 在包里跑档 1）
