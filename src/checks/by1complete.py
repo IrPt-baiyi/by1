@@ -19,7 +19,31 @@ import by1skip
 
 GALLERY = ['complete-Qwen3-0.6B.by1', 'complete-Qwen3-8B.by1',
            'complete-Qwen2.5-7B-Instruct.by1', 'complete-gpt2.by1',
-           'complete-gpt-oss-20b.by1', 'complete-Qwen3.8-27B.by1']
+           'complete-gpt-oss-20b.by1', 'complete-Qwen3.8-27B.by1',
+           # **第二个机制族（T26）**：SSM/递归状态。
+           'complete-mamba-130m-hf.by1']
+
+#: **按名字取件，不要按下标。** 加一个模型就会把 `GALLERY[-1]` / `GALLERY[5]`
+#: 悄悄换成另一个模型 —— 2026-10-16 加 mamba 时真撞上：MTP/视觉那两个用例
+#: 拿 `GALLERY[-1]` 当 Qwen3.8，于是去问 `MambaForCausalLM` 要 `.model`，
+#: 报的是 `'MambaForCausalLM' object has no attribute 'model'`。
+QWEN3_SMALL = 'complete-Qwen3-0.6B.by1'
+QWEN25_7B = 'complete-Qwen2.5-7B-Instruct.by1'
+GPT2 = 'complete-gpt2.by1'
+GPT_OSS = 'complete-gpt-oss-20b.by1'
+QWEN38 = 'complete-Qwen3.8-27B.by1'
+MAMBA = 'complete-mamba-130m-hf.by1'
+
+#: 夹具用的 norm eps —— **`tiny()` 与 `config_of()` 必须取同一个值**：
+#: 一个是"声明编译出来的配置"，一个是"独立写出来的参考配置"，
+#: 两边 eps 不同的话前向必然不一致（报出来是"前向不一致"，看不出病因）。
+#: 实测踩过两次：mamba 的真实声明是 1e-5、gpt-oss 的参考配置写的是 1e-5，
+#: 而其余家族是 1e-6 —— 所以这张表是**唯一事实源**，别再各写一个字面量。
+TINY_EPS = {'gpt2': None, 'gpt_oss': 1e-5, 'default': 1e-6}
+
+
+def tiny_eps(family):
+    return TINY_EPS.get(family, TINY_EPS['default'])
 
 
 def require(condition, message):
@@ -39,6 +63,13 @@ def tiny(name):
     family = info['arch']
     hp = info['hparams']
     hp.update(d_model='32', vocab='64', bos_token_id='54', eos_token_id='55')
+    # **夹具把 eps 也钉住**（与 `config_of` 共用 `TINY_EPS`）：
+    # mamba 的真实声明是 1e-5、gpt-oss 的参考配置是 1e-5，其余 1e-6 ——
+    # 不钉的话两侧不同，前向必然不一致。
+    # **真实 eps 由 `official_configs` 那条逐字段用例负责**，不靠这里。
+    eps = tiny_eps(family)
+    if eps is not None:                  # gpt2 走 `ln_eps`，不用这个字段
+        hp['rms_eps'] = str(eps)
     info['ctx'] = 128 if family == 'gpt_oss' else 32
     keep, counts = [], {}
     for stack, mech, attrs, key, attached in info['layer_seq']:
@@ -85,6 +116,25 @@ def tiny(name):
         info['vision'].update(patch_size='2', temporal_patch_size='2', num_position_embeddings='16',
                              mrope_section='[1, 1, 0]', image_token_id='60', video_token_id='61',
                              vision_start_token_id='62', vision_end_token_id='63')
+    if family == 'mamba':
+        # **SSM 的宽度不从 d_model 推**：`d_inner` 要自己缩，而且必须守住
+        # `d_inner == expand × d_model`（`_compile_mamba` 的判据）；
+        # `dt_rank` / `ssm_state` 同理各缩各的。
+        #
+        # ⚠ 两处都要改：**层的机制属性来自 `layer_seq`**（`_layers` 里
+        # `mix = (mechs[name], dict(attrs))`），而 `mech_attrs` 只有 feed 用。
+        # 只改后者的话 `state_size` 还是 16，而参考配置是 4 —— 形状对不上，
+        # 报出来是 "Error(s) in loading state_dict"（第一版就是这么栽的）。
+        expand = 2
+        for stack, mech, attrs, key, attached in info['layer_seq']:
+            if info['mechs'][mech] == 'SSM':
+                expand = int(float(attrs.get('expand', 2)))
+                attrs['ssm_state'] = '4'
+        for name_, attrs in info['mech_attrs'].items():
+            if info['mechs'][name_] == 'SSM':
+                attrs['ssm_state'] = '4'
+        hp['d_inner'] = str(expand * 32)
+        hp['dt_rank'] = '2'
     return by1full.compile_config(info)
 
 
@@ -95,7 +145,8 @@ def config_of(family, tied, T):
     common = dict(vocab_size=64, hidden_size=32, num_hidden_layers=2, num_attention_heads=4,
                   num_key_value_heads=2, head_dim=8, intermediate_size=64,
                   max_position_embeddings=32, tie_word_embeddings=tied,
-                  bos_token_id=54, eos_token_id=55, rms_norm_eps=1e-6, attention_dropout=0)
+                  bos_token_id=54, eos_token_id=55, rms_norm_eps=tiny_eps(family),
+                  attention_dropout=0)
     if family == 'qwen3':
         return T.Qwen3Config(rope_parameters={'rope_type': 'default', 'rope_theta': 1e6}, **common)
     if family == 'qwen2':
@@ -107,7 +158,8 @@ def config_of(family, tied, T):
                             attn_pdrop=0.1, resid_pdrop=0.1, embd_pdrop=0.1,
                             bos_token_id=54, eos_token_id=55)
     if family == 'gpt_oss':
-        common.update(max_position_embeddings=128, rms_norm_eps=1e-5, attention_bias=True)
+        common.update(max_position_embeddings=128, rms_norm_eps=tiny_eps(family),
+                      attention_bias=True)
         return T.GptOssConfig(num_local_experts=4, num_experts_per_tok=2,
                               sliding_window=4,
                               layer_types=['sliding_attention', 'full_attention'],
@@ -116,6 +168,23 @@ def config_of(family, tied, T):
                                                'original_max_position_embeddings': 4,
                                                'beta_fast': 32., 'beta_slow': 1.,
                                                'truncate': False}, **common)
+    if family == 'mamba':
+        # **mamba 用不了 `common`** —— 它那一代的字段名是另一套
+        # （`d_model` / `d_inner` / `n_layer` / `state_size` / `conv_kernel`），
+        # 而且没有 num_attention_heads 这些。照着 tiny() 缩出来的尺寸写死。
+        return by1full._tclass('MambaConfig')(
+            vocab_size=64, hidden_size=32, num_hidden_layers=2,
+            intermediate_size=64, hidden_act='silu', initializer_range=0.1,
+            layer_norm_epsilon=tiny_eps(family), use_cache=True,
+            d_model=32, d_inner=64, n_layer=2,
+            state_size=4, conv_kernel=4, expand=2,
+            time_step_rank=2, time_step_scale=1.0, time_step_min=0.001,
+            time_step_max=0.1, time_step_init_scheme='random',
+            time_step_floor=0.0001, rms_norm=True, residual_in_fp32=True,
+            fused_add_norm=True, rescale_prenorm_residual=False,
+            use_bias=False, use_conv_bias=True, pad_vocab_size_multiple=8,
+            ssm_cfg={}, bos_token_id=54, eos_token_id=55, pad_token_id=0,
+            tie_word_embeddings=tied)
     text = dict(vocab_size=64, hidden_size=32, intermediate_size=64, num_hidden_layers=4,
                 num_attention_heads=4, num_key_value_heads=2, head_dim=16, rms_norm_eps=1e-6,
                 max_position_embeddings=32, tie_word_embeddings=False, bos_token_id=54, eos_token_id=55,
@@ -141,6 +210,9 @@ def reference(family, tied, torch, T):
         return T.GPT2LMHeadModel(config_of(family, tied, T))
     if family == 'gpt_oss':
         return T.GptOssForCausalLM(config_of(family, tied, T))
+    if family == 'mamba':
+        # 同样要用 `_tclass`（没导出到顶层）。
+        return by1full._tclass('MambaForCausalLM')(config_of(family, tied, T))
     return T.Qwen3_5ForConditionalGeneration(config_of(family, tied, T))
 
 
@@ -199,7 +271,7 @@ def main():
             print('  !! %s: %s' % (name, ex), flush=True)
 
     def manifest():
-        family, cfg, mtp = by1full.compile_config(description(GALLERY[-1]))
+        family, cfg, mtp = by1full.compile_config(description(QWEN38))
         model = by1full.build_model(family, cfg, mtp, device='meta')
         ref = json.loads(pathlib.Path(by1paths.REFS, 'Qwen__Qwen3.8-27B.tensors.json').read_text(encoding='utf-8'))
         got = {k: list(v.shape) for k, v in model.state_dict().items()}
@@ -215,16 +287,14 @@ def main():
         # 可重跑命令。IR 路径早就有 by1verify 的 config 逐字段行，而
         # complete-* 走 Transformers 后端、没有 field 映射表 —— 于是漏在两边之间。
         # **refs/ 里有哪个模型的 config，这里就能比哪个。**
-        for name, reference_file in [(GALLERY[0], 'Qwen__Qwen3-0.6B.config.json'),
-                                     (GALLERY[3], 'openai-community__gpt2.config.json'),
-                                     (GALLERY[4], 'openai__gpt-oss-20b.config.json'),
-                                     (GALLERY[5], 'Qwen__Qwen3.8-27B.config.json'),
-                                     # T26：第二架构（SSM）。**没有进 GALLERY** ——
-                                     # 那张表的用例是按 Attention/FFN 家族写的，
-                                     # mamba 的入场要另一套（见 docs/t26-plan.md）。
-                                     # 但 config 逐字段这条判据与家族无关，先接上。
-                                     ('complete-mamba-130m-hf.by1',
-                                      'state-spaces__mamba-130m-hf.config.json')]:
+        for name, reference_file in [(QWEN3_SMALL, 'Qwen__Qwen3-0.6B.config.json'),
+                                     (GPT2, 'openai-community__gpt2.config.json'),
+                                     (GPT_OSS, 'openai__gpt-oss-20b.config.json'),
+                                     (QWEN38, 'Qwen__Qwen3.8-27B.config.json'),
+                                     # T26：第二架构（SSM）。它的两条 family 用例
+                                     # （tiny 的缩尺寸 + config_of 的独立参考配置）
+                                     # 与家族无关的那部分见 tiny()/config_of() 的 mamba 分支。
+                                     (MAMBA, 'state-spaces__mamba-130m-hf.config.json')]:
             family, cfg, _ = by1full.compile_config(description(name))
             raw = json.loads(pathlib.Path(by1paths.REFS, reference_file).read_text(encoding='utf-8'))
             # **用 by1full._tclass**：mamba 系的两个类没导出到顶层，
@@ -278,7 +348,7 @@ def main():
         case(filename + ' 前向/反向（独立参考配置）', numerical)
 
     def mtp_execution():
-        family, cfg, mtp = tiny(GALLERY[-1])
+        family, cfg, mtp = tiny(QWEN38)
         model = by1full.build_model(family, cfg, mtp).eval()
         args = inputs(family, torch)
         recorded = []
@@ -311,7 +381,7 @@ def main():
     case('图像→主干→MTP 的执行、独立公式和梯度', mtp_execution)
 
     def checkpoint():
-        family, cfg, mtp = tiny(GALLERY[-1])
+        family, cfg, mtp = tiny(QWEN38)
         model = by1full.build_model(family, cfg, mtp).eval()
         with tempfile.TemporaryDirectory(prefix='by1-full-', dir=by1paths.ROOT) as tmp:
             root = pathlib.Path(tmp).resolve()
@@ -388,7 +458,7 @@ def main():
         ('错误 QKV bias', lambda i: i['layer_seq'][0][2].update(qkv_bias='false')),
     ]:
         def rejected(change=change):
-            info = copy.deepcopy(description(GALLERY[2])); change(info)
+            info = copy.deepcopy(description(QWEN25_7B)); change(info)
             try:
                 by1full.compile_config(info)
             except ValueError:
@@ -397,7 +467,9 @@ def main():
         case(name + '被拒绝', rejected)
 
     # ── T26 加的五条规则：**每条配一个必红反例**（否则规则可能永远绿）──
-    MAMBA = 'complete-mamba-130m-hf.by1'
+    # （`MAMBA` 用模块级那个常量 —— 在 main() 里再赋一次会把它变成 main 的
+    #  局部名，而 `official_configs` 是嵌套函数、早于这次赋值被调用，
+    #  报的是 "cannot access free variable 'MAMBA'"。）
 
     def _mamba():
         return copy.deepcopy(description(MAMBA))
