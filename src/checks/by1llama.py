@@ -436,7 +436,41 @@ def selftest_kv_map(gguf_path):
     return missing
 
 
-def _modify_tensor(arch, hf_name, ggml_name, arr):
+def _gguf_name(arch, hf_name, mapper, has_experts=False):
+    """HF 名 -> GGML 名，**含"映射表里没有、上游在钩子里做"的那几条**。
+
+    `TensorNameMap` 是一张纯命名表；上游的 `conversion/<arch>.py` 里还有
+    改名与特判（`filter_tensors` / `modify_tensors`）。实测（2026-10-16，
+    granite 混合栈）有三条只在钩子里：
+      · `mamba.dt_bias` → 先改成 `mamba.dt_proj.bias` 再查表（mamba.py 的 filter_tensors）
+      · `shared_mlp.input_linear.weight` → 拆成 `ffn_gate` + `ffn_up`
+        （见 `_tensors_for`；映射表里根本没有这一条）
+      · `shared_mlp.output_linear.weight` → **无专家**时落 `ffn_down`
+        （映射表给的是 `ffn_down_shexp`，那是**有专家**那一支的名字）
+    不补这几条，症状是"包能打出来、装不上"或者"名字对不上、张量少一批"。
+    """
+    fixed = hf_name
+    if arch == 'granite_hybrid' and hf_name.endswith('.dt_bias'):
+        fixed = hf_name[:-len('.dt_bias')] + '.dt_proj.bias'
+    g = mapper.get_name(fixed, try_suffixes=('.weight', '.bias'))
+    if arch == 'granite_hybrid' and 'shared_mlp.' in hf_name and has_experts:
+        # **要么实现，要么拒绝。** 专家形态（`num_local_experts > 0`）走的是
+        # 另一套名字（`*_shexp`），还没实现 —— 宁可在这里停下，
+        # 也不要产出一个"名字看着对、算的是另一个模型"的包。
+        raise ValueError('granite 专家形态（num_local_experts > 0）还没实现：'
+                         '共享前馈的落名与拆分都不一样')
+    if g is None and arch == 'granite_hybrid' \
+            and hf_name.endswith('shared_mlp.input_linear.weight'):
+        bid = int(hf_name.split('.layers.')[1].split('.')[0])
+        g = 'blk.%d.ffn_up_shexp.weight' % bid      # 占位：真正写出的是拆开的两份
+    if arch == 'granite_hybrid' and not has_experts \
+            and hf_name.endswith('shared_mlp.output_linear.weight'):
+        bid = int(hf_name.split('.layers.')[1].split('.')[0])
+        g = 'blk.%d.ffn_down.weight' % bid
+    return g
+
+
+def _modify_tensor(arch, hf_name, ggml_name, arr, n_groups=1):
     """转换期的张量改写 —— **照上游 `conversion/<arch>.py` 的 `modify_tensors`**。
 
     名字映射（`TensorNameMap`）只解决"叫什么"。有些架构还要改**值或形状**，
@@ -461,11 +495,76 @@ def _modify_tensor(arch, hf_name, ggml_name, arr):
         # HF 是 `(d_inner, 1, kernel)`，GGML 要 2D `(kernel, d_inner)`（写盘时反序）。
         if hf_name.endswith('conv1d.weight'):
             return np.squeeze(arr)
+    if arch == 'granite_hybrid':
+        # **Mamba2 那一代的三条形状规则**（conversion/mamba.py:184-194）——
+        # Mamba1 没有它们（它的 A_log/D 本来就是那个形状），只有这一族要：
+        #   · `ssm_conv1d.weight` -> squeeze
+        #   · `ssm_a` / `ssm_d`   -> reshape((*shape, 1))（"unsqueeze 到 Mamba-1 的
+        #     形状语义"，上游注释原话）
+        #   · `ssm_norm.weight`   -> reshape((n_groups, d_inner // n_groups))
+        # **顺序也照上游**：先 reshape，再对 A_log 取负 exp（见下）。
+        out = np.asarray(arr)
+        if ggml_name.endswith('ssm_conv1d.weight'):
+            out = np.squeeze(out)
+        elif ggml_name.endswith('ssm_a') or ggml_name.endswith('ssm_d'):
+            out = out.reshape((*out.shape, 1))
+        elif ggml_name.endswith('ssm_norm.weight'):
+            out = out.reshape((n_groups, out.shape[0] // n_groups))
+        arr = out
+    if arch in ('mamba', 'granite_hybrid') and hf_name.endswith('.A_log'):
+        # 值：GGML 的 `ssm_a` 存的是 **A = -exp(A_log)**，不是 A_log。
+        # **必须用 torch.exp**：与上游 `torch.exp` 差 ~1 ulp 就会让逐位判据红
+        # （T26 实测：max|Δ| 0.625，首个分歧 @1034）。放在 reshape 之后，
+        # 与上游同一个顺序。
+        import torch
+        return -torch.exp(torch.as_tensor(np.ascontiguousarray(arr))).numpy()
     return arr
 
 
+def _permute(weights, n_head, n_head_kv):
+    """上游 `LlamaModel.permute` —— HF 的 q/k 权重换成 GGML 要的排布。
+
+    `undo_permute = True` 的架构都要它（llama 本家、granite 混合族、llada）。
+    实测（2026-10-16，granite 混合栈）：不做这一步，**四个注意力层的
+    `attn_q` / `attn_k` 与上游对不上**（max|Δ| 0.18 ~ 0.42）—— 形状一个不差、
+    名字一个不差，**是排布不同**。这类错最难从症状上看出来。
+    """
+    import numpy as np
+    if n_head_kv is not None and n_head != n_head_kv:
+        n_head = n_head_kv
+    return (weights.reshape(n_head, 2, weights.shape[0] // n_head // 2,
+                            *weights.shape[1:])
+            .swapaxes(1, 2)
+            .reshape(weights.shape))
+
+
+def _tensors_for(arch, hf_name, ggml_name, arr, n_groups=1, n_heads=None,
+                 n_kv_heads=None):
+    """一个 HF 张量 -> **要写进 GGUF 的 (名字, 数组) 列表**。
+
+    多数是 1:1，但上游有 **1:2** 的情形：granite 那个融合的
+    `shared_mlp.input_linear`（行数为 2 × shared_intermediate_size）在
+    **没有专家**时要拆成 `ffn_gate` + `ffn_up`（conversion/granite.py:211-222）。
+    实测：不拆的话张量数是 370 而上游是 402（32 层各少一个），
+    llama.cpp 装不上。所以产物线的循环**不能假设一对一**。
+    """
+    import numpy as np
+    out = np.asarray(arr)
+    if arch == 'granite_hybrid':
+        if hf_name.endswith('shared_mlp.input_linear.weight'):
+            ffn = out.shape[0] // 2
+            bid = int(hf_name.split('.layers.')[1].split('.')[0])
+            return [('blk.%d.ffn_gate.weight' % bid, out[:ffn]),
+                    ('blk.%d.ffn_up.weight' % bid, out[ffn:])]
+        if hf_name.endswith('self_attn.q_proj.weight') and n_heads:
+            out = _permute(out, n_heads, n_heads)
+        elif hf_name.endswith('self_attn.k_proj.weight') and n_heads:
+            out = _permute(out, n_heads, n_kv_heads or n_heads)
+    return [(ggml_name, _modify_tensor(arch, hf_name, ggml_name, out, n_groups))]
+
+
 def build_gguf(hf_dir, out_path, ref_gguf=None, arch="llama", n_blocks=24,
-               quantize=False):
+               quantize=False, n_groups=1):
     """T23 产物线：HF 权重 -> 真 .gguf（F32），by1 表驱动 KV。
 
     范围记档：tokenizer KV 从 ref_gguf（上游转换产物）整拷 —— 分词器
@@ -500,19 +599,30 @@ def build_gguf(hf_dir, out_path, ref_gguf=None, arch="llama", n_blocks=24,
     # mapping 方向 = HF 名 -> (MODEL_TENSOR, ggml 名)，直查（我第一版
     # 当成反方向建索引，命中 0 —— 坑账）
     tensors = []
+    # q/k 置换要头数（granite 混合族 `undo_permute = True`）；从 config.json 读。
+    n_heads = n_kv_heads = None
+    has_experts = False
+    cfg_path = _os.path.join(hf_dir, 'config.json')
+    if _os.path.exists(cfg_path):
+        with open(cfg_path, encoding='utf-8') as fh:
+            _cfg = json.load(fh)
+        n_heads = _cfg.get('num_attention_heads')
+        n_kv_heads = _cfg.get('num_key_value_heads')
+        has_experts = bool(_cfg.get('num_local_experts'))
     for name, val in sd.items():
-        g = mapper.get_name(name, try_suffixes=('.weight', '.bias'))
+        g = _gguf_name(arch, name, mapper, has_experts)
         if g is None:
             continue
         arr = val.to(torch.float32).numpy() if hasattr(val, "to") else np.asarray(val)
-        arr = _modify_tensor(arch, name, g, arr)
-        arr = np.ascontiguousarray(arr)
-        vshape = arr.shape
-        if quantize and arr.ndim >= 2:
-            q = _q8_0_encode(arr.reshape(-1))
-            nblk = arr.size // 32
-            arr = np.frombuffer(q, dtype=np.uint8).reshape(nblk, 34)
-        tensors.append((g, arr, vshape))
+        for g_name, g_arr in _tensors_for(arch, name, g, arr, n_groups,
+                                          n_heads, n_kv_heads):
+            g_arr = np.ascontiguousarray(g_arr)
+            vshape = g_arr.shape
+            if quantize and g_arr.ndim >= 2:
+                q = _q8_0_encode(g_arr.reshape(-1))
+                nblk = g_arr.size // 32
+                g_arr = np.frombuffer(q, dtype=np.uint8).reshape(nblk, 34)
+            tensors.append((g_name, g_arr, vshape))
     if out_path and ref_gguf:
         with open(ref_gguf, 'rb') as fh:
             raw = fh.read()
@@ -757,6 +867,9 @@ def main(argv=None):
     bb.add_argument('--arch', default='llama', help='GGUF 架构名（llama/qwen3/…）')
     bb.add_argument('--n-blocks', type=int, default=24)
     bb.add_argument('--q8-0', action='store_true')
+    # Mamba2 那一族的 `ssm_norm` 要 reshape 成 (n_groups, d_inner // n_groups)
+    # （上游 conversion/mamba.py:193）。granite 这个形态是 1；别的形态要显式给。
+    bb.add_argument('--n-groups', type=int, default=1)
     args = ap.parse_args(argv)
     if args.cmd == 'record':
         return record(args.out)
@@ -774,7 +887,7 @@ def main(argv=None):
         return 0
     if args.cmd == 'build-gguf':
         ts = build_gguf(args.hf_dir, args.out, args.ref, args.arch,
-                        args.n_blocks, args.q8_0)
+                        args.n_blocks, args.q8_0, args.n_groups)
         print('  写了 %s：%d 个张量' % (args.out, len(ts)))
         return 0
     return logits_run(args.gguf, args.prompt, args.out, args.llama_cli)

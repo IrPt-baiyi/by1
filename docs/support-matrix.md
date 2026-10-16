@@ -24,7 +24,7 @@
 | Qwen3.8-27B（BF16，含视觉+MTP） | ✅ | ✅ | ✅ | 🟡 实验 | [含图像与 MTP](gpu-results/gpu-benchmark-qwen38-final.json)；产物 = Qwen3.8 IQ3_S GGUF 基线配方**待 GPU 日跑** |
 | Qwen3.8-27B-FP8 | ✅ | 🟡 装载路径已接通 | — 未验 | — 未验 | Q2 **GPU 实测前不标完成**（[量化边界](quantization.md)）；存储审计 407 对 |
 | **mamba-130m-hf**（**第二架构**：SSM，无 KV cache） | ✅ | ✅ | ✅ | ✅ [T26 记录](t26-plan.md) | 真权重双 loader 前向**逐位（max\|Δ\|=0，纯 CPU）**；递归状态增量 == 全量 **1.497e-03**（判据 2e-3，余量 1.3× 已登记进[精度预算](precision-budget.md)）；**产物**：by1 出 GGUF 被未修改的上游 llama.cpp 加载，logits **逐位（30604 值）** |
-| **granite-4.0-h-350m**（**第三架构**：混合栈 —— 28 × Mamba2 + 4 × Attention 同栈） | ✅ | ✅ | ✅ | — 未验 | 真权重双 loader 前向**逐位（max\|Δ\|=0）**；**混合状态**增量 == 全量 **9.918e-05**（一个 `DynamicCache` 里 28 个递归层 + 4 个注意力层）；config 逐字段 40 个 · 340.3 M 与真权重同。**产物腿未验**（llama.cpp 有 `GRANITE_HYBRID` 实现，跑不跑得通要实测，见 [T27 计划](t27-plan.md)） |
+| **granite-4.0-h-350m**（**第三架构**：混合栈 —— 28 × Mamba2 + 4 × Attention 同栈） | ✅ | ✅ | ✅ | ✅ [T27 记录](t27-plan.md) | 真权重双 loader 前向**逐位（max\|Δ\|=0）**；**混合状态**增量 == 全量 **9.918e-05**（一个 `DynamicCache` 里 28 个递归层 + 4 个注意力层）；config 逐字段 40 个 · 340.3 M 与真权重同；**产物**：402 张量与上游**逐位相同**、上游未修改的 llama.cpp 加载后 logits **逐位（89474 值）** |
 
 ## B. refs 语料（**36** 个 config / **31** 个有逐字段行）
 

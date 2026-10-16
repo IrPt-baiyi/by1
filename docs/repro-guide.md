@@ -138,11 +138,12 @@ python3 -m venv --without-pip .venv && python3 -m pip --python .venv install -e 
 
 这一步最重（要检出并编译 llama.cpp），但它是最硬的判据：
 **未经修改的上游 `llama.cpp` 加载 by1 生成的 GGUF，logits 逐位相同。**
-命令与出处见 [llama.cpp 基线](llama.cpp-baseline.md)；实测（mamba-130m，同一条提示词）：
+命令与出处见 [llama.cpp 基线](llama.cpp-baseline.md)；实测（同一条提示词）：
 
-```
-  [PASS] logits 逐位相同（30604 个值）
-```
+| 模型 | 结果 |
+|---|---|
+| mamba-130m（纯递归） | `[PASS] logits 逐位相同（30604 个值）` |
+| granite-4.0-h-350m（混合栈） | 402 张量与上游产物逐位相同 · `[PASS] logits 逐位相同（89474 个值）` |
 
 ## 七、对不上时先看哪儿
 

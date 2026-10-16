@@ -51,6 +51,31 @@ llama-cli logits 逐位 max|Δ|=0 —— **产物等价，差异全在过程**�
 （**递归模型对这个尤其敏感**：SSM 每步都乘 A，1 ulp 会沿序列放大；
 KV-cache 那类模型没有这条放大链。）
 
+## 混合栈（granite 4.0-h）逼出来的另外四条（2026-10-16，T27）
+
+同一件事在混合栈上更露骨：**370 个 HF 张量要变成 402 个 GGUF 张量**，
+而且中间有三种"看不见的改写"。四条都在上游的钩子里，映射表一条都没有：
+
+| 规则 | 上游出处 | 少了它的后果 |
+|---|---|---|
+| `mamba.dt_bias` → 先改名成 `.dt_proj.bias` 再查表 | `conversion/mamba.py` 的 `filter_tensors` | 该张量查不到名字 → **静默丢掉**（包能打出来、装不上） |
+| `shared_mlp.input_linear.weight` → **拆成** `ffn_gate` + `ffn_up`（无专家时） | `conversion/granite.py:211-222` | 张量数 370 ≠ 上游 402（32 层各少一个）；名字也不对（映射表给的是 `*_shexp`） |
+| `self_attn.q_proj` / `k_proj` → **置换**（`undo_permute = True`） | `conversion/llama.py` 的 `permute` | **形状一个不差、名字一个不差，算出来不一样**（实测 max\|Δ\| 0.18~0.42，四个注意力层全中）——最难从症状上看出来的一类 |
+| `shared_mlp.output_linear.weight` → **无专家**时落 `ffn_down` | `conversion/granite.py:223` | 映射表按"有专家"给 `ffn_down_shexp`，与上游对不上 |
+
+外加 **Mamba2 的三条形状规则**（`conversion/mamba.py:184-194`，Mamba1 没有）：
+`ssm_conv1d` squeeze、`ssm_a` / `ssm_d` 各 unsqueeze 一维、
+`ssm_norm` reshape 成 `(n_groups, d_inner // n_groups)`；**顺序**也要照上游
+（先 reshape，再对 `A_log` 取负 exp）。
+
+**收口之后**：402/402 张量逐位相同 · 上游未修改的 llama.cpp 加载 by1 的产物，
+logits **逐位相同（89474 值）**。
+
+**一条纪律也在这里落地**：上游对"有专家"的形态用的是另一套名字
+（`*_shexp`）。by1 的产物线**只实现了无专家那一支**，遇到
+`num_local_experts > 0` 时**直接报错拒绝** ——
+「要么实现，要么拒绝」，不产出一个"名字看着对、算的是另一个模型"的包。
+
 ## 判卷人
 
 `src/checks/by1llama.py`（build_gguf / _gguf_write / selftest_kv_map）·

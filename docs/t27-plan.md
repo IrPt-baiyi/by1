@@ -100,9 +100,13 @@ M M M M M M M M M M A M M A M M M A M M M M M M M M M A M M M M
 - [x] complete 声明过 `by1check` + `by1complete`（含 config 逐字段）；
 - [x] 真权重双 loader：零 missing/unexpected + 前向 max|Δ| **0.000e+00**；
 - [x] 混合状态的增量 == 全量（KV 与递归两本账在同一个模型里，**分开报**：9.918e-05）；
-- [ ] 上游加载 + logits 逐位（若 llama.cpp 的 granite_hybrid 跑不通这个 350m 形态，
-      **如实记录为"未验"**，并按 [Step-5 那条纪律](step5-contract-plan.md)停在规格层）；
+- [x] 上游加载 + logits 逐位：**402/402 张量逐位 · 上游 logits 逐位（89474 值）**；
 - [ ] 报告进 `docs/`，更新[支持矩阵](support-matrix.md)与[精度预算](precision-budget.md)。
+
+**T27 一句话结论**：by1 现在能描述、能算、能出标准产物、能被上游加载的，
+是**一整类"逐层机制混排"的模型**了 —— 形状来自逐层类型表而不是家族名，
+判据两侧齐全（transformers + llama.cpp），而且**同一套产线**同时覆盖
+纯注意力、纯递归、混合三种主干。**从"支持几个模型"到"支持一类模型"。**
 
 ### 进度（2026-10-16 当天）
 
@@ -112,7 +116,7 @@ M M M M M M M M M M A M M A M M M A M M M M M M M M M A M M M M
 | 2 | **✅** | 声明入库（`models/` 下 `complete-granite-4.0-h-350m`，`models.tsv` 加了行，`by1fetch` 抓回 refs）：`by1check` **0 错 0 警** · `compile_config` 出 **40 个字段** · meta 建模 `GraniteMoeHybridForCausalLM` **340.3 M**（与真权重同）· 真权重装载 **370/370 零 missing** · `by1complete` 的 config 逐字段已接上（**PASS**） |
 | 3 | **✅（前向那半）** | `by1shadow --smoke-refs` → **370 个真名 · 双 loader 零 missing/unexpected · 前向 max\|Δ\| = 0.000e+00（逐位）** |
 | 3' | **✅** | `by1shadow --smoke-state-hybrid`（新加的第三条判据）：**一个 `DynamicCache` 里 28 个递归层 + 4 个注意力层** · 官方 **9.918e-05** · by1 **9.918e-05**（判据 2e-3，余量约 20×）· 逐位置曲线 **不随序列增长**（1e-5 ~ 1e-4 平着走）—— 比 T26 的纯递归（1.497e-03）还小 15 倍，所以**别把纯递归的余量外推给别的递归形态**（已登记进[精度预算](precision-budget.md)） |
-| 4 | 待做 | `--arch granite_hybrid` 产物 + 上游 logits 逐位 |
+| 4 | **✅** | `by1llama build-gguf --arch granite_hybrid --n-blocks 32`：**402 个张量**（比 HF 的 370 多 32 —— 融合的 gate+up 要拆开），与上游产物**逐位相同（402/402）**；上游未修改的 llama.cpp 加载后 logits **逐位相同（89474 值）**。路上补了 6 条转换期改写（3 条在钩子里、Mamba2 的 3 条形状规则），记在 [convert-diff](convert-diff.md) |
 | — | **✅** | 已进 `by1complete` 的 **GALLERY**（`tiny`/`config_of`/`reference` 三条分支都写了）：那一步现在跑 **8 个完整声明**的前向/反向 + config 逐字段 + **13 条必红反例**（含 T27 新加的 5 条）→ `[PASS] 完整模型：全部通过` |
 
 **夹具这一步踩的三个坑（都记进代码注释了）**：
