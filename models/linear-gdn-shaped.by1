@@ -1,0 +1,45 @@
+# ── linear-gdn-shaped.by1 ────────────────────────────────────────────
+# **GDN 线性注意力**（qwen3-next / clef 视觉塔那一路）的**单独探针**。
+#
+# 为什么要单独一份：clef-tiny 同时带 `q_gate`，一旦数值对不上，
+# **分不清是 Linear 的映射错还是 q_gate 的**（实测第一版就是这么蒙的）。
+# 一个特性一个探针 —— 和 attn-qgate-shaped 同一条理由。
+#
+# 语义唯一在 `by1exec.op_linear`：短卷积 + delta 规则 + 门控归一化。
+# ggml 侧映射到 `ggml_gated_delta_net`（内核递推与参照逐项相同）。
+#
+#   python by1exec.py linear-gdn-shaped.by1 --compare
+#   python by1ggml.py --from-ir linear-gdn-shaped.by1
+
+model LinearGdnShaped {
+  ctx 512
+
+  hparams {
+    d_model = 64
+    n_layer = 2
+    vocab   = 256
+    rms_eps = 1e-05
+  }
+
+  mech GDN : Linear {
+    k_heads     = 2        # rep = v_heads/k_heads = 2（GQA 式头广播）
+    v_heads     = 4
+    k_dim       = 8        # k_dim == v_dim（ggml 的 GDN 状态是方阵）
+    v_dim       = 8
+    conv_kernel = 4
+    act         = silu
+    out_dim     = 64
+    structural  = [ k_dim, v_dim, out_dim ]
+  }
+
+  mech FFN_ : FFN { hidden = 128 }
+
+  stack main {
+    pattern = 2 * GDN
+    main[:] >> FFN_
+  }
+
+  position {
+    default = rope(base = 10000, pairing = half)
+  }
+}

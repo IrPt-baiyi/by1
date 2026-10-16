@@ -46,6 +46,7 @@ PROBES = [
     ('hello.by1', 'Attention + FFN（最小完整）'),
     ('attn-fused-shaped.by1', 'Attention（融合 qkv + 门）'),
     ('attn-qgate-shaped.by1', 'Attention（q_gate：q 投影宽一倍）'),
+    ('linear-gdn-shaped.by1', 'Linear（GDN 线性注意力 · 映射未收口）'),
     ('mla-shaped.by1', 'MLA'),
     ('mla-sparse-shaped.by1', 'MLA + 稀疏索引（DSA）'),
     ('moe-routing-shaped.by1', 'MoE（路由）'),
@@ -370,6 +371,11 @@ def classify(probe, backend, msg):
         return "可补", ("ggml 有 `GATED_DELTA_NET`/`GATED_LINEAR_ATTN`"
                        "（delta-rule/GDN 族原语）—— 与 by1 的 KDA/Linear "
                        "对表是实现工作（可能要折算）")
+    if "数值未收口" in msg:
+        # 发射器写好了、**数值差没进判据** —— 按纪律拒绝，不冒充支持。
+        # 这是"可补"里最诚实的一种状态：实现进行中、收口未完。
+        return "可补", ("映射实现进行中：发射器已写，数值差 ~2.7e-3 未收口，"
+                       "按纪律拒绝（调试台账见 ggml-gaps-feasibility.md）")
     if ("yarn" in msg or "llama3" in msg.lower()) and backend == "ggml":
         # **顺序要紧**：这条排在"缺算子"后面 —— 一个格子同时有 yarn 和 MoE
         # 时（gpt-oss 就是），硬阻塞（卡上游）才算数，yarn 是"顺手能补"。

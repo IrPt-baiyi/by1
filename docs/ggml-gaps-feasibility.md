@@ -49,6 +49,33 @@ q/k 的 L2 归一在 op 外面做）。`qwen3-next`/`clef-tiny` 的 `Linear` 与
 > 第一版按"两大半"切，`max|Δ| = 1.9e-02`，形状与名字全对、只有数值错。
 > **布局类 bug 只有数值判据抓得住**（qkv_fused 的 bias 偏移那次同款）。
 
+## 三·五、路线 ① 的调试台账（`Linear`，**未收口**）
+
+发射器写好了（`by1ggml` 的 `elif k == "Linear"`），但数值差 **~2.7e-3** ——
+按"数值没对上的实现不许冒充支持"，`check_support` **拒绝 `Linear`**。
+探针 `linear-gdn-shaped.by1`（隔离用：clef 混着 q_gate，二分不了）。
+
+已测的事实（下轮从这接）：
+
+| 实验 | 结果 | 说明 |
+|---|---|---|
+| 序列长度 16 / 64 / 256 | 2.46e-3 / 2.46e-3 / 2.94e-3 | **不随长度变** —— 不是递推累积，是结构/逐元素错 |
+| conv 核 1 / 2 / 4 | 1.28e-3 / 3.43e-3 / 2.7e-3 | **随核变** —— conv 的 tap 布局有嫌疑；但核 1 也错 -> 还有第二个来源 |
+| rep=1（k_heads=v_heads） | 9.98e-4 | 头广播（interleave）洗清 |
+| 去掉 q 的 `dk^-0.5` 预乘 | 误差变大 | 原语内部有 `scale = 1/sqrt(S_v)`；**但 RMS 归一是尺度不变的**，理论两者等价 —— 这条不一致本身也是线索 |
+| `ggml_softplus` | 精确 `log1p(exp(x))`（>20 截断） | 洗清 |
+| `ggml_l2_norm` | `1/max(sqrt(sum), eps)` ≠ 参照的 `1/sqrt(sum+eps)` | 差异 ~1e-8 量级，洗清 |
+| 形状契约（in_proj_qkvz/ba/conv/A_log/dt_bias/norm.w/out_proj） | 逐个对上 | `norm.w` 是 `(dv,)` **逐维共享跨头**，不是 `(vd,)` |
+
+剩余嫌疑（按优先级）：
+1. **conv 的 tap 顺序/布局**（`ggml_ssm_conv` 的核序 vs 参照 `P["conv"][:, i]`；
+   核 1 的残差说明还有别的）；
+2. `beta`/`g` 的逐头索引（`(1, nv, n)` 的 nb1 步长）；
+3. 状态转置约定（内核注释 `s_out[j*S_v+i] = S[i][j]`）与参照 `(dk, dv)` 的对齐。
+
+**收口判据**：`python src/by1ggml.py --from-ir linear-gdn-shaped.by1`
+对拍进 1e-6 以内，且 `clef-tiny` 同绿（那时 `check_support` 的拒绝一起撤）。
+
 ## 四、剩余 11 格的实施路线（按"一处实现关几格"排）
 
 | 路线 | 关掉的格 | 依赖 |

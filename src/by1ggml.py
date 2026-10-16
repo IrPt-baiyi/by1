@@ -66,7 +66,7 @@ def _qk_on(v):
 # ── 支持集：要么实现，要么拒绝 ──────────────────────────────────────
 
 SUPPORTED_KINDS = ("Embed", "Norm", "Head", "Attention", "FFN", "Add", "SSM",
-                   "MLA")
+                   "MLA", "Linear")
 SUPPORTED_ACT = ("silu", "gelu", "gelu_new", "gelu_tanh", "tanh")
 
 
@@ -146,6 +146,15 @@ def check_support(ir):
                     bad.append(f"{where}：gate_act={a.get('gate_act')!r} 还没实现")
                 if str(a.get("head_gate", "off")) not in ("off", "per_head"):
                     bad.append(f"{where}：head_gate={a.get('head_gate')!r} 还没实现")
+            elif k == "Linear":
+                # **GDN 线性注意力**（语义唯一在 `by1exec.op_linear`）。
+                # 发射器写好了（`elif k == "Linear"` 那段），但**数值差
+                # ~2.7e-3 未收口**（2026-10-17）—— **数值没对上的实现
+                # 不许冒充支持**（"能描述 ≠ 能算"），所以这里拒绝。
+                # 调试台账见 docs/ggml-gaps-feasibility.md 第三节。
+                bad.append(f"{where}：Linear 的 ggml 映射**数值未收口**"
+                           "（实测差 ~2.7e-3，调试台账见 "
+                           "docs/ggml-gaps-feasibility.md）—— 拒绝，不冒充支持")
     for o in ir["globals"]:
         if o["kind"] not in SUPPORTED_KINDS:
             bad.append(f"全局算子 {o['kind']} 还没有 ggml 映射")
@@ -1103,6 +1112,125 @@ def emit_model_c(ir, order, params):
                          f"{W_('dense')}, {p}att);")
             if bias:
                 lines.append(f"{indent}{dst} = ggml_add(ctx, {dst}, {W_('dense.bias')});")
+        elif k == "Linear":
+            # **GDN 线性注意力** —— 语义唯一在 `by1exec.op_linear`。
+            # ⚠ **这段当前是 WIP**：数值差 ~2.7e-3 未收口，`check_support`
+            # 对 `Linear` 一律拒绝（数值没对上的实现不许冒充支持）——
+            # 所以正常路径进不到这里。调试台账见
+            # `docs/ggml-gaps-feasibility.md` 第三·五节。
+            #
+            #   ① in_proj_qkvz -> [q|k|v|z]、in_proj_ba -> [bb|aa]（**逐头块**）；
+            #   ② [q|k|v] 过深度可分离因果卷积 + silu，再切回 q/k/v
+            #      （(token, channel) 布局、左补 k-1 —— 同 SSM 那次）；
+            #   ③ beta = sigmoid(bb)；**g = -exp(A_log)·softplus(aa + dt_bias)
+            #      是对数域**（ggml 内核里 `expf(g)`，正好对上）；
+            #   ④ q/k 头广播是 **interleave 不是 tile**（np.repeat 语义
+            #      [h0,h0,h1,h1]），逐头 L2 归一 + q·dk^-0.5；
+            #   ⑤ `ggml_gated_delta_net` 递推 —— 内核与参照逐项相同
+            #      （`delta[j] = (v - S·k)·beta`、`S += k⊗delta`、`out = S·q`）；
+            #   ⑥ RMS 归一 × norm.w × silu(z) -> out_proj。
+            nk, nv = int(a["k_heads"]), int(a["v_heads"])
+            dk, dv = int(a["k_dim"]), int(a["v_dim"])
+            rpn = nv // nk
+            kd, vd = nk * dk, nv * dv
+            blk = 2 * dk + 2 * dv * rpn
+            eps = _f(a.get("norm_eps", _DEFAULT_EPS))
+            l2e = _f(a.get("l2_eps", 1e-6))
+            kcv = int(a["conv_kernel"])
+            lines.append(f"{indent}struct ggml_tensor * {p}pj = ggml_mul_mat(ctx, "
+                         f"{W_('in_proj_qkvz')}, {src[0]});")
+            lines.append(f"{indent}struct ggml_tensor * {p}pj3 = ggml_reshape_3d(ctx, "
+                         f"{p}pj, {blk}, {nk}, n);")
+
+            def _seg(expr, w, off):
+                return (f"ggml_cont_2d(ctx, ggml_view_3d(ctx, {expr}, {w}, {nk}, n, "
+                        f"{expr}->nb[1], {expr}->nb[2], (size_t) {off} * "
+                        f"{expr}->nb[0]), {w * nk}, n)")
+
+            lines.append(f"{indent}struct ggml_tensor * {p}q0 = {_seg(p + 'pj3', dk, 0)};")
+            lines.append(f"{indent}struct ggml_tensor * {p}k0 = {_seg(p + 'pj3', dk, dk)};")
+            lines.append(f"{indent}struct ggml_tensor * {p}v0 = {_seg(p + 'pj3', dv * rpn, 2 * dk)};")
+            lines.append(f"{indent}struct ggml_tensor * {p}z0 = {_seg(p + 'pj3', dv * rpn, 2 * dk + dv * rpn)};")
+            lines.append(f"{indent}struct ggml_tensor * {p}pb = ggml_mul_mat(ctx, "
+                         f"{W_('in_proj_ba')}, {src[0]});")
+            lines.append(f"{indent}struct ggml_tensor * {p}pb3 = ggml_reshape_3d(ctx, "
+                         f"{p}pb, {2 * rpn}, {nk}, n);")
+            lines.append(f"{indent}struct ggml_tensor * {p}bb = {_seg(p + 'pb3', rpn, 0)};")
+            lines.append(f"{indent}struct ggml_tensor * {p}aa = {_seg(p + 'pb3', rpn, rpn)};")
+            # ② 因果深度卷积（与 SSM 同一套布局）
+            lines.append(f"{indent}struct ggml_tensor * {p}mix = ggml_concat(ctx, "
+                         f"{p}q0, ggml_concat(ctx, {p}k0, {p}v0, 0), 0);")
+            lines.append(f"{indent}float * {p}pad_buf = (float *) calloc("
+                         f"(size_t) {kcv - 1} * {2 * kd + vd}, sizeof(float));")
+            lines.append(f"{indent}struct ggml_tensor * {p}pad0 = ggml_new_tensor_2d("
+                         f"ctx, GGML_TYPE_F32, {kcv - 1}, {2 * kd + vd});")
+            lines.append(f"{indent}{p}pad0->data = {p}pad_buf;")
+            lines.append(f"{indent}struct ggml_tensor * {p}cv = ggml_silu(ctx, "
+                         f"ggml_ssm_conv(ctx, ggml_concat(ctx, {p}pad0, "
+                         f"ggml_cont(ctx, ggml_transpose(ctx, {p}mix)), 0), "
+                         f"{W_('conv')}));")
+            lines.append(f"{indent}struct ggml_tensor * {p}q1 = ggml_cont_2d(ctx, "
+                         f"ggml_view_2d(ctx, {p}cv, {kd}, n, {p}cv->nb[1], 0), {kd}, n);")
+            lines.append(f"{indent}struct ggml_tensor * {p}k1 = ggml_cont_2d(ctx, "
+                         f"ggml_view_2d(ctx, {p}cv, {kd}, n, {p}cv->nb[1], "
+                         f"(size_t) {kd} * {p}cv->nb[0]), {kd}, n);")
+            lines.append(f"{indent}struct ggml_tensor * {p}v1 = ggml_cont_2d(ctx, "
+                         f"ggml_view_2d(ctx, {p}cv, {vd}, n, {p}cv->nb[1], "
+                         f"(size_t) {2 * kd} * {p}cv->nb[0]), {vd}, n);")
+            # ③ beta / g
+            lines.append(f"{indent}struct ggml_tensor * {p}beta = ggml_reshape_3d(ctx, "
+                         f"ggml_sigmoid(ctx, {p}bb), 1, {nv}, n);")
+            # g = -exp(A_log)·softplus(aa + dt_bias)：**对数域**。
+            # `ggml_mul(a, b)` 要求 b 广播进 a —— 大形状（nv, n）在前。
+            lines.append(f"{indent}struct ggml_tensor * {p}g = ggml_reshape_3d(ctx, "
+                         f"ggml_mul(ctx, ggml_softplus(ctx, ggml_add(ctx, {p}aa, "
+                         f"{W_('dt_bias')})), ggml_neg(ctx, ggml_exp(ctx, "
+                         f"ggml_reshape_2d(ctx, {W_('A_log')}, {nv}, 1)))), "
+                         f"1, {nv}, n);")
+            # ④ 头广播（interleave）+ 逐头 L2 归一 + q·dk^-0.5
+            def _interleave(x2, w, heads, times):
+                if times == 1:
+                    return f"ggml_reshape_3d(ctx, {x2}, {w}, {heads}, n)"
+                parts = []
+                for _h in range(heads):
+                    for _r in range(times):
+                        parts.append(f"ggml_view_2d(ctx, {x2}, {w}, n, "
+                                     f"{x2}->nb[1], (size_t) {_h} * {w} * "
+                                     f"{x2}->nb[0])")
+                expr = f"ggml_cont(ctx, {parts[0]})"
+                for extra in parts[1:]:
+                    expr = f"ggml_concat(ctx, {expr}, ggml_cont(ctx, {extra}), 0)"
+                return f"ggml_reshape_3d(ctx, {expr}, {w}, {heads * times}, n)"
+            lines.append(f"{indent}struct ggml_tensor * {p}q3 = {_interleave(p + 'q1', dk, nk, rpn)};")
+            lines.append(f"{indent}struct ggml_tensor * {p}k3 = {_interleave(p + 'k1', dk, nk, rpn)};")
+            lines.append(f"{indent}struct ggml_tensor * {p}v3 = ggml_reshape_3d(ctx, "
+                         f"{p}v1, {dv}, {nv}, n);")
+            # q 的 `dk^-0.5` 缩放**在原语内部**（内核 `attn_data[j] = sum * scale`
+            # ，`scale = 1/sqrt(S_v)`）—— 这里**不能**再乘一次（第一版预乘了，
+            # 双重缩放）。只做 L2 归一。
+            lines.append(f"{indent}{p}q3 = ggml_l2_norm(ctx, {p}q3, {l2e});")
+            lines.append(f"{indent}{p}k3 = ggml_l2_norm(ctx, {p}k3, {l2e});")
+            # ⑤ GDN 递推（输出 = y 与末态拼接，y 取前半段视图）
+            lines.append(f"{indent}float * {p}s0_buf = (float *) calloc("
+                         f"(size_t) {dk} * {dv} * {nv}, sizeof(float));")
+            lines.append(f"{indent}struct ggml_tensor * {p}s0 = ggml_new_tensor_4d("
+                         f"ctx, GGML_TYPE_F32, {dk}, {dv}, {nv}, 1);")
+            lines.append(f"{indent}{p}s0->data = {p}s0_buf;")
+            lines.append(f"{indent}struct ggml_tensor * {p}res = ggml_gated_delta_net("
+                         f"ctx, {p}q3, {p}k3, {p}v3, {p}g, {p}beta, {p}s0, 1);")
+            lines.append(f"{indent}struct ggml_tensor * {p}y4 = ggml_view_4d(ctx, "
+                         f"{p}res, {dk}, {nv}, n, 1, {p}res->nb[0], "
+                         f"(size_t) {dk} * {p}res->nb[0], "
+                         f"(size_t) {dk} * {nv} * {p}res->nb[0], 0);")
+            # ⑥ RMS 归一 × norm.w × **silu(z)** -> out_proj。
+            #    `norm.w` 是 `(dv,)` —— **逐维共享、跨头广播**（参照：
+            #    `P["norm.w"] * y`，y 是 (b, nv, s, dv)）→ reshape (dv, 1, 1)。
+            lines.append(f"{indent}struct ggml_tensor * {p}y3 = ggml_mul(ctx, "
+                         f"ggml_mul(ctx, ggml_rms_norm(ctx, {p}y4, {eps}), "
+                         f"ggml_reshape_3d(ctx, {W_('norm.w')}, {dv}, 1, 1)), "
+                         f"ggml_silu(ctx, ggml_reshape_3d(ctx, {p}z0, {dv}, {nv}, n)));")
+            lines.append(f"{indent}struct ggml_tensor * {dst} = ggml_mul_mat(ctx, "
+                         f"{W_('out_proj')}, ggml_cont_2d(ctx, {p}y3, {vd}, n));")
         elif k == "FFN":
             hid = int(a["hidden"])
             bias = bool(a.get("bias"))
