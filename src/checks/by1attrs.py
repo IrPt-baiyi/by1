@@ -150,13 +150,13 @@ def emitter_prims(root=ROOT):
 
 
 
-def emit_symbols(root=ROOT):
+def emit_symbols(root=ROOT, script="by1c.py"):
     """每个图原语在 C 发射器里**会出现的那几个符号**（从 by1c.py 的分支源码里抽）。
 
     只认 `p_xxx` / `ggml_xxx` / `by1_xxx` 三种前缀 —— 它们是发射器真正拼进产物里的名字。
     某个原语抽不出符号（纯表达式装配）就返回空集，A7 对它**不作要求**。
     """
-    text = (pathlib.Path(root) / "src/by1c.py").read_text(encoding="utf-8")
+    text = (pathlib.Path(root) / "src" / script).read_text(encoding="utf-8")
     lines = text.splitlines()
     heads = []
     for i, ln in enumerate(lines):
@@ -179,8 +179,13 @@ def emit_symbols(root=ROOT):
 A7_MODELS = ("llama-shaped.by1", "gelu-shaped.by1", "ling-tiny.by1",
              "mla-sparse-shaped.by1", "ssm-shaped.by1")
 
+#: ggml 侧的见证模型：它的符号体系和 C 侧不同（多 35 个有名内核），
+#: 同样贪心覆盖：前 5 份盖 31/35，再加三份补齐 clamp_max / gelu_tanh / log1p / soft_max_sink。
+A7_MODELS_GGML = A7_MODELS + ("gpt-oss-shaped.by1", "gpt2-tiny.by1",
+                      "qwen3-next-shaped.by1")
 
-def artifact_check(root=ROOT, models=A7_MODELS):
+
+def artifact_check(root=ROOT, models=A7_MODELS, emitter="c"):
     """A7：**产物里的证据** —— 生成的 C 里真的出现该原语的符号。
 
     跑 `by1c --from-graph` 生成一份 model.c，对模型图里每个原语查"它的分支符号"
@@ -202,7 +207,8 @@ def artifact_check(root=ROOT, models=A7_MODELS):
     import by1check as _bc
     import by1codegen as _cg
     import by1graph as _bg
-    symbols = emit_symbols(root)
+    script = "by1c.py" if emitter == "c" else "by1ggml.py"
+    symbols = emit_symbols(root, script)
     problems, rows = [], []
     covered = set()
     total = len({p for p, v in symbols.items() if v})
@@ -219,9 +225,12 @@ def artifact_check(root=ROOT, models=A7_MODELS):
         covered |= {u for u in used if symbols.get(u)}
         wd = pathlib.Path(_tf.mkdtemp(prefix="by1a7-"))
         try:
-            run = _sp.run([sys.executable, str(root / "src/by1c.py"),
-                           "--from-graph", "--gcc", gcc, "--seq", "16",
-                           "--workdir", str(wd), str(p)],
+            argv = [sys.executable, str(root / "src" / script),
+                    "--gcc", gcc, "--seq", "16",
+                    "--workdir", str(wd), str(p)]
+            if emitter == "c":
+                argv.insert(2, "--from-graph")
+            run = _sp.run(argv,
                           capture_output=True, text=True, encoding="utf-8",
                           errors="replace", timeout=900)
             cfile = wd / "model.c"
@@ -471,17 +480,18 @@ def check(root=ROOT, enums=None, provenance=None, reserved=None):
                 if p not in prims_real:
                     problems.append('A6 EMIT_ASYM 里的 <%s> 不在 PRIMS 里了' % p)
     # A7：**产物里的证据** —— 分派表里有名字不等于产物里有调用。
-    try:
-        rows7, probs7, why7 = artifact_check(root)
-    except (ImportError, FileNotFoundError) as exc:
-        notes.append('产物证据没算（缺依赖/缺语料）：%r' % (exc,))
-    except Exception as exc:
-        problems.append('产物证据算不了：%r' % (exc,))
-    else:
-        if rows7 is None:
-            notes.append('产物证据没算：' + (why7 or ''))
+    for side, side_models in (('c', A7_MODELS), ('ggml', A7_MODELS_GGML)):
+        try:
+            rows7, probs7, why7 = artifact_check(root, side_models, side)
+        except (ImportError, FileNotFoundError) as exc:
+            notes.append('产物证据没算（缺依赖/缺语料）：%r' % (exc,))
+        except Exception as exc:
+            problems.append('产物证据算不了：%r' % (exc,))
         else:
-            problems.extend(probs7)
+            if rows7 is None:
+                notes.append('产物证据没算：' + (why7 or ''))
+            else:
+                problems.extend(probs7)
     return problems, notes
 
 
@@ -560,16 +570,21 @@ def _selftest():
 
 def _art():
     """A7 的一句话摘要：几份产物、多少个原语缺符号。"""
-    try:
-        rows, probs, info = artifact_check(ROOT)
-    except Exception:
-        return "没算"
-    if rows is None:
-        return "没算（缺 gcc）"
-    miss = sum(r[2] for r in rows)
-    cov = (info or {}).get("covered", 0) if isinstance(info, dict) else 0
-    tot = (info or {}).get("total", 0) if isinstance(info, dict) else 0
-    return "%d 份 / 原语 %d/%d / 缺 %d" % (len(rows), cov, tot, miss)
+    parts = []
+    for side, side_models in (('c', A7_MODELS), ('ggml', A7_MODELS_GGML)):
+        try:
+            rows, _probs, info = artifact_check(ROOT, side_models, side)
+        except Exception:
+            parts.append('%s 没算' % side)
+            continue
+        if rows is None:
+            parts.append('%s 没算' % side)
+            continue
+        miss = sum(r[2] for r in rows)
+        cov = (info or {}).get('covered', 0) if isinstance(info, dict) else 0
+        tot = (info or {}).get('total', 0) if isinstance(info, dict) else 0
+        parts.append('%s %d 份/%d/%d 缺 %d' % (side, len(rows), cov, tot, miss))
+    return ' · '.join(parts)
 
 def _emit():
     """(两个发射器都声明的原语数, PRIMS 里的原语数)。"""
