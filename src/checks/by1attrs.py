@@ -174,7 +174,13 @@ def emit_symbols(root=ROOT):
     return sym
 
 
-def artifact_check(root=ROOT, models=("llama-shaped.by1", "gelu-shaped.by1")):
+#: A7 见证模型：按**覆盖所有有命名内核的原语**选的（贪心覆盖）。
+#: 实测 5 份合起来 ±5 秒：前两份只能覆盖 8/22，加后三份补齐。
+A7_MODELS = ("llama-shaped.by1", "gelu-shaped.by1", "ling-tiny.by1",
+             "mla-sparse-shaped.by1", "ssm-shaped.by1")
+
+
+def artifact_check(root=ROOT, models=A7_MODELS):
     """A7：**产物里的证据** —— 生成的 C 里真的出现该原语的符号。
 
     跑 `by1c --from-graph` 生成一份 model.c，对模型图里每个原语查"它的分支符号"
@@ -198,6 +204,8 @@ def artifact_check(root=ROOT, models=("llama-shaped.by1", "gelu-shaped.by1")):
     import by1graph as _bg
     symbols = emit_symbols(root)
     problems, rows = [], []
+    covered = set()
+    total = len({p for p, v in symbols.items() if v})
     for name in models:
         p = root / "models" / name
         if not p.exists():
@@ -208,6 +216,7 @@ def artifact_check(root=ROOT, models=("llama-shaped.by1", "gelu-shaped.by1")):
         except Exception:
             continue
         used = sorted({n["prim"] for n in g.nodes})
+        covered |= {u for u in used if symbols.get(u)}
         wd = pathlib.Path(_tf.mkdtemp(prefix="by1a7-"))
         try:
             run = _sp.run([sys.executable, str(root / "src/by1c.py"),
@@ -233,7 +242,7 @@ def artifact_check(root=ROOT, models=("llama-shaped.by1", "gelu-shaped.by1")):
                                 % (name, ", ".join(missing[:4])))
         finally:
             _sh.rmtree(wd, ignore_errors=True)
-    return rows, problems, ""
+    return rows, problems, {"covered": len(covered), "total": total}
 
 #: 只在某个发射器里有、另一个没有的原语，若确实是有意的，写在这里（A6 要它）。
 EMIT_ASYM = {
@@ -552,13 +561,15 @@ def _selftest():
 def _art():
     """A7 的一句话摘要：几份产物、多少个原语缺符号。"""
     try:
-        rows, probs, _why = artifact_check(ROOT)
+        rows, probs, info = artifact_check(ROOT)
     except Exception:
         return "没算"
     if rows is None:
         return "没算（缺 gcc）"
     miss = sum(r[2] for r in rows)
-    return "%d 份 / 缺 %d" % (len(rows), miss)
+    cov = (info or {}).get("covered", 0) if isinstance(info, dict) else 0
+    tot = (info or {}).get("total", 0) if isinstance(info, dict) else 0
+    return "%d 份 / 原语 %d/%d / 缺 %d" % (len(rows), cov, tot, miss)
 
 def _emit():
     """(两个发射器都声明的原语数, PRIMS 里的原语数)。"""
