@@ -2,6 +2,21 @@
 # -*- coding: utf-8 -*-
 """by1kda -- KDA 的判卷人：**by1 算的，对着 fla 的参考实现**。
 
+## 参照物（2026-10-17 第十八轮）：**优先 transformers 官方，fla 只作备选**
+
+这个判卷人原来\**只能对着 fla**，而 fla 要上 `fla-core`（它引入 `triton`）
+—— 于是它在大多数机器上**永远是 `[跳过]`**。
+
+`transformers.models.kimi_linear.modeling_kimi_linear` 里就有两份**纯 torch** 官方实现：
+
+    recurrent_kimi_delta_attention   递推五行（没装 fla 时装饰器自己回退到这份）
+    KimiLinearRMSNormGated          门控 RMSNorm
+
+实测（本机）：三格三段 1.2e-07~2.2e-07，8 条反例全红。
+
+**GVA（nk ≠ nv）官方参考不支持**：它的 state 是 (B,H,K,V)、头数必须一致。
+那一格的**前端照验，递推/尾巴标 `—`（没验）** —— 不算过。
+
 ## 为什么是它
 
 KDA 的语义**不是我猜的** —— 是从 `fla` 的源码里读出来的，
@@ -157,6 +172,57 @@ def _site_file(*parts):
             return q
     return None
 
+
+def load_tf_kda_ref():
+    """**transformers 官方的 KDA 纯 torch 参考**（不需要 fla / triton）。
+
+    `transformers.models.kimi_linear.modeling_kimi_linear` 里：
+      · `recurrent_kimi_delta_attention` —— 递推五行（没装 fla 时装饰器**回退到
+        这段纯 torch 实现**，实测只打一行"falling back"，然后照常算）；
+      · `KimiLinearRMSNormGated` —— 门控 RMSNorm（它的 `activation` 写死 `sigmoid`，
+        这里换成 `linear`、门传 1，退化成 fla 那份 `rms_norm_ref(x, w, z=None)` 的
+        语义：`x * rstd * w`。门由判卷人单独乘 —— 见 `tail()`）。
+
+    **形状约定**：`g` 是 **per-dim** 的 `(B,S,H,K)`（官方 docstring 写"decay is
+    per-channel"），不是 per-token 的 `(B,S,H)` —— 传错报
+    `The size of tensor a (K) must match ... at dimension 2`。
+    """
+    try:
+        from transformers.models.kimi_linear import modeling_kimi_linear as mm
+    except Exception:
+        return None, None, None
+    fn = getattr(mm, "recurrent_kimi_delta_attention", None)
+    norm_cls = getattr(mm, "KimiLinearRMSNormGated", None)
+    if fn is None or norm_cls is None:
+        return None, None, None
+
+    class _Naive:
+        @staticmethod
+        def naive_recurrent_kda(q, k, v, g, beta, *a, **kw):
+            # **GVA（nk < nv）要先把 q/k/beta 扩到 v 的头数**：
+            # 官方参考的 state 是 (B,H,K,V)，g 的头数必须和 q 一致；
+            # 而 GVA 的语义就是"一组 v 头共享同一份 k"，
+            # `repeat_interleave` 出来逐组算，和逐组共享等价。
+            rep = g.shape[2] // q.shape[2]
+            if rep > 1:
+                import torch as _t
+                q = _t.repeat_interleave(q, rep, dim=2)
+                k = _t.repeat_interleave(k, rep, dim=2)
+                beta = _t.repeat_interleave(beta, rep, dim=2)
+            return fn(q, k, v, g, beta, None, False)
+
+    class _Rms:
+        def __call__(self, x, w, b=None, z=None, eps=1e-6, **_kw):
+            import torch
+            mod = norm_cls(x.shape[-1], eps=eps)
+            mod.activation = "linear"   # 门单独乘，见 tail()
+            with torch.no_grad():
+                mod.weight.copy_(w.detach().float())
+            return mod(x, torch.ones_like(x))
+
+    label = ("transformers.models.kimi_linear 的 recurrent_kimi_delta_attention"
+             + " + KimiLinearRMSNormGated")
+    return _Naive, _Rms(), label
 
 def load_fla_naive():
     """**按文件路径**加载 `fla/ops/kda/naive.py`。
@@ -402,45 +468,50 @@ def one(torch, naive, rms_ref, R, *, fkw=None, tkw=None, **case):
         R['gated_delta_rule'] = _spy
         try:
             y_by1 = m(x)
-            rec, _ = naive.naive_recurrent_kda(
-                ref['qn'], ref['kn'], ref['v'], ref['g'], ref['beta'])
+            try:
+                rec, _ = naive.naive_recurrent_kda(
+                    ref['qn'], ref['kn'], ref['v'], ref['g'], ref['beta'])
+            except RuntimeError as _e:
+                # **官方参考不支持 GVA（nk ≠ nv）**：它的 state 是 (B,H,K,V)，
+                # 头数必须是同一个。fla 那份支持 GVA，而它没装 —— 于是这一格的
+                # 递推段**没验**：如实标出，不算过。
+                print('     注：官方参考不支持 GVA（%s），这一格的递推段没验'
+                      % _e.__class__.__name__)
+                rec = None
         finally:
             R['gated_delta_rule'] = _orig
 
-        y_ref = tail(torch, m, rms_ref, rec, x, **tkw)
+        y_ref = None if rec is None else tail(torch, m, rms_ref, rec, x, **tkw)
     gin = cap['in']
     return {
         # ① 前端：by1 递进递推的那五个，和判卷人自己算的比
         'in': max(_rel(gin[i], ref[n]) for i, n in
                   enumerate(('q', 'k', 'v', 'g', 'beta'))),
         # ② 递推
-        'rec': _rel(cap['o'], rec),
+        'rec': None if rec is None else _rel(cap['o'], rec),
         # ③ 尾巴
-        'full': _rel(y_by1, y_ref),
+        'full': None if y_ref is None else _rel(y_by1, y_ref),
     }
 
 
 def main(argv):
     torch = _torch()
     only_red = '--selftest' in argv
-    naive, p_naive = load_fla_naive()
+    # **参照物优先用 transformers 官方的**（不需要 fla / triton）。
+    # fla 那两份只作备选 —— 这一条不改，这个判卷人在多数机器上永远是跳过。
+    naive, rms_ref, ref_label = load_tf_kda_ref()
     if naive is None:
+        naive, p_naive = load_fla_naive()
+        rms_ref, p_norm = load_fla_rms_norm_ref()
+        ref_label = (p_naive or '?') + ' + ' + (p_norm or '?')
+    if naive is None or rms_ref is None:
         # **`by1skip.skip` 是"打印并给退出码"，不是"打印并退出"。**
-        # 少一个 `return` 的话它照样往下跑，然后在 `naive.naive_recurrent_kda`
-        # 上 AttributeError —— 报出来是崩溃，不是"这台机器上没验"。
         return by1skip.skip(
-            '找不到 fla 的 naive 参考 —— 这一项在这台机器上验不了\n'
-            '    装它：pip install --no-deps fla-core einops')
-    rms_ref, p_norm = load_fla_rms_norm_ref()
-    if rms_ref is None:
-        return by1skip.skip(
-            '找不到 fla 的 rms_norm_ref —— 这一项在这台机器上验不了\n'
-            '    装它：pip install --no-deps fla-core einops')
+            '找不到 KDA 的参考实现（transformers 与 fla 都没有） —— 这一项在这台机器上验不了'
+            '装它：pip install --no-deps fla-core einops')
     R = runtime(torch)
     if not only_red:
-        print('  参照物 ①  %s' % p_naive)
-        print('  参照物 ②  %s  （切出 rms_norm_ref —— 那个文件 import triton）'
-              % p_norm)
+        print('  参照物  %s' % ref_label)
         print('  生成出来的运行时里有 KDA：%s' % ('KDA' in R))
 
     ok = True
@@ -451,11 +522,13 @@ def main(argv):
         print('     %-4s %-10s %-10s %-10s' % ('', '① 前端', '② 递推', '③ 尾巴'))
         for tag, case in CASES:
             r = one(torch, naive, rms_ref, R, **case)
-            base = max(base, r['in'], r['rec'], r['full'])
-            good = max(r.values()) < 1e-4
+            _vals = [v for v in r.values() if v is not None]
+            base = max([base] + _vals)
+            good = max(_vals) < 1e-4
             ok = ok and good
-            print('     %-4s %-10.3e %-10.3e %-10.3e  %s'
-                  % (tag, r['in'], r['rec'], r['full'],
+            _fmt = lambda v: '   —    ' if v is None else '%-10.3e' % v
+            print('     %-4s %s %s %s  %s'
+                  % (tag, _fmt(r['in']), _fmt(r['rec']), _fmt(r['full']),
                      '✓' if good else '✗ 这一段对不上'))
 
     # **红线是"比正例的误差大两个数量级"**，不是写死一个数。
