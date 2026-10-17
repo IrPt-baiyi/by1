@@ -1959,7 +1959,7 @@ static void p_le(float *o, const float *a, const float *b, int nd,
 }
 
 /* 一元（保形）。op: 0=silu 1=gelu_tanh 2=gelu 3=sigmoid 4=exp
-   5=log1p 6=sqrt 7=softplus 8=sqrtsoftplus —— 公式照 PRIMS 的 f 列。 */
+   5=log1p 6=已退役（原 sqrt，图里没有 lowering 会产出它）7=softplus 8=sqrtsoftplus —— 公式照 PRIMS 的 f 列。 */
 static void p_un(float *o, const float *x, long long tot, int op) {
     for (long long t = 0; t < tot; t++) {
         float u = x[t], r;
@@ -2384,7 +2384,7 @@ static void p_ssm_scan(float *o, const float *d, const float *A,
 
 # 一元原语 -> p_un 的 op 序（和 C_PRIMS 里的 switch 一一对应）
 _UN_OP = {"silu": 0, "gelu_tanh": 1, "gelu": 2, "sigmoid": 3, "exp": 4,
-          "log1p": 5, "sqrt": 6, "softplus": 7, "sqrtsoftplus": 8}
+          "log1p": 5, "softplus": 7, "sqrtsoftplus": 8}
 
 _UN_SHAPE_OK = set(_UN_OP) | {"softmax"}
 

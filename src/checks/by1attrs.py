@@ -62,8 +62,6 @@ RESERVED = {
 
 #: 图原语里**没有语料走到、但明确保留**的（A5 要它们）。每条都要写理由。
 PRIM_RESERVED = {
-    'sqrt': '**没有任何 lowering 会产出它**：rms_norm / layer_norm 里的 sqrt 是 numpy 参考，'
-            'sqrtsoftplus 是独立原语；映射留着给手写图（--from-graph 的构造侧）',
 }
 
 
@@ -343,8 +341,11 @@ def check(root=ROOT, enums=None, provenance=None, reserved=None):
     # **没有语料就跳过**（自检的假树里没有 by1all.py）—— 否则这条会在假树上全盘报红。
     try:
         used_p, unused_p = prim_coverage(root)
+    except (ImportError, FileNotFoundError) as exc:
+        notes.append('图原语覆盖没算（缺依赖）：%r' % (exc,))
     except Exception as exc:
-        notes.append('图原语覆盖没算（%r）' % (exc,))
+        # **其它异常不能当跳过**：第三十五轮就遇到过一次（by1graph 被改出了缩进错，A5/A6 只印一行“没算”就绿了）。
+        problems.append('图原语覆盖算不了：%r' % (exc,))
     else:
         if used_p or unused_p:
             for p in unused_p:
@@ -359,8 +360,10 @@ def check(root=ROOT, enums=None, provenance=None, reserved=None):
     try:
         g_set, c_set = emitter_prims(root)
         prims_real = _real_prims()
+    except (ImportError, FileNotFoundError) as exc:
+        notes.append('发射器覆盖没算（缺依赖）：%r' % (exc,))
     except Exception as exc:
-        notes.append('发射器覆盖没算（%r）' % (exc,))
+        problems.append('发射器覆盖算不了：%r' % (exc,))
     else:
         if prims_real:
             for p in sorted(prims_real):

@@ -794,7 +794,7 @@ def emit_model_c_graph(g, ir, order, params, dump=()):
             if node["ins"][0] in ivals:
                 ivals.add(node["outs"][0])
         # ── T16 第一批补口（2026-10-14）：对 ggml.h 逐个摸底后接上的 ────
-        elif prim in ("exp", "sqrt", "neg", "log"):
+        elif prim in ("exp", "neg", "log"):
             _put(body, prim, node, f"ggml_{prim}(ctx, {a[0]})")
         elif prim == "div":
             _put(body, prim, node,

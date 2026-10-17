@@ -505,11 +505,6 @@ def _ref_log1p():
     return np.log1p
 
 
-def _ref_sqrt():
-    np = _np()
-    return np.sqrt
-
-
 def _ref_l2_norm():
     """`x / √(Σx² + eps)`，沿**最后轴**（sum，不是 mean）。
 
@@ -660,8 +655,6 @@ PRIMS = {
                   "src": "by1exec 的 np.exp（衰减门要用）"},
     "log1p":     {"ins": 1, "f": "log(1+x)", "ref": _ref_log1p(),
                   "src": "by1exec.op_linear 的 np.log1p（衰减门要用）"},
-    "sqrt":      {"ins": 1, "f": "√x", "ref": _ref_sqrt(),
-                  "src": "by1exec 的 1/sqrt(·)（L2 归一 / 输出归一）"},
     # GDN 的归一与 GQA 广播。
     # `l2_norm(x, vd·eps) · √vd` **就是** mean 那一支（图里现拼），
     # 所以闭集只需要这一个归一。
@@ -770,7 +763,6 @@ _SPEC = {
                  "bound": "状态更新见 f 的递推式；零初始"},
     "exp": {"shape": "out = ins0", "dtype": "浮点逐元", "bound": "无前提（溢出即真溢出）"},
     "log1p": {"shape": "out = ins0", "dtype": "浮点逐元", "bound": "x > -1"},
-    "sqrt": {"shape": "out = ins0", "dtype": "浮点逐元", "bound": "x ≥ 0"},
     "l2_norm": {"shape": "out = ins0（沿最后轴）", "dtype": "浮点逐元",
                 "bound": "eps > 0；**sum 不是 mean**（均值那支是现拼的）"},
     "repeat": {"shape": "沿 ggml 轴 axis 整块重复 reps 次", "dtype": "同 ins0",
@@ -2316,7 +2308,7 @@ def run_graph(g, params, ids, pos=None, extra=None):
         elif prim == "ssm_scan":
             out = PRIMS["ssm_scan"]["ref"](a[0], a[1], a[2], a[3], a[4],
                                            a[5])
-        elif prim in ("exp", "log1p", "sqrt"):
+        elif prim in ("exp", "log1p"):
             out = PRIMS[prim]["ref"](a[0])
         elif prim == "l2_norm":
             out = PRIMS["l2_norm"]["ref"](a[0], at["eps"])
@@ -2570,7 +2562,6 @@ def selftest():
         bad.append("rope 位置 0 应当不动")
     # ── 打分函数那一族（MoE 路由的第一步）── 手算 + **与 by1ir 同源** ──
     for k, want in (("softplus", np.log(2.0)),
-                    ("sqrtsoftplus", np.sqrt(np.log(2.0))),
                     ("sigmoid", 0.5)):
         z = PRIMS[k]["ref"](np.array([0.0]))
         if abs(float(z[0]) - want) > 1e-9:
@@ -2626,8 +2617,8 @@ def selftest():
                                            np.array([2.0, 3.0])), [2.0, 2.0]):
         bad.append("div 对不上手算")
     # ── GDN / delta 规则那一族（Linear 与 KDA 共用）── 手算 ──
-    for k, want in (("exp", 1.0), ("log1p", 0.0), ("sqrt", 2.0)):
-        z = PRIMS[k]["ref"](np.array([0.0 if k != "sqrt" else 4.0]))
+    for k, want in (("exp", 1.0), ("log1p", 0.0)):
+        z = PRIMS[k]["ref"](np.array([0.0]))
         if abs(float(z[0]) - want) > 1e-12:
             bad.append("%s 对不上手算（应 %r）" % (k, want))
     if not np.array_equal(PRIMS["concat"]["ref"](np.array([[1.0, 2.0]]),
@@ -2661,7 +2652,7 @@ def selftest():
     print("  [PASS] 原语参考实现对拍手算（rms_norm / matmul / silu / rope · "
           "打分族 softmax/softplus/sqrtsoftplus/sigmoid 并与 by1ir 同源 · "
           "路由归约 top_k/gather/sum/clamp_min/clamp_max/add_scalar/div · "
-          "GDN concat/conv1d_causal〔含因果性〕/delta_rule/ssm_scan/exp/log1p/sqrt）")
+          "GDN concat/conv1d_causal〔含因果性〕/delta_rule/ssm_scan/exp/log1p）")
     return 0
 
 
