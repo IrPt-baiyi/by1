@@ -38,8 +38,10 @@ import torch
 import by1codegen as cg
 import by1ir
 import by1skip
+import numpy as np
+import by1exec
 from transformers.models.deepseek_v3.modeling_deepseek_v3 import (
-    DeepseekV3TopkRouter)
+    DeepseekV3MoE, DeepseekV3TopkRouter)
 from transformers.models.deepseek_v3.configuration_deepseek_v3 import (
     DeepseekV3Config)
 # **判卷人可选，不在就跳过 —— 但退出是调用方的事，库代码不 sys.exit**
@@ -57,6 +59,20 @@ except ImportError:
 D, E, K, NG, TG = 256, 32, 4, 8, 4
 NT = 12
 
+
+def _note_links():
+    """判卷人现在验三层（2026-10-17 第十七轮）：
+
+      ① 路由式子 vs 官方 router（原来就有）；
+      ② **整块**：官方 `DeepseekV3MoE`（路由 + 专家 + 共享 + 缩放）-> `by1exec.op_moe`；
+      ③ **专家路径单独对拍**：官方权重手算逐专家 MLP（`shared=0`）。
+
+    **一个很隐蔽的坑**：官方模块独立构造时
+    `experts.gate_up_proj` / `down_proj` / `shared_experts.*` 是 `torch.empty`（未初始化），
+    实测恰好全零 —— 于是“官方 experts 返回 0”、“换掉 w1/w3 结果也不变”，
+    看上去还很一致（0 == 0）。判卷人必须**自己给权重**；
+    另外专家参考要**逐 token** 写（批量写法会轰出错形状，而结果又恰好是 0）。
+    """
 
 def main():
     if DeepseekV4TopKRouter is None:
@@ -152,8 +168,140 @@ def main():
                                     "与参考一致" if ok else "对不上"))
     ok2 = sqrtsoftplus_vs_v4()
     ok3 = routing_vs_config()
-    return 0 if (ok and ok2 and ok3) else 1
+    ok4 = block_direct_link(cfg, torch)
+    ok5 = expert_direct_link(cfg, torch)
+    return 0 if (ok and ok2 and ok3 and ok4 and ok5) else 1
 
+
+def block_direct_link(cfg, torch):
+    """**整块直连**：官方 `DeepseekV3MoE`（路由 + 专家 + 共享 + 缩放）-> `by1exec.op_moe`。
+
+    上面那两段验的是"式子"（判卷人里另写一遍）与 config 对账；真正跑 IR/图那条路的是
+    `by1exec.op_moe`。两条链各自对上官方，不等于**彼此**一致。
+
+    官方把专家权重**融合**了：`experts.gate_up_proj[e]` 是 `(2*hidden, d)`，
+    `linear(x, W).chunk(2, -1)` 给出 `(gate, up)` —— 也就是**前半行是 gate、后半行是 up**。
+    by1 的 `op_moe` 吃的是分开的 `w1/w3`，映射就落在这条分界上。
+    """
+    torch.manual_seed(1)
+    cfg = cfg.__class__(**{**cfg.to_dict(), "_experts_implementation": "eager"})
+    blk = DeepseekV3MoE(cfg).eval()
+    # **官方模块独立构造时专家权重是 `torch.empty`（未初始化）** ——
+    # 实测恰好是**全零**，于是"官方 experts 返回 0"、"换 w1/w3 也不变"。
+    # 那不是上游的 bug，是**没人调 post_init**；判卷人自己给权重。
+    with torch.no_grad():
+        for _p in (blk.experts.gate_up_proj, blk.experts.down_proj,
+                   blk.shared_experts.gate_proj.weight,
+                   blk.shared_experts.up_proj.weight,
+                   blk.shared_experts.down_proj.weight):
+            _p.normal_(0.0, 0.05)
+    sd = {k: v.detach().numpy().astype(np.float32)
+          for k, v in blk.state_dict().items()}
+    mi = int(cfg.moe_intermediate_size)
+    gu = sd["experts.gate_up_proj"]
+    P = {
+        "router": sd["gate.weight"],
+        "score_bias": sd["gate.e_score_correction_bias"],
+        "w1": gu[:, :mi, :],
+        "w3": gu[:, mi:, :],
+        "w2": sd["experts.down_proj"],
+        "sw1": sd["shared_experts.gate_proj.weight"],
+        "sw3": sd["shared_experts.up_proj.weight"],
+        "sw2": sd["shared_experts.down_proj.weight"],
+    }
+    at = {"experts": int(cfg.n_routed_experts), "top_k": int(cfg.num_experts_per_tok),
+          "hidden": mi, "shared": 1, "shared_hidden": mi,
+          "score_bias": True, "router_bias": False,
+          "routed_scale": float(cfg.routed_scaling_factor),
+          "routing": "sigmoid_group_topk", "act": "silu",
+          "limit": None, "alpha": 1.702, "expert_bias": False,
+          "shared_gate": False, "n_group": int(cfg.n_group),
+          "topk_group": int(cfg.topk_group)}
+    x = torch.randn(1, NT, D)
+    with torch.no_grad():
+        ref = blk(x).numpy().astype(np.float64)
+    got = by1exec.op_moe(P, at, [x.numpy().astype(np.float32)], D)
+    got = np.asarray(got, dtype=np.float64)
+    dd = float(np.abs(got - ref).max())
+    rel = dd / max(float(np.abs(ref).max()), 1e-12)
+    good = rel < 1e-6
+    print("\n  整块直连：官方 DeepseekV3MoE -> by1exec.op_moe")
+    print("     绝对差 %.3e  相对 %.3e  %s"
+          % (dd, rel, "后端 op 与官方一致 ok" if good else "**不一致**"))
+    return good
+
+def expert_direct_link(cfg, torch):
+    """**专家路径单独对拍**（整块对拍覆盖不到它）。
+
+    坑：本环境里官方 `DeepseekV3Experts.forward` **返回全零** ——
+    `@use_experts_implementation` 的专家实现没装/没分派上，装饰器把整段
+    算成 0（实测：`m.experts(...)` 的 absmax = 0.0，换 w1/w3 结果都不变）。
+    所以"整块对拍"只证明路由 + 共享 + 缩放；**专家路径要单独比**：用官方权重
+    （`gate_up_proj` 前半 gate、后半 up）手算逐专家 MLP，再乘官方路由权重。
+    """
+    torch.manual_seed(2)
+    blk = DeepseekV3MoE(cfg).eval()
+    # **官方模块独立构造时专家权重是 `torch.empty`（未初始化）** ——
+    # 实测恰好是**全零**，于是"官方 experts 返回 0"、"换 w1/w3 也不变"。
+    # 那不是上游的 bug，是**没人调 post_init**；判卷人自己给权重。
+    with torch.no_grad():
+        for _p in (blk.experts.gate_up_proj, blk.experts.down_proj,
+                   blk.shared_experts.gate_proj.weight,
+                   blk.shared_experts.up_proj.weight,
+                   blk.shared_experts.down_proj.weight):
+            _p.normal_(0.0, 0.05)
+    sd = {k: v.detach().numpy().astype(np.float32)
+          for k, v in blk.state_dict().items()}
+    mi = int(cfg.moe_intermediate_size)
+    gu = sd["experts.gate_up_proj"]
+    P = {
+        "router": sd["gate.weight"],
+        "score_bias": sd["gate.e_score_correction_bias"],
+        "w1": gu[:, :mi, :],
+        "w3": gu[:, mi:, :],
+        "w2": sd["experts.down_proj"],
+    }
+    at = {"experts": int(cfg.n_routed_experts),
+          "top_k": int(cfg.num_experts_per_tok),
+          "hidden": mi, "shared": 0, "shared_hidden": 0,
+          "score_bias": True, "router_bias": False,
+          "routed_scale": float(cfg.routed_scaling_factor),
+          "routing": "sigmoid_group_topk", "act": "silu",
+          "limit": None, "alpha": 1.702, "expert_bias": False,
+          "shared_gate": False, "n_group": int(cfg.n_group),
+          "topk_group": int(cfg.topk_group)}
+    x = torch.randn(1, NT, D)
+    with torch.no_grad():
+        # 官方路由（权重**是**官方模块算的；只有专家前向是坏的）
+        _, wgt, idx = blk.gate(x)
+        xf = x.view(-1, D)
+        # **逐 token 的朴素写法**：每个 token 的每个被选专家各自一遍。
+        # 第一版写成 `xe @ gu[e, :mi, :].transpose(...)` —— 两边都是**批量**，
+        # torch 广播出一个错形状，而结果恰好是 0，看上去"一致"（0 == 0）。
+        # 判据里最危险的正是这种"全零也对得上"。
+        gu_t = blk.experts.gate_up_proj
+        dp_t = blk.experts.down_proj
+        ref = torch.zeros_like(xf)
+        for t in range(xf.shape[0]):
+            for j in range(idx.shape[1]):
+                e = int(idx[t, j])
+                g = xf[t] @ gu_t[e, :mi, :].T
+                u = xf[t] @ gu_t[e, mi:, :].T
+                y = (torch.nn.functional.silu(g) * u) @ dp_t[e].T
+                ref[t] = ref[t] + y * wgt[t, j]
+        if float(ref.abs().max()) == 0.0:
+            # **不许用 assert 当控制流**（lint ⑤：`-O` 一跑就没了）
+            raise RuntimeError("专家参考全零 —— 这条判据是空的")
+        ref = ref.numpy().astype(np.float64)
+    got = by1exec.op_moe(P, at, [x.numpy().astype(np.float32)], D)
+    got = np.asarray(got, dtype=np.float64).reshape(-1, D)  # op_moe 出 [b,n,d]
+    dd = float(np.abs(got - ref).max())
+    rel = dd / max(float(np.abs(ref).max()), 1e-12)
+    good = rel < 1e-6
+    print("\n  专家路径直连：官方权重手算逐专家 MLP -> by1exec.op_moe（shared=0）")
+    print("     绝对差 %.3e  相对 %.3e  %s"
+          % (dd, rel, "后端专家路径一致 ok" if good else "**不一致**"))
+    return good
 
 def sqrtsoftplus_vs_v4():
     """**打分函数独立于选法** —— 拿 DeepSeek V4 的 `sqrtsoftplus` 验一遍。
