@@ -48,6 +48,7 @@ except ImportError:                     # 单独拷一个文件出去时兜底
 try:
     from by1ir import EPS_DEFAULT as _DEFAULT_EPS
     from by1ir import qk_norm_of
+    from by1ir import as_bool, as_num
 except ImportError:                     # 单独拷一个文件出去时兜底
     _DEFAULT_EPS = 1e-5
 
@@ -252,18 +253,14 @@ class UnsupportedError(CodegenError):
 
 
 def _num(v, default=None):
-    if v is None:
-        return default
-    try:
-        return float(str(v).strip())
-    except ValueError:
-        return default
+    """数字读法 —— 委托给 `by1ir.as_num`（唯一实现）。"""
+    return as_num(v, default)
 
 
-def _bool(v, default=False):
-    if v is None:
-        return default
-    return str(v).strip().lower() in ("true", "1", "yes", "on")
+# `_bool` 原来在这里：白名单语义（只有 true/1/yes/on 算开）——
+# 于是 `sink = per_head` 这种描述性取值被判成**关**（悄悄关掉一个开着的
+# 属性）。它当时没有任何调用点（死函数），删掉比留着安全。
+# 布尔读法只有 `by1ir.as_bool` 一份。
 
 
 # ── 取值必须在**实现过的**集合里 ────────────────────────────────────
@@ -302,12 +299,8 @@ def _enum_bad(key, v, name, kind):
 
 
 def _flag(v, default=False):
-    """像 `sink = per_head` 这种描述性取值：只要不是明确的否定，就算开着。
-    （旧版用 _bool 会把 per_head 判成 False —— 属性开着却被静默关掉。）"""
-    if v is None:
-        return default
-    s = str(v).strip().lower()
-    return s not in ("", "false", "no", "off", "none", "null", "0")
+    """布尔读法 —— 委托给 `by1ir.as_bool`（唯一实现）。"""
+    return as_bool(v, default)
 
 
 def _heads(raw):

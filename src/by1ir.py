@@ -657,12 +657,49 @@ def qk_is_full(v):
     return qk_on(v) and qk_norm_of(v) == "full"
 
 
+#: **布尔/数字取值的唯一强制转换**（2026-10-17 第八轮）。
+#:
+#: 各后端此前有三种写法：`bool(a.get(x))`（Python 真值 —— `"false"` 是**真**）、
+#: `_bool`（白名单 —— `sink = per_head` 这种描述性取值被静默关掉）、
+#: `_flag`（黑名单 —— 只在明确否定时关）。`bool()` 那次是**错**的、
+#: `_bool` 那次是**漏**的；黑名单是这两种里唯一能同时说对的两类属性。
+#: 现在只有这一份；`by1lint` 第⑬ 类盯"又有人在文件里 def 一份"。
+BOOL_OFF = ("", "false", "no", "off", "none", "null", "0")
+
+
+def as_bool(v, default=False):
+    """IR 属性的布尔读法（**唯一实现**）。
+
+    明确否定（`false`/`off`/`no`/`none`/`null`/`""`/`0`，不分大小写）才关；
+    其余非空值都算开 —— 于是 `sink = per_head` 这种描述性取值不会被
+    静默关掉，而 `bias = "false"` 也不会被 Python 真值判成开。
+    None 走 default。
+    """
+    if v is None:
+        return default
+    return str(v).strip().lower() not in BOOL_OFF
+
+
+def as_num(v, default=None):
+    """IR 属性的数字读法（**唯一实现**）：认 `"1e-5"` 这种字符串。
+
+    读不出来就回 default —— 调用方必须给一个有据的默认值。
+    """
+    if v is None:
+        return default
+    try:
+        return float(str(v).strip())
+    except (TypeError, ValueError):
+        return default
+
+
 #: `_qk_on` 是 `qk_on` 的旧名（by1c/by1exec/by1graph 都这么调）。
 _qk_on = qk_on
 
 #: **不许有第二份实现的谓词**（`by1lint` 的第⑫类按这张表查）。
 #: 这些名字一旦在别的文件里出现 `def`，就是又复制了一份。
-CANON_PREDICATES = ("qk_on", "qk_norm_of", "qk_is_full", "_qk_on")
+CANON_PREDICATES = ("qk_on", "qk_norm_of", "qk_is_full", "_qk_on",
+                    "as_bool", "as_num")
 
 
 def _qk_norm_shapes(a, q, kv, hd):

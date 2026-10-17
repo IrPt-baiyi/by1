@@ -32,7 +32,7 @@ import by1paths
 # 这个文件里原来有 11 处 `1e-5`；那些形状本身没错，
 # 错在"哪一处漏了传参"没有结构性征兆 —— 见 by1ir 里那段注释。
 try:
-    from by1ir import (qk_on as _qk_on, qk_is_full, EPS_DEFAULT as _DEFAULT_EPS, ALPHA_DEFAULT as _ALPHA,
+    from by1ir import (as_bool, qk_on as _qk_on, qk_is_full, EPS_DEFAULT as _DEFAULT_EPS, ALPHA_DEFAULT as _ALPHA,
                    L2_EPS_DEFAULT as _L2_EPS, ROPE_PARTIAL_DEFAULT as _ROPE_PARTIAL,
                    ROPE_SCALE_DEFAULT as _ROPE_SCALE,
                    ROUTED_SCALE_DEFAULT as _ROUTED_SCALE)
@@ -250,7 +250,7 @@ def op_attention(P, a, ins, d):
     #
     # 和 by1codegen 当初那个"Attention 无条件 apply_rope"是同一个 bug，
     # 只是那个是在 PyTorch 后端、且是被 GPT-2 逼出来的。
-    _rope_on = bool(a.get("rope", True))
+    _rope_on = as_bool(a.get("rope", True))
     npr = int(hd * part)
     # **开关要真的管住两个分支。**
     # 若写成 `if not _rope_on: part = 0.0`，则 `npr = 0`
@@ -377,7 +377,7 @@ def _dsa_index_pool(P, a, x, q, k):
     """
     b, n, _ = x.shape
     P_ = int(a["index_kpool"])
-    tail = bool(a.get("index_kpool_tail"))
+    tail = as_bool(a.get("index_kpool_tail"))
     nh, hd = int(a["index_heads"]), int(a["index_dim"])
     topk = int(a["index_topk"])
     gate = x @ P["indexer.index_kpool_compress_gate"].T        # [b, n, hd]

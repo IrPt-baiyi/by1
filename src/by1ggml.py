@@ -39,7 +39,7 @@ import sys
 import numpy as np
 import by1io
 import by1paths
-from by1ir import ROPE_SCALE_DEFAULT  # noqa: E402
+from by1ir import ROPE_SCALE_DEFAULT, as_bool  # noqa: E402
 
 MANGLE = __import__("re").compile(r"[^0-9A-Za-z]")
 
@@ -690,7 +690,7 @@ def emit_model_c_graph(g, ir, order, params, dump=()):
                 xb = f"{u}_b3"
             _put(body, prim, node, f"ggml_mul_mat(ctx, {xa}, {xb})")
         elif prim == "rms_norm":
-            eps, one = _f(at["eps"]), bool(at.get("one_plus"))
+            eps, one = _f(at["eps"]), as_bool(at.get("one_plus"))
             r = f"_r{len(body)}"
             body.append(f"    struct ggml_tensor * {r} = "
                         f"ggml_rms_norm(ctx, {a[0]}, {eps});")
@@ -700,7 +700,7 @@ def emit_model_c_graph(g, ir, order, params, dump=()):
             else:
                 _put(body, prim, node, f"ggml_mul(ctx, {r}, {a[1]})")
         elif prim == "layer_norm":
-            eps, one = _f(at["eps"]), bool(at.get("one_plus"))
+            eps, one = _f(at["eps"]), as_bool(at.get("one_plus"))
             r = f"_r{len(body)}"
             body.append(f"    struct ggml_tensor * {r} = "
                         f"ggml_norm(ctx, {a[0]}, {eps});")

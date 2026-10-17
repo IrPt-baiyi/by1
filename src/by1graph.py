@@ -48,7 +48,7 @@ import json
 import by1io      # noqa: F401  —— import 即钉 UTF-8
 
 try:
-    from by1ir import (qk_on as _qk_on, qk_is_full, EPS_DEFAULT as _DEFAULT_EPS, ALPHA_DEFAULT as _ALPHA,
+    from by1ir import (as_bool, qk_on as _qk_on, qk_is_full, EPS_DEFAULT as _DEFAULT_EPS, ALPHA_DEFAULT as _ALPHA,
                    L2_EPS_DEFAULT as _L2_EPS, ROPE_PARTIAL_DEFAULT as _ROPE_PARTIAL,
                    ROPE_SCALE_DEFAULT as _ROPE_SCALE,
                    ROUTED_SCALE_DEFAULT as _ROUTED_SCALE)
@@ -904,8 +904,8 @@ def lower_op(g, i, j, o, d, pname, refmap, cache=None):
                      "one_plus": bool(one)}, shapes=[(d, None)])
     elif k == "FFN":
         hid = int(a["hidden"])
-        bias = bool(a.get("bias"))
-        gate = bool(a.get("gate", True))
+        bias = as_bool(a.get("bias"))
+        gate = as_bool(a.get("gate", True))
         act = {"gelu_new": "gelu_tanh", "gelu_tanh": "gelu_tanh",
                "tanh": "gelu_tanh", "gelu": "gelu",
                "gelu_erf": "gelu"}.get(str(a.get("act", "silu")), "silu")
@@ -1134,7 +1134,7 @@ def _lower_moe(g, p, x, dst, w, a, d):
             return g.add("mul", [r, r], [p + nm], shapes=[shape])
         return g.add(_APRIM[_act], [inp], [p + nm], shapes=[shape])
     E, K, H = int(a["experts"]), int(a["top_k"]), int(a["hidden"])
-    sb_on = bool(a.get("score_bias"))
+    sb_on = as_bool(a.get("score_bias"))
     # **打分函数和选法正交**，解析走 `by1ir.moe_score` 那一份（唯一定义）。
     from by1ir import moe_score as _moe_score
     _sc = _moe_score(a)
@@ -1689,7 +1689,7 @@ def _lower_dsa(g, p, x, q_resid, w, a, nq):
                   shapes=[(None, None)])
     keep = g.add("repeat", [keep0], [p + "ikeep"],
                  attrs={"reps": P, "axis": 0}, shapes=[(None, None)])
-    if not bool(a.get("index_kpool_tail")):
+    if not as_bool(a.get("index_kpool_tail")):
         return keep
     # **尾池**：每个 query 追加"最末那个不完整池里已可见的 token"。
     #   起点 S[t] = P*floor((t+1)/P) = R[t] + P*[t ≡ P-1 (mod P)]
@@ -1732,7 +1732,7 @@ def _lower_mla(g, p, x, dst, w, a, d):
     vd, kvl = int(a["v_dim"]), int(a["kv_lora"])
     ql = int(a["q_lora"])
     hd = nope + nr
-    _op = bool(a.get("norm_one_plus", False))
+    _op = as_bool(a.get("norm_one_plus", False))
     _eps = float(a.get("norm_eps", _DEFAULT_EPS))
     # k-pool（GLM-5.3 的池打分）已收编：见 `_lower_dsa` 的池分支
     if a.get("head_gate", "off") not in ("off", "per_head"):
@@ -1958,7 +1958,7 @@ def _lower_attn(g, p, x, dst, w, a, d, cache=None):
                          "（输出重排还没收编）")
     # 这里原来有一条 `head_gate 还没有 lowering` 的预拒绝 —— **已收编**
     # （见下面 attention 输出段的 head_gate 分支；非 per_head 仍然拒绝）。
-    bias = bool(a.get("bias"))
+    bias = as_bool(a.get("bias"))
     # **融合 q/k/v 只是布局**：`by1exec` 的做法是把它拆回 wq/wk/wv/wo，
     # 「后面一格不动」—— 这里同样拆，拆的是**权重叶子**（`slice` 原语）。
     # 权重在 exec 视角是 (out, in)，节点 attr 按 ggml 视角写（[in, out]），
@@ -2022,7 +2022,7 @@ def _lower_attn(g, p, x, dst, w, a, d, cache=None):
         if qg is not None:
             raise SystemExit("  [不支持] qk_norm=full 与 q_gate 同时出现")
         eps = float(a.get("norm_eps", _DEFAULT_EPS))
-        _one = bool(a.get("norm_one_plus", False))
+        _one = as_bool(a.get("norm_one_plus", False))
         q = g.add("rms_norm", [q, w("qn.w")], [p + "q1n"],
                   attrs={"eps": eps, "one_plus": _one},
                   shapes=[(nh * hd, None)])
@@ -2051,7 +2051,7 @@ def _lower_attn(g, p, x, dst, w, a, d, cache=None):
         # **one_plus 是属性，不是常量** —— 第一版这里写死 False，于是
         # 所有 one_plus=True 的模型（qwen3-next 的注意力就是）算出别的数：
         # qk_norm 少乘了个 1，而判据只会说"差 0.19"。
-        _one = bool(a.get("norm_one_plus", False))
+        _one = as_bool(a.get("norm_one_plus", False))
         # **norm 的公式自带乘 w**（PRIMS["rms_norm"] 就是那一条）——
         # 不是 norm 一个节点、mul 一个节点：两个节点就是两份语义。
         q3 = g.add("rms_norm", [q3, w("qn.w")], [p + "q3n"],

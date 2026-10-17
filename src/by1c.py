@@ -27,7 +27,7 @@ import by1paths
 # 这个文件里原来有 9 处 `1e-5`；C_HEAD 里那段"eps 必须由调用方传进来"
 # 的注释记的就是这一类 —— 而它当时没管住 `qk_norm()`。
 try:
-    from by1ir import (qk_on as _qk_on, EPS_DEFAULT as _DEFAULT_EPS,
+    from by1ir import (as_bool, qk_on as _qk_on, EPS_DEFAULT as _DEFAULT_EPS,
                    ROPE_PARTIAL_DEFAULT as _ROPE_PARTIAL,
                    ROPE_SCALE_DEFAULT as _ROPE_SCALE)
 except ImportError:                     # 单独拷一个文件出去时兜底
@@ -1578,7 +1578,7 @@ def _emit_c_body(ir, params):
                 # **融合 q/k/v**（视觉塔）：一个 `qkv` 装下 [q | k | v] 三截，
                 # 所以 k / v 就是同一块内存的偏移 —— 指针加法，不用拷。
                 # 这是**布局**不是算法，和拆开的算出来必须一样。
-                _fz = bool(a.get("qkv_fused"))
+                _fz = as_bool(a.get("qkv_fused"))
                 _qn = "qkv" if _fz else "wq"
                 # ⚠ **偏移要乘这一层的输入宽度。** `P(nm)` 展开成
                 # `W + OFF_nm` —— 那是**元素**指针；而 k 那一截从第 qw **行**
@@ -1641,7 +1641,7 @@ def _emit_c_body(ir, params):
                 lb.append(f" {B}({dst}, ob, P({key(i,j,_on)}){BA(_on)}, n, {nh*hd}, D);")
             elif k == "FFN":
                 hid = a["hidden"]
-                _b = bool(a.get("bias"))
+                _b = as_bool(a.get("bias"))
                 # **参数顺序要和 order 里注册的一致** —— 不一致的话
                 # 权重会串位，而算出来的数看着仍然"像那么回事"。
                 # **有 bias 用 linear_b，没有用 linear** —— 两个不同的函数，
@@ -1695,8 +1695,8 @@ def _emit_c_body(ir, params):
                     f" P({key(i, j, 'out_proj')}),"
                     f" {float(a['norm_eps'])}f);")
             elif k == "KDA":
-                _low = bool(a.get("gate_lowrank"))
-                _ob = bool(a.get("gate_out_bias", True))
+                _low = as_bool(a.get("gate_lowrank"))
+                _ob = as_bool(a.get("gate_out_bias", True))
                 _lo = a.get("gate_lower")
 
                 def _p(nm, when=True):
