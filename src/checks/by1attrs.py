@@ -150,6 +150,41 @@ def emitter_prims(root=ROOT):
 
 
 
+def norm_reaches_ir(root=ROOT):
+    """**声明 -> IR**：写了 `norm = zero_centered` 的模型，编译后 `ir["norm_one_plus"]` 必须是 True。
+
+    为什么要单独一条：`norm` 是 hparams 上的一个开关，读它的地方在 `by1codegen.compile_ir`。
+    **改名或拼错一个字母，声明会被静默丢掉**，而模型照旧编译通过、config 照旧对得上 ——
+    只有前向会差一个 2 倍的归一。这条把"写了"和"真读到"连起来。
+
+    返回 (ok_list, bad_list, skipped_list)。
+    """
+    src = str(pathlib.Path(root) / "src")
+    if src not in sys.path:
+        sys.path.insert(0, src)
+    import by1paths  # noqa: F401
+    import by1check as _bc
+    import by1codegen as _cg
+    aliases, decls = norm_switches(root)
+    low = [a.lower() for a in aliases]
+    ok, bad, skipped = [], [], []
+    for name, val in sorted(decls.items()):
+        p = pathlib.Path(root) / "models" / name
+        try:
+            _r, info = _bc.check(str(p))
+            ir = _cg.compile_ir(info)
+        except (SystemExit, Exception):
+            skipped.append(name)      # 部分描述（缺 vocab 等）编译不了，不算失败
+            continue
+        want = val.lower() in low
+        got = bool(ir.get("norm_one_plus"))
+        if got != want:
+            bad.append("%s 写了 norm = <%s>，但 IR 里 norm_one_plus = %r"
+                       % (name, val, got))
+        else:
+            ok.append(name)
+    return ok, bad, skipped
+
 def norm_switches(root=ROOT):
     """`norm` 的**开关别名集合**（从 by1codegen 的 `nv in (...)` 抽）+ 每个模型的取值。
 
@@ -614,6 +649,16 @@ def check(root=ROOT, enums=None, provenance=None, reserved=None):
                 notes.append('**同一份权重、两份描述的归一约定不一致**：%s 写 <%s>，%s 写 <%s>'
                              ' —— 差 2 倍的那类错，先查 checkpoint'
                              % (a_name, av or '（没写=普通）', b_name, bv or '（没写=普通）'))
+    # A11：**声明 -> IR** —— 写了 `norm` 的模型，编译后 IR 里必须真的读到它。
+    try:
+        ok11, bad11, skip11 = norm_reaches_ir(root)
+    except Exception as exc:
+        notes.append('norm 进没进 IR 没算：%r' % (exc,))
+    else:
+        problems.extend('A11 ' + x for x in bad11)
+        if ok11 or skip11:
+            tail = ('；%d 份编译不了（部分描述）' % len(skip11)) if skip11 else ''
+            notes.append('norm 进 IR：%d 份确认%s' % (len(ok11), tail))
     return problems, notes
 
 
