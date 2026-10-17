@@ -125,16 +125,31 @@ Set `IMAGE` to a saved test image and record its SHA-256. Run text generation, i
 返回 422）；`v0.6.0` 那个 tag 的提交是 `d812350`。这正是本文开头说的
 "不能视作已验证基线" —— 现在它有了机器判据（见下）。
 
-**`llama-bench` 能跑起来，但还不能出数**：它要一个**完整模型** GGUF；仓库里
-只有 tokenizer-only 的 `ggml-vocab-*.gguf`，喂给它会在加载期报
-`check_tensor_dims: tensor token_embd.weight not found`。真正的 tokens/s 基线
-仍等 11.8 GB 的 IQ3_S 下载（GPU 日那一条，见上节）。这一项**记档为未验**，
-不是通过。
+**`llama-bench` 真跑出数了（小模型冒烟）**。仓库里的大模型 GGUF 还没有，但钉住的
+小模型够证明"钉定的 llama.cpp 跑得动"：
 
-**机器判据**：`python src/checks/by1llama.py pin-check` ——
-有构建时核对 tag/commit/两个二进制的版本串，**没构建时 `[跳过]`（rc=2）**。
-对旧的 `llamacpp/build-cli` 跑会红（`9b0c827` + 缺 `llama-bench`）——
-这就是"钉定值是真的"的证词。
+| 项 | 值 |
+|---|---|
+| 模型 | `stories260K.gguf`（`ggml-org/models` 的 `tinyllamas/`，1 185 376 字节，sha256 `270cba1b…bd256d`） |
+| 命令 | `llama-bench -m stories260K.gguf -p 32 -n 16 -r 3 -t 4` |
+| 结果 | **pp32 9848.04 t/s · tg16 416.94 t/s**，表尾 `build: d812350 (1)` |
+| 端到端 | `llama-cli -m stories260K.gguf -p "Once upon a time" -n 16 -t 4 -s 42` 生成 16 token（Prompt 7716.8 t/s / Generation 362.4 t/s） |
+
+**t/s 是机器相关的**（同一个命令在 `by1all` 并行跑判卷人时实测只有 4583 t/s ——
+其余 6 个 worker 在抢 CPU；单独跑是 9848~10246），所以它只证明"跑得动、且跑的是
+钉定版本"，不当跨机器阈值；
+真正的 tokens/s 基线仍是 11.8 GB IQ3_S（GPU 日那一条，见上节）。一条负面记录也留着：
+拿 tokenizer-only 的 `ggml-vocab-*.gguf` 喂 `llama-bench`，会在加载期报
+`check_tensor_dims: tensor token_embd.weight not found` —— 那不是 bug，是输入不对。
+
+**机器判据**（两条，都进 `by1all` 档 5）：
+
+- `python src/checks/by1llama.py pin-check` —— 有构建时核对 tag/commit/两个
+  二进制的版本串，**没构建时 `[跳过]`（rc=2）**。对旧的 `llamacpp/build-cli`
+  跑会红（`9b0c827` + 缺 `llama-bench`）—— 这就是"钉定值是真的"的证词。
+- `python src/checks/by1llama.py bench-run` —— 先核对小模型的 **sha256**，
+  再跑 bench 抠出 `pp32`/`tg16` 的数，并核对表尾 build 是 `d812350`。
+  模型不对/出不了数 -> 红；没构建或没下载模型 -> `[跳过]`。
 ## 基线判卷人 / Baseline judges
 
 配方本身由 `src/checks/by1llama.py` 当判卷人（每项判据可机器复核）：

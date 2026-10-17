@@ -65,6 +65,20 @@ PINNED = {
     },
 }
 
+#: **小模型冒烟 / bench 的固定输入。** 1.1 MB，可随时重下；
+#: `sha256` 是判据 —— 文件不对就不许拿它的数当基线。
+#: （大模型 IQ3_S 11.8 GB 那一条归 GPU 日；这条只证明
+#:  "钉定的 llama.cpp 能真跑出一个数"。）
+TINY_MODEL = {
+    'name': 'stories260K.gguf',
+    'repo': 'ggml-org/models',
+    'url': ('https://huggingface.co/ggml-org/models/resolve/main/'
+            'tinyllamas/stories260K.gguf'),
+    'bytes': 1185376,
+    'sha256': ('270cba1bd5109f42d03350f604060245'
+               '60464db173c0e387d91f0426d3bd256d'),
+}
+
 #: 基线记录的字段与**取值命令** —— 报告里每个值都能顺着命令复核。
 RECORD_COMMANDS = [
     ('llama_cpp_tag', 'git -C llamacpp/llama.cpp describe --tags'),
@@ -91,6 +105,21 @@ def _run(cmd):
     # 记录表把它们记成同一个值就是不出声的错（by1lint ⑨ 盯这个）。
     return body if p.returncode == 0 else '%s（rc=%d）' % (body, p.returncode)
 
+
+def _run_big(cmd, timeout=600):
+    """同 `_run`，但给长跑（bench）用 —— 输出整份留着给正则抠数。
+
+    **退出码要说出来**：bench 挂了也可能打出半张表，光看输出会把"跑挂了"
+    读成"跑过了"。非零就把退出码塞进返回串，让下游的正则抠不到数而红。
+    """
+    try:
+        p = subprocess.run(cmd, shell=True, capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=timeout)
+    except Exception as exc:
+        return "（跑不起来：%s）" % exc
+    if p.returncode != 0:
+        return "（退出码 %d）\n%s%s" % (p.returncode, p.stdout, p.stderr)
+    return p.stdout + p.stderr
 
 def sha256_of(path, chunk=8 * 1024 * 224):
     h = hashlib.sha256()
@@ -140,6 +169,77 @@ def record(out_path):
     bad = [k for k, e in rows.items() if e.get('matches_pinned') is False]
     return 1 if bad else 0
 
+
+def _find_build(build_dir=None):
+    """找本机那个 llama.cpp 构建（钉定 clone 优先，退回旧快照）。"""
+    roots = [build_dir] if build_dir else [
+        by1paths.root('build', 'clean-clone', 'llama-v0.6.0'),
+        by1paths.root('llamacpp', 'llama.cpp'),
+    ]
+    return next((r for r in roots if r and _os.path.isdir(r)), None)
+
+
+def _exe(bin_dir, name):
+    return _os.path.join(bin_dir, name + (".exe" if _os.name == "nt" else ""))
+
+
+def bench_run(build_dir=None, bin_dir=None, model=None, reps=3):
+    """**钉定的 llama.cpp 真跑出数**：小模型 bench + 版本串对账。
+
+    三态：没有构建或没有模型 -> `[跳过]`（rc=2）；模型 sha256 不对
+    或 bench 出不了数 -> FAIL。t/s 本身是**机器相关**的，所以它只
+    证明"跑得动"，不当作跨机器的阈值（阈值留给 GPU 日的固定机器）。
+    """
+    root = _find_build(build_dir)
+    if root is None:
+        print("  [跳过] 本机没有 llama.cpp 构建 —— 这一项没验")
+        return 2
+    bin_dir = bin_dir or _os.path.join(root, "build", "bin")
+    exe = _exe(bin_dir, "llama-bench")
+    if not _os.path.exists(exe):
+        print("  [跳过] 构建里没有 llama-bench —— 这一项没验")
+        return 2
+    model = model or by1paths.root("models", "llama-tiny", TINY_MODEL["name"])
+    if not _os.path.exists(model):
+        print("  [跳过] 小模型没下载（%s）—— bench 没验"
+              % TINY_MODEL["name"])
+        print("    下载：%s" % TINY_MODEL["url"])
+        return 2
+    got = sha256_of(model)
+    if got != TINY_MODEL["sha256"]:
+        print("  [FAIL] %s 的 sha256 不对：%s != %s"
+              % (TINY_MODEL["name"], got[:16], TINY_MODEL["sha256"][:16]))
+        return 1
+    cmd = '"%s" -m "%s" -p 32 -n 16 -r %d -t 4' % (exe, model, reps)
+    out = _run_big(cmd, timeout=600)
+    build = None
+    m = re.search(r"^build: (\S+)", out, re.M)
+    if m:
+        build = m.group(1)
+    want = PINNED["llama_cpp_commit_prefix"]
+    rows = {}
+    for tag in ("pp32", "tg16"):
+        mm = re.search(r"\|\s*" + tag + r"\s*\|\s*([0-9.]+)", out)
+        rows[tag] = float(mm.group(1)) if mm else None
+    print("  模型   %s  sha256=%s... %d 字节"
+          % (TINY_MODEL["name"], got[:12], TINY_MODEL["bytes"]))
+    print("  build  %s" % (build or "(没打印)"))
+    for tag in ("pp32", "tg16"):
+        print("  %-5s  %s t/s" % (tag, rows[tag] if rows[tag] else "(没出数)"))
+    bad = []
+    if not build or want not in build:
+        bad.append("bench 报的 build=%r 里没有 %s" % (build, want))
+    for tag in ("pp32", "tg16"):
+        if not rows[tag] or rows[tag] <= 0:
+            bad.append("%s 没出数" % tag)
+    print()
+    ok = not bad
+    print("  [%s] 钉定构建上的小模型 bench：%s"
+          % ("PASS" if ok else "FAIL",
+             "pp32=%.2f t/s · tg16=%.2f t/s（build %s）"
+             % (rows["pp32"] or 0, rows["tg16"] or 0, build)
+             if ok else "；".join(bad)))
+    return 0 if ok else 1
 
 def pin_check(build_dir=None, bin_dir=None):
     """**钉定版本的实测判据。**
@@ -1220,6 +1320,11 @@ def main(argv=None):
     sub = ap.add_subparsers(dest='cmd', required=True)
     r = sub.add_parser('record', help='基线记录表（每项带来源命令）')
     r.add_argument('-o', '--out', default='cgen/llama-baseline-record.json')
+    br = sub.add_parser('bench-run', help='钉定构建上的小模型 bench（真跑出数）')
+    br.add_argument('--build-dir')
+    br.add_argument('--bin-dir')
+    br.add_argument('--model')
+    br.add_argument('-r', '--reps', type=int, default=3)
     pc = sub.add_parser('pin-check', help='钉定版本的实测判据（干净 clone 构建）')
     pc.add_argument('--build-dir')
     pc.add_argument('--bin-dir')
@@ -1266,6 +1371,8 @@ def main(argv=None):
     args = ap.parse_args(argv)
     if args.cmd == 'record':
         return record(args.out)
+    if args.cmd == 'bench-run':
+        return bench_run(args.build_dir, args.bin_dir, args.model, args.reps)
     if args.cmd == 'pin-check':
         return pin_check(args.build_dir, args.bin_dir)
     if args.cmd == 'gguf-check':

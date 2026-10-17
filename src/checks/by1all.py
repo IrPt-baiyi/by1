@@ -366,10 +366,12 @@ SHAPED = ['llama-shaped.by1', 'mixtral-shaped.by1', 'gpt-oss-shaped.by1',
 # 具体原因可以说，不是一个模糊的"慢"。
 #
 # 实测：要 torch 前向的 6 个各自 8~15 秒；其余 9 个加起来 11 秒。
-#: **带子命令的判卷人**：JUDGES 里只写脚本名，参数在这里。
-#: 写成映射而不是三元组 —— 那张表有 40 条，改成三元组要动每一行。
-JUDGE_ARGS = {
-    'by1llama.py': ['pin-check'],
+#: **一个脚本拆成几行判卷人**：显示名 -> 实际命令。
+#: JUDGES 里写显示名（带子命令），这里把它译成命令行。
+#: 写成射而不是三元组 —— 那张表有 40 多条，改成三元组要动每一行。
+JUDGE_CMDS = {
+    'by1llama.py pin-check': ['by1llama.py', 'pin-check'],
+    'by1llama.py bench-run': ['by1llama.py', 'bench-run'],
 }
 
 JUDGES = [
@@ -456,7 +458,10 @@ JUDGES = [
     # llama.cpp **钉定版本**的实测判据：干净 clone 构建之后，二进制版本串必须是
     # `d812350`（v0.6.0）。没有构建就 `[跳过]`（rc=2）—— 那是"这台机器没验"，
     # 不是通过（D6：不入门的检查会烂；但也别把"没装"记成"通过"）。
-    ('by1llama.py', 5),
+    ('by1llama.py pin-check', 5),
+    # 小模型 bench（1.1 MB、sha256 钉住）：证明钉定的 llama.cpp 能**真跑出一个数**。
+    # 没构建/没模型就 [跳过]。
+    ('by1llama.py bench-run', 5),
     ('by1extdemo.py', 5),
     # 端到端：真产物 -> IR -> 三个后端 -> 对官方实现。
     # 没下载过 gpt2 的话它自己会跳过（返回 2）。
@@ -1161,7 +1166,7 @@ def main():
         # 记一行 skip。它们不是通过，是"这一档不含"。
         _js = [(s, t2) for s, t2 in JUDGES if TIER >= t2]
         for (s, _t2), (st, out) in zip(
-                _js, run_many([([s] + JUDGE_ARGS.get(s, []), s) for s, _ in _js])):
+                _js, run_many([(JUDGE_CMDS.get(s) or [s], s) for s, _ in _js])):
             line = [l.strip() for l in out.splitlines() if '[PASS]' in l
                     or '[FAIL]' in l]
             st = confirmed(st, out, line)
