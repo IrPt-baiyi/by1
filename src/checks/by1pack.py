@@ -107,6 +107,7 @@ WANT = [
     ('by1sparse.py', '判卷人：DSA 稀疏索引器（对 `GlmMoeDsaIndexer`）'),
     ('by1gptoss.py', '判卷人：注意力 sink（对 `GptOssAttention`）'),
     ('by1laguna.py', '判卷人：head gate 的激活（对 `LagunaAttention`）'),
+    ('by1gemma.py', '判卷人：GeGLU 的 FFN（对 `GemmaMLP`）'),
     ('by1ggml.py', '后端四：生成 ggml C（并按 manifest 对拍）'),
     ('by1llama.py', '产物线：GGUF 构建 / 上游 logits 逐位对拍 / 转换期改写'),
     ('by1quant.py', '量化格式声明（MXFP4 / FP8）的数值 oracle 与运行时规格'),

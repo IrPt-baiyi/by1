@@ -467,6 +467,7 @@ JUDGES = [
     ('by1gptoss.py', 4),
     # head gate：**同名不同义**的典型（Laguna softplus / Ling sigmoid）。
     ('by1laguna.py', 4),
+    ('by1gemma.py', 4),   # GeGLU（门控 + tanh 近似）对官方 GemmaMLP
     # 前向，**真实维度**（14 个真实模型里唯一在这台机器上跑得动的）
     ('by1instella.py', 4),
     # 真实维度、官方 config 的前向 —— **另一代**
