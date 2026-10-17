@@ -1,0 +1,41 @@
+# ── gelu-shaped.by1 ─────────────────────────────────────────────────
+# **最小的一个探针模型：把图原语 `gelu` 走到。**
+#
+# `by1graph.PRIMS` 里有 `gelu`（精确 erf 式），但在这之前**没有任何模型会产出它**：
+# GPT-2 用 tanh 近似（`gelu_new` -> `gelu_tanh` 原语），其余模型的 FFN 都是 SwiGLU。
+# 于是闭集里躺着一个"实现存在、映射存在、但从没被走到"的原语。
+#
+# 这份模型就是让它被走到：`act = gelu`（精确式）。
+#
+# ⚠️ 它验的是"这个原语在三个后端上算得对、发得出来"，不是"某个官方模型的数值"。
+#    判据是 by1exec（NumPy 参考）与 ggml / 图->C 两条发射路径的对拍。
+
+model GeluShaped {
+  ctx 128
+
+  hparams {
+    d_model = 8
+    n_layer = 1
+    vocab   = 16
+    rms_eps = 1e-06
+  }
+
+  mech Attention : Attention {
+    heads = { q = 2, kv = 2, head_dim = 4 }
+  }
+
+  # **无门控 FFN + 精确 GELU**（不是 silu，也不是 tanh 近似）
+  mech MLP : FFN {
+    hidden = 4
+    act    = gelu
+  }
+
+  stack main {
+    pattern = 1 * Attention
+    main[:] >> MLP
+  }
+
+  position {
+    default = rope(base = 10000, pairing = half)
+  }
+}

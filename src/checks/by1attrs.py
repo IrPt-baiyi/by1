@@ -55,7 +55,6 @@ PROVENANCE = {
 #: 闭集里**没有模型走到、但明确保留**的取值（A4 要它们）。
 #: 每条都要写理由；一旦有模型用到它，这条就要删掉（否则 A4 报“残留”）。
 RESERVED = {
-    ('act', 'gelu'): '精确 GELU 实现留着；当前没有官方模型用它（GPT-2 用 tanh 近似），两条公式由 _gelu 的断言守着',
     ('qk_norm', '1'): '旧写法（等价 per_head），by1langspec 记档；不会有模型这么写',
     ('qk_norm', 'on'): '旧写法（等价 per_head），by1langspec 记档',
     ('qk_norm', 'yes'): '旧写法（等价 per_head），by1langspec 记档',
@@ -63,8 +62,8 @@ RESERVED = {
 
 #: 图原语里**没有语料走到、但明确保留**的（A5 要它们）。每条都要写理由。
 PRIM_RESERVED = {
-    'gelu': '只有 act=gelu 才会产生它；act=gelu 本身是 RESERVED（没有官方模型用），两个后端的映射都在',
-    'sqrt': '探针语料里没有图会产出它（sqrtsoftplus 的打分有专门原语）；映射留着给手写图',
+    'sqrt': '**没有任何 lowering 会产出它**：rms_norm / layer_norm 里的 sqrt 是 numpy 参考，'
+            'sqrtsoftplus 是独立原语；映射留着给手写图（--from-graph 的构造侧）',
 }
 
 
@@ -173,9 +172,16 @@ def prim_coverage(root=ROOT):
     import by1codegen as _cg
     import by1graph as _bg
     root = pathlib.Path(root)
-    text = (root / "src/checks/by1all.py").read_text(encoding="utf-8")
-    m = re.search(r"GGML_GRAPH_MODELS\s*=\s*\[(.*?)\]", text, re.S)
-    models = re.findall(r"'([A-Za-z0-9_.\-]+\.by1)'", m.group(1)) if m else []
+    # **用 AST 取列表**，不要用正则：表里夹着注释，注释里的 `]` 会把正则截断
+    # （实测只取到 19/22 个模型，于是新加的那个模型没被看见）。
+    tree = ast.parse((root / "src/checks/by1all.py").read_text(encoding="utf-8"))
+    models = []
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 \
+                and isinstance(node.targets[0], ast.Name) \
+                and node.targets[0].id == "GGML_GRAPH_MODELS":
+            models = list(ast.literal_eval(node.value))
+            break
     house = {"ins", "src", "f", "ref"}
     all_prims = {k for k in _bg.PRIMS if k not in house}
     used = set()
