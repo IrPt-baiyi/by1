@@ -366,6 +366,12 @@ SHAPED = ['llama-shaped.by1', 'mixtral-shaped.by1', 'gpt-oss-shaped.by1',
 # 具体原因可以说，不是一个模糊的"慢"。
 #
 # 实测：要 torch 前向的 6 个各自 8~15 秒；其余 9 个加起来 11 秒。
+#: **带子命令的判卷人**：JUDGES 里只写脚本名，参数在这里。
+#: 写成映射而不是三元组 —— 那张表有 40 条，改成三元组要动每一行。
+JUDGE_ARGS = {
+    'by1llama.py': ['pin-check'],
+}
+
 JUDGES = [
     # ── 档 2：结构类。只要 Python 和读文件 ────────────────────
     # refs 语料：每个文件都能解析、都有出处（by1 / models.tsv / SOURCES）。
@@ -447,6 +453,10 @@ JUDGES = [
     # ── 档 5：要 gcc 或要下载 ───────────────────────────────
     # 逃生舱第二层：IR 引用外部符号（.so + ABI）。它证的正是
     # 「加一个新机制不用改编译器」—— 而它要 gcc 编那个 .so。
+    # llama.cpp **钉定版本**的实测判据：干净 clone 构建之后，二进制版本串必须是
+    # `d812350`（v0.6.0）。没有构建就 `[跳过]`（rc=2）—— 那是"这台机器没验"，
+    # 不是通过（D6：不入门的检查会烂；但也别把"没装"记成"通过"）。
+    ('by1llama.py', 5),
     ('by1extdemo.py', 5),
     # 端到端：真产物 -> IR -> 三个后端 -> 对官方实现。
     # 没下载过 gpt2 的话它自己会跳过（返回 2）。
@@ -1151,7 +1161,7 @@ def main():
         # 记一行 skip。它们不是通过，是"这一档不含"。
         _js = [(s, t2) for s, t2 in JUDGES if TIER >= t2]
         for (s, _t2), (st, out) in zip(
-                _js, run_many([([s], s) for s, _ in _js])):
+                _js, run_many([([s] + JUDGE_ARGS.get(s, []), s) for s, _ in _js])):
             line = [l.strip() for l in out.splitlines() if '[PASS]' in l
                     or '[FAIL]' in l]
             st = confirmed(st, out, line)

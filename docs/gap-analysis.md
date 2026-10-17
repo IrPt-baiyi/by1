@@ -56,7 +56,7 @@
 | 描述合同 | 持续收敛重复规则（多检查器重复维护同一规则）—— **2026-10-17 第六轮推进一格**：属性默认值收归 `by1ir.ATTR_DEFAULTS`（唯一源头），`by1lint` 第⑪类盯两件事：① 活代码里的取值点不许再写数字；② **生成物模板里的字面量必须等于源头**（这一条当场抓到 SSM 门控 norm 的 1e-6 vs 1e-5）。两条都有反例自检（第七轮：谓词 `qk_on` 也收归了——它曾在五个模块各有一份、四份逐字相同，现在只能在 `by1ir` 定义、`by1lint` 第⑫类盯着；顺带把"规则数"从五处手写扁为从自检表派生）（第八轮：**取值强制转换**也收归了——`as_bool`/`as_num` 曾有三种写法（`bool()` 把 `"false"` 当真、`_bool` 白名单把 `per_head` 当假），现在只有 `by1ir` 一份；新检查器 `by1coerce.py`（档 2）四关：取值表 / 语言层八种写法 /IR 门口拒字符串 / 开关确实改变图和数） |
 | 参考执行 | 扩大独立参考的模型/上下文范围；合成图像检查 ≠ 视觉评测 |
 | ggml 生成 | 只是验证工具，不代表可并入上游的完整架构 |
-| llama.cpp 基线 | **干净 clone 构建 + 原版 CLI/llama-bench 实跑**（v0.6.0 钉定）——rc1 前只做了加载/对拍 |
+| llama.cpp 基线 | **干净 clone 构建（2026-10-17 第九轮已做）** · **llama-bench / llama-cli 数值实跑（未做）** —— tag `v0.6.0`（= `d812350`）clone 11 秒 / configure 2 秒 / build 207 秒，两个二进制版本串都是 `commit d812350`；`by1llama.py pin-check` 已进档 5 当判据（没构建时 `[跳过]`）。**剩下的一格是数据**：`llama-bench` 要完整模型 GGUF，仓库只有 tokenizer-only 的 vocab GGUF（实测报 `tensor token_embd.weight not found`），11.8 GB IQ3_S 的下载仍归 GPU 日 |
 | 量化 Q1/Q2 | 新格式必须真实 checkpoint + 独立判据；Q2 的 GPU 真跑未做 |
 | 量化 Q3 | 未开 |
 
@@ -94,3 +94,11 @@
 > 推断维形状），`GRAPH_C_MODELS` **19 -> 20/20**，两个发射器的差分对照没有缺口。
 > mla-sparse 图->C **4.022e-07 / 6.746e-07**。第四轮那个 NaN 的根因是 `None -> n`
 > （池 gather 整块形状算错）—— 记在这里，免得下一次再把"能跑"当成"算对"。
+
+> **2026-10-17 晚（第九轮）**：llama.cpp 基线的"干净 clone 构建"做了 ——
+> tag `v0.6.0`（= `d812350`，GitHub API 核对过）clone 11 秒 / configure 2 秒 /
+> build 207 秒（Windows + MinGW + CPU；要加 `-D_WIN32_WINNT=0x0A00` 才过
+> `vendor/cpp-httplib`），`llama-cli` 与 `llama-bench` 的版本串都是 `commit d812350`。
+> 旧的 `llamacpp/build-cli` 快照是 `9b0c827`（**上游查不到**）—— `pin-check` 对它
+> 会红，这就是钉定值是真的证词。`llama-bench` 跑得起来但出不了数（要完整模型
+> GGUF），记档为未验。

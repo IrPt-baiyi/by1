@@ -102,6 +102,39 @@ Set `IMAGE` to a saved test image and record its SHA-256. Run text generation, i
 
 将 `IMAGE` 设为保存好的测试图片路径，并记录该图片的 SHA-256。文本生成、图像输入和内嵌 MTP 分别验收。`llama-bench` 不包含 tokenizer 和采样耗时，也不提供可靠的峰值显存；运行时需用外部工具采样显存。当前仍待 GPU 实例运行。以上命令是已固定的复现配方，不是实测结果。
 
+## 本轮实测：干净 clone 构建（2026-10-17，Windows / MinGW / CPU）/ Measured clean build
+
+这一节是**实测**，不是配方。命令在仓库根目录执行，输出逐条可复核。
+
+| 项 | 实测值 |
+|---|---|
+| clone | `git clone --depth 1 --branch v0.6.0` -> **11 秒**，`tag = v0.6.0`，`sha = d81235049384534c167caea52b85a694f6103d14` |
+| configure | `cmake -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=ON -DLLAMA_CURL=OFF -DGGML_NATIVE=ON` -> **2 秒** |
+| build | `cmake --build build --target llama-bench llama-cli -j 8` -> **207 秒** |
+| 产物 | `llama-bench.exe` 13.06 MB · `llama-cli.exe` 17.44 MB |
+| 版本串 | 两个都是 `version: 0.6.0-dev (build 1, commit d812350)` |
+
+**Windows 上多一个必须的编译宏**：MinGW 的 `cpp-httplib` 会报
+`::CreateFile2 has not been declared`（它要求 `_WIN32_WINNT >= 0x0602`）。
+加 `-DCMAKE_CXX_FLAGS=-D_WIN32_WINNT=0x0A00 -DCMAKE_C_FLAGS=-D_WIN32_WINNT=0x0A00`
+之后通过。第一次不加它的构建 9 秒就死在 `vendor/cpp-httplib` —— 那个错误信息里
+没有任何线索指向 `_WIN32_WINNT`，所以记在这里。
+
+**工作区里那个旧的 `llamacpp/build-cli` 快照不是钉定版本**：它的版本串是
+`0.6.0-dev (build 345, commit 9b0c827)`，而 `9b0c827` 在上游**查不到**（GitHub API
+返回 422）；`v0.6.0` 那个 tag 的提交是 `d812350`。这正是本文开头说的
+"不能视作已验证基线" —— 现在它有了机器判据（见下）。
+
+**`llama-bench` 能跑起来，但还不能出数**：它要一个**完整模型** GGUF；仓库里
+只有 tokenizer-only 的 `ggml-vocab-*.gguf`，喂给它会在加载期报
+`check_tensor_dims: tensor token_embd.weight not found`。真正的 tokens/s 基线
+仍等 11.8 GB 的 IQ3_S 下载（GPU 日那一条，见上节）。这一项**记档为未验**，
+不是通过。
+
+**机器判据**：`python src/checks/by1llama.py pin-check` ——
+有构建时核对 tag/commit/两个二进制的版本串，**没构建时 `[跳过]`（rc=2）**。
+对旧的 `llamacpp/build-cli` 跑会红（`9b0c827` + 缺 `llama-bench`）——
+这就是"钉定值是真的"的证词。
 ## 基线判卷人 / Baseline judges
 
 配方本身由 `src/checks/by1llama.py` 当判卷人（每项判据可机器复核）：

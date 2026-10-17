@@ -141,6 +141,56 @@ def record(out_path):
     return 1 if bad else 0
 
 
+def pin_check(build_dir=None, bin_dir=None):
+    """**钉定版本的实测判据。**
+
+    干净 clone 构建之后，本地那个二进制**必须**是钉住的版本：
+      · git 检出：tag == PINNED['llama_cpp_tag']、commit 前缀对得上；
+      · 二进制：`--version` 里带的 commit 与钉住的前缀一致。
+
+    三态：没有构建 -> `[跳过]`（rc=2，CI/干净检出里就是这一态）；
+    有构建但版本不对 -> FAIL（不是跳过 —— 那是"基线不基了"）。
+    """
+    want_tag = PINNED['llama_cpp_tag']
+    want_sha = PINNED['llama_cpp_commit_prefix']
+    roots = [build_dir] if build_dir else [
+        by1paths.root('build', 'clean-clone', 'llama-v0.6.0'),
+        by1paths.root('llamacpp', 'llama.cpp'),
+    ]
+    root = next((r for r in roots if r and _os.path.isdir(r)), None)
+    if root is None:
+        print("  [跳过] 本机没有 llama.cpp 构建 —— 这一项没验（不是通过）")
+        return 2
+    bad = []
+    sha = None
+    if _os.path.isdir(_os.path.join(root, ".git")):
+        tag = _run('git -C "%s" describe --tags' % root)
+        sha = _run('git -C "%s" rev-parse HEAD' % root)
+        print("  检出   %s  tag=%s  sha=%s" % (root, tag, sha[:12]))
+        if tag != want_tag:
+            bad.append("tag=%r，钉住的是 %r" % (tag, want_tag))
+        if not sha.startswith(want_sha):
+            bad.append("commit=%r 不以 %r 开头" % (sha[:12], want_sha))
+    else:
+        print("  检出   %s（不是 git 检出 —— 只用二进制版本判）" % root)
+    bin_dir = bin_dir or _os.path.join(root, "build", "bin")
+    for exe in ("llama-cli", "llama-bench"):
+        path = _os.path.join(bin_dir, exe + (".exe" if _os.name == "nt" else ""))
+        if not _os.path.exists(path):
+            bad.append("缺 %s（干净 clone 构建没产出它）" % exe)
+            continue
+        out = _run('"%s" --version' % path)
+        line = out.splitlines()[0] if out else "(空)"
+        print("  %-12s %s" % (exe, line))
+        if want_sha not in line:
+            bad.append("%s 的版本里没有 %s" % (exe, want_sha))
+    print()
+    ok = not bad
+    print("  [%s] llama.cpp 钉定版本（%s / %s）：%s"
+          % ("PASS" if ok else "FAIL", want_tag, want_sha,
+             "实测二进制与钉住的一致" if ok else "；".join(bad)))
+    return 0 if ok else 1
+
 def gguf_check(directory):
     """对照固定清单验文件。缺/坏/没 pin 的都点名 —— 清单是判据。"""
     problems = []
@@ -1170,6 +1220,9 @@ def main(argv=None):
     sub = ap.add_subparsers(dest='cmd', required=True)
     r = sub.add_parser('record', help='基线记录表（每项带来源命令）')
     r.add_argument('-o', '--out', default='cgen/llama-baseline-record.json')
+    pc = sub.add_parser('pin-check', help='钉定版本的实测判据（干净 clone 构建）')
+    pc.add_argument('--build-dir')
+    pc.add_argument('--bin-dir')
     g = sub.add_parser('gguf-check', help='对照固定清单验 GGUF 文件')
     g.add_argument('--dir', default='.')
     c = sub.add_parser('logits-compare', help='两个 logits dump 逐位比较')
@@ -1213,6 +1266,8 @@ def main(argv=None):
     args = ap.parse_args(argv)
     if args.cmd == 'record':
         return record(args.out)
+    if args.cmd == 'pin-check':
+        return pin_check(args.build_dir, args.bin_dir)
     if args.cmd == 'gguf-check':
         return gguf_check(args.dir)
     if args.cmd == 'logits-compare':
