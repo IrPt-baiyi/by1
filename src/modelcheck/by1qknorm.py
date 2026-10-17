@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """by1qknorm -- **qk_norm 的三个取值是不是三件事**：per_head / full / off。
-参照物：transformers 的 Qwen3Attention / Qwen3RMSNorm（per-head RMSNorm）
+参照物：transformers 的 Qwen3Attention（per-head RMSNorm）与 Olmo2Attention（整宽 RMSNorm）
 
 ## 为什么值得单独一个判卷人
 
@@ -34,10 +34,12 @@ import by1codegen as cg  # noqa: E402
 import by1skip  # noqa: E402
 
 try:
-    from transformers import Qwen3Config
+    from transformers import Qwen3Config, Olmo2Config
     from transformers.models.qwen3.modeling_qwen3 import Qwen3Attention
+    from transformers.models.olmo2.modeling_olmo2 import Olmo2Attention
 except ImportError:
     Qwen3Config = Qwen3Attention = None
+    Olmo2Config = Olmo2Attention = None
 
 D, NH, KV, HD, SEQ = 64, 4, 2, 16, 8
 
@@ -70,6 +72,20 @@ def _official():
     cfg._attn_implementation = "eager"
     return Qwen3Attention(cfg, layer_idx=0).eval()
 
+
+def _official_olmo2():
+    """官方 `Olmo2Attention`：`q_norm`/`k_norm` 是**整宽** RMSNorm
+
+    （`num_attention_heads * head_dim`），作用在**拆头之前**的扁平 q/k 上 ——
+    正是 by1 的 `qk_norm = full`。"""
+    cfg = Olmo2Config(hidden_size=D, num_attention_heads=NH,
+                        num_key_value_heads=KV, head_dim=HD,
+                        num_hidden_layers=1, intermediate_size=64,
+                        max_position_embeddings=64, rms_norm_eps=1e-6,
+                        attention_bias=False, attention_dropout=0.0,
+                        rope_theta=10000.0)
+    cfg._attn_implementation = "eager"
+    return Olmo2Attention(cfg, layer_idx=0).eval()
 
 def _load(mine, ref):
     sd = {
@@ -136,10 +152,46 @@ def main():
     if d4 <= 1e-3:
         bad.append("full 与 per_head 算出来一样（%.3e）—— 两个取值被实现成一件事" % d4)
 
+    # ---- ⑤ 正例：full（整宽）对官方 Olmo2Attention ----
+    if Olmo2Attention is not None:
+        ref_o = _official_olmo2()
+        m_full_o = _by1(ns, "full")
+        with torch.no_grad():
+            m_full_o.wq.weight.copy_(ref_o.q_proj.weight)
+            m_full_o.wk.weight.copy_(ref_o.k_proj.weight)
+            m_full_o.wv.weight.copy_(ref_o.v_proj.weight)
+            m_full_o.wo.weight.copy_(ref_o.o_proj.weight)
+            m_full_o.qn.w.copy_(ref_o.q_norm.weight)
+            m_full_o.kn.w.copy_(ref_o.k_norm.weight)
+        yf = m_full_o(x).detach()
+        yfo = ref_o(x, position_embeddings=(cos, sin),
+                    attention_mask=mask)[0].detach()
+        d5, r5 = _rel(yf, yfo)
+        print("  ⑤ full       by1 vs 官方 Olmo2Attention  绝对 %.3e  相对 %.3e  [%s]"
+              % (d5, r5, "PASS" if r5 < 1e-5 else "FAIL"))
+        if r5 >= 1e-5:
+            bad.append("full 与官方 Olmo2Attention 不一致（相对 %.3e）" % r5)
+
+        # ---- ⑥ 可证伪：同一批权重，只把归一轴换成 per_head ----
+        m_ph = _by1(ns, "per_head")
+        with torch.no_grad():
+            m_ph.wq.weight.copy_(ref_o.q_proj.weight)
+            m_ph.wk.weight.copy_(ref_o.k_proj.weight)
+            m_ph.wv.weight.copy_(ref_o.v_proj.weight)
+            m_ph.wo.weight.copy_(ref_o.o_proj.weight)
+            m_ph.qn.w.copy_(ref_o.q_norm.weight[:HD])
+            m_ph.kn.w.copy_(ref_o.k_norm.weight[:HD])
+        d6, _r6 = _rel(m_ph(x).detach(), yfo)
+        print("  ⑥ 可证伪 per_head vs 官方 full         绝对 %.3e  [%s]"
+              % (d6, "PASS" if d6 > 1e-3 else "FAIL"))
+        if d6 <= 1e-3:
+            bad.append("per_head 与 full 在同一批权重下算出一模一样（%.3e）" % d6)
+
     for b in bad:
         print("     ! " + b)
-    print("  [%s] qk_norm：per_head 对官方（相对 %.1e）；true 逐位等价；off / full 都差得出来"
-          % ("PASS" if not bad else "FAIL", r1))
+    print("  [%s] qk_norm：per_head 对 Qwen3、full 对 OLMo2（均逐位）；"
+          "true 等价 per_head；off / 换轴后的 full 都差得出来"
+          % ("PASS" if not bad else "FAIL"))
     return 0 if not bad else 1
 
 
