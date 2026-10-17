@@ -657,6 +657,12 @@ def find_gcc():
     return by1paths.find_gcc()
 
 
+def _has_mark(out):
+    """输出里有没有**判定行**（`[PASS]` / `[FAIL]`）或跳过标记。"""
+    text = out or ''
+    return ('[PASS]' in text or '[FAIL]' in text or by1skip.MARK in text)
+
+
 def run_many(pairs, jobs=None):
     """**并行跑一批独立命令。**
 
@@ -673,9 +679,22 @@ def run_many(pairs, jobs=None):
     if jobs is None:
         jobs = int(_os.environ.get('BY1_JOBS', '0')) or min(6, (_os.cpu_count() or 2))
     if jobs <= 1 or len(pairs) <= 1:
-        return [run(c, tag) for c, tag in pairs]
-    with ThreadPoolExecutor(max_workers=jobs) as ex:
-        return list(ex.map(lambda pt: run(pt[0], pt[1]), pairs))
+        res = [run(c, tag) for c, tag in pairs]
+    else:
+        with ThreadPoolExecutor(max_workers=jobs) as ex:
+            res = list(ex.map(lambda pt: run(pt[0], pt[1]), pairs))
+    # **空判定行重试一次。** 并行跑时偶尔会出现"退出码 0、输出里却没有判定行"：
+    # 这既可能是脚本真没跑，也可能是一次偶发的进程 / 管道事故（第 49 轮实测过一次
+    # `NumPy mixtral-shaped.by1`：首跑空行判失败，顺序重跑就是好的）。
+    # 判据不变 —— 只是**再问一次**，仍然按"退出码 + 输出"两条通道判。
+    # 仍然空 -> 保持失败（"什么都没跑"不能因为重试过就变绿）。
+    for i, (st, out) in enumerate(res):
+        if st != 'ok' or _has_mark(out):
+            continue
+        st2, out2 = run(pairs[i][0], pairs[i][1])
+        if _has_mark(out2):
+            res[i] = (st2, out2)
+    return res
 
 
 # 每一段跑了多久。**它的用途是分档** —— 六档的边界该画在哪，
