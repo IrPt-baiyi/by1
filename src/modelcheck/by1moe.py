@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """by1moe -- MoE 路由的差分验证：**分组选法** + **打分函数**。
-参照物：transformers 的 DeepseekV3TopkRouter / DeepseekV4TopKRouter / DeepseekV3MoE
+参照物：transformers 的 DeepseekV3TopkRouter / DeepseekV4TopKRouter / DeepseekV3MoE / GptOssTopKRouter
 
 两把尺子，各自对一层的不同东西：
 
@@ -20,6 +20,9 @@
   ③ **编码 vs 官方 config**（`routing_vs_config`）：`.by1` 写的打分函数
      和官方 `scoring_func` 对不对得上。**这一项原来靠名字前缀猜**
      （`rt.startswith('sigmoid')`），是错的来源之一 —— 现在读 `score`。
+
+  ④ **四个 routing 取值的关系**（routing_kinds）：同一批 router 权重上一起跑，     拍下 by1 真实选出的专家与权重。实测：softmax_topk 与 topk_softmax     **是同一个函数**（权重差 8.9e-08 = 那个 1e-9 eps）；topk_softmax 对官方     GptOssTopKRouter 逐位一致；sigmoid_topk 与 softmax_topk 选中的专家**相同**     但权重不同（输出差 1.2e-02）；sigmoid_group_topk 比 sigmoid_topk 多 6/12 行不同。
+
 
 用法:  python by1moe.py
 """
@@ -171,7 +174,8 @@ def main():
     ok3 = routing_vs_config()
     ok4 = block_direct_link(cfg, torch)
     ok5 = expert_direct_link(cfg, torch)
-    return 0 if (ok and ok2 and ok3 and ok4 and ok5) else 1
+    ok6 = routing_kinds()
+    return 0 if (ok and ok2 and ok3 and ok4 and ok5 and ok6) else 1
 
 
 def block_direct_link(cfg, torch):
@@ -413,6 +417,134 @@ def sqrtsoftplus_vs_v4():
                                         if ok else "对不上"))
     return ok
 
+
+def routing_kinds():
+    """四个 `routing` 取值：**到底有几个是真不同的函数**。
+
+    闭集里有四个写法（`softmax_topk` / `topk_softmax` / `sigmoid_topk` /
+    `sigmoid_group_topk`），但没有任何判据说过它们之间的关系。这一条把它们放在
+    **同一批 router 权重**上跑，抓 by1 真实选出的下标与权重（替换 RUNTIME 命名空间里的
+    `_stable_topk` / `_stable_topk2` 来录制，**不重写公式**），然后：
+
+      ① `topk_softmax` 对官方 `GptOssTopKRouter`（logits -> top-k -> 只对 k 个 softmax）
+         —— 下标与权重都要一致；
+      ② `softmax_topk` 与 `topk_softmax`：**数学上应当是同一个函数**
+         （softmax 全体取 top-k 再归一 ≡ 只对那 k 个 logits 做 softmax）。
+         如果这条**没通过**，说明两支里有一支算错了；
+      ③ `sigmoid_topk` 与 `softmax_topk`：**选中的专家相同、权重不同**（两者都单调，
+         所以 top-k 选出的集合必然一样；差在 sigmoid 归一 vs softmax 归一）；
+      ④ `sigmoid_group_topk` 与 `sigmoid_topk`：必须不同（多了"先选组"）。
+
+    ②的措辞是刻意的：它不是"两个名字应该一样所以算它过"，而是
+    "**如果它们不一样，就有一个是错的**"。
+    """
+    ns = {}
+    exec(cg.RUNTIME, ns)
+    MoE = ns["MoE"]
+    orig1, orig2 = ns["_stable_topk"], ns["_stable_topk2"]
+    cap = {"idx": None, "val": None}
+
+    def rec1(v, k, dim=-1):
+        out = orig1(v, k, dim)
+        cap["idx"] = out.detach().clone()
+        return out
+
+    def rec2(v, k, dim=-1):
+        tv, ti = orig2(v, k, dim)
+        cap["idx"] = ti.detach().clone()
+        cap["val"] = tv.detach().clone()
+        return tv, ti
+
+    ns["_stable_topk"] = rec1
+    ns["_stable_topk2"] = rec2
+
+    torch.manual_seed(0)
+    gw = torch.randn(E, D) * 0.1        # router 权重（四支共用）
+    x = torch.randn(1, NT, D)
+    base = {"experts": E, "top_k": K, "hidden": 8, "shared": 0,
+            "shared_hidden": 0, "score_bias": False, "routed_scale": 1.0,
+            "router_bias": False, "act": "silu", "limit": None,
+            "alpha": 1.702, "expert_bias": False, "shared_gate": False,
+            "n_group": NG, "topk_group": TG, "score": "softmax"}
+
+    def run(kind, score="softmax", score_bias=False):
+        at = dict(base)
+        at["routing"] = kind
+        at["score"] = score
+        at["score_bias"] = score_bias
+        torch.manual_seed(0)          # 四支专家权重逐位相同
+        m = MoE(at, D).eval()
+        with torch.no_grad():
+            m.router.weight.copy_(gw)
+        cap["idx"] = cap["val"] = None
+        with torch.no_grad():
+            out = m(x).detach()
+        return cap["idx"], cap["val"], out
+
+    ok = True
+    i_ts, v_ts, o_ts = run("topk_softmax")
+    i_st, v_st, o_st = run("softmax_topk")
+    i_sg, _, o_sg = run("sigmoid_topk", score="sigmoid")
+    i_gr, _, o_gr = run("sigmoid_group_topk", score="sigmoid")
+
+    # ---- ① topk_softmax 对官方 GptOssTopKRouter ----
+    from transformers import GptOssConfig
+    from transformers.models.gpt_oss.modeling_gpt_oss import GptOssTopKRouter
+    cfg = GptOssConfig(hidden_size=D, num_local_experts=E,
+                       num_experts_per_tok=K, intermediate_size=8,
+                       num_hidden_layers=1)
+    ref = GptOssTopKRouter(cfg).eval()
+    with torch.no_grad():
+        ref.weight.copy_(gw)
+        ref.bias.zero_()
+        _, r_scores, r_idx = ref(x.view(-1, D))
+    same_idx = torch.equal(r_idx.sort(-1)[0], i_ts.sort(-1)[0])
+    rmap = torch.zeros(NT, E).scatter_(1, r_idx, r_scores)
+    mmap = torch.zeros(NT, E).scatter_(1, i_ts, v_ts.softmax(-1))
+    d1 = (rmap - mmap).abs().max().item()
+    print("  ① topk_softmax vs 官方 GptOssTopKRouter: 下标%s  权重差 %.3e  [%s]"
+          % ("一致" if same_idx else "不同", d1,
+             "PASS" if (same_idx and d1 < 1e-6) else "FAIL"))
+    if not (same_idx and d1 < 1e-6):
+        ok = False
+
+    # ---- ② softmax_topk 与 topk_softmax 应当是同一个函数 ----
+    same2 = torch.equal(i_st.sort(-1)[0], i_ts.sort(-1)[0])
+    smap = torch.zeros(NT, E).scatter_(
+        1, i_st, v_st / (v_st.sum(-1, keepdim=True) + 1e-9))
+    d2 = (smap - mmap).abs().max().item()
+    print("  ② softmax_topk 与 topk_softmax: 下标%s  权重差 %.3e  [%s]"
+          % ("一致" if same2 else "不同", d2,
+             "PASS" if (same2 and d2 < 1e-6) else "FAIL"))
+    if not (same2 and d2 < 1e-6):
+        print("     ! 这两个写法算出来不一样 —— 其中一支的实现是错的")
+        ok = False
+
+    # ---- ③ sigmoid_topk vs softmax_topk：**选出来的专家相同、权重不同** ----
+    # sigmoid 与 softmax 都是单调的，所以 top-k 选中的专家**必然相同**
+    # （这一点原来被我写成"选择必须不同"，跑出来 0/12 —— 我的假设错了）。
+    # 真正不同的是**权重**：sigmoid 打分归一 vs softmax 归一。所以比整块输出。
+    d3same = sum(1 for r in range(NT)
+                 if set(i_sg[r].tolist()) != set(i_ts[r].tolist()))
+    d3 = float((o_sg - o_st).abs().max())
+    ok3 = (d3same == 0) and d3 > 1e-3
+    print("  ③ sigmoid_topk vs softmax_topk: 选中专家相同(%d/%d 处不同)"
+          " · 输出差 %.3e  [%s]"
+          % (d3same, NT, d3, "PASS" if ok3 else "FAIL"))
+    if not ok3:
+        print("     ! 打分函数换了却没改变权重（或者连选中的专家都变了）")
+        ok = False
+
+    # ---- ④ 分组 vs 不分组必须不同 ----
+    d4 = sum(1 for r in range(NT)
+             if set(i_gr[r].tolist()) != set(i_sg[r].tolist()))
+    print("  ④ sigmoid_group_topk vs sigmoid_topk: 有 %d/%d 行选择不同  [%s]"
+          % (d4, NT, "PASS" if d4 else "FAIL"))
+    if not d4:
+        print("     ! 分组与不分组选出同样的专家 —— 分组没生效")
+        ok = False
+
+    return ok
 
 def routing_vs_config():
     """第二把尺子：**`.by1` 的路由编码 vs 官方 config 的 `scoring_func`**。
