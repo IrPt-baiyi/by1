@@ -7,6 +7,7 @@ Qwen 的 MTP 拼接、归一化与共享关系在本模块实现，不丢弃 che
 MTP 组合依据 vLLM qwen3_5_mtp.py；它的输入 hidden_states 是主干最终归一化后的值。
 """
 import argparse
+from by1ir import ALPHA_DEFAULT as _ALPHA
 import copy
 import json
 import math
@@ -572,7 +573,7 @@ def compile_config(info):
         _fail(feeds.get('routing') == 'topk_softmax' and _bool(feeds.get('router_bias'))
               and _bool(feeds.get('expert_bias')), "gpt_oss 需要带偏置的 topk_softmax 路由/专家")
         _fail(int(feeds.get('shared', 0)) == 0, "gpt_oss 没有共享专家")
-        _fail(float(feeds.get('alpha', 1.702)) == 1.702, "gpt_oss 的 alpha 为 1.702")
+        _fail(float(feeds.get('alpha', _ALPHA)) == _ALPHA, "gpt_oss 的 alpha 为 1.702")
         _fail(float(feeds.get('swiglu_limit', 7)) == 7, '此 gpt_oss 实现的 swiglu_limit 固定为 7')
         windows = [None if a.get('window', 'none') in ('none', 'null', '', None) else int(a['window'])
                    for (_, a), _ in main]

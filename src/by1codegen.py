@@ -2408,8 +2408,12 @@ class Mamba2(nn.Module):
         self.dt_bias = nn.Parameter(torch.ones(self.h))
         self.A_log = nn.Parameter(torch.zeros(self.h))
         self.D = nn.Parameter(torch.ones(self.h))
+        # 默认值要和 `by1ir.EPS_DEFAULT` **相等**（`by1exec`/`by1graph` 的 SSM
+        # 门控 norm 吃的是那个）：这里原来写 1e-6，比源头小一个量级 ——
+        # 所有 .by1 的 SSM 层都显式写了 norm_eps，所以它一直没露；
+        # 第六轮的对账（by1lint ⑪）把它抓出来了。
         self.norm = RMSNormGatedGrouped(self.d_inner, self.ng,
-                                        eps=a.get("norm_eps", 1e-6))
+                                        eps=a.get("norm_eps", 1e-05))
         self.out_proj = nn.Linear(self.d_inner, d, bias=_b)
 
     def forward(self, x):

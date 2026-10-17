@@ -48,7 +48,10 @@ import json
 import by1io      # noqa: F401  —— import 即钉 UTF-8
 
 try:
-    from by1ir import EPS_DEFAULT as _DEFAULT_EPS
+    from by1ir import (EPS_DEFAULT as _DEFAULT_EPS, ALPHA_DEFAULT as _ALPHA,
+                   L2_EPS_DEFAULT as _L2_EPS, ROPE_PARTIAL_DEFAULT as _ROPE_PARTIAL,
+                   ROPE_SCALE_DEFAULT as _ROPE_SCALE,
+                   ROUTED_SCALE_DEFAULT as _ROUTED_SCALE)
 except ImportError:
     _DEFAULT_EPS = 1e-5
 
@@ -971,7 +974,7 @@ def _lower_linear(g, p, x, dst, w, a, d):
     C = 2 * dk + 2 * dv * rep          # in_proj_qkvz 的每头宽度
     R = 2 * rep                         # in_proj_ba 的每头宽度
     L = 2 * kd + vd                     # 卷积那一支的通道数（q|k|v）
-    eps_l2 = float(a.get("l2_eps", 1e-6))
+    eps_l2 = float(a.get("l2_eps", _L2_EPS))
     eps_nm = float(a.get("norm_eps", _DEFAULT_EPS))
     kern = int(a["conv_kernel"])
     if str(a.get("act", "silu")) != "silu":
@@ -1251,7 +1254,7 @@ def _lower_moe(g, p, x, dst, w, a, d):
         tv = g.add("softmax", [tv], [p + "sm"], shapes=[(K, None)])
     topv = g.add("div", [tv, den], [p + "topv"], shapes=[(K, None)]) \
         if rt != "topk_softmax" else tv
-    if float(a.get("routed_scale", 1.0)) != 1.0:
+    if float(a.get("routed_scale", _ROUTED_SCALE)) != 1.0:
         topv = g.add("scale", [topv], [p + "topv1"],
                      attrs={"s": float(a["routed_scale"])}, shapes=[(K, None)])
     # ── ② 逐专家 SwiGLU ───────────────────────────────────────────
@@ -1299,7 +1302,7 @@ def _lower_moe(g, p, x, dst, w, a, d):
             ob = g.add("clamp_max", [ob], [p + "ob1"],
                        attrs={"max": float(_lim)}, shapes=[(H, K, None)])
         t1 = g.add("scale", [hb], [p + "g1"],
-                   attrs={"s": float(a.get("alpha", 1.702))},
+                   attrs={"s": float(a.get("alpha", _ALPHA))},
                    shapes=[(H, K, None)])
         t2 = g.add("sigmoid", [t1], [p + "g2"], shapes=[(H, K, None)])
         t3 = g.add("mul", [hb, t2], [p + "g3"], shapes=[(H, K, None)])
@@ -1338,7 +1341,7 @@ def _lower_moe(g, p, x, dst, w, a, d):
                 sh3 = g.add("clamp_max", [sh3], [p + "sh31"],
                             attrs={"max": float(_lm)}, shapes=[(None, None)])
             t1 = g.add("scale", [sh], [p + "sh10"],
-                       attrs={"s": float(a.get("alpha", 1.702))},
+                       attrs={"s": float(a.get("alpha", _ALPHA))},
                        shapes=[(None, None)])
             t2 = g.add("sigmoid", [t1], [p + "sh11"], shapes=[(None, None)])
             t3 = g.add("mul", [sh, t2], [p + "sh12"], shapes=[(None, None)])
@@ -1381,7 +1384,7 @@ def _lower_kda(g, p, x, dst, w, a, d):
     dk, dv = int(a["k_dim"]), int(a["v_dim"])
     kd, vd = nk * dk, nv * dv
     ck = int(a["conv_kernel"])
-    eps_l2 = float(a.get("l2_eps", 1e-6))
+    eps_l2 = float(a.get("l2_eps", _L2_EPS))
     eps_nm = float(a.get("norm_eps", _DEFAULT_EPS))
     if str(a.get("act", "silu")) != "silu":
         raise SystemExit("  [不支持] KDA.act=%r 还没有 lowering" % a.get("act"))
@@ -2064,13 +2067,13 @@ def _lower_attn(g, p, x, dst, w, a, d, cache=None):
                    attrs={"eps": eps, "one_plus": _one},
                    shapes=[(hd, nkv, None)])
     if a.get("rope", True):
-        nrot = int(hd * float(a.get("rope_partial", 1.0)))
+        nrot = int(hd * float(a.get("rope_partial", _ROPE_PARTIAL)))
         rp = {"base": float(a["rope_base"]),
               "pairing": str(a.get("rope_pairing", "half")),
               "n_dims": nrot,
               # **YaRN / llama3 与 rope_scale 都走这一条**（`rope_inv` 一处定义）
               "yarn": a.get("yarn"),
-              "rope_scale": float(a.get("rope_scale", 1.0))}
+              "rope_scale": float(a.get("rope_scale", _ROPE_SCALE))}
         q3 = g.add("rope", [q3, "pos"], [p + "q3r"], attrs=rp,
                    shapes=[(hd, nh, None)])
         k3 = g.add("rope", [k3, "pos"], [p + "k3r"], attrs=rp,
@@ -2330,7 +2333,7 @@ def run_graph(g, params, ids, pos=None, extra=None):
             x = np.transpose(a[0], (1, 0, 2))
             out = PRIMS["rope"]["ref"](x, a[1], at["base"], at["pairing"],
                                        at["n_dims"], at.get("yarn"),
-                                       at.get("rope_scale", 1.0))
+                                       at.get("rope_scale", _ROPE_SCALE))
             out = np.transpose(out, (1, 0, 2))
         elif prim == "soft_max":
             # a: [头, query, key]（exec 约定），mask [query, key]

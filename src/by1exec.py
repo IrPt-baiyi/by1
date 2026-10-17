@@ -32,7 +32,10 @@ import by1paths
 # 这个文件里原来有 11 处 `1e-5`；那些形状本身没错，
 # 错在"哪一处漏了传参"没有结构性征兆 —— 见 by1ir 里那段注释。
 try:
-    from by1ir import EPS_DEFAULT as _DEFAULT_EPS
+    from by1ir import (EPS_DEFAULT as _DEFAULT_EPS, ALPHA_DEFAULT as _ALPHA,
+                   L2_EPS_DEFAULT as _L2_EPS, ROPE_PARTIAL_DEFAULT as _ROPE_PARTIAL,
+                   ROPE_SCALE_DEFAULT as _ROPE_SCALE,
+                   ROUTED_SCALE_DEFAULT as _ROUTED_SCALE)
 except ImportError:                     # 单独拷一个文件出去时兜底
     _DEFAULT_EPS = 1e-5
 
@@ -251,7 +254,7 @@ def op_attention(P, a, ins, d):
         # 这正是 by1c 的 C_HEAD 里记着"犯过五次"的那一类。
         q = rms_norm(q, P["qn.w"], eps=_qeps, one_plus=_qop)
         k = rms_norm(k, P["kn.w"], eps=_qeps, one_plus=_qop)
-    hd, part = a["head_dim"], a.get("rope_partial", 1.0)
+    hd, part = a["head_dim"], a.get("rope_partial", _ROPE_PARTIAL)
     # **`rope` 是一个开关，不是一个常量。**
     # 这一段以前无条件转 —— 而 GPT-2 的 `rope = false`
     # （它的位置信息是外面加的 wpe）。
@@ -268,7 +271,7 @@ def op_attention(P, a, ins, d):
     # 一个"看起来加了开关"的改动比没加更坏：它让人以为查过了。
     if _rope_on and 0 < npr < hd:
         c, s = rope_tables(npr, n, a["rope_base"], a.get("yarn"))
-        if a.get("rope_scale", 1.0) != 1.0:
+        if a.get("rope_scale", _ROPE_SCALE) != 1.0:
             c, s = c * a["rope_scale"], s * a["rope_scale"]
         q = np.concatenate([apply_rope(q[..., :npr], c, s, a["rope_pairing"]),
                             q[..., npr:]], -1)
@@ -276,7 +279,7 @@ def op_attention(P, a, ins, d):
                             k[..., npr:]], -1)
     elif _rope_on:
         c, s = rope_tables(hd, n, a["rope_base"], a.get("yarn"))
-        if a.get("rope_scale", 1.0) != 1.0:
+        if a.get("rope_scale", _ROPE_SCALE) != 1.0:
             c, s = c * a["rope_scale"], s * a["rope_scale"]
         q = apply_rope(q, c, s, a["rope_pairing"])
         k = apply_rope(k, c, s, a["rope_pairing"])
@@ -548,7 +551,7 @@ def op_ffn(P, a, ins, d):
         if lim is not None:
             g = np.minimum(g, lim)
             u = np.clip(u, -lim, lim)
-        h = (u + 1) * (g / (1.0 + np.exp(-a.get("alpha", 1.702) * g)))
+        h = (u + 1) * (g / (1.0 + np.exp(-a.get("alpha", _ALPHA) * g)))
     else:
         h = _act_apply(g, _act) * u
     return _bias(h @ P["w2"].T, P, "w2.bias")
@@ -643,7 +646,7 @@ def op_moe(P, a, ins, d):
         base = logits if sb is not None else sel
         tv = np.take_along_axis(softmax(base, -1), topi, -1)
         topv = tv / np.maximum(tv.sum(-1, keepdims=True), 1e-9)
-    topv = topv * a.get("routed_scale", 1.0)
+    topv = topv * a.get("routed_scale", _ROUTED_SCALE)
     out = np.zeros_like(xf)
     for e in range(a["experts"]):
         hit = topi == e
@@ -661,7 +664,7 @@ def op_moe(P, a, ins, d):
             if lim is not None:
                 g = np.minimum(g, lim)
                 u = np.clip(u, -lim, lim)
-            h = (u + 1) * (g / (1.0 + np.exp(-a.get("alpha", 1.702) * g)))
+            h = (u + 1) * (g / (1.0 + np.exp(-a.get("alpha", _ALPHA) * g)))
         else:
             # **激活要分派，不能写死 silu** —— `act = relu2`（Nemotron 的
             # MoE）原来在这里被算成 silu，而 PyTorch 的 `_swiglu` 也写死
@@ -683,7 +686,7 @@ def op_moe(P, a, ins, d):
                 _g2 = np.minimum(_g2, _lm)
                 _u2 = np.clip(_u2, -_lm, _lm)
             sh = ((_u2 + 1)
-                  * (_g2 / (1.0 + np.exp(-a.get("alpha", 1.702) * _g2))))
+                  * (_g2 / (1.0 + np.exp(-a.get("alpha", _ALPHA) * _g2))))
         else:
             sh = _act_apply(_g2, a.get("act", "silu")) * _u2
         se = sh @ P["sw2"].T
@@ -726,7 +729,7 @@ def op_linear(P, a, ins, d):
     if rep > 1:
         q = np.repeat(q, rep, axis=2)
         kk = np.repeat(kk, rep, axis=2)
-    eps = a.get("l2_eps", 1e-6)
+    eps = a.get("l2_eps", _L2_EPS)
     q = q * (1.0 / np.sqrt((q * q).sum(-1, keepdims=True) + eps))
     kk = kk * (1.0 / np.sqrt((kk * kk).sum(-1, keepdims=True) + eps))
     q, kk, v, beta, g = [t.transpose(0, 2, 1, 3).astype(np.float64)
@@ -813,7 +816,7 @@ def op_kda(P, a, ins, d):
         g = -np.exp(A)[None, None, :, None] * np.log1p(
             np.exp(fg.astype(np.float64) + dtb[None, None, :, :]))
 
-    eps = a.get("l2_eps", 1e-6)
+    eps = a.get("l2_eps", _L2_EPS)
     q = q * (1.0 / np.sqrt((q * q).sum(-1, keepdims=True) + eps))
     kk = kk * (1.0 / np.sqrt((kk * kk).sum(-1, keepdims=True) + eps))
     q, kk, v, beta, g = [t.transpose(0, 2, 1, 3).astype(np.float64)

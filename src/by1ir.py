@@ -71,6 +71,41 @@ except ImportError:                     # 单独拷一个文件出去时兜底
 # 于是"哪一处漏了传参"永远只有出事之后才知道。现在它是一个名字。
 EPS_DEFAULT = 1e-5
 
+# ── **属性默认值登记表**（2026-10-17 第六轮）───────────────────────
+# 同一个默认值曾经在四个后端各写一遍：`alpha` 7 处、`norm_eps` 6 处、
+# `rope_scale` 6 处、`rope_partial` 5 处、`l2_eps` 4 处、`routed_scale` 2 处。
+# 值当时**恰好**一致，但"恰好一致"不是保证 —— 改一处忘一处就会造出两个
+# 算不同模型的"同一个后端"，而且这种偏差通常低于 1e-4 的判据，永远是绿的。
+#
+# 从这一轮起：这些名字**只在这里定义**，其它模块 import；`by1lint` 的
+# 第⑪类盯着"取值点又写死了一个数字"。
+#
+# **不在表里**的常量（1e-6 的 DSA 索引器 LayerNorm、1e-5 之外的参考固定值）
+# 是**参考实现钉死的语义常量**，不是模型属性默认值 —— 它们该在 lowering 里
+# 写一次并注明出处，不归这张表管。
+ALPHA_DEFAULT = 1.702                 # GELU-tanh 的 alpha
+L2_EPS_DEFAULT = 1e-6                 # l2_norm 的 eps
+ROPE_SCALE_DEFAULT = 1.0              # rope 的 cos/sin 缩放
+ROPE_PARTIAL_DEFAULT = 1.0            # 参与旋转的比例
+ROPE_BASE_DEFAULT = 10000             # rope 的基频
+ROUTED_SCALE_DEFAULT = 1.0            # MoE 路由的缩放
+
+#: 属性名 -> 默认值。`by1lint` 的第⑪类按这张表查两件事：
+#:   ① 活代码里的取值点不许再写数字（要么用这里的名字）；
+#:   ② **生成物模板**（`by1codegen.RUNTIME` 那段文本）里的字面量
+#:      必须**等于**这里的值 —— 模板是独立产物、引用不了模块名，
+#:      所以只能写字面量，但"相等"由机器盯。
+ATTR_DEFAULTS = {
+    "norm_eps": EPS_DEFAULT,
+    "eps": EPS_DEFAULT,
+    "l2_eps": L2_EPS_DEFAULT,
+    "alpha": ALPHA_DEFAULT,
+    "rope_scale": ROPE_SCALE_DEFAULT,
+    "rope_partial": ROPE_PARTIAL_DEFAULT,
+    "rope_base": ROPE_BASE_DEFAULT,
+    "routed_scale": ROUTED_SCALE_DEFAULT,
+}
+
 # ── STACKS（by1-ir 1.1）：栈/塔登记表 ───────────────────────────────
 # (名字, 类型, 必填, 说明)
 # 为什么要有它：源语言里 `stack vision { }`、MODAL 闭集早就有，但
@@ -1281,7 +1316,7 @@ def _check_op(where, op, errs):
     #   ② rope 关着时任意 head_dim 都合法（GPT-2 那条路）——
     #      **不许做成「见奇数就拒」的全局规则**。
     if k == "Attention" and isinstance(attrs, dict) and attrs.get("rope"):
-        hd, part = attrs.get("head_dim"), attrs.get("rope_partial", 1.0)
+        hd, part = attrs.get("head_dim"), attrs.get("rope_partial", ROPE_PARTIAL_DEFAULT)
         if isinstance(hd, int) and hd > 0:
             try:
                 npr = int(hd * float(part))

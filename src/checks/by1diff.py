@@ -30,6 +30,7 @@ import os
 import sys
 
 import by1io      # noqa: F401  —— import 即把 stdout 钉成 UTF-8
+from by1ir import ROPE_SCALE_DEFAULT as _ROPE_SCALE  # noqa: E402
 import by1skip
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -266,7 +267,7 @@ def main(argv=None):
                   "beta_fast": float(y.get("beta_fast", 32)),
                   "beta_slow": float(y.get("beta_slow", 1)),
                   "truncate": bool(y.get("truncate", True)),
-                  "attention_factor": float(attn.get("rope_scale", 1.0))}
+                  "attention_factor": float(attn.get("rope_scale", _ROPE_SCALE))}
             win = attn["window"] or ir["ctx"]
             common.pop("rope_theta")
             cfg = T.GptOssConfig(intermediate_size=ma["hidden"],

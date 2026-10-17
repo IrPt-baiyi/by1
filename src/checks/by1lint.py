@@ -18,7 +18,7 @@
 
 **所以这个脚本只查那些"会让错误不出声"的写法。**
 
-## 查十类
+## 查十一类
 
     ① `except: pass` / `except Exception: pass`   把错误吃掉
     ② 光秃秃的 `except:`                            连 KeyboardInterrupt 都吃
@@ -30,6 +30,10 @@
     ⑧ 没用的 import
     ⑨ `subprocess` 不看返回码                       失败了当成功
     ⑩ 库代码里 `sys.exit`                           调用方没法处理
+    ⑪ 属性默认值写死在取值点                        四个后端各写一遍，漂了也不出声
+       （`a.get("norm_eps", 1e-5)` 这种形状；唯一源头是 `by1ir.ATTR_DEFAULTS`。
+        生成物模板 `by1codegen.RUNTIME` 只能写字面量，但必须**等于**源头 ——
+        那一半由 `main()` 里的模板对账盯着。）
 
 用法:  python by1lint.py [--top N]
 """
@@ -45,9 +49,12 @@ _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)
 import by1paths  # noqa: E402,F401
 import ast
 import os
+import re
 import sys
 from collections import defaultdict
 import by1io
+# 属性默认值的**唯一源头**（第⑪类按它查"取值点写死"与"模板不等于源头"）。
+from by1ir import ATTR_DEFAULTS as _ATTR_DEFAULTS  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 os.chdir(HERE)
@@ -164,6 +171,22 @@ class V(ast.NodeVisitor):
             has_ck = any(k.arg == 'check' for k in n.keywords)
             if not has_ck and not self._reads_result(n):
                 self.add('⑨ subprocess 不看返回码', n)
+        # ⑪ 属性默认值写死在取值点
+        #
+        # `a.get("norm_eps", 1e-5)` 这种形状：同一个语义默认值曾经在四个后端
+        # 各写一遍（`alpha` 7 处、`norm_eps` 6 处……）。值当时恰好一致 —— 但
+        # "恰好一致"不是保证：改一处忘一处就会造出两个算不同模型的"同一个后端"，
+        # 而且偏差通常低于判据。唯一允许的写法是从 `by1ir` 取名字。
+        if (isinstance(n.func, ast.Attribute) and n.func.attr == "get"
+                and len(n.args) >= 2):
+            _a0, _a1 = n.args[0], n.args[1]
+            if (isinstance(_a0, ast.Constant)
+                    and isinstance(_a0.value, str)
+                    and _a0.value in _ATTR_DEFAULTS
+                    and isinstance(_a1, ast.Constant)
+                    and isinstance(_a1.value, (int, float))
+                    and not isinstance(_a1.value, bool)):
+                self.add("⑪ 属性默认值写死", n, _a0.value)
         self.generic_visit(n)
 
     def _reads_result(self, call):
@@ -422,7 +445,7 @@ def main():
 
     print()
     print('=' * 78)
-    print('  by1 的十类"不出声"写法 —— %d 个文件' % len(files))
+    print('  by1 的十一类"不出声"写法 —— %d 个文件' % len(files))
     print('=' * 78)
     print()
 
@@ -449,17 +472,43 @@ def main():
     # 一个不可能红的检查，等于一个不存在的检查（而这个仓库的
     # `KNOWN` 清单、`by1skip` 三态、`confirmed()` 都是为了反这一条）。
     #
-    # 现在它有一条判定线：**这十类的命中数必须是 0**。
+    # 现在它有一条判定线：**这十一类的命中数必须是 0**。
     # 之所以能要求 0，是因为把这条线接进 `by1all` 之前，
     # 树上已经清干净了 —— 而"清干净"这件事本身要能被复查。
     # 要豁免某一条，就写进 `ALLOW`，**并且写清楚为什么**。
-    total = sum(len(v) for v in allhits.values())
     print('  **这些不是风格问题，是"错误会不会出声"的问题。**')
     print('  ① 和 ② 最重 —— `except: pass` 把错误吃掉之后，')
     print('  调用方看到的是"一切正常"，而它是坏的。')
+    # ── ⑪ 的另一半：**生成物模板**里的字面量必须等于唯一源头 ────
+    #
+    # `by1codegen.RUNTIME` 是一段会被 emit 出去的**文本**（整个 torch
+    # 运行时），它引用不了模块名，所以只能写字面量。"只能写"不等于
+    # "可以写错"：这里把每个 `.get("<属性>", <数字>)` 抠出来，和
+    # `by1ir.ATTR_DEFAULTS` 逐条比 —— 第六轮就是这样抓到 SSM 门控 norm
+    # 的 1e-6（源头是 1e-5，差一个量级，而所有模型都显式写了它所以一直没露）。
+    _tmpl = os.path.join(_p.SRC, "by1codegen.py")
+    if os.path.exists(_tmpl):
+        _tsrc = by1io.read_text(_tmpl, encoding="utf-8")
+        _k = _tsrc.find("RUNTIME = r")
+        if _k >= 0:
+            _blk = _tsrc[_k:]
+            _ends = _blk.find(chr(10) + "'''")
+            _blk = _blk[:_ends] if _ends > 0 else _blk
+            _off = _tsrc[:_k].count(chr(10))
+            for _m in re.finditer(
+                    r'\.get\("(\w+)",\s*([-0-9.eE+]+)\)', _blk):
+                _nm, _v = _m.group(1), float(_m.group(2))
+                if _nm not in _ATTR_DEFAULTS:
+                    continue
+                if abs(_v - float(_ATTR_DEFAULTS[_nm])) > 1e-12:
+                    _ln = _off + _blk[:_m.start()].count(chr(10)) + 1
+                    allhits["⑪ 属性默认值写死"].append((
+                        _tmpl, _ln,
+                        "模板 %s 默认 %r != 源头 %r" % (_nm, _v, _ATTR_DEFAULTS[_nm])))
+    total = sum(len(v) for v in allhits.values())
     print()
     ok = total == 0
-    print('  [%s] lint 十类静默写法 %d 处%s'
+    print('  [%s] lint 十一类静默写法 %d 处%s'
           % ('PASS' if ok else 'FAIL', total,
              '（这一类必须一直是 0）' if ok else ' —— 上面逐条列出来了'))
     return 0 if ok else 1
@@ -482,11 +531,13 @@ _SELFTEST = (
      '    return r.stdout\n'),
     ('⑩ 库代码里的 sys.exit',
      'import sys\n\n\ndef main():\n    return 0\n\n\nsys.exit(main())\n'),
+    ('⑪ 属性默认值写死',
+     'def f(a):\n    return a.get("norm_eps", 1e-5)\n'),
 )
 
 
 def _selftest():
-    """**十条规则各有一个必须红的反例。** 外加两个必须不红的正例。"""
+    """**十一条规则各有一个必须红的反例。** 外加三个必须不红的正例。"""
     print()
     print('=' * 78)
     print('  by1lint 自检：每条规则都要在反例上真的红一次')
@@ -508,6 +559,8 @@ def _selftest():
          'import subprocess\n\n\ndef f():\n'
          '    r = subprocess.run(["x"], capture_output=True, text=True)\n'
          '    return 0 if r.returncode == 0 else 1\n'),
+        ('默认值取名字不该报',
+         'EPS = 1e-5\n\n\ndef f(a):\n    return a.get("norm_eps", EPS)\n'),
     )
     for label, code in GOOD:
         hits = lint_text('<selftest>', code)
@@ -519,7 +572,7 @@ def _selftest():
     print()
     print('  [%s] lint 自检 %s'
           % ('PASS' if not bad else 'FAIL',
-             '十条规则都会红，两个正例都没误报'
+             '十一条规则都会红，三个正例都没误报'
              if not bad else '%d 条不对' % bad))
     return 0 if not bad else 1
 

@@ -39,6 +39,7 @@ import sys
 import numpy as np
 import by1io
 import by1paths
+from by1ir import ROPE_SCALE_DEFAULT  # noqa: E402
 
 MANGLE = __import__("re").compile(r"[^0-9A-Za-z]")
 
@@ -736,7 +737,7 @@ def emit_model_c_graph(g, ir, order, params, dump=()):
         elif prim == "rope":
             nrot = int(at["n_dims"])
             mode = 2 if str(at["pairing"]) == "half" else 0
-            if float(at.get("rope_scale", 1.0)) != 1.0:
+            if float(at.get("rope_scale", ROPE_SCALE_DEFAULT)) != 1.0:
                 # **这里原来是静默算错**：ref 是 `cos/sin · rope_scale`，
                 # 而发射出去的是 mscale=1.0 —— rope_scale≠1 的模型会
                 # "看起来对、算的是另一个模型"。要么实现（attn_factor -> mscale
@@ -1259,7 +1260,7 @@ int main(int argc, char **argv) {{
         from by1ver import stamp as _stamp
         stamp = "/* %s */" % _stamp()
     except ImportError:
-        # **不能 `except: pass`** —— by1lint 的十类静默写法之一：
+        # **不能 `except: pass`** —— by1lint 的十一类静默写法之一：
         # 错误被吃掉，调用方看到"一切正常"，而 stamp 根本没打上。
         stamp = "/* by1ggml */"
     return stamp + GGML_HEAD + dump_c + "\n".join(head) + main, \

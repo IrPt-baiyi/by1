@@ -27,7 +27,9 @@ import by1paths
 # 这个文件里原来有 9 处 `1e-5`；C_HEAD 里那段"eps 必须由调用方传进来"
 # 的注释记的就是这一类 —— 而它当时没管住 `qk_norm()`。
 try:
-    from by1ir import EPS_DEFAULT as _DEFAULT_EPS
+    from by1ir import (EPS_DEFAULT as _DEFAULT_EPS,
+                   ROPE_PARTIAL_DEFAULT as _ROPE_PARTIAL,
+                   ROPE_SCALE_DEFAULT as _ROPE_SCALE)
 except ImportError:                     # 单独拷一个文件出去时兜底
     _DEFAULT_EPS = 1e-5
 
@@ -1629,7 +1631,7 @@ def _emit_c_body(ir, params):
                 # llama3 的 attention_factor 恒为 1.0，别跟着 YaRN 的公式算
                 _sc = a["rope_scale"] if (not _y or _ty == "yarn") else 1.0
                 _rt = 0 if not _y else (2 if _ty == "llama3" else 1)
-                _nrot = int(hd * a.get("rope_partial", 1.0))
+                _nrot = int(hd * a.get("rope_partial", _ROPE_PARTIAL))
                 # **`rope` 是开关。** 这里以前无条件发这行 ——
                 # GPT-2 的 `rope = false`，于是它也把这个忙转了。
                 if a.get("rope", True):
@@ -2710,7 +2712,7 @@ def emit_c_graph(ir, params, g=None):
             body.append("    p_rope(%s, %s, v_pos, n, %s, %s, %d, %d, %r, %s);"
                         % (dst, a[0], x[1], x[2], int(at["n_dims"]),
                            1 if str(at.get("pairing")) == "half" else 0,
-                           float(at.get("rope_scale", 1.0)), rn))
+                           float(at.get("rope_scale", _ROPE_SCALE)), rn))
         elif prim in ("soft_max", "soft_max_sink"):
             x = shp_in[0]
             if len(x) != 3:
