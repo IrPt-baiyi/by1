@@ -57,7 +57,7 @@
 | 参考执行 | 扩大独立参考的模型/上下文范围；合成图像检查 ≠ 视觉评测（第十一轮推进一格：`by1ssm` 判卷人从 **2 样形式** 扩到 **形状 × 上下文** 网格（9 格），含分块残块（seq 7/13/20）、n_groups 1/2/4/8、conv 2/4/7，逐格登记余量（26.7x~120.8x）；并记下配置约束 **n_groups 必须整除 num_heads**）（第十二轮：直连对拍接上了 —— 官方权重直接喂给 `by1exec.op_ssm`，实测 1.5e-07~2.1e-07；把 op_ssm 的 gate 顺序写错，式子那些行照样绿而直连行立刻红——这就是“两条链各自对上官方不等于彼此一致”的直接证据） |
 | ggml 生成 | 只是验证工具，不代表可并入上游的完整架构 |
 | llama.cpp 基线 | **干净 clone 构建（2026-10-17 第九轮已做）** · **llama-bench / llama-cli 数值实跑（未做）** —— tag `v0.6.0`（= `d812350`）clone 11 秒 / configure 2 秒 / build 207 秒，两个二进制版本串都是 `commit d812350`；`by1llama.py pin-check` 已进档 5 当判据（没构建时 `[跳过]`）。**剩下的一格是数据**：`llama-bench` 要完整模型 GGUF，仓库只有 tokenizer-only 的 vocab GGUF（实测报 `tensor token_embd.weight not found`），11.8 GB IQ3_S 的下载仍归 GPU 日 |
-| 量化 Q1/Q2 | 新格式必须真实 checkpoint + 独立判据；Q2 的 GPU 真跑未做 |
+| 量化 Q1/Q2 | 新格式必须真实 checkpoint + 独立判据；Q2 的 GPU 真跑未做（第十三轮：Q2 的 **CPU 一半** 立了判据 —— `audit_checkpoint_storage`原来只有 `by1gpubench` 一个调用者，没卡就从没执行过；现在`by1quant.selftest` 用合成 safetensors 分片跑 2 正 + 6 反，档 1 里跑；**GPU 那一半仍未验**） |
 | 量化 Q3 | 未开 |
 
 ## 总账（一句话）

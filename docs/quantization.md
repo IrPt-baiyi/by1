@@ -44,6 +44,16 @@ emit torch.module {
 
 `by1full` 的 Q2 加载入口已接收 `.by1` 量化规格：它会把已声明的格式与 checkpoint 原生量化配置核对，要求 `dequantize=False`，并在加载后审计 FP8 或 MXFP4 存储。审计结果按文本/视觉/MTP 模块分别计数；若声明 MTP / 共享词嵌入，还会检查这些别名关系。数值内核仍由 Transformers 原生量化适配器执行，by1 尚无自研 CUDA kernel。
 
+**CPU 一半（2026-10-17 第十三轮）**：`safetensors` **头审计**
+（`by1quant.audit_checkpoint_storage`）现在有**正反例判据**，跑在档 1（`by1fast` ->
+`by1quant.selftest`）：合成分片（最小 safetensors：头 + 占位字节）的正例两条
+（单分片 / 跨分片）+ 六条反例（scale dtype 不对、缺 scale、scale 形状不对、
+权重不是 E4M3、分片间重名、数量对不上）。**这条审计原来只有
+`by1gpubench` 一个调用者** —— 在没卡的机器上从没执行过。
+为了让它在"只要 numpy"的那条腿里也跑得了，审计改用
+`safe_open(..., framework="numpy")`（它只读 dtype/shape），CI 的 numpy 腿也因此
+多装一个 `safetensors`。**这不是 Q2 通过**：运行期的数值内核仍
+无自研实现，且 GPU forward / generation / 显存对拍仍未运行。
 Q2 的 GPU forward / generation / 显存对拍仍未运行。现有 GPT-OSS checkpoint 可走原生 MXFP4 benchmark。FP8 首选现已固定为官方 `Qwen/Qwen3.8-27B-FP8`：它有独立量化描述 [Qwen3.8-27B-FP8.by1](../models/Qwen3.8-27B-FP8.by1)，基准使用完整 Qwen3.8 架构描述，覆盖文本、BF16 视觉塔、量化 MTP 和共享关系。原始 safetensors 头审计会核验合同声明的 BF16 scale、E4M3 权重、块形状与 `weight_scale_inv` 配对；运行时报告再记录实际 scale dtype。GPU 实测通过前不把 Q2 标为完成。Q3 仍未开始。
 
 ## 共享/附属分支检查清单（Q2 验收逐项，2026-10-14 固化）

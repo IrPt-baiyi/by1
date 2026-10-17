@@ -5,9 +5,14 @@
 These describe checkpoint storage, not model architecture or a runnable kernel.
 """
 
-import re
+import json
 import math
+import os
 import pathlib
+import re
+import shutil
+import struct
+import tempfile
 
 
 FORMATS = {
@@ -266,7 +271,10 @@ def audit_checkpoint_storage(checkpoint_dir, quant, expected_weight_count=None):
     weight_dtypes, scale_dtypes = set(), set()
     shard_count = 0
     for filename in files:
-        with safe_open(str(filename), framework="pt", device="cpu") as shard:
+        # **`framework="numpy"`**：这里只读 dtype/shape，不取数据。用 "pt" 会把
+        # torch 拖进来，于是这条审计**只能在装了 torch 的机器上跑** ——
+        # 而它的判据（见 selftest 里的合成分片）恰恰要在"只要 numpy"的那条腿里跑。
+        with safe_open(str(filename), framework="numpy", device="cpu") as shard:
             shard_count += 1
             for name in shard.keys():
                 is_weight = (name.endswith(".weight") and any(
@@ -409,6 +417,91 @@ def validate_emit_quant(quant):
     return errors
 
 
+def _write_safetensors(path, tensors):
+    """最小 safetensors 写手（头 + 占位字节）。
+
+    **判据要在"只要 numpy"的环境里跑**，所以不能借 torch 去写文件；
+    而 safetensors 的格式就是 `u64 头长 + JSON 头 + 数据`，写起来十行。
+    占位字节的**内容**审计不看（它只读 dtype/shape）。
+    """
+    header, offset, blobs = {}, 0, []
+    for name, (dtype, shape, nbytes) in tensors.items():
+        header[name] = {'dtype': dtype, 'shape': list(shape),
+                        'data_offsets': [offset, offset + nbytes]}
+        blobs.append(b"\x00" * nbytes)
+        offset += nbytes
+    raw = json.dumps(header).encode("utf-8")
+    with open(path, "wb") as fh:
+        fh.write(struct.pack("<Q", len(raw)))
+        fh.write(raw)
+        for b in blobs:
+            fh.write(b)
+
+
+def _selftest_checkpoint_audit():
+    """**safetensors 头审计**：一条正例 + 六条反例。
+
+    这条审计原来只有 `by1gpubench` 一个调用者 —— 在没卡的机器上
+    **从没被执行过**（D6：不入门的检查会烂）。合成分片给它立判据。
+    """
+    quant = {"format": "fp8_e4m3_block", "block": "128",
+             # **编译后的 IR 形态：`tensor` 是 list**（`[a, b]` 那种字符串
+             # 是语言层的，`compile_emit_quant` 会拆成表；直接给它字符串的话
+             # 审计会按字符迭代 —— 我第一版就这么写的，于是正例 0/0 报错）。
+             "tensor": ["layer.weight"], "scale": "weight_scale_inv"}
+    w = ("F8_E4M3", (128, 256), 128 * 256)
+    sc = ("F32", (1, 2), 4 * 2)
+    # **张量名要带前缀**：审计按 `.endswith("." + logical)` 匹配，所以
+    # 合同写 `layer.weight`、仓里的名字是 `model.layer.weight`。
+    good = {"model.layer.weight": w, "model.layer.weight_scale_inv": sc}
+
+    def run(tensors_by_shard, expect_count=None):
+        d = tempfile.mkdtemp(prefix="by1q-audit-")
+        try:
+            for i, t in enumerate(tensors_by_shard):
+                _write_safetensors(
+                    os.path.join(d, "model-%d.safetensors" % i), t)
+            return audit_checkpoint_storage(
+                d, quant, expected_weight_count=expect_count)
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def must_red(tag, tensors_by_shard, expect_count=None):
+        try:
+            run(tensors_by_shard, expect_count)
+        except ValueError:
+            return None
+        return "%s 被放行了（反例没红）" % tag
+
+    bad = []
+    # 正例：单分片 / 跨分片各一次
+    got = run([good], expect_count=1)
+    if (got["weight_tensor_count"] != 1 or got["shard_count"] != 1
+            or got["scale_dtypes"] != ["F32"]):
+        bad.append("正例（单分片）结果不对：%r" % (got,))
+    got2 = run([{"model.layer.weight": w}, {"model.layer.weight_scale_inv": sc}])
+    if got2["shard_count"] != 2 or got2["weight_tensor_count"] != 1:
+        bad.append("正例（跨分片）结果不对：%r" % (got2,))
+    # 反例：每一条都必须红
+    cases = (
+        ("scale dtype 是 F16", [{"model.layer.weight": w,
+                                "model.layer.weight_scale_inv": ("F16", (1, 2), 2 * 2)}], None),
+        ("缺 scale", [{"model.layer.weight": w}], None),
+        ("scale 形状不对", [{"model.layer.weight": w,
+                             "model.layer.weight_scale_inv": ("F32", (2, 2), 4 * 4)}], None),
+        # F16 每元素 2 字节 —— 字节数写错的话文件本身就不合法，报的是 SafetensorError
+        ("权重不是 E4M3", [{"model.layer.weight": ("F16", (128, 256), 128 * 256 * 2),
+                            "model.layer.weight_scale_inv": sc}], None),
+        ("分片间重名", [good, {"model.layer.weight": w}], None),
+        ("数量对不上", [good], 3),
+    )
+    for tag, shards, cnt in cases:
+        why = must_red(tag, shards, cnt)
+        if why:
+            bad.append(why)
+    if bad:
+        raise RuntimeError("checkpoint 头审计：" + "；".join(bad))
+
 def selftest():
     """Deterministic numeric-oracle and accepted/rejected-format checks."""
     valid = (
@@ -487,6 +580,8 @@ def selftest():
         block_mismatch_rejected = True
     if not block_mismatch_rejected:
         raise RuntimeError("mismatched checkpoint FP8 block was accepted")
+
+    _selftest_checkpoint_audit()
 
     class _Tensor:
         def __init__(self, dtype):
