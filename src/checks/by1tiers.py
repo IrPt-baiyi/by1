@@ -21,6 +21,8 @@ CI 的"纯标准库"那条腿就会红；反过来一个只要标准库的挂在
     T6 参照物    判卷人的 docstring 里必须有一行 `参照物：...`，
                  且它里面的至少一个 **CamelCase 名字**要真的出现在那个文件里（防“文档写的参照物早就不存在了”）。
                  不是参照对比类的记在 `NO_REF` 里。
+    T7 上游      上面那行里点名的官方名字，要能在**本机装的 transformers 里找到**（没装就跳过）。
+                 “文档写着、上游已删”与“名字拼错”都在这一条上现形。
                  （modelcheck 是"一个模型一个判卷人"，漏一个就是漏一整条判据。）
 
 ## 自检
@@ -41,6 +43,33 @@ MIN_TIER = {'torch': 4, 'transformers': 4, 'numpy': 3}
 
 #: `src/modelcheck/` 里**不是判卷人**的东西，逐条写理由（T5 要它）。
 #: 不是“对着官方实现比”的判卷人：它们自带自测。
+#: 参照物不在 transformers 里的判卷人（T7 要跳过它们）。
+UPSTREAM_EXEMPT = {
+    'by1instella.py': '参照物是 AMD 官方仓库里的 modeling_instella.py，不在 transformers 里',
+}
+
+_UPSTREAM = {}
+
+def upstream_names():
+    """本机 transformers 里出现过的标识符集合。没装 -> None（T7 跳过）。cache 一次。"""
+    if 'names' in _UPSTREAM:
+        return _UPSTREAM['names']
+    try:
+        import transformers
+    except Exception:
+        _UPSTREAM['names'] = None
+        return None
+    import pathlib as _pl
+    root = _pl.Path(transformers.__file__).parent
+    names = set()
+    for f in root.rglob('*.py'):
+        try:
+            text = f.read_text(encoding='utf-8', errors='ignore')
+        except OSError:
+            continue
+        names.update(re.findall(r'[A-Za-z_][A-Za-z0-9_]{4,}', text))
+    _UPSTREAM['names'] = names
+    return names
 NO_REF = {
     'by1dev.py': '设备无关性：验的是前向不依赖 CPU 默认，没有官方对照物',
 }
@@ -115,12 +144,14 @@ def min_tier_of(root, path, _seen=None):
     return need
 
 
-def check(root=ROOT, tiers_path=None, modelcheck_dir=None):
+def check(root=ROOT, tiers_path=None, modelcheck_dir=None, resolve=None):
     """返回问题列表（空 = 过）。`root`/路径可换 —— 自检就靠这个。"""
     root = pathlib.Path(root)
     tiers_path = pathlib.Path(tiers_path or (root / 'src/checks/by1all.py'))
     mc = pathlib.Path(modelcheck_dir or (root / 'src/modelcheck'))
     problems = []
+    # T7 的上游名字集：默认扫本机的 transformers（缓存一次）；没装 -> None -> 跳过
+    upstream = upstream_names() if resolve is None else (resolve or None)
     tb = load_tables(tiers_path)
     judges = tb.get('JUDGES') or []
     cmds = tb.get('JUDGE_CMDS') or {}
@@ -181,6 +212,13 @@ def check(root=ROOT, tiers_path=None, modelcheck_dir=None):
         code_only = text.replace(doc, '')
         if not caps or not any(c in code_only for c in caps):
             problems.append('T6 %s 的参照物名字 %r 在文件里找不到（文档过期）' % (base, caps[:3]))
+            continue
+        # T7：这些名字要能**在本机装的 transformers 里找到**（没装就不查）
+        if upstream is None or base in UPSTREAM_EXEMPT:
+            continue
+        if not any(c in upstream for c in caps):
+            problems.append('T7 %s 的参照物 %r 在本机 transformers 里一个都找不到'
+                            '（上游改过名？名字拼错？）' % (base, caps[:3]))
     if mc.is_dir():
         for f in sorted(mc.glob('*.py')):
             if f.name == '__init__.py' or f.name in names:
@@ -191,8 +229,17 @@ def check(root=ROOT, tiers_path=None, modelcheck_dir=None):
     return problems
 
 
+def _expect7(d, tag, table_text, want, known):
+    p = d / 'src/checks/by1all.py'
+    # 自检里用一行字符串写表更省事，这里把字面 \n 当真换行处理
+    table_text = table_text.replace(chr(92) + 'n', chr(10))
+    p.write_text(table_text, encoding='utf-8')
+    probs = check(root=d, tiers_path=p,
+                  modelcheck_dir=d / 'src/modelcheck', resolve=known)
+    return [x for x in probs if want in x]
+
 def _selftest():
-    """假树 + 假表：五条规则各弄红一次，再验真树。"""
+    """假树 + 假表：七条规则各弄红一次，再验真树。"""
     import shutil
     import tempfile
     d = pathlib.Path(tempfile.mkdtemp(prefix='by1tiers-'))
@@ -220,7 +267,7 @@ def _selftest():
 
         def expect(tag, text, want):
             p = table(text)
-            probs = check(root=d, tiers_path=p,
+            probs = check(root=d, tiers_path=p, resolve=frozenset(),
                           modelcheck_dir=d / 'src/modelcheck')
             if not [x for x in probs if want in x]:
                 bad.append('%s 没被抓住（问题表：%r）' % (tag, probs))
@@ -230,7 +277,8 @@ def _selftest():
                 " ('by1judge.py', 2)]\n"
                 "JUDGE_CMDS = {'by1torchy.py sub': ['by1torchy.py', 'sub']}\n")
         p = table(good)
-        probs = check(root=d, tiers_path=p, modelcheck_dir=d / 'src/modelcheck')
+        probs = check(root=d, tiers_path=p, modelcheck_dir=d / 'src/modelcheck',
+                      resolve=frozenset())
         if probs:
             bad.append('正例竟然红了：%r' % (probs,))
         expect('T1 找不到文件',
@@ -262,6 +310,17 @@ def _selftest():
         expect('T6 参照物名字过期',
                "JUDGES = [('by1stale.py', 2), ('by1judge.py', 2)]\n"
                "JUDGE_CMDS = {}\n", 'T6')
+        t7_tab = ("JUDGES = [('by1stale.py', 2), ('by1judge.py', 2)]\n"
+                  "JUDGE_CMDS = {}\n")
+        # 反例：参照物名字在本机上游找不到 -> T7 必须红
+        if not _expect7(d, 'T7 上游找不到', t7_tab, 'T7',
+                        frozenset({'SomethingElse'})):
+            bad.append('T7 反例没红（上游没有那个名字却放行了）')
+        # 正例：名字在上游里 -> 不许报 T7
+        t7_pos = "JUDGES = [('by1stale.py', 2)]\nJUDGE_CMDS = {}\n"
+        if _expect7(d, 'T7 正例', t7_pos, 'T7',
+                    frozenset({'NoSuchClassAtAll'})):
+            bad.append('T7 正例被误判（名字明明在已知集合里）')
         expect('T5 modelcheck 漏了',
                "JUDGES = [('by1plain.py', 2), ('by1judge.py', 2)]\n"
                "JUDGE_CMDS = {}\n", 'T5')
@@ -272,7 +331,7 @@ def _selftest():
         bad.append('真树：' + x)
     for x in bad:
         print('     ! ' + x)
-    print('  [%s] 档位归属：五条规则各红一次，真树 %s'
+    print('  [%s] 档位归属：七条规则各红一次，真树 %s'
           % ('PASS' if not bad else 'FAIL',
              '也过' if not real else '有 %d 处问题' % len(real)))
     return 0 if not bad else 1
@@ -292,7 +351,7 @@ def main(argv):
     ok = not problems
     print('  [%s] 档位归属 %s'
           % ('PASS' if ok else 'FAIL',
-             '五条规则都成立（%d 个判卷人）' % _count()
+             '七条规则都成立（%d 个判卷人）' % _count()
              if ok else '%d 处不成立' % len(problems)))
     return 0 if ok else 1
 
