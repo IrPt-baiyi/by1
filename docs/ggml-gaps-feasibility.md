@@ -676,8 +676,8 @@ RMS·norm.w·z / 权重布局 / mul_mat 契约 / 内核布局）全部留档 —
 | `clef-tiny.by1` | Linear + FFN + Attention（视觉塔布局） | 2.203e-07 |
 | `ssm-shaped.by1` | SSM（Mamba2 · `ssm_scan`，第二轮补） | 1.704e-07 |
 
-**矩阵上的结果**（[backend-matrix](backend-matrix.md) 两列分开量）：
-IR 路公共子集仍是 **10 / 23**（没动 `--from-ir`）；**默认路 19 / 23**。
+**矩阵上的结果**（[backend-matrix](backend-matrix.md)）：**四后端交集 19 / 23**
+（A3-3 之后 `ggml` 只有图路这一列；旧路已删，见 6.5）。
 
 ### 6.1 写进发射器的映射
 
@@ -767,8 +767,27 @@ seq = 8 / 16 / 32 / 48 上都是 1.7e-07 ~ 1.9e-07（运行期 n 的路径也验
 ### 6.4 门禁（防「收口」变回记忆）
 
 - `by1ggml --selftest` 的 ⑥ 从「**必须拒绝** qwen3-next」改成
-  「**必须数值过** moe-routing / kda / glm-text-tiny / qwen3-next」。
-- `by1all` 的 6b 段新增 `GGML_GRAPH_MODELS`（12 份）—— 图路默认路逐份对拍
-  （含第二轮的 `ssm-shaped`）。
-- `by1backends` 新增 **`ggml-graph` 列** + 「默认路公共子集」一行
-  （19/23，和 IR 路的 10/23 并排）。
+  「**必须数值过** moe-routing / kda / glm-text-tiny / qwen3-next / ssm-shaped」。
+- `by1all` 的 6b 段用 **`GGML_GRAPH_MODELS`**（17 份）逐份对拍 ——
+  A3-3 之后它就是 ggml 的唯一判据集（原来的 `GGML_IR_MODELS` 已并进来）。
+- `by1backends` 的 `ggml` 列 = 图路（A3-3 之后不再分两列）。
+
+### 6.5 A3-3：旧路删掉了（2026-10-17 第三轮）
+
+图路 19/23 ≥ 旧路 10/23 之后，**按 A3-3 删掉了按 IR kind 手写的发射器**，
+`by1ggml` 从 2277 行降到 ~1490 行。删掉的东西与替代：
+
+| 删掉 | 替代 |
+|---|---|
+| `emit_model_c`（含内嵌 `emit_op`，约 640 行） | `emit_model_c_graph`（PRIMS 表的机械翻译） |
+| `check_support`（IR kind 白名单 + 属性约束） | **lowering/发射表自己**：降不动就 `[不支持]` 点名拒绝 |
+| `--from-ir` 开关、`cgen-ggml-` 工作目录 | 没有第二条路（`cgen-ggmlg-`） |
+| 矩阵的 `ggml`（IR 路）列、`GGML_IR_MODELS` | 单列 `ggml` = 图路；名单并入 `GGML_GRAPH_MODELS` |
+
+**为什么敢删**：那 6 份原来只走旧路的探针（hello / attn-fused / ssm / mla /
+llama3 / attn-qgate）在图路上**已经逐个数值过**（1.2e-07 ~ 4.5e-07），
+删完之后 19 份 shaped 全部由同一个门禁集跑。**没有覆盖率的损失**，
+少的是"两份实现"这个长期隐患。
+
+**代价**：失去差分对照。接受它的理由：差分在那 6 份上已经做过（数值同量级），
+而两份发射器并存会让每次收口都要在两条路上都验一遍 —— 这才是隐患。

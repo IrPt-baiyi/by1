@@ -279,21 +279,17 @@ REAL = [
 # **挑选本身对不对由 `by1sparse.py` 对着 transformers 的 `GlmMoeDsaIndexer` 判。**
 EXEC_SEQ = {'mla-sparse-shaped.by1': 16}
 
-#: **IR 路（--from-ir）要进门槛的三个探针** —— 与后端矩阵里 ggml ✅ 的三格同集。
+#: **ggml 图路要进门槛的探针**（A3-3 之后它是唯一的一条路）。
 #: 为什么必须进门禁（2026-10-16 实测）：`qkv_fused` 的 bias 视图偏移少乘了
 #: `nb[0]`（**字节 vs 元素**），形状、名字全对、只有数值错（3.6e-01）——
-#: 而 `--selftest` 的孪生模型不含融合 qkv，于是它一直绿。
-#: **没进门禁的检查会烂**，同一条纪律（D6）。
-GGML_IR_MODELS = ['hello.by1', 'attn-fused-shaped.by1', 'ssm-shaped.by1',
-                  'mla-shaped.by1', 'llama3-shaped.by1', 'attn-qgate-shaped.by1']
-
-#: **图路径（`by1ggml` 的默认路，A3-2 起）要进门槛的探针。** 2026-10-17 之前
-#: 图路径只会点名拒绝 MoE / KDA / Linear（映射没写）；那一天收口之后，
-#: 这三族变成**数值判据**（判卷人是 by1exec）—— 所以它们必须在门里，
-#: 否则"收口"只是这一天的记忆，下一个人改坏了不会有人知道（同 D6）。
-#: MoE 四种路由 / 三种打分（moe-routing 一份覆盖三条分支）+ KDA 三变体 +
-#: Linear（GDN）+ 两个真实结构的机械缩小版（Ling / GLM 文本主干）。
-GGML_GRAPH_MODELS = ['moe-routing-shaped.by1', 'mixtral-shaped.by1',
+#: 而 `--selftest` 的孪生模型不含融合 qkv，于是它一直绿。**没进门禁的检查
+#: 会烂**（D6）。2026-10-17 又把 MoE / KDA / Linear / SSM 收进图路：
+#: 它们从"必须拒绝"变成**数值判据**（判卷人是 by1exec），所以也必须在门里。
+#: 名单 = 矩阵里 ggml ✅ 的那 19 份 shaped 里最能代表机制的（全部运行判据）。
+GGML_GRAPH_MODELS = ['hello.by1', 'attn-fused-shaped.by1',
+                     'attn-qgate-shaped.by1', 'mla-shaped.by1',
+                     'llama3-shaped.by1',
+                     'moe-routing-shaped.by1', 'mixtral-shaped.by1',
                      'gpt-oss-shaped.by1', 'qwen3-next-shaped.by1',
                      'ling-tiny.by1', 'glm-text-tiny.by1',
                      'kda-shaped.by1', 'kda-gva-shaped.by1',
@@ -1063,28 +1059,15 @@ def main():
                          note_of(g_st, g_out, g_line, empty='（没有判定行）')))
             if g_st == 'fail':
                 fails.append('ggml selftest')
-            # **IR 路的数值对拍**（判卷人是 NumPy）：见 `GGML_IR_MODELS` 处
-            # 的来由。这三行就是"第四后端承诺到哪"的数值版。
-            for f, (st, out) in zip(GGML_IR_MODELS, run_many(
-                    [(['by1ggml.py', '--from-ir', f], 'ggml-ir ' + f)
-                     for f in GGML_IR_MODELS])):
-                line = [l.strip() for l in out.splitlines()
-                        if '最大绝对差' in l]
-                st = confirmed(st, out, line)
-                rows.append(('ggml IR ' + f, st,
-                             note_of(st, out, line, empty='').replace('   ', ' ')))
-                if st == 'fail':
-                    fails.append('ggml-ir ' + f)
-            # **图路径（默认路）的数值对拍** —— MoE / KDA / Linear。见
-            # `GGML_GRAPH_MODELS` 处：这三族的"要么实现，要么拒绝"在
-            # 2026-10-17 变成了**数值判据**，放进门里才不会烂。
+            # **图路的数值对拍** —— A3-3 之后这是 ggml 唯一的一条路，
+            # 判卷人是 NumPy（by1exec）。见 `GGML_GRAPH_MODELS` 处的来由。
             for f, (st, out) in zip(GGML_GRAPH_MODELS, run_many(
                     [(['by1ggml.py', f], 'ggml ' + f)
                      for f in GGML_GRAPH_MODELS])):
                 line = [l.strip() for l in out.splitlines()
                         if '最大绝对差' in l]
                 st = confirmed(st, out, line)
-                rows.append(('ggml 图 ' + f, st,
+                rows.append(('ggml ' + f, st,
                              note_of(st, out, line, empty='').replace('   ', ' ')))
                 if st == 'fail':
                     fails.append('ggml-graph ' + f)
