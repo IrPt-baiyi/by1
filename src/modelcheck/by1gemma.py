@@ -15,7 +15,8 @@ by1 的 MLP（RUNTIME）有两条支：`gate = true` 的 SwiGLU 与 `gate = none
 这条判卷人把三件事分开验：正例（GeGLU 对官方 GemmaMLP 逐值一致）+ 两条可证伪
 （写成 silu 要差、写成精确 gelu 也要差）。
 
-参照物：transformers 的 `GemmaMLP`（models/gemma/modeling_gemma.py）：
+参照物：transformers 的 `GemmaMLP`（models/gemma/modeling_gemma.py）与
+`NemotronMLP`（models/nemotron/modeling_nemotron.py，无门控、hidden_act=relu2）：
 `down_proj(act_fn(gate_proj(x)) * up_proj(x))`，`act_fn = ACT2FN["gelu_pytorch_tanh"]`
 （= tanh 近似）。本机 5.20.0 实测可取。
 """
@@ -45,6 +46,23 @@ def _official():
     cfg = GemmaConfig(hidden_size=D, intermediate_size=H)
     return GemmaMLP(cfg)
 
+
+def _official_nemotron():
+    """官方的无门控 MLP（`NemotronMLP`：up_proj -> act_fn -> down_proj，
+
+    `hidden_act` 默认就是 `relu2`）。对应 by1 的 `gate=False`。
+    """
+    from transformers import NemotronConfig
+    from transformers.models.nemotron.modeling_nemotron import NemotronMLP
+    cfg = NemotronConfig(hidden_size=D, intermediate_size=H)
+    return NemotronMLP(cfg)
+
+
+def _tie_ungated(m, ref):
+    """无门控那一支：w1->up_proj, w2->down_proj。"""
+    with torch.no_grad():
+        ref.up_proj.weight.copy_(m.w1.weight)
+        ref.down_proj.weight.copy_(m.w2.weight)
 
 def _tie(m, ref):
     """把 by1 的三个权重装进官方模块：w1->gate_proj, w3->up_proj, w2->down_proj。"""
@@ -98,10 +116,34 @@ def main():
     if d3 <= 1e-4:
         bad.append("\u7cbe\u786e gelu \u4e0e tanh \u8fd1\u4f3c\u5206\u4e0d\u5f00\uff08%.3e\uff09\u2014\u2014 \u4e24\u5f0f\u88ab\u6df7\u6210\u4e00\u4e2a" % d3)
 
+    # ---- ④ 正例：relu2（Nemotron）对官方 NemotronMLP ----
+    # 这也是历史上被静默算成 silu 的取值之一。
+    mu = _by1_mlp(gate=False, hidden=H, act="relu2")
+    ref_n = _official_nemotron()
+    _tie_ungated(mu, ref_n)
+    yu = mu(x).detach()
+    yn = ref_n(x).detach()
+    d4 = _diff(yu, yn)
+    print("  ④ relu2      by1 vs 官方 NemotronMLP 最大差 %.3e  [%s]"
+          % (d4, "PASS" if d4 < 1e-6 else "FAIL"))
+    if d4 >= 1e-6:
+        bad.append("relu2 与官方 NemotronMLP 不一致（%.3e）" % d4)
+
+    # ---- ⑤ 可证伪：relu2 写成 silu 就不是它 ----
+    ms2 = _by1_mlp(gate=False, hidden=H, act="silu")
+    with torch.no_grad():
+        ms2.w1.weight.copy_(mu.w1.weight)
+        ms2.w2.weight.copy_(mu.w2.weight)
+    d5 = _diff(ms2(x).detach(), yn)
+    print("  ⑤ 证伪 无门控 act=silu     vs 官方差       %.3e  [%s]"
+          % (d5, "PASS" if d5 > 1e-3 else "FAIL"))
+    if d5 <= 1e-3:
+        bad.append("无门控 act=silu 竟然和 relu2 一样（%.3e）—— 分派没生效" % d5)
+
     for b in bad:
         print("     ! " + b)
-    print("  [%s] GeGLU\uff1a\u6b63\u4f8b\u9010\u503c\u4e00\u81f4\uff08%.2e\uff09\uff0csilu / \u7cbe\u786e gelu \u4e24\u6761\u53ef\u8bc1\u4f2a\u90fd\u5dee\u5f97\u51fa\u6765"
-          % ("PASS" if not bad else "FAIL", d1))
+    print("  [%s] FFN 激活分派：GeGLU 正例 %.2e、relu2 正例 %.2e；silu 两条 + 精确 gelu 一条可证伪都差得出来"
+          % ("PASS" if not bad else "FAIL", d1, d4))
     return 0 if not bad else 1
 
 
