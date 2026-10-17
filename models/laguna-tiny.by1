@@ -1,0 +1,55 @@
+# ── laguna-tiny.by1 ─────────────────────────────────────────────────
+# **由 Laguna-XS-2_1.by1 机械缩小维度得到，结构一个字没改。**
+#
+# 目的：闭集里有两个写法**从来没有模型走过** ——
+#
+#     qk_norm  = true        （Laguna 的真实取值：`qk_norm: true`）
+#     gate_act = softplus    （Attention 的 head gate 默认是 softplus；
+#                             Ling 那边显式写的是 sigmoid，所以这个默认值一直没人写）
+#
+# 这两个都在 `by1codegen.ENUMS` 里、都有官方出处，却**没有任何模型用到** ——
+# `by1attrs` 会把它们列进"还没人用"的清单。这份模型就是把那两格填上：
+# 让每个取值都至少被一条真实的 `.by1` 走到。
+#
+# 缩的对应关系（左边真尺寸，右边这份）：
+#   d_model 2048 -> 64    n_layer 40 -> 2   vocab 100352 -> 512
+#   GQA  q 48 -> 4   kv 8 -> 2   head_dim 128 -> 16
+#   Dense hidden 8192 -> 128
+#
+# ⚠️ **它验的是"结构跑得起来、多个后端一致"，不是"和 Laguna 的数值一致"。**
+#    机制级数值判据在 `src/modelcheck/by1laguna.py`（对着官方 LagunaAttention，
+#    六段：门控 per-head/full、softplus 钉死、rope 按层 base、部分旋转）。
+
+model Laguna-tiny {
+  arch  laguna
+  ctx   4096
+
+  hparams {
+    d_model = 64
+    n_layer = 2
+    vocab   = 512
+    rms_eps = 1e-06
+    d_ff    = 128
+  }
+
+  # ── 注意力：GQA + per-head qk_norm（**旧写法 `true`**）+ per-head 门（softplus）
+  mech GQA : Attention {
+    heads      = { q = 4, kv = 2, head_dim = 16 }
+    qk_norm    = true             # Laguna 的 config 就是 `qk_norm: true`（等价 per_head）
+    attn_bias  = false
+    head_gate  = per_head         # 每头一个门，g_proj 形状 (q, d_model)
+    gate_act   = softplus         # **Laguna 用 softplus**（Ling 才是 sigmoid）
+    structural = [ q, head_dim, head_gate, out_dim ]
+  }
+
+  mech Dense : FFN {
+    hidden     = 128
+    layer_kind = dense
+  }
+
+  # 两层全量（Laguna 真模型是 1 全量 + 3 滑窗一组；缩到两层时全量即可，
+  # 滑窗那条路由 `by1gptoss` 与 shaped 探针覆盖）
+  schedule {
+    full = 1 * GQA(window = none, q = 4, out_dim = 64) + 1 * Dense()
+  }
+}

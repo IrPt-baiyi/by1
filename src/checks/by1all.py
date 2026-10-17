@@ -305,7 +305,11 @@ GGML_GRAPH_MODELS = ['hello.by1', 'llama-shaped.by1', 'gpt2-tiny.by1',
                      # **k-pool**（2026-10-17）：GLM-5.3 的池打分。池号/池
                      # 起止全靠 `view(pos,[P,None])` 的**推断维** + 切片拼
                      # 出来（见 by1graph._lower_dsa 的池分支）。
-                     'mla-sparse-shaped.by1']
+                     'mla-sparse-shaped.by1',
+                     # **head_gate 的 softplus 与 qk_norm 的旧写法 `true`**（2026-10-17
+                     # 第三十轮）：这两个写法在 ENUMS 里、有官方出处，却
+                     # **没有任何模型走过**。laguna-tiny 把那两格填上。
+                     'laguna-tiny.by1']
 
 #: **同一张图的第二个独立发射器**：`by1c --from-graph`（PRIMS -> 手写 C
 #: 逐元内核）。它原来只活在 CLI 里、**不在任何门禁里**（D6 那类欠账：

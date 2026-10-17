@@ -1,6 +1,6 @@
 # 这个仓库里每个文件是干什么的
 
-> 425 个跟踪文件。按"你会想找什么"分组，不按字母表。
+> 426 个跟踪文件。按"你会想找什么"分组，不按字母表。
 >
 > **这份文档是生成的**：`python src/by1files.py --write`。
 > 文件清单、每组的个数、每个文件的一句话都从目录树和 docstring 来 ——
@@ -347,7 +347,7 @@
 | `expected.json` | "_comment": [ |
 | `run-audit.py` | 把外部复现从"报告级"升到"审计级" |
 
-## `models/` —— 67 个
+## `models/` —— 68 个
 
 命名规矩：**文件名 = 长名 = HF 的模型名（去掉 owner）**，
 `model` 声明 = 短名（手写的）。两列的对照见 `models.tsv`。
@@ -406,6 +406,7 @@
 | `kda-gva-shaped.by1` | KDA 的 **GVA 变体**：q/k 的头数**少于** v 的头数 |
 | `kda-lowrank-shaped.by1` | KDA 的 **低秩门变体**：门是两层（`f_a`/`f_b`、`g_a`/`g_b`） |
 | `kda-shaped.by1` | KDA（Kimi Delta Attention）的最小可跑模型 |
+| `laguna-tiny.by1` | 由 Laguna-XS-2_1.by1 机械缩小维度得到，结构一个字没改 |
 | `linear-gdn-shaped.by1` | GDN 线性注意力**（qwen3-next / clef 视觉塔那一路）的**单独探针** |
 | `ling-tiny.by1` | 由 Ling-3.0-tiny.by1 机械缩小维度得到，结构一个字没改 |
 | `llama-shaped.by1` | 与 transformers 的 LlamaForCausalLM 结构完全一致的最小模型： |
