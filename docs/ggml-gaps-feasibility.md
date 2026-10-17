@@ -801,7 +801,7 @@ seq = 8 / 16 / 32 / 48 上都是 1.7e-07 ~ 1.9e-07（运行期 n 的路径也验
   「**必须数值过** moe-routing / kda / glm-text-tiny / qwen3-next / ssm-shaped」。
 - `by1all` 的 6b 段用 **`GGML_GRAPH_MODELS`**（20 份）逐份对拍 ——
   A3-3 之后它就是 ggml 的唯一判据集（原来的 `GGML_IR_MODELS` 已并进来）；
-  同一段再用 `by1c --from-graph`（19 份）做第二个发射器的差分对照。
+  同一段再用 `by1c --from-graph`（同一份 20 份）做第二个发射器的差分对照。
 - `by1backends` 的 `ggml` 列 = 图路（A3-3 之后不再分两列）。
 
 ### 6.5 A3-3：旧路删掉了（2026-10-17 第三轮）
@@ -827,7 +827,7 @@ llama3 / attn-qgate）在图路上**已经逐个数值过**（1.2e-07 ~ 4.5e-07�
 **同一张图、两个互不相干的发射器**（ggml 原语 vs C 逐元循环），比原来
 "IR 路 vs 图路"（都是同一个人写的发射器）更独立。
 
-**新增的门禁**：`by1all` 的 6b 段把 `GGML_GRAPH_MODELS` 补到 **19 份**（= 矩阵里
-`ggml` ✅ 的全部探针），并对同一名单逐份跑 `by1c --from-graph`（每份一个独立
+**新增的门禁**：`by1all` 的 6b 段把 `GGML_GRAPH_MODELS` 补到 **20 份**（= 矩阵里
+`ggml` ✅ 的全部探针），并对同一名单（20 份）逐份跑 `by1c --from-graph`（每份一个独立
 workdir —— 并行跑共用目录会互相踩）。这条 C 图路原来只活在 CLI 里、**不在任何
 门禁里**，正是 D6 那类欠账；现在它的 19 行数值与 ggml 那 19 行并排。

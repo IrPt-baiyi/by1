@@ -312,11 +312,11 @@ GGML_GRAPH_MODELS = ['hello.by1', 'llama-shaped.by1', 'gpt2-tiny.by1',
 #: 不入表的检查会烂）。A3-3 删掉 IR 路之后，这条正好补上**差分对照**：
 #: 同一张图、两个互不相干的发射器（ggml 原语 vs C 逐元循环）、同一个
 #: NumPy 判卷人 —— 两边对不上，就是其中一份发射器错了。
-#: 名单 = 上面那份 **减去 mla-sparse**：图->C 对 k-pool 的池 gather 是
-#: **明确拒绝**（那条要 float 下标内核 + 推断维形状；硬跑会 NaN，所以
-#: 拒掉——见 `docs/gap-analysis.md` A3-5）。ggml 路（默认路）已支持。
-GRAPH_C_MODELS = [f for f in GGML_GRAPH_MODELS
-                   if f != 'mla-sparse-shaped.by1']
+#: 名单 = 上面那份**整份**（20 份，含 k-pool）：图->C 的发射器在第四轮对
+#: k-pool 明确拒绝过（NaN），第五轮补了 float 下标内核（`p_get_rows_f` /
+#: `p_one_hot_f`）+ 推断维形状（`_view_shp`）之后就吃得下了 ——
+#: `mla-sparse` 实测 **4.022e-07 绝对 / 6.746e-07 相对**（见 `docs/gap-analysis.md` A3-5）。
+GRAPH_C_MODELS = list(GGML_GRAPH_MODELS)
 
 SHAPED = ['llama-shaped.by1', 'mixtral-shaped.by1', 'gpt-oss-shaped.by1',
           'qwen3-next-shaped.by1', 'mla-shaped.by1', 'llama3-shaped.by1',

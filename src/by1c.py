@@ -1868,6 +1868,17 @@ static void p_get_rows(float *o, const float *tab, const int *ids,
         memcpy(o + (size_t)i * d, tab + (size_t)ids[i] * d,
                sizeof(float) * (size_t)d);
 }
+static void p_get_rows_f(float *o, const float *tab, const float *ids,
+                        long long n, long long d) {
+    /* `p_get_rows` 的 **float 下标**孪生：图里的下标常常是 `pos` 的视图
+       （p_copy 出来是 float 缓冲），值是整数、只是类型是 float。为了它把
+       整套值的类型翻成 int 会连累所有旧图（buffer 声明跟着类型走），所以
+       就地取整。 */
+    for (long long i = 0; i < n; i++)
+        memcpy(o + (size_t)i * d,
+               tab + (size_t)((long long) ids[i]) * d,
+               sizeof(float) * (size_t)d);
+}
 
 /* top_k：每行前 k 大的**下标**（不是值），并列取小 —— `_ref_top_k` 的
    `argsort(-x, kind="stable")`：稳定插入排序，严格 `<`，相等保持原序。
@@ -2009,6 +2020,16 @@ static void p_one_hot(float *o, const int *ids, long long rows,
     for (long long r = 0; r < rows; r++)
         for (long long t = 0; t < nidx; t++) {
             long long j = ids[r * nidx + t];
+            if (j >= 0 && j < cols) o[r * cols + j] = 1.f;
+        }
+}
+static void p_one_hot_f(float *o, const float *ids, long long rows,
+                         long long cols, long long nidx) {
+    /* `p_one_hot` 的 float 下标孪生（下标是 pos 的视图时走这条）。 */
+    memset(o, 0, sizeof(float) * (size_t)(rows * cols));
+    for (long long r = 0; r < rows; r++)
+        for (long long t = 0; t < nidx; t++) {
+            long long j = (long long) ids[r * nidx + t];
             if (j >= 0 && j < cols) o[r * cols + j] = 1.f;
         }
 }
@@ -2403,6 +2424,57 @@ def emit_c_graph(ir, params, g=None):
         shp[nm] = [str(int(x)) for x in s]
         typ[nm] = "f"
 
+    def _view_shp(sh, src):
+        """图视角形状 -> exec 形状字符串（None = **推断维**）。
+
+        旧版把 None 写死成 "n"；对绝大多数视图恰好相等，但 k-pool 的
+        `view(pos, [P, n/P])` 不行。这里算 `源元素数 / 静态维之积`，
+        能约回 "n" 就约（旧图一个字符串都不变），约不掉才出表达式。"""
+        out = [None if t is None else str(int(t)) for t in reversed(sh)]
+        if sum(1 for t in out if t is None) != 1:
+            return ["n" if t is None else t for t in out]
+        stat = 1
+        for t in out:
+            if t is not None:
+                stat *= int(t)
+        nums, dyn = 1, []
+        for t in src:
+            if t.lstrip("-").isdigit():
+                nums *= int(t)
+            else:
+                dyn.append(t)
+        expr = None
+        if len(dyn) == 0 and nums % stat == 0:
+            expr = str(nums // stat)
+        elif len(dyn) == 1:
+            if nums % stat == 0:
+                q = nums // stat
+                expr = dyn[0] if q == 1 else "(%s) * %d" % (dyn[0], q)
+            else:
+                expr = "(%s) / %d" % (dyn[0], stat)
+        if expr is None:
+            raise SystemExit("  [不支持] 图->C：视图的推断维约不出来（%s -> %s）"
+                             % (src, out))
+        for i, t in enumerate(out):
+            if t is None:
+                out[i] = expr
+        return out
+
+    def _mul_expr(a, k):
+        """形状轴乘以常数：数字直接乘；`(X) / k` 乘 k **约回 X**（形状字符串
+        要拿来比，`((n) / 4) * 4` 与 `n` 必须比成同一个）。"""
+        if a.lstrip("-").isdigit():
+            return str(int(a) * k)
+        m = re.fullmatch(r"\((.*)\) / (\d+)", a)
+        if m and int(m.group(2)) == k:
+            return m.group(1)
+        return "(%s) * %d" % (a, k)
+
+    def _add_expr(a, b):
+        if a.lstrip("-").isdigit() and b.lstrip("-").isdigit():
+            return str(int(a) + int(b))
+        return "(%s) + (%s)" % (a, b)
+
     def _bc(a, b, what):
         """numpy 右对齐广播。推不出来就**拒绝**，不猜。"""
         nd = max(len(a), len(b))
@@ -2481,40 +2553,43 @@ def emit_c_graph(ir, params, g=None):
             if len(tab) < 2:
                 raise SystemExit("  [不支持] get_rows 的表是 %d 维 —— "
                                  "至少要 2 维" % len(tab))
-            if ins[0] not in params:
-                # **按图值整块取行**（不是按权重取专家行）：k-pool 的池
-                # gather 是第一个用例。这条路要两样这里还没有的东西：
-                # ① 下标张量是 `pos` 的视图（float 缓冲，需要 float 下标
-                #    内核）；② `view(pos, [P, n/P])` 的推断维形状（这里
-                #    把 None 硬编码成 "n"）。硬跑的结果是 **NaN**，所以
-                #    **拒绝**而不是将就。ggml 路（默认路）已经支持。
-                raise SystemExit("  [不支持] 图->C：按**图值**取行"
-                                 "（k-pool 的池 gather，%r 是下标）" % ins[1])
-            if typ.get(ins[1]) != "i":
-                raise SystemExit("  [FAIL] get_rows 的下标 %r 不是 int" % ins[1])
             # out = table[ids]：ids 形状 + 表的行宽（MoE 的 (n,K) 下标取
-            # (E,out,in) 的专家整行 -> (n,K,out,in) 就是这一条）
+            # (E,out,in) 的专家整行 -> (n,K,out,in) 就是这一条；k-pool 的池
+            # gather 是按**图值**取行，同一条式）。
             out = ids_ + tab[1:]
-            body.append("    p_get_rows(%s, %s, %s, %s, %s);"
-                        % (dst, a[0], _iref(ins[1]), _prod(ids_),
-                           _prod(tab[1:])))
+            if typ.get(ins[1]) == "i":
+                body.append("    p_get_rows(%s, %s, %s, %s, %s);"
+                            % (dst, a[0], _iref(ins[1]), _prod(ids_),
+                               _prod(tab[1:])))
+            else:
+                # 下标是 **float 视图**（pos 的视图；池路的 pidx 就是它）
+                body.append("    p_get_rows_f(%s, %s, %s, %s, %s);"
+                            % (dst, a[0], a[1], _prod(ids_),
+                               _prod(tab[1:])))
         elif prim == "top_k":
             out = list(shp_in[0])
             _m = shp_in[0][-1]
             # ref 的 `[..., :k]` 自动钳到行宽，这里同规则（否则 C 越界）；
             # 行宽是 n 时按 k 铺缓冲 —— 内核运行期钳，只会少写不多写
-            out[-1] = (str(min(int(at["k"]), int(_m))) if _m != "n"
-                       else str(int(at["k"])))
+            if _m.lstrip("-").isdigit():
+                out[-1] = str(min(int(at["k"]), int(_m)))
+            else:
+                # 行宽要么是 n、要么是表达式（池轴 n/kpool）：缓冲按 k 铺，
+                # 内核运行期钳 —— 只会少写不多写
+                out[-1] = str(int(at["k"]))
             body.append("    p_top_k(%s, %s, %s, %s, %s);"
                         % (dst, a[0], _prod(shp_in[0][:-1]),
                            _m, out[-1]))
         elif prim == "one_hot":
             x, rf = shp_in[0], shp_in[1]
-            if typ.get(ins[0]) != "i":
-                raise SystemExit("  [FAIL] one_hot 的下标 %r 不是 int" % ins[0])
             out = x[:-1] + [rf[-1]]       # 宽度 = 参照的最后一维
-            body.append("    p_one_hot(%s, %s, %s, %s, %s);"
-                        % (dst, _iref(ins[0]), _prod(x[:-1]), out[-1], x[-1]))
+            if typ.get(ins[0]) == "i":
+                body.append("    p_one_hot(%s, %s, %s, %s, %s);"
+                            % (dst, _iref(ins[0]), _prod(x[:-1]), out[-1],
+                               x[-1]))
+            else:
+                body.append("    p_one_hot_f(%s, %s, %s, %s, %s);"
+                            % (dst, a[0], _prod(x[:-1]), out[-1], x[-1]))
         elif prim == "masked_fill":
             out, _A, B = _bc(shp_in[0], shp_in[1], "masked_fill")
             _v = float(at["value"])
@@ -2661,7 +2736,7 @@ def emit_c_graph(ir, params, g=None):
                 raise SystemExit("  [不支持] %s 的输入 %r 是 int" % (prim, ins[0]))
             if prim == "view" or at.get("shape"):
                 sh = at["shape"]
-                out = ["n" if s is None else str(int(s)) for s in reversed(sh)]
+                out = _view_shp(sh, shp_in[0])
             else:
                 out = list(shp_in[0])
             body.append("    p_copy(%s, %s, %s);" % (dst, a[0], _prod(out)))
@@ -2694,7 +2769,7 @@ def emit_c_graph(ir, params, g=None):
             if A3[ax] == "n" or B3[ax] == "n":
                 raise SystemExit("  [不支持] concat 沿 n 轴拼 —— 没推过")
             out = list(A3)
-            out[ax] = str(int(A3[ax]) + int(B3[ax]))
+            out[ax] = _add_expr(A3[ax], B3[ax])
             body.append("    p_concat(%s, %s, %s, %s, %s, %s, %s);"
                         % (dst, a[0], a[1], _prod(A3[:ax]), A3[ax], B3[ax],
                            _prod(A3[ax + 1:])))
@@ -2705,7 +2780,7 @@ def emit_c_graph(ir, params, g=None):
             if x[ax] == "n":
                 raise SystemExit("  [不支持] repeat 沿 n 轴 —— 没推过")
             out = list(x)
-            out[ax] = str(int(x[ax]) * reps)
+            out[ax] = _mul_expr(x[ax], reps)
             body.append("    p_repeat(%s, %s, %s, %s, %s, %d);"
                         % (dst, a[0], _prod(x[:ax]), x[ax],
                            _prod(x[ax + 1:]), reps))
