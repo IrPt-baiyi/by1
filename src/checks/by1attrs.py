@@ -68,6 +68,97 @@ PRIM_RESERVED = {
 }
 
 
+def _const_set(expr, table):
+    """把「字面集合 / set(NAME) / A | B」求成集合；求不出返回 None。"""
+    expr = expr.strip()
+    try:
+        v = ast.literal_eval(expr)
+    except Exception:
+        v = None
+    if isinstance(v, dict):
+        return set(v)
+    if isinstance(v, (set, frozenset, list, tuple)):
+        return set(v)
+    m = re.fullmatch(r"set\((\w+)\)", expr)
+    if m:
+        base = table.get(m.group(1))
+        return set(base) if base is not None else None
+    if "|" in expr:
+        out = set()
+        for part in expr.split("|"):
+            got = _const_set(part, table)
+            if got is None:
+                name = part.strip()
+                if name in table:
+                    out |= set(table[name])
+                    continue
+                return None
+            out |= got
+        return out
+    if expr in table:
+        return set(table[expr])
+    return None
+
+
+def _node_set(node, table):
+    """AST 版本：字面集合 / set(NAME) / BitOr —— 多行字面量也能吃。"""
+    if isinstance(node, ast.Dict):
+        return {k.value for k in node.keys if isinstance(k, ast.Constant)}
+    if isinstance(node, (ast.Set, ast.List, ast.Tuple)):
+        return {e.value for e in node.elts if isinstance(e, ast.Constant)}
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) \
+            and node.func.id == "set" and len(node.args) == 1 \
+            and isinstance(node.args[0], ast.Name):
+        base = table.get(node.args[0].id)
+        return set(base) if base is not None else None
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+        left, right = _node_set(node.left, table), _node_set(node.right, table)
+        if left is not None and right is not None:
+            return left | right
+        return None
+    if isinstance(node, ast.Name) and node.id in table:
+        return set(table[node.id])
+    return None
+
+
+def emitter_prims(root=ROOT):
+    """两个发射器各自**声明能发**的原语集合：(ggml, C)。
+
+    静态扫 `prim == "x"` 与 `prim in (...)`/`prim in CONST`，并展开顶层常量
+    （含 `_UN_SHAPE_OK = set(_UN_OP) | {"softmax"}` 这种）。不 import 它们
+    （by1c 是脚本、by1ggml 要 gcc）。
+    """
+    out = {}
+    for name in ("by1ggml.py", "by1c.py"):
+        text = (pathlib.Path(root) / "src" / name).read_text(encoding="utf-8")
+        tree = ast.parse(text)
+        table = {}
+        for node in tree.body:
+            if isinstance(node, ast.Assign) and len(node.targets) == 1 \
+                    and isinstance(node.targets[0], ast.Name):
+                got = _node_set(node.value, table)
+                if got is not None:
+                    table[node.targets[0].id] = got
+        got = set()
+        for m in re.finditer(r'prim\s*==\s*"([a-z_0-9]+)"', text):
+            got.add(m.group(1))
+        for m in re.finditer(r"prim\s+in\s*(\([^)]*\)|\[[^\]]*\]|[A-Z_][A-Z0-9_]*)", text):
+            tok = m.group(1).strip()
+            if tok[0] in "([":
+                got |= _const_set(tok, table) or set()
+            elif tok in table:
+                got |= set(table[tok])
+        out[name] = got
+    return out["by1ggml.py"], out["by1c.py"]
+
+
+
+#: 只在某个发射器里有、另一个没有的原语，若确实是有意的，写在这里（A6 要它）。
+EMIT_ASYM = {
+    # by1ggml 里 `log` / `neg` 是从别的上下文扫进来的（不是 PRIMS 的分派），
+    # 它们在 PRIMS 里也不存在 —— 不用管。
+}
+
 def prim_coverage(root=ROOT):
     """(被语料走到的原语, 未被走到的原语)。语料 = by1all 的图探针表。
 
@@ -258,7 +349,32 @@ def check(root=ROOT, enums=None, provenance=None, reserved=None):
                 if p in used_p:
                     problems.append('A5 PRIM_RESERVED 里的 <%s> 已经有模型走到了 '
                                     '—— 这条保留记录该删了' % p)
+    # A6：每个图原语要**两个发射器都能发**。
+    try:
+        g_set, c_set = emitter_prims(root)
+        prims_real = _real_prims()
+    except Exception as exc:
+        notes.append('发射器覆盖没算（%r）' % (exc,))
+    else:
+        if prims_real:
+            for p in sorted(prims_real):
+                if p in EMIT_ASYM:
+                    continue
+                missing = [n for n, s in (('ggml', g_set), ('C', c_set)) if p not in s]
+                if missing:
+                    problems.append('A6 图原语 <%s> 在 %s 发射器里没有映射'
+                                    % (p, ' / '.join(missing)))
+            for p in sorted(EMIT_ASYM):
+                if p not in prims_real:
+                    problems.append('A6 EMIT_ASYM 里的 <%s> 不在 PRIMS 里了' % p)
     return problems, notes
+
+
+def _real_prims():
+    """PRIMS 里看得见的那些（去掉 ins/src/f/ref 这种传导项）。"""
+    import by1paths  # noqa: F401
+    import by1graph as _bg
+    return {k for k in _bg.PRIMS if k not in ('ins', 'src', 'f', 'ref')}
 
 
 def _selftest():
@@ -327,6 +443,16 @@ def _selftest():
     return 0 if not bad else 1
 
 
+def _emit():
+    """(两个发射器都声明的原语数, PRIMS 里的原语数)。"""
+    try:
+        g_set, c_set = emitter_prims(ROOT)
+        prims = _real_prims()
+        return len({p for p in prims if p in g_set and p in c_set}), len(prims)
+    except Exception:
+        return 0, 0
+
+
 def _cov():
     try:
         used, unused = prim_coverage(ROOT)
@@ -346,8 +472,9 @@ def main(argv):
     ok = not problems
     print('  [%s] 机制属性的出处 %s'
           % ('PASS' if ok else 'FAIL',
-             '属性闭集 %d 个取值都有出处；图原语覆盖 %d/%d'
-             % (len(PROVENANCE), _cov()[0], _cov()[0] + _cov()[1])
+             '属性闭集 %d 个取值都有出处；图原语覆盖 %d/%d；两个发射器都声明 %d/%d'
+             % (len(PROVENANCE), _cov()[0], _cov()[0] + _cov()[1],
+                _emit()[0], _emit()[1])
              if ok else '%d 处不成立' % len(problems)))
     return 0 if ok else 1
 
