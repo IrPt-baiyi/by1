@@ -15,9 +15,10 @@ by1 的 MLP（RUNTIME）有两条支：`gate = true` 的 SwiGLU 与 `gate = none
 这条判卷人把三件事分开验：正例（GeGLU 对官方 GemmaMLP 逐值一致）+ 两条可证伪
 （写成 silu 要差、写成精确 gelu 也要差）。
 
-参照物：transformers 的 `GemmaMLP`（models/gemma/modeling_gemma.py）与
-`NemotronMLP`（models/nemotron/modeling_nemotron.py，无门控、hidden_act=relu2）：
-与 `GptOssExperts`（models/gpt_oss/modeling_gpt_oss.py 的 _apply_gate：clampped swiglu）。
+参照物：transformers 的 `GemmaMLP`（models/gemma/modeling_gemma.py，GeGLU）、
+`NemotronMLP`（models/nemotron/modeling_nemotron.py，无门控·relu2）、
+`GptOssExperts._apply_gate`（models/gpt_oss/modeling_gpt_oss.py，clamped swiglu）、
+`LlamaMLP`（models/llama/modeling_llama.py，silu）。
 `down_proj(act_fn(gate_proj(x)) * up_proj(x))`，`act_fn = ACT2FN["gelu_pytorch_tanh"]`
 （= tanh 近似）。本机 5.20.0 实测可取。
 """
@@ -188,10 +189,31 @@ def main():
     if d7 <= 1e-2:
         bad.append("去掉 clamp 竟然和官方一样（%.3e）—— 输入没越过 limit，这条判据是空的" % d7)
 
+    # ---- ⑧ 正例：silu（门控支最常见的取值）对官方 LlamaMLP ----
+    from transformers import LlamaConfig
+    from transformers.models.llama.modeling_llama import LlamaMLP
+    lcfg = LlamaConfig(hidden_size=D, intermediate_size=H, num_attention_heads=4,
+                       num_key_value_heads=2, num_hidden_layers=1,
+                       hidden_act="silu")
+    ref_l = LlamaMLP(lcfg).eval()
+    m_silu = _by1_mlp(gate=True, hidden=H, act="silu")
+    with torch.no_grad():
+        ref_l.gate_proj.weight.copy_(m_silu.w1.weight)
+        ref_l.up_proj.weight.copy_(m_silu.w3.weight)
+        ref_l.down_proj.weight.copy_(m_silu.w2.weight)
+    y8 = m_silu(x).detach()
+    r8 = ref_l(x).detach()
+    d8 = _diff(y8, r8)
+    print("  ⑧ silu       by1 vs 官方 LlamaMLP        最大差 %.3e  [%s]"
+          % (d8, "PASS" if d8 < 1e-6 else "FAIL"))
+    if d8 >= 1e-6:
+        bad.append("silu 与官方 LlamaMLP 不一致（%.3e）" % d8)
+
     for b in bad:
         print("     ! " + b)
-    print("  [%s] FFN 激活分派：GeGLU %.2e、relu2 %.2e、gptoss %.2e；四条可证伪都差得出来"
-          % ("PASS" if not bad else "FAIL", d1, d4, d6))
+    print("  [%s] FFN 激活分派：GeGLU %.2e、relu2 %.2e、gptoss %.2e、silu %.2e；"
+          "四条可证伪都差得出来"
+          % ("PASS" if not bad else "FAIL", d1, d4, d6, d8))
     return 0 if not bad else 1
 
 
