@@ -176,6 +176,21 @@ def emit_symbols(root=ROOT, script="by1c.py"):
 
 #: A7 见证模型：按**覆盖所有有命名内核的原语**选的（贪心覆盖）。
 #: 实测 5 份合起来 ±5 秒：前两份只能覆盖 8/22，加后三份补齐。
+#: **一个节点 = 一次调用** 的原语表（A8）：实测 5 份产物都对得上才进这张表。
+#: 反例已剔：`view`（会额外发 p_copy）、`get_rows`/`one_hot`（还有 _f 变体）、
+#: `clamp_min`（实测 mla-sparse 里 4 个节点、0 次 p_clamp 调用 —— 被内联了）。
+CALL_COUNT = {
+    "batch_matmul": "p_bmm", "matmul": "p_matmul", "permute": "p_perm",
+    "rms_norm": "p_rms_norm", "l2_norm": "p_l2_norm",
+    "layer_norm": "p_layer_norm", "rope": "p_rope",
+    "soft_max": "p_soft_max", "softmax": "p_softmax",
+    "concat": "p_concat", "conv1d_causal": "p_conv1d_causal",
+    "delta_rule": "p_delta_rule", "gather": "p_gather",
+    "masked_fill": "p_masked_fill", "repeat": "p_repeat",
+    "slice": "p_slice", "sum": "p_sum", "top_k": "p_top_k",
+    "add_scalar": "p_add_scalar", "scale": "p_scale",
+}
+
 A7_MODELS = ("llama-shaped.by1", "gelu-shaped.by1", "ling-tiny.by1",
              "mla-sparse-shaped.by1", "ssm-shaped.by1")
 
@@ -211,6 +226,7 @@ def artifact_check(root=ROOT, models=A7_MODELS, emitter="c"):
     symbols = emit_symbols(root, script)
     problems, rows = [], []
     covered = set()
+    pairs8 = 0
     total = len({p for p, v in symbols.items() if v})
     for name in models:
         p = root / "models" / name
@@ -250,13 +266,32 @@ def artifact_check(root=ROOT, models=A7_MODELS, emitter="c"):
                     continue
                 if not any(w in body for w in want):
                     missing.append("%s(%s)" % (prim, "/".join(sorted(want)[:2])))
+            # A8：**节点数 = 调用次数**（只在 C 侧：ggml 的符号体系不同）。
+            worse = []
+            if emitter == "c":
+                counts = {}
+                for nd in g.nodes:
+                    counts[nd["prim"]] = counts.get(nd["prim"], 0) + 1
+                for prim, sym in sorted(CALL_COUNT.items()):
+                    k = counts.get(prim, 0)
+                    if not k:
+                        continue
+                    calls = (len(re.findall(r"\b" + sym + r"\(", body))
+                             - len(re.findall(r"void\s+" + sym + r"\(", body)))
+                    pairs8 += 1
+                    if calls != k:
+                        worse.append("%s 节点%d/调用%d" % (prim, k, calls))
+            if worse:
+                problems.append("A8 %s：图与产物的调用次数对不上：%s"
+                                % (name, "，".join(worse[:4])))
             rows.append((name, len(used), len(missing)))
             if missing:
                 problems.append("A7 %s 的产物里找不到这些原语的符号：%s"
                                 % (name, ", ".join(missing[:4])))
         finally:
             _sh.rmtree(wd, ignore_errors=True)
-    return rows, problems, {"covered": len(covered), "total": total}
+    return rows, problems, {"covered": len(covered), "total": total,
+                               "pairs8": pairs8}
 
 #: 只在某个发射器里有、另一个没有的原语，若确实是有意的，写在这里（A6 要它）。
 EMIT_ASYM = {
@@ -588,7 +623,10 @@ def _art():
         miss = sum(r[2] for r in rows)
         cov = (info or {}).get('covered', 0) if isinstance(info, dict) else 0
         tot = (info or {}).get('total', 0) if isinstance(info, dict) else 0
-        parts.append('%s %d 份/%d/%d 缺 %d' % (side, len(rows), cov, tot, miss))
+        pair = (info or {}).get('pairs8', 0) if isinstance(info, dict) else 0
+        extra = (' · 调用数核对 %d 处' % pair) if pair else ''
+        parts.append('%s %d 份/%d/%d 缺 %d%s'
+                     % (side, len(rows), cov, tot, miss, extra))
     return ' · '.join(parts)
 
 def _emit():
