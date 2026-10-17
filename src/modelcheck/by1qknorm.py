@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """by1qknorm -- **qk_norm 的三个取值是不是三件事**：per_head / full / off。
-参照物：transformers 的 Qwen3Attention（per-head RMSNorm）与 Olmo2Attention（整宽 RMSNorm）
+参照物：transformers 的 Qwen3Attention（per-head RMSNorm）、Olmo2Attention（整宽 RMSNorm）、
+Qwen3NextAttention（q_gate + one_plus 归一）
 
 ## 为什么值得单独一个判卷人
 
@@ -54,10 +55,11 @@ def _mask(seq):
     return m.masked_fill(~keep[None, None], float("-inf"))
 
 
-def _by1(ns, qk="per_head", qn=None, kn=None, q_gate=False):
+def _by1(ns, qk="per_head", qn=None, kn=None, q_gate=False, one_plus=False):
     a = {"q": NH, "kv": KV, "head_dim": HD, "v": HD, "bias": False,
          "out_dim": NH * HD, "window": None, "rope_pairing": "half",
-         "qk_norm": qk, "norm_eps": 1e-6, "rope": False, "rope_base": 10000,
+         "qk_norm": qk, "norm_eps": 1e-6, "norm_one_plus": one_plus,
+         "rope": False, "rope_base": 10000,
          "rope_partial": 1.0, "sink": False, "head_gate": "off",
          "q_gate": q_gate}
     m = ns["Attention"](a, D).eval()
@@ -217,10 +219,50 @@ def main():
         if d6 <= 1e-3:
             bad.append("per_head 与 full 在同一批权重下算出一模一样（%.3e）" % d6)
 
+    # ---- ⑦ 正例：q_gate（每头一份门，乘在注意力输出上）对官方 Qwen3NextAttention ----
+    #
+    # **两轮待查的答案在这里**：第一版对不上（4.061e-01），根因不是 q_gate，而是
+    # Qwen3-Next 的 RMSNorm 用 `one_plus` 约定（weight 零初始化、乘 (1+w)），
+    # 而 Qwen3 的 RMSNorm 是普通的 w·x —— 同一份权重喂给两种约定差一个 2×。
+    # by1 有这个属性（`norm_one_plus`），打开后逐位一致。
+    if Qwen3NextAttention is not None:
+        ref_n = Qwen3NextAttention(_qwen3next_cfg(), layer_idx=0).eval()
+        m_qg = _by1(ns, "per_head", q_gate=True, one_plus=True)
+        with torch.no_grad():
+            m_qg.wq.weight.copy_(ref_n.q_proj.weight)
+            m_qg.wk.weight.copy_(ref_n.k_proj.weight)
+            m_qg.wv.weight.copy_(ref_n.v_proj.weight)
+            m_qg.wo.weight.copy_(ref_n.o_proj.weight)
+            m_qg.qn.w.copy_(ref_n.q_norm.weight)
+            m_qg.kn.w.copy_(ref_n.k_norm.weight)
+        y7 = m_qg(x).detach()
+        y7r = ref_n(x, position_embeddings=(cos, sin),
+                    attention_mask=mask)[0].detach()
+        d7, r7 = _rel(y7, y7r)
+        print("  ⑦ q_gate     by1 vs 官方 Qwen3NextAttention  绝对 %.3e  相对 %.3e  [%s]"
+              % (d7, r7, "PASS" if r7 < 1e-5 else "FAIL"))
+        if r7 >= 1e-5:
+            bad.append("q_gate 与官方 Qwen3NextAttention 不一致（相对 %.3e）" % r7)
+
+        # ---- ⑧ 可证伪：同一批权重，把 one_plus 关掉 -> 必须变 ----
+        m_op = _by1(ns, "per_head", q_gate=True, one_plus=False)
+        with torch.no_grad():
+            m_op.wq.weight.copy_(ref_n.q_proj.weight)
+            m_op.wk.weight.copy_(ref_n.k_proj.weight)
+            m_op.wv.weight.copy_(ref_n.v_proj.weight)
+            m_op.wo.weight.copy_(ref_n.o_proj.weight)
+            m_op.qn.w.copy_(ref_n.q_norm.weight)
+            m_op.kn.w.copy_(ref_n.k_norm.weight)
+        d8, _r8 = _rel(m_op(x).detach(), y7r)
+        print("  ⑧ 证伪 one_plus 关掉 vs 官方          绝对 %.3e  [%s]"
+              % (d8, "PASS" if d8 > 1e-3 else "FAIL"))
+        if d8 <= 1e-3:
+            bad.append("关掉 one_plus 与开着算出一模一样（%.3e）—— 这个属性没生效" % d8)
+
     for b in bad:
         print("     ! " + b)
-    print("  [%s] qk_norm：per_head 对 Qwen3、full 对 OLMo2（均逐位）；"
-          "true 等价 per_head；off / 换轴后的 full 都差得出来"
+    print("  [%s] qk_norm：per_head 对 Qwen3、full 对 OLMo2（均逐位）；true 等价 per_head；"
+          "换轴 / 关归一约定 两条可证伪都差得出来；q_gate 对 Qwen3-Next 逐位"
           % ("PASS" if not bad else "FAIL"))
     return 0 if not bad else 1
 
