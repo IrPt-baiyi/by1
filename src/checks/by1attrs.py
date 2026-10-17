@@ -61,6 +61,46 @@ RESERVED = {
     ('qk_norm', 'yes'): '旧写法（等价 per_head），by1langspec 记档',
 }
 
+#: 图原语里**没有语料走到、但明确保留**的（A5 要它们）。每条都要写理由。
+PRIM_RESERVED = {
+    'gelu': '只有 act=gelu 才会产生它；act=gelu 本身是 RESERVED（没有官方模型用），两个后端的映射都在',
+    'sqrt': '探针语料里没有图会产出它（sqrtsoftplus 的打分有专门原语）；映射留着给手写图',
+}
+
+
+def prim_coverage(root=ROOT):
+    """(被语料走到的原语, 未被走到的原语)。语料 = by1all 的图探针表。
+
+    静态依赖 by1check/by1codegen/by1graph **都不需要 torch** —— 所以这条能在档 2 跑。
+    """
+    # 把 src/ 放上 sys.path（子目录由 by1paths 负责）
+    src = str(root / "src")
+    if src not in sys.path:
+        sys.path.insert(0, src)
+    import by1paths  # noqa: F401
+    import by1check as _bc
+    import by1codegen as _cg
+    import by1graph as _bg
+    root = pathlib.Path(root)
+    text = (root / "src/checks/by1all.py").read_text(encoding="utf-8")
+    m = re.search(r"GGML_GRAPH_MODELS\s*=\s*\[(.*?)\]", text, re.S)
+    models = re.findall(r"'([A-Za-z0-9_.\-]+\.by1)'", m.group(1)) if m else []
+    house = {"ins", "src", "f", "ref"}
+    all_prims = {k for k in _bg.PRIMS if k not in house}
+    used = set()
+    for name in models:
+        p = root / "models" / name
+        if not p.exists():
+            continue
+        try:
+            _r, info = _bc.check(str(p))
+            ir = _cg.compile_ir(info)
+            g = _bg.lower_model(ir, name)
+        except Exception:
+            continue      # 降不动的在别处有账（graph-golden 的"15 份降不动"）
+        used.update(n["prim"] for n in g.nodes)
+    return used & all_prims, sorted(all_prims - used)
+
 def codegen_defaults(codegen_path=None):
     """从 `by1codegen.py` 取每个机制类型的属性默认值（`attrs.get("x", "y")`）。"""
     p = pathlib.Path(codegen_path or (ROOT / "src/by1codegen.py"))
@@ -201,6 +241,23 @@ def check(root=ROOT, enums=None, provenance=None, reserved=None):
         elif (attr, str(v).lower()) in eff:
             problems.append('A4 RESERVED 里 %s = <%s> 已经有模型用到了 —— '
                             '这条保留记录该删了' % (attr, v))
+    # A5：图原语“闭集”也要有语料走到 —— 语料就是 by1all 的图探针表。
+    #
+    # **没有语料就跳过**（自检的假树里没有 by1all.py）—— 否则这条会在假树上全盘报红。
+    try:
+        used_p, unused_p = prim_coverage(root)
+    except Exception as exc:
+        notes.append('图原语覆盖没算（%r）' % (exc,))
+    else:
+        if used_p or unused_p:
+            for p in unused_p:
+                if p not in PRIM_RESERVED:
+                    problems.append('A5 图原语 <%s> 没有任何图探针模型走到，'
+                                    '也没在 PRIM_RESERVED 里写理由' % p)
+            for p in sorted(PRIM_RESERVED):
+                if p in used_p:
+                    problems.append('A5 PRIM_RESERVED 里的 <%s> 已经有模型走到了 '
+                                    '—— 这条保留记录该删了' % p)
     return problems, notes
 
 
@@ -270,6 +327,14 @@ def _selftest():
     return 0 if not bad else 1
 
 
+def _cov():
+    try:
+        used, unused = prim_coverage(ROOT)
+        return len(used), len(unused)
+    except Exception:
+        return 0, 0
+
+
 def main(argv):
     if '--selftest' in argv:
         return _selftest()
@@ -281,7 +346,8 @@ def main(argv):
     ok = not problems
     print('  [%s] 机制属性的出处 %s'
           % ('PASS' if ok else 'FAIL',
-             '闭集里 %d 个取值都有官方出处' % len(PROVENANCE)
+             '属性闭集 %d 个取值都有出处；图原语覆盖 %d/%d'
+             % (len(PROVENANCE), _cov()[0], _cov()[0] + _cov()[1])
              if ok else '%d 处不成立' % len(problems)))
     return 0 if ok else 1
 
