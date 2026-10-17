@@ -191,6 +191,19 @@ CALL_COUNT = {
     "add_scalar": "p_add_scalar", "scale": "p_scale",
 }
 
+#: ggml 侧的一节点=一次调用表（A8）。
+#: 实测 8 份产物共 14 组 1:1，但只取语义上真对应的 11 个：
+#: softplus -> ggml_sqrt（sqrt 只是展开式里的一步）、
+#: ggml_new_tensor_1d / ggml_map_custom1（通用分配器与回调）都剔掉了。
+CALL_COUNT_GGML = {
+    'gelu': 'ggml_gelu_erf', 'gelu_tanh': 'ggml_tanh',
+    'layer_norm': 'ggml_norm', 'log1p': 'ggml_log',
+    'rms_norm': 'ggml_rms_norm', 'sigmoid': 'ggml_sigmoid',
+    'silu': 'ggml_silu', 'soft_max': 'ggml_soft_max_ext',
+    'ssm_scan': 'ggml_ssm_scan', 'top_k': 'ggml_top_k',
+    'delta_rule': 'ggml_gated_delta_net',
+}
+
 A7_MODELS = ("llama-shaped.by1", "gelu-shaped.by1", "ling-tiny.by1",
              "mla-sparse-shaped.by1", "ssm-shaped.by1")
 
@@ -268,11 +281,12 @@ def artifact_check(root=ROOT, models=A7_MODELS, emitter="c"):
                     missing.append("%s(%s)" % (prim, "/".join(sorted(want)[:2])))
             # A8：**节点数 = 调用次数**（只在 C 侧：ggml 的符号体系不同）。
             worse = []
-            if emitter == "c":
+            if True:
                 counts = {}
                 for nd in g.nodes:
                     counts[nd["prim"]] = counts.get(nd["prim"], 0) + 1
-                for prim, sym in sorted(CALL_COUNT.items()):
+                _tbl = CALL_COUNT if emitter == "c" else CALL_COUNT_GGML
+                for prim, sym in sorted(_tbl.items()):
                     k = counts.get(prim, 0)
                     if not k:
                         continue
