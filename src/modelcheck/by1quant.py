@@ -581,7 +581,18 @@ def selftest():
     if not block_mismatch_rejected:
         raise RuntimeError("mismatched checkpoint FP8 block was accepted")
 
-    _selftest_checkpoint_audit()
+    # **没有 safetensors 就不验这一节，并且说出来。**
+    # 档 1 的口径是"纯标准库"（连 numpy 都不装）—— 那条腿上这条审计
+    # 跑不了；档 3 装了 safetensors，判据在那条腿上生效。
+    # 反过来，在这里硬要求 safetensors 会把"档 1 纯标准库"这条口径弄坏
+    # （第一次就这么干了，四条档 1 全红）。
+    try:
+        import safetensors  # noqa: F401
+    except ImportError as exc:
+        print("  by1quant：没有 safetensors，checkpoint 头审计这一节没验（%s）"
+              % exc)
+    else:
+        _selftest_checkpoint_audit()
 
     class _Tensor:
         def __init__(self, dtype):
