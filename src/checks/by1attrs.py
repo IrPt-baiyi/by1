@@ -234,6 +234,11 @@ def artifact_check(root=ROOT, models=A7_MODELS, emitter="c"):
                           capture_output=True, text=True, encoding="utf-8",
                           errors="replace", timeout=900)
             cfile = wd / "model.c"
+            # **后端自己说"跳过"不是失败**：by1ggml 找不到 ggml 静态库时
+            # 打印 [跳过] 并返回 30（CI 上没有那个构建）。这时 A7 对它是"没验"。
+            if (run.returncode == 30
+                    or "[跳过]" in (run.stdout or "")):
+                return None, [], "%s 在这台机器上跳过（缺依赖）" % emitter
             if run.returncode != 0 or not cfile.exists():
                 problems.append("A7 %s 没生成 C（rc=%s）" % (name, run.returncode))
                 continue
