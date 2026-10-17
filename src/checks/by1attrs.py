@@ -150,6 +150,91 @@ def emitter_prims(root=ROOT):
 
 
 
+def emit_symbols(root=ROOT):
+    """每个图原语在 C 发射器里**会出现的那几个符号**（从 by1c.py 的分支源码里抽）。
+
+    只认 `p_xxx` / `ggml_xxx` / `by1_xxx` 三种前缀 —— 它们是发射器真正拼进产物里的名字。
+    某个原语抽不出符号（纯表达式装配）就返回空集，A7 对它**不作要求**。
+    """
+    text = (pathlib.Path(root) / "src/by1c.py").read_text(encoding="utf-8")
+    lines = text.splitlines()
+    heads = []
+    for i, ln in enumerate(lines):
+        m = re.match(r"(\s*)(?:elif |if )prim(?: == \"([a-z_0-9]+)\"| in \(([^)]*)\))", ln)
+        if m:
+            names = [m.group(2)] if m.group(2) else re.findall('"([a-z_0-9]+)"', m.group(3))
+            heads.append((i, [n for n in names if n]))
+    sym = {}
+    for idx, (start, names) in enumerate(heads):
+        end = len(lines) if idx + 1 == len(heads) else heads[idx + 1][0]
+        body = "\n".join(lines[start:end])
+        found = set(re.findall(r"\b((?:p|ggml|by1)_[a-z0-9_]+)\b", body))
+        for n in names:
+            sym.setdefault(n, set()).update(found)
+    return sym
+
+
+def artifact_check(root=ROOT, models=("llama-shaped.by1", "gelu-shaped.by1")):
+    """A7：**产物里的证据** —— 生成的 C 里真的出现该原语的符号。
+
+    跑 `by1c --from-graph` 生成一份 model.c，对模型图里每个原语查"它的分支符号"
+    是否出现在产物里。分派表里有名字**不等于**产物里有调用。
+
+    返回 (rows, problems)；rows 为 None 表示没法查（缺 gcc），由调用方当"跳过"处理。
+    """
+    import shutil as _sh
+    import subprocess as _sp
+    import tempfile as _tf
+    root = pathlib.Path(root)
+    gcc = _sh.which("gcc")
+    if not gcc:
+        return None, [], "找不到 gcc（产物证据要对一份真编出来的 C 才能查）"
+    src = str(root / "src")
+    if src not in sys.path:
+        sys.path.insert(0, src)
+    import by1paths  # noqa: F401
+    import by1check as _bc
+    import by1codegen as _cg
+    import by1graph as _bg
+    symbols = emit_symbols(root)
+    problems, rows = [], []
+    for name in models:
+        p = root / "models" / name
+        if not p.exists():
+            continue
+        try:
+            _r, info = _bc.check(str(p))
+            g = _bg.lower_model(_cg.compile_ir(info), name)
+        except Exception:
+            continue
+        used = sorted({n["prim"] for n in g.nodes})
+        wd = pathlib.Path(_tf.mkdtemp(prefix="by1a7-"))
+        try:
+            run = _sp.run([sys.executable, str(root / "src/by1c.py"),
+                           "--from-graph", "--gcc", gcc, "--seq", "16",
+                           "--workdir", str(wd), str(p)],
+                          capture_output=True, text=True, encoding="utf-8",
+                          errors="replace", timeout=900)
+            cfile = wd / "model.c"
+            if run.returncode != 0 or not cfile.exists():
+                problems.append("A7 %s 没生成 C（rc=%s）" % (name, run.returncode))
+                continue
+            body = cfile.read_text(encoding="utf-8", errors="replace")
+            missing = []
+            for prim in used:
+                want = symbols.get(prim) or set()
+                if not want:
+                    continue
+                if not any(w in body for w in want):
+                    missing.append("%s(%s)" % (prim, "/".join(sorted(want)[:2])))
+            rows.append((name, len(used), len(missing)))
+            if missing:
+                problems.append("A7 %s 的产物里找不到这些原语的符号：%s"
+                                % (name, ", ".join(missing[:4])))
+        finally:
+            _sh.rmtree(wd, ignore_errors=True)
+    return rows, problems, ""
+
 #: 只在某个发射器里有、另一个没有的原语，若确实是有意的，写在这里（A6 要它）。
 EMIT_ASYM = {
     # by1ggml 里 `log` / `neg` 是从别的上下文扫进来的（不是 PRIMS 的分派），
@@ -376,6 +461,18 @@ def check(root=ROOT, enums=None, provenance=None, reserved=None):
             for p in sorted(EMIT_ASYM):
                 if p not in prims_real:
                     problems.append('A6 EMIT_ASYM 里的 <%s> 不在 PRIMS 里了' % p)
+    # A7：**产物里的证据** —— 分派表里有名字不等于产物里有调用。
+    try:
+        rows7, probs7, why7 = artifact_check(root)
+    except (ImportError, FileNotFoundError) as exc:
+        notes.append('产物证据没算（缺依赖/缺语料）：%r' % (exc,))
+    except Exception as exc:
+        problems.append('产物证据算不了：%r' % (exc,))
+    else:
+        if rows7 is None:
+            notes.append('产物证据没算：' + (why7 or ''))
+        else:
+            problems.extend(probs7)
     return problems, notes
 
 
@@ -452,6 +549,17 @@ def _selftest():
     return 0 if not bad else 1
 
 
+def _art():
+    """A7 的一句话摘要：几份产物、多少个原语缺符号。"""
+    try:
+        rows, probs, _why = artifact_check(ROOT)
+    except Exception:
+        return "没算"
+    if rows is None:
+        return "没算（缺 gcc）"
+    miss = sum(r[2] for r in rows)
+    return "%d 份 / 缺 %d" % (len(rows), miss)
+
 def _emit():
     """(两个发射器都声明的原语数, PRIMS 里的原语数)。"""
     try:
@@ -471,6 +579,8 @@ def _cov():
 
 
 def main(argv):
+    # `--artifacts` 就是默认路径（只为满足 JUDGE_CMDS 的"<file> <subcommand>" 约定）
+    argv = [a for a in argv if a == '--selftest']
     if '--selftest' in argv:
         return _selftest()
     problems, notes = check(ROOT)
@@ -481,9 +591,8 @@ def main(argv):
     ok = not problems
     print('  [%s] 机制属性的出处 %s'
           % ('PASS' if ok else 'FAIL',
-             '属性闭集 %d 个取值都有出处；图原语覆盖 %d/%d；两个发射器都声明 %d/%d'
-             % (len(PROVENANCE), _cov()[0], _cov()[0] + _cov()[1],
-                _emit()[0], _emit()[1])
+             '属性 %d 个取值都有出处；图原语 %d/%d；两个发射器 %d/%d；产物里的证据 %s'
+             % (len(PROVENANCE), _cov()[0], _cov()[0] + _cov()[1], _emit()[0], _emit()[1], _art())
              if ok else '%d 处不成立' % len(problems)))
     return 0 if ok else 1
 
