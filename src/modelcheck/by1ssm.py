@@ -38,10 +38,10 @@
 
 ## 它证明什么、不证明什么
 
-    ✓ 证   这条递推和官方逐位同源（两种尺寸都验）
-    ✓ 证   这个对拍碰得到东西（三条反例都红）
-    ✗ 不证 by1 生成出来的代码是对的 —— 那要 by1diff 接上去才验得到
-    ✗ 不证 分块（chunked）形式和它一致 —— 递推是同一个数学，
+    ok 证   这条递推和官方逐位同源（两种尺寸都验）
+    ok 证   这个对拍碰得到东西（三条反例都红）
+    x 不证 by1 生成出来的代码是对的 —— 那要 by1diff 接上去才验得到
+    x 不证 分块（chunked）形式和它一致 —— 递推是同一个数学，
            但官方走的是 kernel 那条路，浮点归约顺序不同
 
 用法：
@@ -176,11 +176,35 @@ def main(argv):
     print('  Mamba2 判卷人（递推 by1 要生成的式子，对官方 NemotronHMamba2Mixer）')
     print('  ' + '-' * 74)
 
-    # ── 正例：两种尺寸 ──────────────────────────────────────────
+    # ── 正例：**形状 x 上下文**的网格 ──────────────────────────
+    #
+    # 原来只有两格（小尺寸 + 真实尺寸、seq 7/4）。扩容的理由是
+    # **分块**：递推按 chunk_size 切块，seq 不是 chunk_size 的整数倍时
+    # 最后一块是残块 —— 那条路原来只有 seq=7 一格碰到。现在把
+    # seq ∈ {7,8,16,20}、n_groups ∈ {1,2}、conv_kernel ∈ {2,4,7} 都摊开。
+    #
+    # **余量 = 判据 / 实测**，逐格登记（1.5x 那种薄余量必须一眼看见）。
+    #
+    # **配置约束（实测踩到）**：`n_groups` 必须整除 `num_heads`。
+    # 我第一版配了 n_groups=8 / num_heads=4，上游在
+    # `repeat_interleave(..., output_size=num_heads // num_groups)`
+    # 处报 `Invalid output_size, expected 0 but got 4` —— 那是**配置非法**，
+    # 不是上游 bug。这一行留着，免得下次又把非法配置当成被测对象。
     ok = True
     if not selftest:
-        for tag, args in (('小尺寸', (32, 4, 8, 16, 2, 4, 7)),
-                          ('真实尺寸', (2688, 64, 64, 128, 8, 4, 4))):
+        # (tag, d, h, hd, ssm, ng, k, seq)
+        grid = [
+            ('小/残块', (32, 4, 8, 16, 2, 4, 7)),
+            ('小/整块', (32, 4, 8, 16, 2, 4, 8)),
+            ('小/两块', (32, 4, 8, 16, 2, 4, 16)),
+            ('小/残块2', (32, 4, 8, 16, 2, 4, 20)),
+            ('小/单组', (32, 4, 8, 16, 1, 4, 13)),
+            ('小/k2', (32, 4, 8, 16, 2, 2, 9)),
+            ('小/k7', (32, 4, 8, 16, 2, 7, 11)),
+            ('小/组=头', (32, 4, 8, 16, 4, 2, 6)),
+            ('真实尺寸', (2688, 64, 64, 128, 8, 4, 4)),
+        ]
+        for tag, args in grid:
             mx, x, ref = _case(torch, *args, tag)
             with torch.no_grad():
                 got = mine_mamba2(mx, x)
@@ -188,9 +212,13 @@ def main(argv):
             rel = d / max(ref.abs().max().item(), 1e-12)
             good = rel < 1e-5
             ok = ok and good
-            print('     %-22s 绝对 %.3e  相对 %.3e  %s'
-                  % ('', d, rel, '同源 ✓' if good else '**不一样 ✗**'))
+            margin = (1e-5 / rel) if rel > 0 else float("inf")
+            print('     %-12s seq %-3d n_groups %-2d conv %-2d  绝对 %.3e  '
+                  '相对 %.3e  余量 %.1fx  %s'
+                  % (tag, args[6], args[4], args[5], d, rel, margin,
+                     '同源 ok' if good else '**不一样 FAIL**'))
         print()
+    print()
 
     # ── 反例：证明这个对拍碰得到东西 ────────────────────────────
     print('  ── 反例（每一条都必须红 —— 否则这个判卷人碰不到被测的东西）')
@@ -206,7 +234,7 @@ def main(argv):
         red = rel > 1e-5
         ok = ok and red
         print('     %-26s 相对 %.3e  %s'
-              % (nm, rel, '红了 ✓' if red else '**没红 ✗**'))
+              % (nm, rel, '红了 ok' if red else '**没红 x**'))
 
     print()
     print('  [%s] Mamba2 递推与官方同源%s'

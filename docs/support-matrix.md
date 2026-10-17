@@ -70,7 +70,7 @@ Qwen3.8-Flash-Next · GLM-4.7-Flash · embeddinggemma-2。
 | 功能 | 状态 | 证据 / 边界 |
 |---|---|---|
 | 文本前向/生成 | 完整模型 **9** 个 ✅（含第二架构 mamba-130m、第三架构 granite-4.0-h-350m **与同类第二成员 1b**，**均纯 CPU**）；refs 36 个有语料 / 31 个 config 逐字段 ✅，运行未验 | 见 A/B |
-| **状态契约** | **三本账都验过**：KV cache ✅（Qwen3-0.6B **2.289e-05**）· **递归状态 ✅**（mamba **1.497e-03**，判据 2e-3，**余量 1.3× 已登记**）· **混合状态 ✅**（granite-350m **9.918e-05** · granite-1b **7.343e-05**，一个 cache 里两本账） | `by1shadow --smoke-state` / `--smoke-state-ssm` / `--smoke-state-hybrid`；[精度预算](precision-budget.md) |
+| **状态契约** | **三本账都验过**：KV cache ✅（Qwen3-0.6B **2.289e-05**）· **递归状态 ✅**（mamba **1.497e-03**，判据 2e-3，**余量 1.3× 已登记**；`by1ssm` 另有 **形状×上下文 9 格网格**逐格余量 26.7×~120.8×，含分块残块 seq 7/13/20 与 n_groups 1/2/4/8）· **混合状态 ✅**（granite-350m **9.918e-05** · granite-1b **7.343e-05**，一个 cache 里两本账） | `by1shadow --smoke-state` / `--smoke-state-ssm` / `--smoke-state-hybrid`；[精度预算](precision-budget.md) |
 | 视觉塔 | **接线级** ✅（qwen3_5 影子含视觉塔，逐位 0）；真权重值 ✅（Qwen3.8 图像对比）；其余塔未验 | [多模态缺口](INVENTORY.txt)【F】 |
 | MTP | ✅（Qwen3.8 含 MTP 对拍 + mtp.* 命名对 refs 15/15） | 六模型对比含图像与 MTP |
 | 音频塔 | 未建模 | INVENTORY【F】：完全没建模 |
