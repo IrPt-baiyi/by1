@@ -20,6 +20,8 @@
   ④ 反过来验一次：`gating=False` 的官方（**full 宽度门**，它**不会取消门**）与 by1 `head_gate=full` 也应一致；
   ⑤ `rope_parameters` 的**按层参数**（base / part）也要对得上。
      否则"关掉"这条可能只是碰巧对上。
+  ⑥ 滑窗：`layer_types` 里那些 `sliding_attention` 层要对得上（Laguna 真模型 3/4 层是滑窗）；
+  ⑦ 既然前六段全部绕开了滑窗，那就单独验一段：W=5 对官方，再把窗口关掉必须变。
 """
 
 import os as _os
@@ -54,9 +56,9 @@ def _cfg(gating, rope=None):
 
 
 def _by1_attn(ns, gate="per_head", act="softplus", rope=False,
-               rope_base=10000, rope_partial=1.0):
+               rope_base=10000, rope_partial=1.0, window=None):
     a = {"q": NH, "kv": KV, "head_dim": HD, "v": HD, "bias": False,
-         "out_dim": NH * HD, "window": None,
+         "out_dim": NH * HD, "window": window,
          "rope_pairing": "half", "qk_norm": "per_head", "norm_eps": 1e-6,
          "rope": rope, "rope_base": rope_base,
          "rope_partial": rope_partial, "sink": False, "head_gate": gate,
@@ -76,6 +78,15 @@ def _load(mine, ref):
     if getattr(ref, "g_proj", None) is not None:
         sd["g_proj.weight"] = ref.g_proj.weight.detach().clone()
     return mine.load_state_dict(sd, strict=False)
+
+
+def _mask_w(seq, window):
+    """因果 + 滑窗掩码。规则照 by1codegen：
+    `m = causal & (idx[None, :] > idx[:, None] - window)`。"""
+    idx = torch.arange(seq)
+    keep = (idx[None, :] <= idx[:, None]) & (idx[None, :] > idx[:, None] - window)
+    m = torch.zeros(1, 1, seq, seq)
+    return m.masked_fill(~keep[None, None], float("-inf"))
 
 
 def _mask(seq):
@@ -231,9 +242,38 @@ def main():
           % (rel4f, "（部分旋转确实在起作用）" if rel4f > 1e-3
              else "**（!! partial 被忽略）**"))
     ok_all = ok_all and rel4f > 1e-3
+    # ---- ⑦ 滑窗（Laguna 真模型里 3/4 层是滑窗，前六段全部绕开了）----
+    W = 5
+    mask_w = _mask_w(SEQ, W)
+    cfg5 = _cfg("per-head")
+    cfg5.layer_types = ["sliding_attention"]
+    cfg5.sliding_window = W
+    ref5 = LagunaAttention(cfg5, 0, NH).eval()
+    rrope5 = LagunaRotaryEmbedding(cfg5).eval()
+    with torch.no_grad():
+        cos5, sin5 = rrope5(x, pos, "sliding_attention")
+        r5 = ref5(x, (cos5, sin5), mask_w)[0]
+    mine5 = _by1_attn(ns, rope=True, rope_base=10000, window=W)
+    _load(mine5, ref5)
+    with torch.no_grad():
+        m5 = mine5(x)
+    dd5, rel5 = _rel(m5, r5)
+    print("\n  ⑦ 滑窗 W=%d: 绝对 %.3e  相对 %.3e  %s"
+          % (W, dd5, rel5, "逐位一致 ok" if rel5 < 1e-6 else "**对不上**"))
+    ok_all = ok_all and rel5 < 1e-6
+    mine5_off = _by1_attn(ns, rope=True, rope_base=10000, window=None)
+    _load(mine5_off, ref5)
+    with torch.no_grad():
+        m5o = mine5_off(x)
+    _, rel5f = _rel(m5o, m5)
+    print("     当成不开窗: 相对 %.3e  %s"
+          % (rel5f, "（滑窗确实在起作用）" if rel5f > 1e-3
+             else "**（!! 窗口被忽略）**"))
+    ok_all = ok_all and rel5f > 1e-3
+
     print("\n  [%s] head gate %s"
           % ("PASS" if ok_all else "FAIL",
-             "门控钉死 + rope 按层参数/部分旋转逐位一致，四条可证伪全红"
+             "门控钉死 + rope 按层参数/部分旋转逐位一致，五条可证伪全红"
              if ok_all else "有问题"))
     return 0 if ok_all else 1
 
