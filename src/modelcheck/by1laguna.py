@@ -16,7 +16,8 @@
   ① 同一批权重（per-head gate + **softplus**）-> 官方逐位一致；
   ② 把 `gate_act` 换成 `sigmoid` -> **必须变**（这就是"同名不同义"的量化证据）；
   ③ 把 `head_gate` 关掉 -> 必须变；
-  ④ 反过来验一次：`gating=False` 的官方（没有门）与 by1 `head_gate=off` 也应一致 ——
+  ④ 反过来验一次：`gating=False` 的官方（**full 宽度门**，它**不会取消门**）与 by1 `head_gate=full` 也应一致；
+  ⑤ `rope_parameters` 的**按层参数**（base / part）也要对得上。
      否则"关掉"这条可能只是碰巧对上。
 """
 
@@ -38,22 +39,26 @@ except ImportError:
 D, NH, KV, HD, SEQ = 64, 4, 2, 16, 10
 
 
-def _cfg(gating):
+def _cfg(gating, rope=None):
     cfg = LagunaConfig(
         hidden_size=D, num_attention_heads=NH, num_key_value_heads=KV,
         head_dim=HD, num_hidden_layers=1, intermediate_size=64,
         max_position_embeddings=64, rope_theta=10000.0,
         layer_types=["full_attention"], sliding_window=8,
         attention_bias=False, attention_dropout=0.0, gating=gating)
+    if rope is not None:
+        cfg.rope_parameters = rope
     cfg._attn_implementation = "eager"
     return cfg
 
 
-def _by1_attn(ns, gate="per_head", act="softplus", rope=False):
+def _by1_attn(ns, gate="per_head", act="softplus", rope=False,
+               rope_base=10000, rope_partial=1.0):
     a = {"q": NH, "kv": KV, "head_dim": HD, "v": HD, "bias": False,
-         "out_dim": NH * HD, "window": None, "rope_base": 10000,
+         "out_dim": NH * HD, "window": None,
          "rope_pairing": "half", "qk_norm": "per_head", "norm_eps": 1e-6,
-         "rope": rope, "sink": False, "head_gate": gate,
+         "rope": rope, "rope_base": rope_base,
+         "rope_partial": rope_partial, "sink": False, "head_gate": gate,
          "gate_act": act}
     return ns["Attention"](a, D).eval()
 
@@ -94,10 +99,9 @@ def main():
     pos = torch.arange(SEQ)[None]
     mask = _mask(SEQ)
     ok_all = True
-    # **rope 两边都设成恒等**：Laguna 的 `LagunaRotaryEmbedding` 频率与 by1 的
-    # `rope_tables` **不一致**（实测 cos 第二项 0.9993 vs 0.9504，基频对不上），
-    # 那是**另一个问题**，记在 docs/gap-analysis 里待查。这一轮只验门控 ——
-    # 把 rope 两边都设成恒等，才能让"门"这一个变量单独成立。
+    # **rope 在 1~4 段用恒等**（把"门"这一个变量单独隔出来），
+    # rope 自己在 ⑤/⑥ 两段单独验。上一轮说"两边频率对不上"，
+    # 根因是我给构造函数传的 `rope_theta` 被按层的 `rope_parameters` 覆盖了。
     cos_id = torch.ones(1, SEQ, HD)
     sin_id = torch.zeros(1, SEQ, HD)
 
@@ -160,9 +164,75 @@ def main():
           % (dd2, rel2, "也一致 ok" if rel2 < 1e-6 else "**对不上**"))
     ok_all = ok_all and rel2 < 1e-6
 
+    # ⑤ rope 的**按层参数**（上一轮的待查项，这一轮销账）
+    #
+    # 实测：Laguna 的 `rope_parameters` **按层型分开**：full 层是
+    # `rope_theta=500000` ＋ `partial_rotary_factor=0.5`，滑动层才是 10000 / 1.0。
+    # 我上一轮给构造函数传的 `rope_theta=10000` **被它覆盖了**，
+    # 于是以为"两边频率对不上"——其实是**我给错了参数**。
+    rope_full = {"full_attention": {"rope_type": "default",
+                                "rope_theta": 500000.0,
+                                "partial_rotary_factor": 1.0},
+                 "sliding_attention": {"rope_type": "default",
+                                  "rope_theta": 10000.0,
+                                  "partial_rotary_factor": 1.0}}
+    cfg3 = _cfg("per-head", rope=rope_full)
+    ref3 = LagunaAttention(cfg3, 0, NH).eval()
+    rrope3 = LagunaRotaryEmbedding(cfg3).eval()
+    with torch.no_grad():
+        cos3, sin3 = rrope3(x, pos, "full_attention")
+        r3 = ref3(x, (cos3, sin3), mask)[0]
+    mine3 = _by1_attn(ns, rope=True, rope_base=500000)
+    _load(mine3, ref3)
+    with torch.no_grad():
+        m3 = mine3(x)
+    dd3, rel3 = _rel(m3, r3)
+    print("\n  ⑤ rope 按层参数（base=500000）: 绝对 %.3e  相对 %.3e  %s"
+          % (dd3, rel3, "逐位一致 ok" if rel3 < 1e-6 else "**对不上**"))
+    ok_all = ok_all and rel3 < 1e-6
+    mine3_wrong = _by1_attn(ns, rope=True, rope_base=10000)
+    _load(mine3_wrong, ref3)
+    with torch.no_grad():
+        m3w = mine3_wrong(x)
+    _, rel3w = _rel(m3w, m3)
+    print("     base 用错（10000）: 相对 %.3e  %s"
+          % (rel3w, "（底数确实在起作用）" if rel3w > 1e-3
+             else "**（!! base 被忽略）**"))
+    ok_all = ok_all and rel3w > 1e-3
+
+    # ⑥ 部分旋转（partial_rotary_factor=0.5）
+    rope_part = {"full_attention": {"rope_type": "default",
+                                "rope_theta": 500000.0,
+                                "partial_rotary_factor": 0.5},
+                 "sliding_attention": {"rope_type": "default",
+                                  "rope_theta": 10000.0,
+                                  "partial_rotary_factor": 1.0}}
+    cfg4 = _cfg("per-head", rope=rope_part)
+    ref4 = LagunaAttention(cfg4, 0, NH).eval()
+    rrope4 = LagunaRotaryEmbedding(cfg4).eval()
+    with torch.no_grad():
+        cos4, sin4 = rrope4(x, pos, "full_attention")
+        r4 = ref4(x, (cos4, sin4), mask)[0]
+    mine4 = _by1_attn(ns, rope=True, rope_base=500000, rope_partial=0.5)
+    _load(mine4, ref4)
+    with torch.no_grad():
+        m4 = mine4(x)
+    dd4, rel4 = _rel(m4, r4)
+    print("\n  ⑥ 部分旋转（partial=0.5）: 绝对 %.3e  相对 %.3e  %s"
+          % (dd4, rel4, "逐位一致 ok" if rel4 < 1e-6 else "**对不上**"))
+    ok_all = ok_all and rel4 < 1e-6
+    mine4_full = _by1_attn(ns, rope=True, rope_base=500000, rope_partial=1.0)
+    _load(mine4_full, ref4)
+    with torch.no_grad():
+        m4f = mine4_full(x)
+    _, rel4f = _rel(m4f, m4)
+    print("     partial 当成 1.0: 相对 %.3e  %s"
+          % (rel4f, "（部分旋转确实在起作用）" if rel4f > 1e-3
+             else "**（!! partial 被忽略）**"))
+    ok_all = ok_all and rel4f > 1e-3
     print("\n  [%s] head gate %s"
           % ("PASS" if ok_all else "FAIL",
-             "softplus 钉死、sigmoid 必须不同、关掉必须变、无门也对"
+             "门控钉死 + rope 按层参数/部分旋转逐位一致，四条可证伪全红"
              if ok_all else "有问题"))
     return 0 if ok_all else 1
 
