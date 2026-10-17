@@ -525,6 +525,30 @@ C 侧 `y4` 的 16 个值：
 `view_4d(res, dk, nv, n, 1, nb1, nb2, nb3, 0)` 各步长 ——
 错位一格说明某个 nb 少乘/多乘了一个维度。
 
+### 2026-10-17 早（第二十四刀）：步长公式核对一致 —— "左移一格"另有来源
+
+发射的视图：
+
+```c
+_o1_y4 = ggml_view_4d(ctx, _o1_res, 8, 4, n, 1,
+                      _o1_res->nb[0],            /* nb1 = 4 B   = 1 float  */
+                      (size_t) 8 * _o1_res->nb[0],       /* nb2 = 32 B  = 8 floats */
+                      (size_t) 8 * 4 * _o1_res->nb[0], 0);
+```
+
+`res` 的形状是 `(S_v·H = 32, T + state_rows, 1, 1)`，内核写入步长
+（`attn_out_base + (iv3·n_tokens·H + iv1)·S_v`，每 token `+= S_v·H`）
+⇒ 元素 `(t, h, d)` 在扁平 `t·32 + h·8 + d` ✓ ——
+**与视图的 nb1=8 floats、nb2=32 floats 一致** ✓
+
+⇒ **"头 1 = 头 0 左移一格"不来自步长公式**，另有来源
+（内核写入与我读的公式之间可能还有一层，或"移位"本身是读数/排列的假象）。
+
+**下一轮一刀**：`build/dbg-gdn.c` 微测 —— 用已知 q/k/v/g/beta（形状与
+探针一致）跑 `ggml_gated_delta_net`，把输出按 `[t][h][d]` 打出来，
+与 numpy 的递推逐位对 —— **把 GDN 内核的输出布局一次性钉死**。
+（这是第三个语义微测：l2 / rms / gdn。）
+
 **收口判据**：`python src/by1ggml.py --from-ir linear-gdn-shaped.by1`
 对拍进 1e-6 以内，且 `clef-tiny` 同绿（那时 `check_support` 的拒绝一起撤）。
 
