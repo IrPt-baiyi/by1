@@ -148,13 +148,18 @@ def check_support(ir):
                     bad.append(f"{where}：head_gate={a.get('head_gate')!r} 还没实现")
             elif k == "Linear":
                 # **GDN 线性注意力**（语义唯一在 `by1exec.op_linear`）。
-                # 发射器写好了（`elif k == "Linear"` 那段），但**数值差
-                # ~2.7e-3 未收口**（2026-10-17）—— **数值没对上的实现
-                # 不许冒充支持**（"能描述 ≠ 能算"），所以这里拒绝。
-                # 调试台账见 docs/ggml-gaps-feasibility.md 第三节。
-                bad.append(f"{where}：Linear 的 ggml 映射**数值未收口**"
-                           "（实测差 ~2.7e-3，调试台账见 "
-                           "docs/ggml-gaps-feasibility.md）—— 拒绝，不冒充支持")
+                # 映射已收口（2026-10-17）：`linear-gdn-shaped` 对拍 **4.49e-08**、
+                # `clef-tiny` **1.22e-07**。此前 2.7e-3 残差的根因是
+                # `ggml_view_4d` 的步长整体错位一档（nb1 传了 nb0）——
+                # 调试台账见 docs/ggml-gaps-feasibility.md（27 刀排除表）。
+                if int(a.get("k_dim")) != int(a.get("v_dim")):
+                    # ggml 的状态是**方阵**（`state` 是 (S_v, S_v, H)）——
+                    # k_dim ≠ v_dim 摆不进去。**要么实现，要么拒绝。**
+                    bad.append(f"{where}：k_dim={a.get('k_dim')} ≠ v_dim="
+                               f"{a.get('v_dim')} —— ggml 的 GDN 状态是方阵，摆不进")
+                if str(a.get("act", "silu")) != "silu":
+                    bad.append(f"{where}：act={a.get('act')!r} —— "
+                               "参照实现（op_linear）的卷积写死 silu，不一致就拒绝")
     for o in ir["globals"]:
         if o["kind"] not in SUPPORTED_KINDS:
             bad.append(f"全局算子 {o['kind']} 还没有 ggml 映射")
@@ -1226,9 +1231,13 @@ def emit_model_c(ir, order, params, dump=()):
             lines.append(f"{indent}struct ggml_tensor * {p}res = ggml_gated_delta_net("
                          f"ctx, {p}q3, {p}k3, {p}v3, {p}g, {p}beta, {p}s0, 1);")
             lines.append(f"{indent}struct ggml_tensor * {p}y4 = ggml_view_4d(ctx, "
-                         f"{p}res, {dk}, {nv}, n, 1, {p}res->nb[0], "
+                         f"{p}res, {dk}, {nv}, n, 1, "
                          f"(size_t) {dk} * {p}res->nb[0], "
-                         f"(size_t) {dk} * {nv} * {p}res->nb[0], 0);")
+                         f"(size_t) {dk} * {nv} * {p}res->nb[0], 0, 0);")
+            # ↑ **`ggml_view_4d` 的步长是 (nb1, nb2, nb3)**（nb0 继承源张量）。
+            #   此前误传成 (nb0, dk·nb0, dk·nv·nb0) —— **整体错位一档**，
+            #   于是"头偏移错一格"（头 1 = 头 0 左移一格）。
+            #   正确：nb1 = dk·nb0（头步长）、nb2 = dk·nv·nb0（token 步长）。
             # ⑥ RMS 归一 × norm.w × **silu(z)** -> out_proj。
             #    `norm.w` 是 `(dv,)` —— **逐维共享、跨头广播**（参照：
             #    `P["norm.w"] * y`，y 是 (b, nv, s, dv)）→ reshape (dv, 1, 1)。

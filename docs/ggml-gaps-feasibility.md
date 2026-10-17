@@ -609,8 +609,30 @@ C 侧 `y4` 的头 1 就是**头 0 整体左移一格、末尾拼上参照头 1 �
    `view_4d(res, 8, 4, T, 1, nb0, 8*nb0, 32*nb0, 0)` 取一遍，
    与直接按 `[t][h][d]` 取的值比 —— 若两者不同，视图组合就是元凶。
 
-**收口判据**：`python src/by1ggml.py --from-ir linear-gdn-shaped.by1`
-对拍进 1e-6 以内，且 `clef-tiny` 同绿（那时 `check_support` 的拒绝一起撤）。
+### 2026-10-17 早（**收口**）：根因 = `ggml_view_4d` 的步长整体错位一档
+
+**根因**：`ggml_view_4d(ctx, a, ne0, ne1, ne2, ne3, **nb1, nb2, nb3**, offset)`
+的步长从 **nb1** 开始（nb0 继承源张量），而 Linear 的 `y4` 视图误传成
+`(nb0, dk·nb0, dk·nv·nb0)` —— **整体错位一档**，`nb1` 少乘了 `dk`，
+于是"头 1 = 头 0 左移一格"。
+（SSM 分支当年就写对了，注释里还留着"第一版整体错位一格"的教训 ——
+ **同一坑在 Linear 分支重蹈**；教训：**视图步长必须对着签名抄**。）
+
+**修**：`y4 = ggml_view_4d(res, dk, nv, n, 1, dk·nb0, dk·nv·nb0, 0, 0)`。
+
+**收口判据双双达成**：
+
+```
+python src/by1ggml.py --from-ir linear-gdn-shaped.by1   → 4.492e-08  PASS
+python src/by1ggml.py --from-ir clef-tiny.by1           → 1.216e-07  PASS
+```
+
+⇒ `check_support` 的拒绝已撤（换成 k_dim=v_dim / act=silu 两条真约束），
+**IR 路公共子集 8 → 10**（`linear-gdn-shaped` + `clef-tiny` 入列）。
+
+27 刀的排除表（管线语义 / L2 链 / L2 步 / interleave / 卷积 / GDN 递推 /
+RMS·norm.w·z / 权重布局 / mul_mat 契约 / 内核布局）全部留档 ——
+**排除表也是产出**：下一个踩进来的不用重走。
 
 ## 四、剩余 11 格的实施路线（按"一处实现关几格"排）
 

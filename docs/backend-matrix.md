@@ -11,7 +11,7 @@
 | `hello.by1` | Attention + FFN（最小完整） | ✅ | ✅ | ✅ | ✅ | ✗ |
 | `attn-fused-shaped.by1` | Attention（融合 qkv + 门） | ✅ | ✅ | ✅ | ✅ | ✗ |
 | `attn-qgate-shaped.by1` | Attention（q_gate：q 投影宽一倍） | ✅ | ✅ | ✅ | ✅ | ✗ |
-| `linear-gdn-shaped.by1` | Linear（GDN 线性注意力 · 映射未收口） | ✅ | ✅ | ✗ | ✅ | ✗ |
+| `linear-gdn-shaped.by1` | Linear（GDN 线性注意力 · 映射未收口） | ✅ | ✅ | ✅ | ✅ | ✗ |
 | `mla-shaped.by1` | MLA | ✅ | ✅ | ✅ | ✅ | ✗ |
 | `mla-sparse-shaped.by1` | MLA + 稀疏索引（DSA） | ✅ | ✅ | ✗ | ✅ | ✗ |
 | `moe-routing-shaped.by1` | MoE（路由） | ✅ | ✅ | ✗ | ✅ | ✗ |
@@ -29,7 +29,7 @@
 | `qwen3-next-shaped.by1` | Linear + MoE + Attention（线性注意力） | ✅ | ✅ | ✗ | ✅ | ✗ |
 | `ling-tiny.by1` | KDA + MLA + MoE（Ling 结构的机械缩小版） | ✅ | ✅ | ✗ | ✅ | ✗ |
 | `glm-text-tiny.by1` | KDA（低秩门）+ SparseMLA + MoE | ✅ | ✅ | ✗ | ✅ | ✗ |
-| `clef-tiny.by1` | Linear + FFN + Attention（视觉塔布局） | ✅ | ✅ | ✗ | ✅ | ✗ |
+| `clef-tiny.by1` | Linear + FFN + Attention（视觉塔布局） | ✅ | ✅ | ✅ | ✅ | ✗ |
 | `gpt2-tiny.by1` | Attention + FFN（learned 位置） | ✅ | ✅ | ✅ | ✅ | ✗ |
 
 **读法**：✅ = 后端接受并给出产物；✗ = 明确拒绝（原文见第二节）；— = 根本没走到（上游 `codegen` 先拒，本后端无从表态）；? = 没验（缺依赖，**不算通过**）。
@@ -43,7 +43,6 @@
 | `hello.by1` | `full` | 完整后端的 arch 必须是 qwen3, qwen2, gpt2, gpt_oss, qwen3_5, mamba, granitemoehybrid, falcon_h1 |
 | `attn-fused-shaped.by1` | `full` | 完整后端的 arch 必须是 qwen3, qwen2, gpt2, gpt_oss, qwen3_5, mamba, granitemoehybrid, falcon_h1 |
 | `attn-qgate-shaped.by1` | `full` | 完整后端的 arch 必须是 qwen3, qwen2, gpt2, gpt_oss, qwen3_5, mamba, granitemoehybrid, falcon_h1 |
-| `linear-gdn-shaped.by1` | `ggml` | 第 0 层 op1（Linear）：Linear 的 ggml 映射**数值未收口**（实测差 ~2.7e-3，调试台账见 docs/ggml-gaps-feasibility.md）—— 拒绝，不冒充支持；第 1 层 op1（Linear）：Linear 的 ggml 映射**数值未收口**（实测差 ~2.7e-3，调试台账见 docs/ggml-gaps-feasibility.md）—— 拒绝，不冒充支持 |
 | `linear-gdn-shaped.by1` | `full` | 完整后端的 arch 必须是 qwen3, qwen2, gpt2, gpt_oss, qwen3_5, mamba, granitemoehybrid, falcon_h1 |
 | `mla-shaped.by1` | `full` | 完整后端的 arch 必须是 qwen3, qwen2, gpt2, gpt_oss, qwen3_5, mamba, granitemoehybrid, falcon_h1 |
 | `mla-sparse-shaped.by1` | `ggml` | 第 0 层 op1（MLA）：index_heads（SparseMLA/DSA 索引）还没实现 —— 原语 ggml 有（TOP_K/LIGHTNING_INDEXER），缺的是映射实现；第 1 层 op1（MLA）：index_heads（SparseMLA/DSA 索引）还没实现 —— 原语 ggml 有（TOP_K/LIGHTNING_INDEXER），缺的是映射实现；第 2 层 op1（MLA）：index_heads（SparseMLA/DSA 索引）还没实现 —— 原语 ggml 有（TOP_K/LIGHTNING_INDEXER），缺的是映射实现；第 2 层 op1（MLA）： |
@@ -69,13 +68,12 @@
 | `mixtral-shaped.by1` | `full` | 完整后端的 arch 必须是 qwen3, qwen2, gpt2, gpt_oss, qwen3_5, mamba, granitemoehybrid, falcon_h1 |
 | `gpt-oss-shaped.by1` | `ggml` | 第 0 层 op1（Attention）：sink 还没实现（M3）；第 0 层 op4（MoE）：算子 MoE 还没有 ggml 映射；第 1 层 op1（Attention）：sink 还没实现（M3）；第 1 层 op4（MoE）：算子 MoE 还没有 ggml 映射 |
 | `gpt-oss-shaped.by1` | `full` | 完整后端的 arch 必须是 qwen3, qwen2, gpt2, gpt_oss, qwen3_5, mamba, granitemoehybrid, falcon_h1 |
-| `qwen3-next-shaped.by1` | `ggml` | 第 0 层 op1（Linear）：Linear 的 ggml 映射**数值未收口**（实测差 ~2.7e-3，调试台账见 docs/ggml-gaps-feasibility.md）—— 拒绝，不冒充支持；第 0 层 op4（MoE）：算子 MoE 还没有 ggml 映射；第 1 层 op1（Linear）：Linear 的 ggml 映射**数值未收口**（实测差 ~2.7e-3，调试台账见 docs/ggml-gaps-feasibility.md）—— 拒绝，不冒充支持；第 1 层 op4（MoE）：算子 MoE 还没有 ggml 映射；第 2 层 op1（Linear）：Linear |
+| `qwen3-next-shaped.by1` | `ggml` | 第 0 层 op4（MoE）：算子 MoE 还没有 ggml 映射；第 1 层 op4（MoE）：算子 MoE 还没有 ggml 映射；第 2 层 op4（MoE）：算子 MoE 还没有 ggml 映射；第 3 层 op4（MoE）：算子 MoE 还没有 ggml 映射 |
 | `qwen3-next-shaped.by1` | `full` | 完整后端的 arch 必须是 qwen3, qwen2, gpt2, gpt_oss, qwen3_5, mamba, granitemoehybrid, falcon_h1 |
 | `ling-tiny.by1` | `ggml` | 第 0 层 op1（KDA）：算子 KDA 还没有 ggml 映射；第 1 层 op1（KDA）：算子 KDA 还没有 ggml 映射；第 1 层 op4（MoE）：算子 MoE 还没有 ggml 映射；第 2 层 op1（KDA）：算子 KDA 还没有 ggml 映射；第 2 层 op4（MoE）：算子 MoE 还没有 ggml 映射；第 3 层 op4（MoE）：算子 MoE 还没有 ggml 映射 |
 | `ling-tiny.by1` | `full` | 完整后端的 arch 必须是 qwen3, qwen2, gpt2, gpt_oss, qwen3_5, mamba, granitemoehybrid, falcon_h1 |
 | `glm-text-tiny.by1` | `ggml` | 第 0 层 op1（KDA）：算子 KDA 还没有 ggml 映射；第 1 层 op1（KDA）：算子 KDA 还没有 ggml 映射；第 2 层 op1（KDA）：算子 KDA 还没有 ggml 映射；第 3 层 op1（MLA）：index_heads（SparseMLA/DSA 索引）还没实现 —— 原语 ggml 有（TOP_K/LIGHTNING_INDEXER），缺的是映射实现；第 3 层 op4（MoE）：算子 MoE 还没有 ggml 映射 |
 | `glm-text-tiny.by1` | `full` | 完整后端的 arch 必须是 qwen3, qwen2, gpt2, gpt_oss, qwen3_5, mamba, granitemoehybrid, falcon_h1 |
-| `clef-tiny.by1` | `ggml` | 第 0 层 op1（Linear）：Linear 的 ggml 映射**数值未收口**（实测差 ~2.7e-3，调试台账见 docs/ggml-gaps-feasibility.md）—— 拒绝，不冒充支持；第 1 层 op1（Linear）：Linear 的 ggml 映射**数值未收口**（实测差 ~2.7e-3，调试台账见 docs/ggml-gaps-feasibility.md）—— 拒绝，不冒充支持；第 2 层 op1（Linear）：Linear 的 ggml 映射**数值未收口**（实测差 ~2.7e-3，调试台账见 docs/ggml-gaps-feasibility.md） |
 | `clef-tiny.by1` | `full` | 完整后端不能忽略这些块：['tensors', 'emit'] |
 | `gpt2-tiny.by1` | `full` | 完整后端不能忽略这些块：['tensors'] |
 
@@ -88,10 +86,12 @@
 - `hello.by1` —— Attention + FFN（最小完整）
 - `attn-fused-shaped.by1` —— Attention（融合 qkv + 门）
 - `attn-qgate-shaped.by1` —— Attention（q_gate：q 投影宽一倍）
+- `linear-gdn-shaped.by1` —— Linear（GDN 线性注意力 · 映射未收口）
 - `mla-shaped.by1` —— MLA
 - `ssm-shaped.by1` —— SSM（Mamba2/Nemotron-H 参数化）
 - `llama-shaped.by1` —— Attention + FFN（RoPE）
 - `llama3-shaped.by1` —— Attention + FFN（LLaMA3 RoPE 缩放）
+- `clef-tiny.by1` —— Linear + FFN + Attention（视觉塔布局）
 - `gpt2-tiny.by1` —— Attention + FFN（learned 位置）
 
 ### 3.2 五后端交集（含 `full`）
@@ -104,9 +104,8 @@
 > **可补** = 我们的工程活；**卡上游** = 缺 ggml/上游原语；
 > **设计如此** = 边界而非缺口。
 
-### 可补（12 格）
+### 可补（10 格）
 
-- `linear-gdn-shaped.by1` × `ggml` —— 映射实现进行中：发射器已写，数值差 ~2.7e-3 未收口，按纪律拒绝（调试台账见 ggml-gaps-feasibility.md）
 - `mla-sparse-shaped.by1` × `ggml` —— ggml 有 `TOP_K`/`ARGSORT`/`LIGHTNING_INDEXER`（2026-10-17 逐个数过 enum ggml_op，101 个）—— 缺的是路由语义到这些原语的映射实现
 - `moe-routing-shaped.by1` × `ggml` —— ggml 有 `TOP_K`/`ARGSORT`/`LIGHTNING_INDEXER`（2026-10-17 逐个数过 enum ggml_op，101 个）—— 缺的是路由语义到这些原语的映射实现
 - `kda-shaped.by1` × `ggml` —— ggml 有 `GATED_DELTA_NET`/`GATED_LINEAR_ATTN`（delta-rule/GDN 族原语）—— 与 by1 的 KDA/Linear 对表是实现工作（可能要折算）
@@ -117,7 +116,6 @@
 - `qwen3-next-shaped.by1` × `ggml` —— ggml 有 `TOP_K`/`ARGSORT`/`LIGHTNING_INDEXER`（2026-10-17 逐个数过 enum ggml_op，101 个）—— 缺的是路由语义到这些原语的映射实现
 - `ling-tiny.by1` × `ggml` —— ggml 有 `TOP_K`/`ARGSORT`/`LIGHTNING_INDEXER`（2026-10-17 逐个数过 enum ggml_op，101 个）—— 缺的是路由语义到这些原语的映射实现
 - `glm-text-tiny.by1` × `ggml` —— ggml 有 `TOP_K`/`ARGSORT`/`LIGHTNING_INDEXER`（2026-10-17 逐个数过 enum ggml_op，101 个）—— 缺的是路由语义到这些原语的映射实现
-- `clef-tiny.by1` × `ggml` —— 映射实现进行中：发射器已写，数值差 ~2.7e-3 未收口，按纪律拒绝（调试台账见 ggml-gaps-feasibility.md）
 
 ### 卡上游（0 格）
 
