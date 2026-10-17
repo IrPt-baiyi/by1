@@ -105,7 +105,7 @@ GROUPS = [
 
     ('`modelcheck/` —— 一个模型一个判卷人', 'modelcheck', '''每个都用自己的官方产物当真相源。''', [
         'by1gpt2', 'by1instella', 'by1mla', 'by1moe', 'by1rope',
-        'by1ssm', 'by1kda', 'by1sparse', 'by1gptoss', 'by1laguna', 'by1gemma', 'by1real', 'by1load', 'by1mem',
+        'by1ssm', 'by1kda', 'by1sparse', 'by1gptoss', 'by1laguna', 'by1gemma', 'by1qknorm', 'by1real', 'by1load', 'by1mem',
         'by1train', 'by1dev', 'by1quant', 'by1q2schema', 'by1shadow']),
 
     ('`data/` —— 抓数据 / 推模型', 'data', '''从一个已发布的 checkpoint 反推描述，以及把 `refs/` 抓回来。

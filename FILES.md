@@ -1,6 +1,6 @@
 # 这个仓库里每个文件是干什么的
 
-> 428 个跟踪文件。按"你会想找什么"分组，不按字母表。
+> 429 个跟踪文件。按"你会想找什么"分组，不按字母表。
 >
 > **这份文档是生成的**：`python src/by1files.py --write`。
 > 文件清单、每组的个数、每个文件的一句话都从目录树和 docstring 来 ——
@@ -43,7 +43,7 @@
 
 ---
 
-## `src/` —— 95 个模块 + 1 个非 .py
+## `src/` —— 96 个模块 + 1 个非 .py
 
 ### 底座（留在 src/ 顶层）
 
@@ -177,6 +177,7 @@
 | `by1gptoss.py` | GPT-OSS 的三处易错点：**注意力 sink / 滑窗 / YaRN** |
 | `by1laguna.py` | head gate** 的判卷人：by1 的 Attention  vs  官方 `LagunaAttention` |
 | `by1gemma.py` | GeGLU 那一支 FFN**：门控 + tanh 近似激活，对官方 GemmaMLP |
+| `by1qknorm.py` | qk_norm 的三个取值是不是三件事**：per_head / full / off |
 | `by1real.py` | 真权重、真维度，跑一个 27B 模型的前向 |
 | `by1load.py` | 把**真权重**装进 by1 生成的模型 |
 | `by1mem.py` | 从 IR 的 state 声明推出**内存计划**，并可选地用真实模型核它 |
@@ -585,7 +586,7 @@
 | `by1tens.py` | 张量契约实例化：把契约按等价类求值出形状 |
 | `by1vocab.py` | 真实数据的词汇表。模式从这里来，不从想象来 |
 
-## `src/modelcheck/` —— 20 个
+## `src/modelcheck/` —— 21 个
 
 | 文件 | 用途 |
 |---|---|
@@ -602,6 +603,7 @@
 | `by1mla.py` | MLA 的差分验证 |
 | `by1moe.py` | MoE 路由的差分验证：**分组选法** + **打分函数** |
 | `by1q2schema.py` | Q2 报告 schema：指标与容差写死在一处，报告必须带 |
+| `by1qknorm.py` | qk_norm 的三个取值是不是三件事**：per_head / full / off |
 | `by1quant.py` | 量化 checkpoint 的存储契约与权重/scale manifest 审计 |
 | `by1real.py` | 真权重、真维度，跑一个 27B 模型的前向 |
 | `by1rope.py` | RoPE 逆频率三支的网格判卷人**（default / yarn / llama3） |
