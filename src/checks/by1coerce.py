@@ -35,6 +35,7 @@ _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)
 import by1paths  # noqa: E402,F401
 import os  # noqa: E402
 import sys  # noqa: E402
+import tempfile  # noqa: E402
 
 import numpy as np  # noqa: E402
 import by1check  # noqa: E402
@@ -74,9 +75,14 @@ TPL = """model T {
 }"""
 
 
+#: 探针文件写**临时目录**，不写仓内 `build/` —— 那个目录被 gitignore 了，
+#: 干净检出里**不存在**（CI 的档 3 就是在这里红的：本地有 build/，CI 没有）。
+_TMP = tempfile.mkdtemp(prefix="by1coerce-")
+
+
 def _compile_text(text, tag):
     """把一小段 .by1 编译成 IR（只为探一个属性）。"""
-    p = os.path.join(by1paths.ROOT, "build", "coerce-%s.by1" % tag)
+    p = os.path.join(_TMP, "coerce-%s.by1" % tag)
     with open(p, "w", encoding="utf-8") as f:
         f.write(text)
     _rep, info = by1check.check(p)
