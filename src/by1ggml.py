@@ -150,37 +150,55 @@ static struct ggml_tensor * sum_ax(struct ggml_context * ctx,
 }
 
 /* 沿 ggml 轴 axis 把每一份**整块**重复 reps 次（np.repeat 语义：
-   [q0,q0,q1,q1]）。**不是 ggml_repeat 的平铺**（平铺给 [q0,q1,q0,q1]）
-   —— 两者只在"被重复的轴是最外轴"或"该轴本来就只有 1 份"时相同，
-   所以此前只有 Linear 的 GQA 复制露了马脚（axis=1）。
+   [q0,q0,q1,q1]）。**不是 ggml_repeat 的平铺**（平铺给 [q0,q1,q0,q1]）。
 
-   一般情形：把该轴的每一份**单独切片**，各自重复 reps 次再按块拼回去。
-   （两次失败留在注释里：① "插一条长度 1 的轴再 repeat"——reps 轴在内存里
-   落在被复制轴的**后面**，折回去仍是平铺；② "整体 concat 自身 reps 次"——
-   a||a 就是 [h0,h1,h0,h1]，也是平铺。实测都在 dump 里露了头 1 没复制。） */
+   做法：在 axis **前面**插一条长度 1 的轴 -> 平铺到 reps（长度 1 的平铺
+   就是"整份复制"）-> 把这两条轴折回一条。插入点在 axis 之前是关键：
+   折回时内层是 reps、外层是原轴，得到 (i_axis*reps + r)，正是 np.repeat。
+   （插在 axis 之后会得到 (r*ne_axis + i_axis) = 平铺 —— 实测踩过两次。）
+
+   历史：这里原有一条 `axis == 0 -> 整块平铺` 的捷径，理由是"最外轴两者
+   相同"—— **只在 exec 序最外轴成立**，而 ggml 的 axis 0 是 exec 的**最后**
+   一轴。k-pool 的池->token 展开（axis 0、ne=池数>1）第一次踩到它，
+   结果是 [p0..pN,p0..pN] 而不是 [p0,p0,p1,p1..]，keep 掩码直接错。 */
 static struct ggml_tensor * blk_rep_axis(struct ggml_context * ctx,
                                          struct ggml_tensor * x, int axis,
                                          int reps) {
     if (reps <= 1) return x;
     const int nd = ggml_n_dims(x);
-    if (axis < 0 || axis >= nd) return NULL;           /* 不猜 */
-    if (axis == 0 || x->ne[axis] == 1) {
-        /* 最外轴（或本来只有 1 份）：整块平铺 == 整块重复 */
-        int64_t ne[4];
-        for (int i = 0; i < nd; i++) ne[i] = x->ne[i];
-        ne[axis] = ne[axis] * reps;
-        struct ggml_tensor * pat = ggml_new_tensor(ctx, GGML_TYPE_F32, nd, ne);
-        return ggml_repeat(ctx, x, pat);
-    }
-    struct ggml_tensor * out = NULL;
-    const int64_t na = x->ne[axis];
-    for (int64_t k = 0; k < na; k++) {
-        struct ggml_tensor * sl = sl_ax(ctx, x, axis, k, k + 1);
-        for (int r = 0; r < reps; r++) {
-            out = out ? ggml_concat(ctx, out, sl, axis) : sl;
+    if (axis < 0 || axis >= nd) return NULL;
+    if (nd >= 4) {
+        /* 插一个维就超 4 维了：退到逐片切片 + 拼接（慢但语义等价）。 */
+        struct ggml_tensor * acc = NULL;
+        for (int64_t k = 0; k < x->ne[axis]; k++) {
+            struct ggml_tensor * sl = sl_ax(ctx, x, axis, k, k + 1);
+            for (int r = 0; r < reps; r++) {
+                acc = acc ? ggml_concat(ctx, acc, sl, axis) : sl;
+            }
         }
+        return acc;
     }
-    return out;
+    int64_t ins[4] = {1, 1, 1, 1};
+    int m = 0;
+    for (int i = 0; i < nd; i++) {
+        if (i == axis) ins[m++] = 1;
+        ins[m++] = x->ne[i];
+    }
+    struct ggml_tensor * v = ggml_reshape_4d(ctx, ggml_cont(ctx, x),
+                                             ins[0], ins[1], ins[2], ins[3]);
+    int64_t pat[4] = {ins[0], ins[1], ins[2], ins[3]};
+    const int64_t na = pat[axis + 1];
+    pat[axis] = reps;
+    struct ggml_tensor * pt = ggml_new_tensor(ctx, x->type, 4, pat);
+    struct ggml_tensor * r = ggml_repeat(ctx, v, pt);
+    int64_t out[4] = {1, 1, 1, 1};
+    int kk = 0;
+    for (int i = 0; i < 4; i++) {
+        if (i == axis) { out[kk++] = na * reps; continue; }
+        if (i == axis + 1) continue;
+        out[kk++] = pat[i];
+    }
+    return ggml_reshape_4d(ctx, r, out[0], out[1], out[2], out[3]);
 }
 
 /* numpy 风格的**双向广播**二元运算。ggml 的原生二元算子只允许第二个
@@ -275,7 +293,6 @@ static void by1_inv_softplus_f32(struct ggml_tensor * dst,
         ((float *) dst->data)[i] = (d > 80.0f) ? d : logf(expm1f(d));
     }
 }
-
 /* ── masked_fill 的逐元算子（out = m > 0 ? x : v）─────────────────────
    ggml 没有 select；用算术拼（x*m + v*(1-m)）在 v = -inf 时出 nan
    （-inf·0），而 MoE 的分组路由正是要把非选中组填 -inf —— 所以这条走
@@ -459,6 +476,25 @@ def _shp(shape, n_expr="n"):
     return [n_expr if s is None else str(int(s)) for s in shape]
 
 
+def _shp_inferred(shape, src):
+    """形状里的 None = **推断维**（`ggml_nelements(src) / 静态维之积`）。
+
+    图语言里 None 的语义一直是 numpy 的 `-1`（`by1graph._exec_view` 就是这么
+    实现、且只许一个 None）。旧版这里把它写死成 `n` —— 对绝大多数视图恰好
+    相等（被推断的那一维就是序列长），但 k-pool 要 `view(pos, [P, n/P])`，
+    写死就错了。改成真的按元素数推：对旧图**逐位不变**（推断出来仍是 n）。
+    """
+    k = sum(1 for t in shape if t is None)
+    if k != 1:
+        return _shp(shape)
+    prod = 1
+    for t in shape:
+        if t is not None:
+            prod *= int(t)
+    return [f"(ggml_nelements({src}) / {prod})" if t is None else str(int(t))
+            for t in shape]
+
+
 def emit_model_c_graph(g, ir, order, params, dump=()):
     """**从图发射**：逐节点把 PRIMS 翻成 ggml 调用（1.0.0-rc0 · A3-2）。
 
@@ -526,6 +562,24 @@ def emit_model_c_graph(g, ir, order, params, dump=()):
     # （qwen3-next 实测）。view 的 ref 是 np.reshape（逻辑序，必要时自己拷），
     # 所以这里对非连续输入先 cont 一次，语义逐位相同。
     noncont = set()
+    # **I32 的账本**：pos / tok / top_k 的输出及其视图是整数张量。它们可以
+    # 当 ids 用（get_rows/one_hot 内部会 cast），但**不能直接进 F32 算术** ——
+    # ggml 的二元算子不许混类型（k-pool 的池起点/尾池掩码第一次撞上）。
+    ivals = {"pos", "tok"}
+
+    def _f32(expr, valname=None):
+        """整数张量进浮点上下文前先 cast。"""
+        if valname is not None and valname in ivals:
+            return f"ggml_cast(ctx, {expr}, GGML_TYPE_F32)"
+        return expr
+
+    def _cont_if_needed(expr, valname=None):
+        """非连续的值先物化（ggml 的 soft_max 之类的断言要求连续）。"""
+        if valname is None:
+            return expr
+        u = _gvar(valname)
+        body.append(f"    struct ggml_tensor * {u}_cc = ggml_cont(ctx, {expr});")
+        return f"{u}_cc"
     for node in g.nodes:
         prim, ins, at = node["prim"], node["ins"], node["attrs"]
         a = [_ref(x) for x in ins]
@@ -549,19 +603,13 @@ def emit_model_c_graph(g, ir, order, params, dump=()):
                 if len(shp_t) not in (2, 3):
                     raise SystemExit("  [不支持] get_rows 的表是 %d 维" % len(shp_t))
                 u = _gvar(node["outs"][0])
-                # **取整块的那条轴是 exec 的形状第 0 位**（= ggml 的最后一位）。
-                # 第一版写成 shp_t[-1]（exec 的最后一维 = 行的宽度），于是
-                # 表的转置拿错轴：mul_mat 出来 256x32 而不是 2048x32。
-                e_ = int(shp_t[0])
-                io_ = 1
-                for _x in shp_t[1:]:
-                    io_ *= int(_x)
-                body.append(f"    int64_t {u}_e = {e_};"
-                            )
-                body.append(f"    int64_t {u}_io = {io_};"
-                            )
-                body.append(f"    int64_t {u}_m = {ids_}->ne[0] * {ids_}->ne[1];"
-                            )
+                # **维数只在运行期取**：权重（`params`）是 exec 序、图值
+                # （`g.vals`）是 ggml 序 —— 静态推会推错轴。取整块的轴 =
+                # 表的**最后一条 ggml 轴**，行宽 = 其余维之积。
+                body.append(f"    int64_t {u}_nd = ggml_n_dims({tab});")
+                body.append(f"    int64_t {u}_e = {tab}->ne[{u}_nd - 1];")
+                body.append(f"    int64_t {u}_io = ggml_nelements({tab}) / {u}_e;")
+                body.append(f"    int64_t {u}_m = ggml_nelements({ids_});")
                 body.append(f"    struct ggml_tensor * {u}_t = ggml_reshape_2d("
                             f"ctx, {tab}, {u}_io, {u}_e);")
                 body.append(f"    struct ggml_tensor * {u}_a = ggml_cont(ctx, "
@@ -582,21 +630,23 @@ def emit_model_c_graph(g, ir, order, params, dump=()):
                             f"t_one), 0.0f, 1.0f);")
                 body.append(f"    struct ggml_tensor * {u}_r = ggml_mul_mat(ctx, "
                             f"{u}_a, {u}_EQ);")
-                out_shp = g.vals.get(node["outs"][0]) or ()
-                dims = ["%d" % int(x) if x is not None else f"{ids_}->ne[1]"
-                        for x in out_shp]
-                while len(dims) < 4:
-                    dims.append("1")
+                # 输出形状 = 表的**其余维**（ggml 序）+ 下标自身的维（ggml 序）
+                body.append(f"    int64_t {u}_on[4] = {{ 1, 1, 1, 1 }};")
+                body.append(f"    for (int64_t _i = 0; _i < {u}_nd - 1; _i++) "
+                            f"{u}_on[_i] = {tab}->ne[_i];")
+                body.append(f"    for (int64_t _i = 0; _i < ggml_n_dims({ids_}); _i++) "
+                            f"{u}_on[{u}_nd - 1 + _i] = {ids_}->ne[_i];")
                 _put(body, prim, node,
-                     f"ggml_reshape_4d(ctx, {u}_r, " + ", ".join(dims) + ")")
+                     f"ggml_reshape_4d(ctx, {u}_r, {u}_on[0], {u}_on[1], "
+                     f"{u}_on[2], {u}_on[3])")
         elif prim in ("add", "mul"):
             # **双向广播**：ggml 只许第二个参数被广播（见 by1_bin_bcast）。
             _op = "BY1_BIN_ADD" if prim == "add" else "BY1_BIN_MUL"
             _put(body, prim, node,
-                 f"by1_bin_bcast(ctx, {a[0]}, {a[1]}, {_op})")
+                 f"by1_bin_bcast(ctx, {_f32(a[0], ins[0])}, {_f32(a[1], ins[1])}, {_op})")
         elif prim == "scale":
             _put(body, prim, node,
-                 f"ggml_scale(ctx, {a[0]}, {_f(at['s'])})")
+                 f"ggml_scale(ctx, {_f32(a[0], ins[0])}, {_f(at['s'])})")
         elif prim in ("matmul", "batch_matmul"):
             # ggml_mul_mat(W, x) —— 图里的 matmul 也是 (权重, 输入)。
             #
@@ -702,7 +752,7 @@ def emit_model_c_graph(g, ir, order, params, dump=()):
         elif prim == "soft_max":
             w = int(node["ins"][1].rsplit("_", 1)[-1])
             _put(body, prim, node,
-                 f"ggml_soft_max_ext(ctx, {a[0]}, {mask_var[w]}, "
+                 f"ggml_soft_max_ext(ctx, {_cont_if_needed(a[0], ins[0])}, {mask_var[w]}, "
                  f"{_f(at['scale'])}, 0.0f)")
         elif prim == "view":
             src = a[0]
@@ -711,8 +761,10 @@ def emit_model_c_graph(g, ir, order, params, dump=()):
                 body.append(f"    struct ggml_tensor * {u}_c = ggml_cont(ctx, {src});")
                 src = f"{u}_c"
             _put(body, prim, node,
-                 _reshape("ggml_reshape_%dd" % len(at["shape"]), src,
-                          at["shape"]))
+                 "ggml_reshape_%dd(ctx, %s, " % (len(at["shape"]), src)
+                 + ", ".join(_shp_inferred(at["shape"], src)) + ")")
+            if node["ins"][0] in ivals:
+                ivals.add(node["outs"][0])
         elif prim == "permute":
             ax = list(at["axes"]) + [3, 2, 1][:4 - len(at["axes"])]
             # **轴要取逆**：图的约定是「结果轴 j = 输入轴 axes[j]」
@@ -728,26 +780,31 @@ def emit_model_c_graph(g, ir, order, params, dump=()):
                  f"ggml_permute(ctx, {a[0]}, {inv[0]}, {inv[1]}, "
                  f"{inv[2]}, {inv[3]})")
             noncont.add(node["outs"][0])
+            if node["ins"][0] in ivals:
+                ivals.add(node["outs"][0])
         elif prim == "cont":
             sh = at.get("shape")
             if sh:
                 _put(body, prim, node,
-                     _reshape("ggml_cont_%dd" % len(sh), a[0], sh))
+                     "ggml_cont_%dd(ctx, %s, " % (len(sh), a[0])
+                     + ", ".join(_shp_inferred(sh, a[0])) + ")")
             else:
                 _put(body, prim, node, f"ggml_cont(ctx, {a[0]})")
+            if node["ins"][0] in ivals:
+                ivals.add(node["outs"][0])
         # ── T16 第一批补口（2026-10-14）：对 ggml.h 逐个摸底后接上的 ────
         elif prim in ("exp", "sqrt", "neg", "log"):
             _put(body, prim, node, f"ggml_{prim}(ctx, {a[0]})")
         elif prim == "div":
             _put(body, prim, node,
-                 f"by1_bin_bcast(ctx, {a[0]}, {a[1]}, BY1_BIN_DIV)")
+                 f"by1_bin_bcast(ctx, {_f32(a[0], ins[0])}, {_f32(a[1], ins[1])}, BY1_BIN_DIV)")
         elif prim == "clamp_min":
             # PRIMS 的 bound：`max(x, m)` —— 上界给满
             _put(body, prim, node,
-                 f"ggml_clamp(ctx, {a[0]}, {_f(at['min'])}, 1e38f)")
+                 f"ggml_clamp(ctx, {_f32(a[0], ins[0])}, {_f(at['min'])}, 1e38f)")
         elif prim == "clamp_max":
             _put(body, prim, node,
-                 f"ggml_clamp(ctx, {a[0]}, -1e38f, {_f(at['max'])})")
+                 f"ggml_clamp(ctx, {_f32(a[0], ins[0])}, -1e38f, {_f(at['max'])})")
         elif prim == "add_scalar":
             # a + c（c 是 attr）—— **不是 clamp**（by1c 1999 的注释记着
             # `+1e-20` 和 `max(·, 1e-9)` 是两个公式）。c 发成 1 元素张量。
@@ -779,7 +836,9 @@ def emit_model_c_graph(g, ir, order, params, dump=()):
         elif prim == "softmax":
             # PRIMS「沿最后轴」= ggml dim0；ggml_soft_max 正是沿 dim0
             # 归一（自带 max-subtraction 稳定式）—— 直接映射。
-            _put(body, prim, node, f"ggml_soft_max(ctx, {a[0]})")
+            # **输入要连续**（ggml_soft_max 的断言）：k-pool 的池内 softmax
+            # 吃的是 permute 出来的视图，第一版就撞在这条上。
+            _put(body, prim, node, f"ggml_soft_max(ctx, {_cont_if_needed(a[0], ins[0])})")
         elif prim == "l2_norm":
             # x / sqrt(Σx² + eps)，**sum 不是 mean**（PRIMS 原文），
             # 沿最后轴 = ggml dim0 = sum_rows 的归约轴。
@@ -802,6 +861,8 @@ def emit_model_c_graph(g, ir, order, params, dump=()):
                         f"{a[0]}, {int(at['axis'])}, {int(at['reps'])});")
             body.append(f"    if (!{u}_br) GGML_ABORT(\"blk_rep_axis: axis range\");")
             _put(body, prim, node, f"{u}_br")
+            if node["ins"][0] in ivals:
+                ivals.add(node["outs"][0])
         elif prim == "concat":
             _put(body, prim, node,
                  f"ggml_concat(ctx, {a[0]}, {a[1]}, {int(at['axis'])})")
@@ -809,12 +870,14 @@ def emit_model_c_graph(g, ir, order, params, dump=()):
             _put(body, prim, node,
                  f"sl_ax(ctx, {a[0]}, {int(at['axis'])}, "
                  f"{int(at['start'])}, {int(at['stop'])})")
+            if node["ins"][0] in ivals:
+                ivals.add(node["outs"][0])
         elif prim == "soft_max_sink":
             # 语义逐字照 ref：z = a·scale + mask -> **尾巴拼 sink 槽** ->
             # softmax -> 去掉最后一列。exec 尾轴（key）= ggml dim0。
             # **顺序要紧**：先加 mask 再拼 sink —— sink 那列没有 mask。
             u = _gvar(node["outs"][0])
-            x0 = a[0]
+            x0 = _cont_if_needed(a[0], ins[0])
             body.append(f"    struct ggml_tensor * {u}_z = "
                         f"ggml_scale(ctx, {x0}, {_f(at['scale'])});")
             body.append(f"    {u}_z = ggml_add(ctx, {u}_z, {a[1]});")
@@ -861,7 +924,25 @@ def emit_model_c_graph(g, ir, order, params, dump=()):
             body.append(f"    int {u}_k = {int(at['k'])};")
             body.append(f"    if ({u}_k > (int) {a[0]}->ne[0]) "
                         f"{u}_k = (int) {a[0]}->ne[0];")
-            _put(body, prim, node, f"ggml_top_k(ctx, {a[0]}, {u}_k)")
+            # **并列取较小下标**（by1exec 定死的那条：DSA 的 ReLU 会产生
+            # 大量精确 0，top-k 边界天天撞并列；三条后端都按这条算，
+            # "三后端一致"才是有意义的判据）。ggml_top_k 用的是**不稳定**
+            # partial_sort，还故意换序前两个 —— 所以给它喂一条**denormal
+            # 量级的递增偏移** i·1e-30：对任何可表示的正分数都小于 1 ulp
+            # （不改变顺序），但把精确相等的 0 排成小下标优先。
+            body.append(f"    struct ggml_tensor * {u}_ix = ggml_reshape_2d("
+                        f"ctx, ggml_arange(ctx, 0.0f, (float) {a[0]}->ne[0], "
+                        f"1.0f), {a[0]}->ne[0], 1);")
+            body.append(f"    int64_t {u}_bn[4] = {{ {a[0]}->ne[0], "
+                        f"{a[0]}->ne[1], {a[0]}->ne[2], {a[0]}->ne[3] }};")
+            body.append(f"    struct ggml_tensor * {u}_pat = ggml_new_tensor("
+                        f"ctx, GGML_TYPE_F32, 4, {u}_bn);")
+            body.append(f"    struct ggml_tensor * {u}_eps = ggml_repeat(ctx, "
+                        f"ggml_scale(ctx, {u}_ix, 1e-30f), {u}_pat);")
+            body.append(f"    struct ggml_tensor * {u}_adj = ggml_sub(ctx, "
+                        f"{a[0]}, {u}_eps);")
+            _put(body, prim, node, f"ggml_top_k(ctx, {u}_adj, {u}_k)")
+            ivals.add(node["outs"][0])
         elif prim in ("one_hot", "gather"):
             # 这两条都靠**一个加法拼出来的相等判定**（ggml 这版没有 EQ/LE
             # 逐元算子；GGML_OP_LE 最近的邻居是 ARGSORT，不是比较）：
@@ -916,20 +997,20 @@ def emit_model_c_graph(g, ir, order, params, dump=()):
                 _put(body, prim, node, f"sum_ax(ctx, {u}_EQ, {ax}, 0)")
         elif prim == "le":
             # out = (a <= b) ? 1 : 0 —— ggml 没有比较算子，走 map_custom2。
-            # 两边先 repeat 到**广播后的形状**（结果形状取第一个参数，而
-            # DSA 的外积两边都不是结果形状）。
+            # 两边先 repeat 到**广播后的形状**。形状**运行期取 max**（不是
+            # 声明的形状）：k-pool 的可见性掩码是 [n_query, n_pool] 的外积，
+            # 两条轴都是运行期的，声明形状里写不出来。
             u = _gvar(node["outs"][0])
-            out_shp2 = g.vals.get(node["outs"][0]) or ()
-            _dims2 = [(str(int(x)) if x is not None else "n") for x in out_shp2]
-            while len(_dims2) < 4:
-                _dims2.append("1")
-            body.append(f"    int64_t {u}_bn[4] = {{ " + ", ".join(_dims2) + " };")
+            body.append(f"    int64_t {u}_bn[4];")
+            body.append(f"    for (int _i = 0; _i < 4; _i++) "
+                        f"{u}_bn[_i] = ({a[0]}->ne[_i] > {a[1]}->ne[_i])"
+                        f" ? {a[0]}->ne[_i] : {a[1]}->ne[_i];")
             body.append(f"    struct ggml_tensor * {u}_pat = ggml_new_tensor(ctx, "
                         f"GGML_TYPE_F32, 4, {u}_bn);")
             body.append(f"    struct ggml_tensor * {u}_A = ggml_repeat(ctx, "
-                        f"{a[0]}, {u}_pat);")
+                        f"{_f32(a[0], ins[0])}, {u}_pat);")
             body.append(f"    struct ggml_tensor * {u}_B = ggml_repeat(ctx, "
-                        f"{a[1]}, {u}_pat);")
+                        f"{_f32(a[1], ins[1])}, {u}_pat);")
             _put(body, prim, node,
                  f"ggml_map_custom2(ctx, {u}_A, {u}_B, by1_le_f32, 1, NULL)")
         elif prim == "masked_fill":
@@ -948,8 +1029,8 @@ def emit_model_c_graph(g, ir, order, params, dump=()):
                 _vs = _f(_vv)
             body.append(f"    static float {sv} = {_vs};")
             _put(body, prim, node,
-                 f"ggml_map_custom2(ctx, {a[0]}, {a[1]}, "
-                 f"by1_masked_fill_f32, 1, &{sv})")
+                 f"ggml_map_custom2(ctx, {_f32(a[0], ins[0])}, "
+                 f"{_f32(a[1], ins[1])}, by1_masked_fill_f32, 1, &{sv})")
         elif prim == "ssm_scan":
             # **Mamba2 的递推 -> ggml_ssm_scan**（迁移的最后一格）。三处折算：
             #   ① 图把 softplus 放在**原语外面**（ref 吃 d = softplus(dt+bias)），

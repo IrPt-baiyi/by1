@@ -2481,6 +2481,15 @@ def emit_c_graph(ir, params, g=None):
             if len(tab) < 2:
                 raise SystemExit("  [不支持] get_rows 的表是 %d 维 —— "
                                  "至少要 2 维" % len(tab))
+            if ins[0] not in params:
+                # **按图值整块取行**（不是按权重取专家行）：k-pool 的池
+                # gather 是第一个用例。这条路要两样这里还没有的东西：
+                # ① 下标张量是 `pos` 的视图（float 缓冲，需要 float 下标
+                #    内核）；② `view(pos, [P, n/P])` 的推断维形状（这里
+                #    把 None 硬编码成 "n"）。硬跑的结果是 **NaN**，所以
+                #    **拒绝**而不是将就。ggml 路（默认路）已经支持。
+                raise SystemExit("  [不支持] 图->C：按**图值**取行"
+                                 "（k-pool 的池 gather，%r 是下标）" % ins[1])
             if typ.get(ins[1]) != "i":
                 raise SystemExit("  [FAIL] get_rows 的下标 %r 不是 int" % ins[1])
             # out = table[ids]：ids 形状 + 表的行宽（MoE 的 (n,K) 下标取

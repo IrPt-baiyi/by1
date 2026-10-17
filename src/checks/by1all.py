@@ -285,7 +285,7 @@ EXEC_SEQ = {'mla-sparse-shaped.by1': 16}
 #: 而 `--selftest` 的孪生模型不含融合 qkv，于是它一直绿。**没进门禁的检查
 #: 会烂**（D6）。2026-10-17 又把 MoE / KDA / Linear / SSM 收进图路：
 #: 它们从"必须拒绝"变成**数值判据**（判卷人是 by1exec），所以也必须在门里。
-#: **名单 = 矩阵里 ggml ✅ 的全部 19 份 shaped**（一份不多、一份不少 ——
+#: **名单 = 矩阵里 ggml ✅ 的全部 20 份 shaped**（一份不多、一份不少 ——
 #: 矩阵说接受，门禁就逐份数值跑；两边对不上就是漂）。
 GGML_GRAPH_MODELS = ['hello.by1', 'llama-shaped.by1', 'gpt2-tiny.by1',
                      'attn-fused-shaped.by1',
@@ -301,16 +301,22 @@ GGML_GRAPH_MODELS = ['hello.by1', 'llama-shaped.by1', 'gpt2-tiny.by1',
                      # ggml_ssm_scan，中间要过一次逆 softplus（见 by1ggml 的
                      # by1_inv_softplus_f32）。它原来只由 IR 路覆盖 —— 图路
                      # 少这一格，IR 路就删不掉。
-                     'ssm-shaped.by1']
+                     'ssm-shaped.by1',
+                     # **k-pool**（2026-10-17）：GLM-5.3 的池打分。池号/池
+                     # 起止全靠 `view(pos,[P,None])` 的**推断维** + 切片拼
+                     # 出来（见 by1graph._lower_dsa 的池分支）。
+                     'mla-sparse-shaped.by1']
 
 #: **同一张图的第二个独立发射器**：`by1c --from-graph`（PRIMS -> 手写 C
 #: 逐元内核）。它原来只活在 CLI 里、**不在任何门禁里**（D6 那类欠账：
 #: 不入表的检查会烂）。A3-3 删掉 IR 路之后，这条正好补上**差分对照**：
 #: 同一张图、两个互不相干的发射器（ggml 原语 vs C 逐元循环）、同一个
 #: NumPy 判卷人 —— 两边对不上，就是其中一份发射器错了。
-#: 名单与 `GGML_GRAPH_MODELS` 相同（能降成图的那些；mla-sparse 的 k-pool
-#: 降不动，不在里面）。
-GRAPH_C_MODELS = list(GGML_GRAPH_MODELS)
+#: 名单 = 上面那份 **减去 mla-sparse**：图->C 对 k-pool 的池 gather 是
+#: **明确拒绝**（那条要 float 下标内核 + 推断维形状；硬跑会 NaN，所以
+#: 拒掉——见 `docs/gap-analysis.md` A3-5）。ggml 路（默认路）已支持。
+GRAPH_C_MODELS = [f for f in GGML_GRAPH_MODELS
+                   if f != 'mla-sparse-shaped.by1']
 
 SHAPED = ['llama-shaped.by1', 'mixtral-shaped.by1', 'gpt-oss-shaped.by1',
           'qwen3-next-shaped.by1', 'mla-shaped.by1', 'llama3-shaped.by1',

@@ -1571,47 +1571,151 @@ def _lower_dsa(g, p, x, q_resid, w, a, nq):
                 shapes=[(hd, nh, None)]) if nr else iq_pass)
     ik = (g.add("concat", [ik_rot, ik_pass], [p + "ik4"], attrs={"axis": 0},
                 shapes=[(hd, None)]) if nr else ik_pass)
-    # 打分：scores[h, ti, tj] = max(Σ_d q·k, 0) · hd^-0.5
-    # k 是单头的：view 成 [1, n, hd]（批维 1，batch_matmul 的 GQA 重复
-    # 把它摊给每个查询头）—— 写成 [n, 1, hd] 批维就对到 token 上了
-    ikk = g.add("view", [ik], [p + "ik5"], attrs={"shape": [hd, None, 1]},
-                shapes=[(hd, None, 1)])
+    # ── 公共：头的布局、逐头权重 ────────────────────────────────────
     qp = g.add("permute", [iq], [p + "iq5"], attrs={"axes": [0, 2, 1]},
                shapes=[(hd, None, nh)])
-    sc0 = g.add("batch_matmul", [ikk, qp], [p + "isc0"],
-                shapes=[(None, None, nh)])
-    sc0 = g.add("clamp_min", [sc0], [p + "isc1"], attrs={"min": 0.0},
-                shapes=[(None, None, nh)])
-    sc0 = g.add("scale", [sc0], [p + "isc2"],
-                attrs={"s": float(hd) ** -0.5}, shapes=[(None, None, nh)])
     wv = g.add("matmul", [w("indexer.weights_proj.weight"), x], [p + "iw0"],
                shapes=[(nh, None)])
     wv = g.add("scale", [wv], [p + "iw1"], attrs={"s": float(nh) ** -0.5},
                shapes=[(nh, None)])
-    # sc[ti, tj] = Σ_h w[ti,h] · scores[h, ti, tj]
-    s3 = g.add("permute", [sc0], [p + "isc3"], attrs={"axes": [2, 0, 1]},
-               shapes=[(None, None, nh)])
     w2 = g.add("view", [wv], [p + "iw2"], attrs={"shape": [nh, 1, None]},
                shapes=[(nh, 1, None)])
-    sc = g.add("batch_matmul", [w2, s3], [p + "isc4"],
-               shapes=[(None, None, 1)])
-    # 挤掉尾部那个 1：对长度 1 的轴求和 == squeeze（浮点逐位相同）——
-    # `view` 两个未知维是推不出的（reshape 只许一个 -1）
-    sc = g.add("sum", [sc], [p + "isc5"], attrs={"axis": 0, "keepdims": False},
-               shapes=[(None, None)])
-    # 因果：`le` 的外积广播（key[1,n] <= query[n,1]）-> 未来填 -inf
-    pcol = g.add("view", ["pos"], [p + "pcol"], attrs={"shape": [None, 1]},
+
+    P = int(a.get("index_kpool") or 1)
+    if P == 1:
+        # ── 逐 key：scores[h, ti, tj] = max(Σ_d q·k, 0) · hd^-0.5 ────
+        ikk = g.add("view", [ik], [p + "ik5"], attrs={"shape": [hd, None, 1]},
+                    shapes=[(hd, None, 1)])
+        sc0 = g.add("batch_matmul", [ikk, qp], [p + "isc0"],
+                    shapes=[(None, None, nh)])
+        sc0 = g.add("clamp_min", [sc0], [p + "isc1"], attrs={"min": 0.0},
+                    shapes=[(None, None, nh)])
+        sc0 = g.add("scale", [sc0], [p + "isc2"],
+                    attrs={"s": float(hd) ** -0.5}, shapes=[(None, None, nh)])
+        s3 = g.add("permute", [sc0], [p + "isc3"], attrs={"axes": [2, 0, 1]},
+                   shapes=[(None, None, nh)])
+        sc = g.add("batch_matmul", [w2, s3], [p + "isc4"],
+                   shapes=[(None, None, 1)])
+        sc = g.add("sum", [sc], [p + "isc5"],
+                   attrs={"axis": 0, "keepdims": False}, shapes=[(None, None)])
+        pcol = g.add("view", ["pos"], [p + "pcol"], attrs={"shape": [None, 1]},
+                     shapes=[(None, 1)])
+        prow = g.add("view", ["pos"], [p + "prow"], attrs={"shape": [1, None]},
+                     shapes=[(1, None)])
+        cm = g.add("le", [pcol, prow], [p + "cm"], shapes=[(None, None)])
+        sc = g.add("masked_fill", [sc, cm], [p + "sc2"],
+                   attrs={"value": float("-inf")}, shapes=[(None, None)])
+        topi = g.add("top_k", [sc], [p + "itopi"], attrs={"k": topk},
+                     shapes=[(topk, None)])
+        # keep [n, n] 直接交给 masked_fill —— 掩码**右对齐广播**到每个查询头
+        return g.add("one_hot", [topi, pcol], [p + "keep"],
+                     shapes=[(None, None)])
+
+    # ── k-pool：池打分（GLM-5.3），照 `by1exec._dsa_index_pool` 逐句 ──
+    #
+    # 图语言这里需要两样此前没用过的东西，都是**已有的**原语组合：
+    #   ① `view(pos, [P, None])` —— None 是**推断维**（n/P），不是 n。
+    #      发射器按 `nelems / 静态积` 推算（`_shp_inferred`）。
+    #   ② 池号/池起止**不必**要 arange：`pidx` 的槽 0/槽 P-1 就是
+    #      "池起始/池末尾"两列，切片就能取到，再用 `repeat` 摊回 token。
+    #
+    # **限制（写在这里，不藏）**：这套推导要求 n % P == 0（reshape 推维
+    # 需要整除）。不满足时 ggml 的 reshape 当场断言 —— 不是静默算错。
+    # C 融合核路（by1c 默认路）不受这个限制。
+    sk = topk // P
+    if sk < 1:
+        raise SystemExit("  [不支持] MLA.index_kpool：index_topk=%d < "
+                         "index_kpool=%d（没有整池可选）" % (topk, P))
+    pidx = g.add("view", ["pos"], [p + "pidx"],
+                 attrs={"shape": [P, None]}, shapes=[(P, None)])
+    # 逐 token 的门（池内加权用）
+    pg = g.add("matmul", [w("indexer.index_kpool_compress_gate"), x],
+               [p + "ipg"], shapes=[(hd, None)])
+    # 取池：k / gate 按池下标整块取 -> (np, P, hd)
+    gk = g.add("get_rows", [ik, pidx], [p + "ipk"],
+               shapes=[(hd, P, None)])
+    gg = g.add("get_rows", [pg, pidx], [p + "ipgg"],
+               shapes=[(hd, P, None)])
+    # 池内 softmax：门 + 位置嵌入 ape[P, hd]（广播到每个池）
+    lg = g.add("add", [gg, w("indexer.index_kpool_compress_ape")],
+               [p + "ilg"], shapes=[(hd, P, None)])
+    lg_p = g.add("permute", [lg], [p + "ilgp"], attrs={"axes": [1, 0, 2]},
+                  shapes=[(P, hd, None)])
+    prob = g.add("softmax", [lg_p], [p + "ipr"], shapes=[(P, hd, None)])
+    gk_p = g.add("permute", [gk], [p + "igkp"], attrs={"axes": [1, 0, 2]},
+                  shapes=[(P, hd, None)])
+    pk = g.add("mul", [prob, gk_p], [p + "ipk2"], shapes=[(P, hd, None)])
+    pk = g.add("sum", [pk], [p + "ipk3"],
+               attrs={"axis": 0, "keepdims": False}, shapes=[(hd, None)])
+    # 池打分（和逐 key 那一支同构，只是 key 维换成池数）
+    pkk = g.add("view", [pk], [p + "ipk4"], attrs={"shape": [hd, None, 1]},
+                shapes=[(hd, None, 1)])
+    psc = g.add("batch_matmul", [pkk, qp], [p + "ips0"],
+                shapes=[(None, None, nh)])
+    psc = g.add("clamp_min", [psc], [p + "ips1"], attrs={"min": 0.0},
+                shapes=[(None, None, nh)])
+    psc = g.add("scale", [psc], [p + "ips2"],
+                attrs={"s": float(hd) ** -0.5}, shapes=[(None, None, nh)])
+    ps3 = g.add("permute", [psc], [p + "ips3"], attrs={"axes": [2, 0, 1]},
+                shapes=[(None, None, nh)])
+    psc = g.add("batch_matmul", [w2, ps3], [p + "ips4"],
+                shapes=[(None, None, 1)])
+    psc = g.add("sum", [psc], [p + "ips5"],
+                attrs={"axis": 0, "keepdims": False}, shapes=[(None, None)])
+    # 池可选 ⟺ **它最后一个 token** 对 query 可见（因果）
+    # 槽 0 / 槽 P-1 两列直接从 pidx 切出来 —— 不用 arange(np)
+    pfirst0 = g.add("slice", [pidx], [p + "ifst"],
+                    attrs={"axis": 0, "start": 0, "stop": 1},
+                    shapes=[(1, None)])
+    plast0 = g.add("slice", [pidx], [p + "ilst"],
+                   attrs={"axis": 0, "start": P - 1, "stop": P},
+                   shapes=[(1, None)])
+    pfirst = g.add("view", [pfirst0], [p + "ifst2"], attrs={"shape": [None]},
+                   shapes=[(None,)])
+    plast = g.add("view", [plast0], [p + "ilst2"], attrs={"shape": [None]},
+                  shapes=[(None,)])
+    plast_c = g.add("view", [plast], [p + "ilst3"],
+                    attrs={"shape": [None, 1]}, shapes=[(None, 1)])
+    pos_r = g.add("view", ["pos"], [p + "iposr"],
+                  attrs={"shape": [1, None]}, shapes=[(1, None)])
+    vis = g.add("le", [plast_c, pos_r], [p + "ivis"],
+                shapes=[(None, None)])
+    psc = g.add("masked_fill", [psc, vis], [p + "ips6"],
+                attrs={"value": float("-inf")}, shapes=[(None, None)])
+    psel = g.add("top_k", [psc], [p + "ipsl"], attrs={"k": sk},
+                 shapes=[(sk, None)])
+    # 选中的池 -> 池 one-hot -> **再按可见性过滤**（top_k 在整行 -inf 时
+    # 仍会挑出一个下标 —— 参考那边靠 `cand` 把它挡掉）-> 摊回原始 token
+    keep0 = g.add("one_hot", [psel, plast], [p + "ikeepp"],
+                  shapes=[(None, None)])
+    keep0 = g.add("mul", [keep0, vis], [p + "ikeepf"],
+                  shapes=[(None, None)])
+    keep = g.add("repeat", [keep0], [p + "ikeep"],
+                 attrs={"reps": P, "axis": 0}, shapes=[(None, None)])
+    if not bool(a.get("index_kpool_tail")):
+        return keep
+    # **尾池**：每个 query 追加"最末那个不完整池里已可见的 token"。
+    #   起点 S[t] = P*floor((t+1)/P) = R[t] + P*[t ≡ P-1 (mod P)]
+    #   （R = repeat(池起点, P)；判定 t 落在每个池的**最后一格**用 one_hot(pend)）
+    #   tail[t,v] = (S[t] <= v) & (v <= t)
+    st = g.add("repeat", [pfirst], [p + "ist"],
+               attrs={"reps": P, "axis": 0}, shapes=[(None,)])
+    pcol = g.add("view", ["pos"], [p + "ipcol"], attrs={"shape": [None, 1]},
                  shapes=[(None, 1)])
-    prow = g.add("view", ["pos"], [p + "prow"], attrs={"shape": [1, None]},
-                 shapes=[(1, None)])
-    cm = g.add("le", [pcol, prow], [p + "cm"], shapes=[(None, None)])
-    sc = g.add("masked_fill", [sc, cm], [p + "sc2"],
-               attrs={"value": float("-inf")}, shapes=[(None, None)])
-    topi = g.add("top_k", [sc], [p + "itopi"], attrs={"k": topk},
-                 shapes=[(topk, None)])
-    # keep [n, n] 直接交给 masked_fill —— 掩码**右对齐广播**到每个查询头
-    # （view 成 [1,n,n] + repeat 那条路要两个未知维的 reshape，推不出）
-    return g.add("one_hot", [topi, pcol], [p + "keep"],
+    ee = g.add("one_hot", [plast, pcol], [p + "iee"], shapes=[(None,)])
+    ee = g.add("scale", [ee], [p + "iee2"], attrs={"s": float(P)},
+                shapes=[(None,)])
+    ss = g.add("add", [st, ee], [p + "iss"], shapes=[(None,)])
+    ss_c = g.add("view", [ss], [p + "iss2"], attrs={"shape": [1, None]},
+                  shapes=[(1, None)])
+    pos_r2 = g.add("view", ["pos"], [p + "iposr2"],
+                   attrs={"shape": [None, 1]}, shapes=[(None, 1)])
+    ta = g.add("le", [ss_c, pos_r2], [p + "ita"], shapes=[(None, None)])
+    pos_c2 = g.add("view", ["pos"], [p + "iposc2"],
+                   attrs={"shape": [1, None]}, shapes=[(1, None)])
+    tb = g.add("le", [pos_r2, pos_c2], [p + "itb"], shapes=[(None, None)])
+    tmask = g.add("mul", [ta, tb], [p + "itm"], shapes=[(None, None)])
+    return g.add("add", [keep, tmask], [p + "ikeep2"],
                  shapes=[(None, None)])
 
 
@@ -1633,10 +1737,7 @@ def _lower_mla(g, p, x, dst, w, a, d):
     hd = nope + nr
     _op = bool(a.get("norm_one_plus", False))
     _eps = float(a.get("norm_eps", _DEFAULT_EPS))
-    if a.get("index_heads") and int(a.get("index_kpool") or 1) > 1:
-        # k-pool 那条路（GLM-5.3 的池打分）还没收编 —— 要么实现要么拒绝
-        raise SystemExit("  [不支持] MLA.index_kpool > 1"
-                         "（k-pool 路径还没收编）")
+    # k-pool（GLM-5.3 的池打分）已收编：见 `_lower_dsa` 的池分支
     if a.get("head_gate", "off") not in ("off", "per_head"):
         raise SystemExit("  [不支持] MLA.head_gate=%r 只实现了 per_head"
                          % a["head_gate"])

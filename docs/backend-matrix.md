@@ -13,7 +13,7 @@
 | `attn-qgate-shaped.by1` | Attention（q_gate：q 投影宽一倍） | ✅ | ✅ | ✅ | ✅ | ✗ |
 | `linear-gdn-shaped.by1` | Linear（GDN 线性注意力） | ✅ | ✅ | ✅ | ✅ | ✗ |
 | `mla-shaped.by1` | MLA | ✅ | ✅ | ✅ | ✅ | ✗ |
-| `mla-sparse-shaped.by1` | MLA + 稀疏索引（DSA） | ✅ | ✅ | ✗ | ✅ | ✗ |
+| `mla-sparse-shaped.by1` | MLA + 稀疏索引（DSA） | ✅ | ✅ | ✅ | ✅ | ✗ |
 | `moe-routing-shaped.by1` | MoE（路由） | ✅ | ✅ | ✅ | ✅ | ✗ |
 | `kda-shaped.by1` | KDA | ✅ | ✅ | ✅ | ✅ | ✗ |
 | `kda-gva-shaped.by1` | KDA（GVA） | ✅ | ✅ | ✅ | ✅ | ✗ |
@@ -45,7 +45,6 @@
 | `attn-qgate-shaped.by1` | `full` | 完整后端的 arch 必须是 qwen3, qwen2, gpt2, gpt_oss, qwen3_5, mamba, granitemoehybrid, falcon_h1 |
 | `linear-gdn-shaped.by1` | `full` | 完整后端的 arch 必须是 qwen3, qwen2, gpt2, gpt_oss, qwen3_5, mamba, granitemoehybrid, falcon_h1 |
 | `mla-shaped.by1` | `full` | 完整后端的 arch 必须是 qwen3, qwen2, gpt2, gpt_oss, qwen3_5, mamba, granitemoehybrid, falcon_h1 |
-| `mla-sparse-shaped.by1` | `ggml` | [不支持] MLA.index_kpool > 1（k-pool 路径还没收编） |
 | `mla-sparse-shaped.by1` | `full` | 完整后端的 arch 必须是 qwen3, qwen2, gpt2, gpt_oss, qwen3_5, mamba, granitemoehybrid, falcon_h1 |
 | `moe-routing-shaped.by1` | `full` | 完整后端的 arch 必须是 qwen3, qwen2, gpt2, gpt_oss, qwen3_5, mamba, granitemoehybrid, falcon_h1 |
 | `kda-shaped.by1` | `full` | 完整后端的 arch 必须是 qwen3, qwen2, gpt2, gpt_oss, qwen3_5, mamba, granitemoehybrid, falcon_h1 |
@@ -80,6 +79,7 @@
 - `attn-qgate-shaped.by1` —— Attention（q_gate：q 投影宽一倍）
 - `linear-gdn-shaped.by1` —— Linear（GDN 线性注意力）
 - `mla-shaped.by1` —— MLA
+- `mla-sparse-shaped.by1` —— MLA + 稀疏索引（DSA）
 - `moe-routing-shaped.by1` —— MoE（路由）
 - `kda-shaped.by1` —— KDA
 - `kda-gva-shaped.by1` —— KDA（GVA）
@@ -105,9 +105,9 @@
 > **可补** = 我们的工程活；**卡上游** = 缺 ggml/上游原语；
 > **设计如此** = 边界而非缺口。
 
-### 可补（1 格）
+### 可补（0 格）
 
-- `mla-sparse-shaped.by1` × `ggml` —— 图路的 lowering 还没收：SparseMLA 的 k-pool 组合 / 表外原语 —— 原语在，缺的是 PRIMS 到它的翻译
+**没有。**
 
 ### 卡上游（0 格）
 

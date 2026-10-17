@@ -637,8 +637,9 @@ RMS·norm.w·z / 权重布局 / mul_mat 契约 / 内核布局）全部留档 —
 ## 四、剩余 11 格的实施路线（按"一处实现关几格"排）
 
 > **2026-10-17 晚已按这张表的顺序收口 9 格**（MoE 四种路由 + KDA 三变体 +
-> Linear 两格；判据与踩坑见第六节）。剩下 `mla-sparse` 的 k-pool，与图路的
-> `ssm_scan`（不在本表里，是迁移带来的新缺口）。
+> Linear 两格；判据与踩坑见第六节）；`ssm_scan`（不在本表里，是迁移带来的
+> 新缺口）第二、三轮收掉；**最后一批 k-pool 第四轮收掉** —— 本表的 11 格
+> 现在**全部销账**（`docs/backend-matrix.md` 的"可补"档 = 0）。
 
 | 路线 | 关掉的格 | 依赖 |
 |---|---|---|
@@ -758,18 +759,49 @@ seq = 8 / 16 / 32 / 48 上都是 1.7e-07 ~ 1.9e-07（运行期 n 的路径也验
 （对调一次）；内核的 `y` 只有 `Σ s·C`，**D 跳连在外围补**（ref 是
 `y = s·C + D·x`）。
 
-### 6.3b 还差的一格（记档，不猜）
+### 6.3b k-pool：最后一批也收了（2026-10-17 第四轮）
 
-- **SparseMLA 的 k-pool（`index_kpool > 1`）**：lowering 还没收编 ——
-  这是 `mla-sparse-shaped` 在**两条路**上都还拒绝的原因（IR 路另有
-  `index_heads` 的按算子实现缺口）。
+**判据**：`mla-sparse-shaped.by1` 图路数值 **1.914e-07 绝对 / 3.210e-07 相对**
+（判卷人 `by1exec._dsa_index_pool`）；图求值 vs by1exec **3.572e-08**；
+矩阵 `ggml` 列 ✅、"可补"格 1 -> 0；四后端交集 **19/23 -> 20/23**。
+
+**做法**（原语一个没加，全用现成件拼）：
+
+- 池下标 = `view(pos, [P, None])` —— 这里的 `None` 是**推断维**（n/P），
+  不是写死的 n；
+- 池号/池起止**不要 arange**：`pidx` 的槽 0 / 槽 P-1 两列切出来就是
+  "池起始/池末尾"，`repeat` 摊回 token；
+- 池内 softmax = `permute` 后过 `softmax`；池打分与逐 key 那一支同构；
+- 尾池（`index_kpool_tail`）= `S[t] = P·floor((t+1)/P)`，而 S 由
+  `repeat(池起始) + P·one_hot(池末尾)` 直接拼出来 —— 同样不需要除法原语。
+
+**两条代价，都写死在这里**：
+
+1. 图路要求 `seq % kpool == 0`：推断维靠 `nelems / 静态积`，不整除时 ggml
+   的 reshape **当场断言**（大声失败，不是静默算错）。C 融合核路不受限。
+2. 图->C（`by1c --from-graph`）对这条**明确拒绝**（按图值取行 = 池 gather，
+   下标是 float 缓冲）。硬跑会 NaN，所以拒掉；`GRAPH_C_MODELS` 是 19/20，
+   这一笔记在 `docs/gap-analysis.md` A3-5。
+
+### 6.3c 这一轮踩出来的四个**静默算错**（都不是新原语，是旧假设）
+
+| 假设 | 反例 | 症状 |
+|---|---|---|
+| `blk_rep_axis` 在 axis 0 上"平铺 == 整块重复" | 池->token 展开（axis 0、ne>1） | keep 掩码变成 `[p0..pN,p0..pN]`；旧注释里的理由只在 **exec 最外轴**成立，而 ggml axis 0 是 exec 的**最后**一轴 |
+| `softmax`/`soft_max` 的输入天然连续 | 池内 softmax 吃 `permute` 出来的视图 | `GGML_ASSERT(ggml_is_contiguous)`；要显式 `cont` |
+| 算术算子可以混 I32/F32 | 池起点/尾池掩码（`pos` 的视图是 I32） | `binary_op: unsupported types`；发射器现在有 I32 账本，进浮点上下文前 `cast` |
+| `ggml_top_k` 的并列无所谓 | DSA 的 ReLU 产生大量**精确 0** | 同一行 top-k 挑出不同的 key，**2.7e-01** 的差；已按仓库定死的那条（并列取小下标）加 denormal 量级递增偏移 |
+
+前三条在旧图里从没被触发过（没有 axis-0 的 ne>1 重复、没有非连续的 softmax、没有 I32 参与算术），
+所以它们一直是"看起来对"的；第四条是**判据**问题 —— 三后端对"并列取谁"必须有同一个答案。
 
 ### 6.4 门禁（防「收口」变回记忆）
 
 - `by1ggml --selftest` 的 ⑥ 从「**必须拒绝** qwen3-next」改成
   「**必须数值过** moe-routing / kda / glm-text-tiny / qwen3-next / ssm-shaped」。
-- `by1all` 的 6b 段用 **`GGML_GRAPH_MODELS`**（17 份）逐份对拍 ——
-  A3-3 之后它就是 ggml 的唯一判据集（原来的 `GGML_IR_MODELS` 已并进来）。
+- `by1all` 的 6b 段用 **`GGML_GRAPH_MODELS`**（20 份）逐份对拍 ——
+  A3-3 之后它就是 ggml 的唯一判据集（原来的 `GGML_IR_MODELS` 已并进来）；
+  同一段再用 `by1c --from-graph`（19 份）做第二个发射器的差分对照。
 - `by1backends` 的 `ggml` 列 = 图路（A3-3 之后不再分两列）。
 
 ### 6.5 A3-3：旧路删掉了（2026-10-17 第三轮）
