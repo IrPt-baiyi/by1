@@ -285,8 +285,10 @@ EXEC_SEQ = {'mla-sparse-shaped.by1': 16}
 #: 而 `--selftest` 的孪生模型不含融合 qkv，于是它一直绿。**没进门禁的检查
 #: 会烂**（D6）。2026-10-17 又把 MoE / KDA / Linear / SSM 收进图路：
 #: 它们从"必须拒绝"变成**数值判据**（判卷人是 by1exec），所以也必须在门里。
-#: 名单 = 矩阵里 ggml ✅ 的那 19 份 shaped 里最能代表机制的（全部运行判据）。
-GGML_GRAPH_MODELS = ['hello.by1', 'attn-fused-shaped.by1',
+#: **名单 = 矩阵里 ggml ✅ 的全部 19 份 shaped**（一份不多、一份不少 ——
+#: 矩阵说接受，门禁就逐份数值跑；两边对不上就是漂）。
+GGML_GRAPH_MODELS = ['hello.by1', 'llama-shaped.by1', 'gpt2-tiny.by1',
+                     'attn-fused-shaped.by1',
                      'attn-qgate-shaped.by1', 'mla-shaped.by1',
                      'llama3-shaped.by1',
                      'moe-routing-shaped.by1', 'mixtral-shaped.by1',
@@ -300,6 +302,15 @@ GGML_GRAPH_MODELS = ['hello.by1', 'attn-fused-shaped.by1',
                      # by1_inv_softplus_f32）。它原来只由 IR 路覆盖 —— 图路
                      # 少这一格，IR 路就删不掉。
                      'ssm-shaped.by1']
+
+#: **同一张图的第二个独立发射器**：`by1c --from-graph`（PRIMS -> 手写 C
+#: 逐元内核）。它原来只活在 CLI 里、**不在任何门禁里**（D6 那类欠账：
+#: 不入表的检查会烂）。A3-3 删掉 IR 路之后，这条正好补上**差分对照**：
+#: 同一张图、两个互不相干的发射器（ggml 原语 vs C 逐元循环）、同一个
+#: NumPy 判卷人 —— 两边对不上，就是其中一份发射器错了。
+#: 名单与 `GGML_GRAPH_MODELS` 相同（能降成图的那些；mla-sparse 的 k-pool
+#: 降不动，不在里面）。
+GRAPH_C_MODELS = list(GGML_GRAPH_MODELS)
 
 SHAPED = ['llama-shaped.by1', 'mixtral-shaped.by1', 'gpt-oss-shaped.by1',
           'qwen3-next-shaped.by1', 'mla-shaped.by1', 'llama3-shaped.by1',
@@ -1071,6 +1082,20 @@ def main():
                              note_of(st, out, line, empty='').replace('   ', ' ')))
                 if st == 'fail':
                     fails.append('ggml-graph ' + f)
+            # **图 -> C 的差分对照**（见 `GRAPH_C_MODELS` 处）。每份跑
+            # `by1c --from-graph`：同一个 lowering、另一份发射器、同一个 NumPy
+            # 判卷人。workdir 按模型分开 —— 并行跑共用目录会互相踩。
+            for f, (st, out) in zip(GRAPH_C_MODELS, run_many(
+                    [(['by1c.py', '--from-graph', '--gcc', gcc, '--seq', '16',
+                       '--workdir', 'cgen-cg-' + f[:-4], f], 'c-graph ' + f)
+                     for f in GRAPH_C_MODELS])):
+                line = [l.strip() for l in out.splitlines()
+                        if '最大绝对差' in l]
+                st = confirmed(st, out, line)
+                rows.append(('图->C ' + f, st,
+                             note_of(st, out, line, empty='').replace('   ', ' ')))
+                if st == 'fail':
+                    fails.append('c-graph ' + f)
 
         t0 = _tick('6. C 后端', t0)
 

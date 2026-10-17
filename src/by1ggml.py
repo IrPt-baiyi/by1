@@ -1468,7 +1468,7 @@ def main(argv=None):
     ap.add_argument("--no-run", action="store_true",
                     help="只生成 + 编译（真实大模型用这个）")
     ap.add_argument("--expect-reject", action="store_true",
-                    help="这份 .by1 应当被支持集拒绝")
+                    help="这份 .by1 应当被发射器/lowering 拒绝")
     ap.add_argument("--ggml-src", default=None)
     ap.add_argument("--dump", action="append", default=[],
                     help="打印名字含此子串的中间节点（ne + 前 16 个值，"
