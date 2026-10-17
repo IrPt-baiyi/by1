@@ -376,6 +376,7 @@ JUDGE_CMDS = {
     # 七条：相同 / 一位不同 / 长度不同 / 空文件 / NaN vs NaN / NaN vs 数 / 逐行文本。
     'by1llama.py logits-selftest': ['by1llama.py', 'logits-selftest'],
     'by1budget.py --selftest': ['by1budget.py', '--selftest'],
+    'by1attrs.py --selftest': ['by1attrs.py', '--selftest'],
 }
 
 JUDGES = [
@@ -388,6 +389,8 @@ JUDGES = [
     ('by1tiers.py', 2),
     # 耗时判据：超上限也是一项失败（实测基线 x 3；BY1_BUDGET_SCALE 可放宽）。
     ('by1budget.py --selftest', 2),
+    # 机制属性的闭集与官方出处（A1/A2/A3）。
+    ('by1attrs.py --selftest', 2),
     # 文档里写的**路径和数字**还在吗。它原来没有判定行、也没有
     # `__main__` 守卫（import 它就印一屏），所以既不能被判、也没人跑它。
     ('by1docs.py', 2),
