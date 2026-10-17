@@ -12,6 +12,7 @@ model clef-tiny {    # 结构 = clef，维度缩小
     n_layer = 8
     vocab   = 512
     rms_eps = 1e-06
+    norm    = zero_centered   # 官方 RMSNorm 是 (1+w) 约定（见 by1qknorm 判卷人）
   }
 
   # ── 线性注意力（48 层）────────────────────────────────────────────

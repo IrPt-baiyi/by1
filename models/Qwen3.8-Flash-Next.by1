@@ -46,6 +46,7 @@ model Qwen3.8-Flash-Next {
     n_layer = 48
     vocab   = 248320
     rms_eps = 1e-06
+    norm    = zero_centered   # 官方 RMSNorm 是 (1+w) 约定（见 by1qknorm 判卷人）
     # mHC：残差流 4 宽，低秩 320。
     hc_count   = 4
     hc_lowrank = 320

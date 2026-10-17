@@ -40,6 +40,7 @@ model Qwen3-Coder-Next {
     n_layer = 48
     vocab   = 151936
     rms_eps = 1e-06
+    norm    = zero_centered   # 官方 RMSNorm 是 (1+w) 约定（见 by1qknorm 判卷人）
   }
 
   # GDN 线性注意力：16 头 k、**32 头 v**，都是 128 维，卷积核 4。

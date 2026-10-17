@@ -26,6 +26,7 @@ model Qwen3.6-35B-A3B {
     n_layer = 40
     vocab   = 248320
     rms_eps = 1e-06
+    norm    = zero_centered   # 官方 RMSNorm 是 (1+w) 约定（见 by1qknorm 判卷人）
   }
 
   mech Lin : Linear {

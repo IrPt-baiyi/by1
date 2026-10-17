@@ -10,6 +10,7 @@ model Qwen3.8-27B-FP8 {
 
   hparams {
     d_model = 5120
+    norm    = zero_centered   # 官方 RMSNorm 是 (1+w) 约定
   }
 
   mech D : Linear {

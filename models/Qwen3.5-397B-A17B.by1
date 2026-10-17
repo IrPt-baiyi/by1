@@ -41,6 +41,7 @@ model Qwen3.5-397B-A17B {
     n_layer = 60
     vocab   = 248320
     rms_eps = 1e-06
+    norm    = zero_centered   # 官方 RMSNorm 是 (1+w) 约定（见 by1qknorm 判卷人）
   }
 
   # GDN 线性注意力：16 头 k、**64 头 v**，都是 128 维，卷积核 4。
