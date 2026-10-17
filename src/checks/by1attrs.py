@@ -150,6 +150,47 @@ def emitter_prims(root=ROOT):
 
 
 
+def norm_switches(root=ROOT):
+    """`norm` 的**开关别名集合**（从 by1codegen 的 `nv in (...)` 抽）+ 每个模型的取值。
+
+    为什么单独盯它：`norm` 和 `norm_kind` 不是一回事 —— 后者有取值门（只收 rms/layer，
+    写错就报错），而 `norm` **不过门**：`nv in ("zero_centered", ...)` 之外的一切都
+    静默当成"普通约定"，数值差一个 2 倍（第 51 轮刚在 Qwen3-Next 上量过）。
+    """
+    code = (pathlib.Path(root) / "src/by1codegen.py").read_text(encoding="utf-8")
+    m = re.search(r"nv in \(([^)]*)\)", code)
+    aliases = tuple(x.strip().strip("\"'") for x in m.group(1).split(",") if x.strip()) if m else ()
+    decls = {}
+    for f in (pathlib.Path(root) / "models").rglob("*.by1"):
+        text = f.read_text(encoding="utf-8", errors="replace")
+        mm = re.search(r"^\s*norm\s*=\s*([A-Za-z_0-9+]+)", text, re.M)
+        if mm:
+            decls[f.name] = mm.group(1)
+    return aliases, decls
+
+def norm_pairs(root=ROOT):
+    """**同一份权重被两份描述时，归一约定必须一致。**
+
+    `models/` 里有 `<X>.by1` 与 `complete-<X>.by1` 成对出现的情形（手写版 / 由 config
+    生成的全量版）。两份描述的是**同一个 checkpoint**；如果一份写了 `norm = zero_centered`、
+    另一份没写，那它们对同一批权重给出**差 2 倍**的归一约定 —— 而这类模型通常只做
+    config/张量名对拍、不跑前向，所以**没人会发现**。
+
+    返回 [(手写名, 全量名, 手写取值, 全量取值), ...]（取值 "" 表示没写 = 普通约定）。
+    """
+    aliases, decls = norm_switches(root)
+    out = []
+    for name, val in sorted(decls.items()):
+        pass
+    names = {f.name for f in (pathlib.Path(root) / "models").rglob("*.by1")}
+    for n in sorted(names):
+        if n.startswith("complete-"):
+            continue
+        twin = "complete-" + n
+        if twin in names:
+            out.append((n, twin, decls.get(n, ""), decls.get(twin, "")))
+    return out
+
 def emit_symbols(root=ROOT, script="by1c.py"):
     """每个图原语在 C 发射器里**会出现的那几个符号**（从 by1c.py 的分支源码里抽）。
 
@@ -546,6 +587,33 @@ def check(root=ROOT, enums=None, provenance=None, reserved=None):
                 notes.append('产物证据没算：' + (why7 or ''))
             else:
                 problems.extend(probs7)
+    # A9：`norm` 是**不过取值门**的开关 —— 拼错会静默按普通约定算（差 2 倍）。
+    try:
+        aliases, decls = norm_switches(root)
+    except Exception as exc:
+        notes.append('norm 开关没算：%r' % (exc,))
+    else:
+        for model, val in sorted(decls.items()):
+            if val.lower() not in [a.lower() for a in aliases]:
+                problems.append('A9 %s 的 hparams.norm = <%s> 不在开关集合 %r 里 —— '
+                                'codegen 会静默当成普通约定（与 one_plus 差 2 倍）'
+                                % (model, val, list(aliases)))
+        if decls:
+            on = sum(1 for v in decls.values() if v.lower() in [a.lower() for a in aliases])
+            notes.append('写 norm 的模型 %d 个，其中 one_plus 类 %d 个（%s）'
+                         % (len(decls), on, '/'.join(sorted(decls))))
+    # A10：成对描述（`<X>` 与 `complete-<X>`）的归一约定必须一致（**只报提示**：
+    # 谁对谁错要拿 checkpoint 的权重统计或官方实现来定，本检查里不臆断）。
+    try:
+        pairs = norm_pairs(root)
+    except Exception as exc:
+        notes.append('成对描述的归一约定没比：%r' % (exc,))
+    else:
+        for a_name, b_name, av, bv in pairs:
+            if av.strip().lower() != bv.strip().lower():
+                notes.append('**同一份权重、两份描述的归一约定不一致**：%s 写 <%s>，%s 写 <%s>'
+                             ' —— 差 2 倍的那类错，先查 checkpoint'
+                             % (a_name, av or '（没写=普通）', b_name, bv or '（没写=普通）'))
     return problems, notes
 
 
@@ -613,11 +681,24 @@ def _selftest():
                         reserved={('act', 'silu'): '保留着'})
         if not [p for p in probs if 'A4' in p]:
             bad.append('A4 没抓到残留的保留条目：%r' % (probs,))
+        # A9：norm 写错一个字 -> 必须报错（不许静默按普通约定算）
+        (d / 'models' / 'bad-norm.by1').write_text(
+            'hparams { d_model = 8, vocab = 16 }' + chr(10)
+            + '  norm = zero_centred' + chr(10),
+            encoding='utf-8')
+        (d / 'src/by1codegen.py').write_text(
+            'ENUMS = {}' + chr(10) + 'nv in ("zero_centered", "one_plus")' + chr(10),
+            encoding='utf-8')
+        probs, _n = check(root=d, enums={'act': {'silu'}},
+                        provenance={('act', 'silu'): 'Llama 的 SwiGLU'},
+                        reserved={})
+        if not [p for p in probs if 'A9' in p]:
+            bad.append('A9 没抓到 norm 拼错：%r' % (probs,))
     finally:
         shutil.rmtree(d, ignore_errors=True)
     for b in bad:
         print('     ! ' + b)
-    print('  [%s] 机制属性的出处：A1/A2/A3/A4 各红一次，正例不误伤'
+    print('  [%s] 机制属性的出处：A1/A2/A3/A4/A9 各红一次，正例不误伤'
           % ('PASS' if not bad else 'FAIL'))
     return 0 if not bad else 1
 
