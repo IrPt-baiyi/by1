@@ -298,7 +298,12 @@ GGML_GRAPH_MODELS = ['moe-routing-shaped.by1', 'mixtral-shaped.by1',
                      'ling-tiny.by1', 'glm-text-tiny.by1',
                      'kda-shaped.by1', 'kda-gva-shaped.by1',
                      'kda-lowrank-shaped.by1', 'linear-gdn-shaped.by1',
-                     'clef-tiny.by1']
+                     'clef-tiny.by1',
+                     # **SSM 的图路**（2026-10-17 晚补）：`ssm_scan` 原语 ->
+                     # ggml_ssm_scan，中间要过一次逆 softplus（见 by1ggml 的
+                     # by1_inv_softplus_f32）。它原来只由 IR 路覆盖 —— 图路
+                     # 少这一格，IR 路就删不掉。
+                     'ssm-shaped.by1']
 
 SHAPED = ['llama-shaped.by1', 'mixtral-shaped.by1', 'gpt-oss-shaped.by1',
           'qwen3-next-shaped.by1', 'mla-shaped.by1', 'llama3-shaped.by1',

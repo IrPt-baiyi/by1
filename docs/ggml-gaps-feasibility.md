@@ -674,9 +674,10 @@ RMS·norm.w·z / 权重布局 / mul_mat 契约 / 内核布局）全部留档 —
 | `kda-lowrank-shaped.by1` | KDA（低秩） | 2.140e-07 |
 | `linear-gdn-shaped.by1` | Linear（GDN） | 1.201e-07 |
 | `clef-tiny.by1` | Linear + FFN + Attention（视觉塔布局） | 2.203e-07 |
+| `ssm-shaped.by1` | SSM（Mamba2 · `ssm_scan`，第二轮补） | 1.704e-07 |
 
 **矩阵上的结果**（[backend-matrix](backend-matrix.md) 两列分开量）：
-IR 路公共子集仍是 **10 / 23**（这一轮没动 `--from-ir`）；**默认路 18 / 23**。
+IR 路公共子集仍是 **10 / 23**（没动 `--from-ir`）；**默认路 19 / 23**。
 
 ### 6.1 写进发射器的映射
 
@@ -726,19 +727,48 @@ DSA 的 `[2,0,1]` 是三循环，当场让 `mul_mat` 的收缩维变成 4 vs 16�
 `one-hot × mul_mat`（`out[io, m] = Σ_e table[io, e]·EQ[e, m]`）。
 **这条也顺手解释了为什么 embedding 的 get_rows 一直对**：那一支的下标是 1 维。
 
-### 6.3 还差的两格（记档，不猜）
+### 6.3 `ssm_scan`：契约差一层，用**逆 softplus** 折过去（2026-10-17 第二轮）
 
-- **`ssm_scan`（图路）**：`ggml_ssm_scan` 内部自己做 `softplus(dt + dt_bias)`，
-  而图的 `ssm_scan` 原语（ref）把 softplus 放在**外面**（lowering 先算 `d`）。
-  直接映射会算两次 softplus。要么给内核加一个「dt 已变换」的开关（上游改动），
-  要么把 lowering 的 softplus 挪进原语语义（会动 by1c/by1exec 的语义）——
-  **两条都不是「改一行」**，所以这一格仍是拒绝（IR 路继续覆盖它）。
-- **SparseMLA 的 k-pool（`index_kpool > 1`）**：lowering 还没收编。
+`ggml_ssm_scan` 内部自己做 `softplus(dt)`（ops.cpp: `ggml_compute_softplus_f32(dt[h])`），
+而图的 `ssm_scan` 原语（ref）把 softplus 放在**外面**（lowering 先算
+`d = softplus(dt + dt_bias)`，再喂给原语）。直接映射会算两次。
+
+三种走法里选了这个：
+
+| 走法 | 代价 | 结论 |
+|---|---|---|
+| 改上游内核加「dt 已变换」开关 | 要动 llama.cpp（不是我们的仓） | 不可行 |
+| 改原语语义（dt 收原始值、ref 内部 softplus） | 动 PRIMS 契约 + by1c 图路径 + graphs-golden | 面太大，且会动其他后端 |
+| **发射前做逆 softplus** `x = log(expm1(d))` | 一个 `map_custom1` 逐元算子 | **选它**：往返可测、不动契约 |
+
+为什么它是**精确**的：`log` 把 `expm1` 的**相对**误差变成 x 的**绝对**误差
+（`δx = δ(expm1)/expm1`），所以 float32 下往返误差是一两个 ulp，不会像
+`log(exp(d)-1)` 那样在小 d 上炸开（`exp(d)-1` 的抵消误差被放大 1/d 倍）。
+`d = 0 -> x = -inf` 也对：内核 `softplus(-inf) = 0`。`d > 80` 取 `x = d`
+（softplus 在 x>20 已恒等，80 只是防 `expm1` 溢出）。
+
+**微测**（`build/dbg-invsp.c`，一次性）：d 取 0 / 1e-9 / 1e-6 / 1e-3 / 0.01 /
+0.1 / 0.69 / 2 / 10 / 80 / 88 / 100 / 1e4，`softplus(log(expm1(d)))` 与 d 的
+相对误差 **≤ 7.8e-07**（1e-3 那档恰好 0），d=0 往返回 0 ✓。
+
+**验收**：`ssm-shaped` 图路 **1.704e-07**（IR 路 2.053e-07），且在
+seq = 8 / 16 / 32 / 48 上都是 1.7e-07 ~ 1.9e-07（运行期 n 的路径也验了）。
+
+布局与外围两处折算：内核要 `[dim, 头, n_tokens, 1]`、图给 `[dim, n, 头, 1]`
+（对调一次）；内核的 `y` 只有 `Σ s·C`，**D 跳连在外围补**（ref 是
+`y = s·C + D·x`）。
+
+### 6.3b 还差的一格（记档，不猜）
+
+- **SparseMLA 的 k-pool（`index_kpool > 1`）**：lowering 还没收编 ——
+  这是 `mla-sparse-shaped` 在**两条路**上都还拒绝的原因（IR 路另有
+  `index_heads` 的按算子实现缺口）。
 
 ### 6.4 门禁（防「收口」变回记忆）
 
 - `by1ggml --selftest` 的 ⑥ 从「**必须拒绝** qwen3-next」改成
   「**必须数值过** moe-routing / kda / glm-text-tiny / qwen3-next」。
-- `by1all` 的 6b 段新增 `GGML_GRAPH_MODELS`（11 份）—— 图路默认路逐份对拍。
+- `by1all` 的 6b 段新增 `GGML_GRAPH_MODELS`（12 份）—— 图路默认路逐份对拍
+  （含第二轮的 `ssm-shaped`）。
 - `by1backends` 新增 **`ggml-graph` 列** + 「默认路公共子集」一行
-  （18/23，和 IR 路的 10/23 并排）。
+  （19/23，和 IR 路的 10/23 并排）。

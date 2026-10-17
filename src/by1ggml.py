@@ -369,6 +369,29 @@ static void by1_le_f32(struct ggml_tensor * dst, const struct ggml_tensor * a,
        }
 }
 
+/* ssm_scan 的**逆 softplus**：图的 ssm_scan 原语（ref）把 softplus 放在
+   原语**外面**（输入 d = softplus(dt + dt_bias)），而 ggml_ssm_scan 在内部又做
+   一次 softplus（ops.cpp: softplus(dt[h])）—— 直接映射会算两次。
+   逆函数 x = log(expm1(d)) 在 float32 下**绝对误差 ~1 ulp**（log 把 expm1 的
+   相对误差转成绝对误差），d = 0 -> -inf 也对（内核 softplus(-inf) = 0）；
+   d > 80 时 expm1 会溢出，直接取 x = d（softplus 在 x>20 已是恒等）。
+   这不是"猜"，是**契约折算**：往返 softplus(log(expm1(d))) = d 逐值可测。 */
+static void by1_inv_softplus_f32(struct ggml_tensor * dst,
+                                 const struct ggml_tensor * a,
+                                 int ith, int nth, void * userdata) {
+    (void) nth; (void) userdata;
+    if (ith != 0) return;
+    GGML_ASSERT(ggml_is_contiguous(dst) && ggml_is_contiguous(a));
+    const int64_t n = ggml_nelements(dst);
+    for (int64_t i = 0; i < n; i++) {
+        const float d = ((const float *) a->data)[i];
+        if (!(d >= 0.0f)) {
+            GGML_ABORT("by1: ssm_scan 的 dt 应当是 softplus 的输出（>= 0）");
+        }
+        ((float *) dst->data)[i] = (d > 80.0f) ? d : logf(expm1f(d));
+    }
+}
+
 /* ── masked_fill 的逐元算子（out = m > 0 ? x : v）─────────────────────
    ggml 没有 select；用算术拼（x*m + v*(1-m)）在 v = -inf 时出 nan
    （-inf·0），而 MoE 的分组路由正是要把非选中组填 -inf —— 所以这条走
@@ -1051,6 +1074,52 @@ def emit_model_c_graph(g, ir, order, params, dump=()):
             _put(body, prim, node,
                  f"ggml_map_custom2(ctx, {a[0]}, {a[1]}, "
                  f"by1_masked_fill_f32, 1, &{sv})")
+        elif prim == "ssm_scan":
+            # **Mamba2 的递推 -> ggml_ssm_scan**（迁移的最后一格）。三处折算：
+            #   ① 图把 softplus 放在**原语外面**（ref 吃 d = softplus(dt+bias)），
+            #      而内核内部又做一次 softplus —— 先做**逆 softplus**（见
+            #      by1_inv_softplus_f32）；
+            #   ② 布局：图是 [dim, n, 头, 1]，内核要 [dim, 头, n_tokens, 1]；
+            #   ③ 内核的 y 只有 Σ s·C，**D 跳连在外围补**（ref 是 y = s·C + D·x）。
+            u = _gvar(node["outs"][0])
+            _sx = g.vals.get(node["ins"][2]) or (None, None, None, None)
+            _sb = g.vals.get(node["ins"][3]) or (None, None, None, None)
+            if _sx[0] is None or _sx[2] is None or _sb[0] is None:
+                raise SystemExit("  [不支持] ssm_scan 的静态维推不出来")
+            _hd, _h, _ssm = int(_sx[0]), int(_sx[2]), int(_sb[0])
+            for _nm, _xx in (("x", a[2]), ("B", a[3]), ("C", a[4])):
+                body.append(f"    struct ggml_tensor * {u}_{_nm} = ggml_cont(ctx, "
+                            f"ggml_permute(ctx, {_xx}, 0, 2, 1, 3));")
+            body.append(f"    struct ggml_tensor * {u}_d0 = ggml_cont(ctx, "
+                        f"ggml_permute(ctx, {a[0]}, 0, 2, 1, 3));")
+            body.append(f"    struct ggml_tensor * {u}_d1 = ggml_reshape_3d(ctx, "
+                        f"{u}_d0, {_h}, n, 1);")
+            body.append(f"    struct ggml_tensor * {u}_dt = ggml_map_custom1(ctx, "
+                        f"{u}_d1, by1_inv_softplus_f32, 1, NULL);")
+            body.append(f"    struct ggml_tensor * {u}_A = ggml_reshape_2d(ctx, "
+                        f"{a[1]}, 1, {_h});")
+            body.append(f"    float * {u}_s0b = (float *) calloc("
+                        f"(size_t) {_ssm} * {_hd} * {_h}, sizeof(float));")
+            body.append(f"    int64_t {u}_sn[4] = {{ {_ssm}, {_hd}, {_h}, 1 }};")
+            body.append(f"    struct ggml_tensor * {u}_s0 = ggml_new_tensor(ctx, "
+                        f"GGML_TYPE_F32, 4, {u}_sn);")
+            body.append(f"    {u}_s0->data = {u}_s0b;")
+            body.append(f"    int32_t * {u}_idb = (int32_t *) calloc(1, sizeof(int32_t));")
+            body.append(f"    struct ggml_tensor * {u}_ids = ggml_new_tensor_1d(ctx, "
+                        f"GGML_TYPE_I32, 1);")
+            body.append(f"    {u}_ids->data = {u}_idb;")
+            body.append(f"    struct ggml_tensor * {u}_res = ggml_ssm_scan(ctx, "
+                        f"{u}_s0, {u}_x, {u}_dt, {u}_A, {u}_B, {u}_C, {u}_ids, 1);")
+            body.append(f"    struct ggml_tensor * {u}_yv = ggml_view_4d(ctx, {u}_res, "
+                        f"{_hd}, {_h}, n, 1, (size_t) {_hd} * {u}_res->nb[0], "
+                        f"(size_t) {_hd} * {_h} * {u}_res->nb[0], "
+                        f"(size_t) {_hd} * {_h} * n * {u}_res->nb[0], 0);")
+            body.append(f"    struct ggml_tensor * {u}_D = ggml_reshape_4d(ctx, "
+                        f"{a[5]}, 1, {_h}, 1, 1);")
+            body.append(f"    struct ggml_tensor * {u}_y2 = ggml_add(ctx, {u}_yv, "
+                        f"ggml_mul(ctx, {u}_x, {u}_D));")
+            _put(body, prim, node,
+                 f"ggml_cont(ctx, ggml_permute(ctx, {u}_y2, 0, 2, 1, 3))")
         elif prim == "delta_rule":
             # **delta 规则 -> ggml_gated_delta_net**（Linear 的 GDN 与 KDA
             # 共用这一条；内核按 g->ne[0] 自己分派：1=逐头、S_v=逐维）。
@@ -2119,6 +2188,10 @@ def selftest(args):
         (os.path.join(root, "models", "kda-shaped.by1"), True, "pass"),
         (os.path.join(root, "models", "glm-text-tiny.by1"), True, "pass"),
         (os.path.join(root, "models", "qwen3-next-shaped.by1"), True, "pass"),
+        # **SSM 的图路**（`ssm_scan` -> ggml_ssm_scan）。它此前只由 IR 路覆盖，
+        # 图路少这一格 IR 路就删不掉；中间那次逆 softplus 折算见
+        # `by1_inv_softplus_f32`。
+        (os.path.join(root, "models", "ssm-shaped.by1"), True, "pass"),
     ]
     results = []
     for path, run, expect in cases:

@@ -18,7 +18,7 @@
 | `kda-shaped.by1` | KDA | ✅ | ✅ | ✗ | ✅ | ✅ | ✗ |
 | `kda-gva-shaped.by1` | KDA（GVA） | ✅ | ✅ | ✗ | ✅ | ✅ | ✗ |
 | `kda-lowrank-shaped.by1` | KDA（低秩） | ✅ | ✅ | ✗ | ✅ | ✅ | ✗ |
-| `ssm-shaped.by1` | SSM（Mamba2/Nemotron-H 参数化） | ✅ | ✅ | ✅ | ✗ | ✅ | ✗ |
+| `ssm-shaped.by1` | SSM（Mamba2/Nemotron-H 参数化） | ✅ | ✅ | ✅ | ✅ | ✅ | ✗ |
 | `raw-escape.by1` | Raw（逃生舱） | ✅ | ✗ | ✗ | ✗ | ✗ | ✗ |
 | `complete-granite-4.0-h-350m.by1` | SSM2 + Attention（逐层混排） | ✗ | — | — | — | — | ✅ |
 | `complete-Falcon-H1-0.5B-Instruct.by1` | Parallel（层内并行：SSM2 + Attention） | ✗ | — | — | — | — | ✅ |
@@ -58,7 +58,6 @@
 | `kda-gva-shaped.by1` | `full` | 完整后端的 arch 必须是 qwen3, qwen2, gpt2, gpt_oss, qwen3_5, mamba, granitemoehybrid, falcon_h1 |
 | `kda-lowrank-shaped.by1` | `ggml` | 第 0 层 op1（KDA）：算子 KDA 还没有 ggml 映射；第 1 层 op1（KDA）：算子 KDA 还没有 ggml 映射；第 2 层 op1（KDA）：算子 KDA 还没有 ggml 映射；第 3 层 op1（KDA）：算子 KDA 还没有 ggml 映射 |
 | `kda-lowrank-shaped.by1` | `full` | 完整后端的 arch 必须是 qwen3, qwen2, gpt2, gpt_oss, qwen3_5, mamba, granitemoehybrid, falcon_h1 |
-| `ssm-shaped.by1` | `ggml-graph` | [不支持] 图的 'ssm_scan' 原语还没有 ggml 映射 —— **要么实现、要么在 check_support 里拒绝** |
 | `ssm-shaped.by1` | `full` | 完整后端的 arch 必须是 qwen3, qwen2, gpt2, gpt_oss, qwen3_5, mamba, granitemoehybrid, falcon_h1 |
 | `raw-escape.by1` | `c` | [不支持] C 后端还没有 Raw |
 | `raw-escape.by1` | `ggml` | 第 0 层 op1（Raw）：算子 Raw 还没有 ggml 映射；第 1 层 op1（Raw）：算子 Raw 还没有 ggml 映射 |
@@ -113,6 +112,7 @@
 - `kda-shaped.by1` —— KDA
 - `kda-gva-shaped.by1` —— KDA（GVA）
 - `kda-lowrank-shaped.by1` —— KDA（低秩）
+- `ssm-shaped.by1` —— SSM（Mamba2/Nemotron-H 参数化）
 - `llama-shaped.by1` —— Attention + FFN（RoPE）
 - `llama3-shaped.by1` —— Attention + FFN（LLaMA3 RoPE 缩放）
 - `mixtral-shaped.by1` —— Attention + MoE
@@ -133,7 +133,7 @@
 > **可补** = 我们的工程活；**卡上游** = 缺 ggml/上游原语；
 > **设计如此** = 边界而非缺口。
 
-### 可补（12 格）
+### 可补（11 格）
 
 - `mla-sparse-shaped.by1` × `ggml` —— **图路（默认）已经收口**；IR 路（`--from-ir`）还按算子手写、没接这一族 —— 要么把映射搬过去，要么按 A3-3 删掉 IR 路
 - `mla-sparse-shaped.by1` × `ggml-graph` —— 图路上的映射还没写：SparseMLA 的 k-pool 组合 / SSM 的 ssm_scan 映射 —— 原语在（IR 路已在用），缺的是图路这一层的翻译
@@ -141,7 +141,6 @@
 - `kda-shaped.by1` × `ggml` —— **图路（默认）已经收口**（KDA/Linear 都走 `GATED_DELTA_NET`）；IR 路还按算子手写、没接 —— 要么搬过去，要么删掉 IR 路
 - `kda-gva-shaped.by1` × `ggml` —— **图路（默认）已经收口**（KDA/Linear 都走 `GATED_DELTA_NET`）；IR 路还按算子手写、没接 —— 要么搬过去，要么删掉 IR 路
 - `kda-lowrank-shaped.by1` × `ggml` —— **图路（默认）已经收口**（KDA/Linear 都走 `GATED_DELTA_NET`）；IR 路还按算子手写、没接 —— 要么搬过去，要么删掉 IR 路
-- `ssm-shaped.by1` × `ggml-graph` —— 图路上的映射还没写：SparseMLA 的 k-pool 组合 / SSM 的 ssm_scan 映射 —— 原语在（IR 路已在用），缺的是图路这一层的翻译
 - `mixtral-shaped.by1` × `ggml` —— **图路（默认）已经收口**；IR 路（`--from-ir`）还按算子手写、没接这一族 —— 要么把映射搬过去，要么按 A3-3 删掉 IR 路
 - `gpt-oss-shaped.by1` × `ggml` —— **图路（默认）已经收口**；IR 路（`--from-ir`）还按算子手写、没接这一族 —— 要么把映射搬过去，要么按 A3-3 删掉 IR 路
 - `qwen3-next-shaped.by1` × `ggml` —— **图路（默认）已经收口**；IR 路（`--from-ir`）还按算子手写、没接这一族 —— 要么把映射搬过去，要么按 A3-3 删掉 IR 路
