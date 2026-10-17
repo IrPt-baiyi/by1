@@ -68,6 +68,13 @@ CASES = [
 ]
 
 
+# **直连后端**（2026-10-17 第十九轮）：生成物对拍只证明"产物"对；
+# 真正跑 IR/图那条路的是 `by1exec._dsa_index`，那里也要和官方权重对一次。
+#
+# 一个实测得到的性质：**挑选集合对全局正缩放不变**。我第一个
+# 齿齿试验把 `nh ** -0.5` 删了 —— 结果两组照样"逐个相同"，不是判据漏，
+# 是那个改动**理论上就不影响排序**。要验直连就得改相对权重（去掉学到的头权重 -> 当场红）。
+
 def build(nh, hd, qk_rope, topk, d, ql, seq, seed=0):
     """一对同权重的 (by1, 参考) 索引器。"""
     torch.manual_seed(seed)
@@ -230,6 +237,50 @@ def negatives():
     return bad
 
 
+def backend_direct_link():
+    """**直连后端**：官方 `GlmMoeDsaIndexer` 的权重 -> `by1exec._dsa_index`。
+
+    上面那段验的是**生成物里的 DSAIndexer**；真正跑 IR/图那条路的是
+    `by1exec._dsa_index`。两份各自对上官方但彼此不一致，会被这里抓住。
+
+    **只跑 `qk_rope == 0` 的用例**：这里 by1 侧自己生成 rope 表（`rope_tables`），
+    而官方那段吃的是判卷人给的随机 cos/sin —— 两边 rope 不同源，比出来的差异
+    说明不了谁错。rope>0 的路由上面"生成物对拍"覆盖（它把同一份 cos/sin 给两边）。
+    """
+    import numpy as np
+    import by1exec
+    ok_all = True
+    ran = 0
+    for label, d, ql, nh, hd, qk_rope, topk, seq in CASES:
+        if qk_rope:
+            continue
+        ran += 1
+        mine, ref, _cfg = build(nh, hd, qk_rope, topk, d, ql, seq)
+        torch.manual_seed(7)
+        x = torch.randn(1, seq, d)
+        q_resid = torch.randn(1, seq, ql)
+        ref_out, _cs, _pos = run_ref(ref, x, q_resid, seq)
+        # 官方模块的键没有 `indexer.` 前缀（那个前缀来自模型层），
+        # 而 `by1exec._dsa_index` 读的是图里的名字，所以这里补上。
+        P = {"indexer." + k: v.detach().numpy().astype(np.float32)
+             for k, v in ref.state_dict().items()}
+        at = {"index_heads": nh, "index_dim": hd, "index_topk": topk,
+              "qk_rope": qk_rope, "rope_base": 10000}
+        mask = by1exec._dsa_index(P, at, x.numpy().astype(np.float32),
+                                  q_resid.numpy().astype(np.float32))
+        same = True
+        for t in range(seq):
+            got = set(int(i) for i in np.flatnonzero(mask[0, t]))
+            want = set(int(i) for i in ref_out[0, t].tolist() if 0 <= int(i) < seq)
+            if got != want:
+                same = False
+                print("     第 %d 行挑选不同：%r vs %r"
+                      % (t, sorted(got)[:6], sorted(want)[:6]))
+        print("     %-22s %s" % (label, "逐个相同 ok" if same else "**不同**"))
+        ok_all = ok_all and same
+    print("     （%d 组 rope=0 的直连；rope>0 见上面的生成物对拍）" % ran)
+    return ok_all
+
 def main():
     if GlmMoeDsaIndexer is None:
         return by1skip.skip(
@@ -269,12 +320,17 @@ def main():
 
     bad = negatives()
 
+    print("\n  直连后端：官方权重 -> by1exec._dsa_index")
+    link_ok = backend_direct_link()
+
+    all_ok = ok_all and not bad and link_ok
     print("\n  [%s] DSA 索引器 %s"
-          % ("PASS" if ok_all and not bad else "FAIL",
-             "与参考一致（挑选集合逐个相同），反例全红"
-             if (ok_all and not bad) else
-             ("对不上参考" if not ok_all else "反例没全红")))
-    return 0 if (ok_all and not bad) else 1
+          % ("PASS" if all_ok else "FAIL",
+             "与参考一致（挑选集合逐个相同），反例全红，后端直连一致"
+             if all_ok else
+             ("对不上参考" if not ok_all else
+              ("反例没全红" if bad else "**直连后端不一致**"))))
+    return 0 if all_ok else 1
 
 
 if __name__ == "__main__":
