@@ -52,6 +52,52 @@ PROVENANCE = {
 }
 
 
+#: 闭集里**没有模型走到、但明确保留**的取值（A4 要它们）。
+#: 每条都要写理由；一旦有模型用到它，这条就要删掉（否则 A4 报“残留”）。
+RESERVED = {
+    ('act', 'gelu'): '精确 GELU 实现留着；当前没有官方模型用它（GPT-2 用 tanh 近似），两条公式由 _gelu 的断言守着',
+    ('qk_norm', '1'): '旧写法（等价 per_head），by1langspec 记档；不会有模型这么写',
+    ('qk_norm', 'on'): '旧写法（等价 per_head），by1langspec 记档',
+    ('qk_norm', 'yes'): '旧写法（等价 per_head），by1langspec 记档',
+}
+
+def codegen_defaults(codegen_path=None):
+    """从 `by1codegen.py` 取每个机制类型的属性默认值（`attrs.get("x", "y")`）。"""
+    p = pathlib.Path(codegen_path or (ROOT / "src/by1codegen.py"))
+    text = p.read_text(encoding="utf-8")
+    out, kind = {}, None
+    for line in text.splitlines():
+        m = re.match(r'\s*if kind == "(\w+)":', line)
+        if m:
+            kind = m.group(1)
+            out.setdefault(kind, {})
+            continue
+        if kind is None:
+            continue
+        for a, v in re.findall(r'attrs\.get\("(\w+)", "([^"]+)"\)', line):
+            out[kind].setdefault(a, v)
+    return out
+
+
+def implicit_values(root=ROOT):
+    """模型里**没写**、但编译器会按默认值用到的 (属性, 取值)。"""
+    defaults = codegen_defaults(pathlib.Path(root) / "src/by1codegen.py")
+    seen = set()
+    pat_mech = re.compile(r"mech\s+(\w+)\s*:\s*(\w+)\s*\{([^}]*)\}")
+    for f in (pathlib.Path(root) / "models").rglob("*.by1"):
+        text = f.read_text(encoding="utf-8", errors="replace")
+        for m in pat_mech.finditer(text):
+            body, kind = m.group(3), m.group(2)
+            for attr, val in (defaults.get(kind) or {}).items():
+                if re.search(r"\b" + attr + r"\s*=", body):
+                    continue      # 显式写了，不算隐式
+                if attr == "gate_act":
+                    hg = re.search(r"head_gate\s*=\s*([A-Za-z_0-9]+)", body)
+                    if not hg or hg.group(1).lower() == "off":
+                        continue  # 没有门就不会用到激活
+                seen.add((attr, val.lower()))
+    return seen
+
 def load_enums(codegen_path=None):
     """从 `by1codegen.py` **静态**取 ENUMS（不 import：那会把 torch 拖进来）。"""
     p = pathlib.Path(codegen_path or (ROOT / 'src/by1codegen.py'))
@@ -100,10 +146,11 @@ def used_values(root=ROOT):
     return seen
 
 
-def check(root=ROOT, enums=None, provenance=None):
+def check(root=ROOT, enums=None, provenance=None, reserved=None):
     root = pathlib.Path(root)
     enums = load_enums(root / 'src/by1codegen.py') if enums is None else enums
     prov = PROVENANCE if provenance is None else provenance
+    RES = RESERVED if reserved is None else reserved
     fams = model_families(root)
     problems = []
     notes = []
@@ -137,11 +184,23 @@ def check(root=ROOT, enums=None, provenance=None):
         if not any(pre in flat for pre in prefixes):
             problems.append('A3 %s = <%s> 的出处 %r 对不上 models/ 里的任何模型'
                             % (attr, v, why[:40]))
-    used = used_values(root)
-    idle = sorted(known - used)
-    if idle:
-        notes.append('还没有任何模型用到的取值（%d 个）：%s'
-                     % (len(idle), ' '.join('%s=%s' % x for x in idle)))
+    # A4：每个取值要么**有模型走到**（显式写出来 或 靠默认值生效），
+    # 要么在 RESERVED 里**写明保留理由** —— 不允许“谁也不知道为什么它在”。
+    eff = set(used_values(root)) | set(implicit_values(root))
+    for attr, v in sorted(known):
+        if (attr, v) in eff:
+            continue
+        if (attr, v) not in RES:
+            problems.append('A4 %s = <%s> 没有任何模型用到，也没在 RESERVED '
+                            '里写保留理由（闭集里不允许谁也不知道为什么它在）'
+                            % (attr, v))
+    for attr, v in sorted(RES):
+        if (attr, str(v).lower()) not in known:
+            problems.append('A4 RESERVED 里有一条 %s = <%s>，但闭集里没有它'
+                            % (attr, v))
+        elif (attr, str(v).lower()) in eff:
+            problems.append('A4 RESERVED 里 %s = <%s> 已经有模型用到了 —— '
+                            '这条保留记录该删了' % (attr, v))
     return problems, notes
 
 
@@ -162,9 +221,12 @@ def _selftest():
                              for k, v in enums.items())
             return 'ENUMS = {' + body + '}\n'
 
-        def run(enums, prov):
+        def run(enums, prov, reserved=None):
             codegen.write_text(enums_text(enums), encoding='utf-8')
-            return check(root=d, enums=enums, provenance=prov)
+            if reserved is None:
+                reserved = {} if enums != {'act': {'silu'}} else {}
+            return check(root=d, enums=enums, provenance=prov,
+                         reserved=reserved if reserved is not None else {})
 
         probs, _n = run({'act': {'silu'}},
                         {('act', 'silu'): 'Llama 的 SwiGLU'})
@@ -183,16 +245,27 @@ def _selftest():
                         {('act', 'silu'): 'SomeVendor 的神秘实现'})
         if not [p for p in probs if 'A3' in p]:
             bad.append('A3 没抓到：%r' % (probs,))
-        _p, notes = run({'act': {'silu', 'gelu'}},
-                        {('act', 'silu'): 'Llama 的 SwiGLU',
-                         ('act', 'gelu'): 'GPT-2 的 GELU'})
-        if not notes:
-            bad.append('没有模型用的取值没被列出来')
+        prov2 = {('act', 'silu'): 'Llama 的 SwiGLU',
+                 ('act', 'gelu'): 'Llama 那边也有的 GELU'}
+        # A4：没模型用、也没保留理由 -> 红
+        probs, _n = run({'act': {'silu', 'gelu'}}, prov2, reserved={})
+        if not [p for p in probs if 'A4' in p]:
+            bad.append('A4 没抓到没人用的取值：%r' % (probs,))
+        # A4：写了保留理由 -> 不红
+        probs, _n = run({'act': {'silu', 'gelu'}}, prov2,
+                        reserved={('act', 'gelu'): '保留着'})
+        if probs:
+            bad.append('A4 保留条目被误判：%r' % (probs,))
+        # A4：保留了但已经有人用 -> 残留
+        probs, _n = run({'act': {'silu'}}, {('act', 'silu'): 'Llama 的 SwiGLU'},
+                        reserved={('act', 'silu'): '保留着'})
+        if not [p for p in probs if 'A4' in p]:
+            bad.append('A4 没抓到残留的保留条目：%r' % (probs,))
     finally:
         shutil.rmtree(d, ignore_errors=True)
     for b in bad:
         print('     ! ' + b)
-    print('  [%s] 机制属性的出处：A1/A2/A3 各红一次，正例不误伤'
+    print('  [%s] 机制属性的出处：A1/A2/A3/A4 各红一次，正例不误伤'
           % ('PASS' if not bad else 'FAIL'))
     return 0 if not bad else 1
 
