@@ -1540,6 +1540,12 @@ class Attention(nn.Module):
         self.sink = nn.Parameter(torch.zeros(self.q)) if a.get("sink") else None
         self.head_gate = a.get("head_gate", "off")
         self.gate_per_head = (self.head_gate == "per_head")
+        # **这一行一直缺着**：`forward` 读 `self.gate_act`，而 `__init__` 从来没
+        # 设过它（只有 `MLAttention` 设了）。于是任何 `mech Attention` + `head_gate` 的模型会
+        # `AttributeError: 'Attention' object has no attribute 'gate_act'`。
+        # 为什么没暴露：没有任何 shaped 模型走过这条路——直到 `by1laguna` 把它跑起来（D6）。
+        # 默认跟编译那边一致：Attention 是 **softplus**（MLA 才是 sigmoid）。
+        self.gate_act = a.get("gate_act", "softplus")
         if self.head_gate != "off":
             self.g_proj = nn.Linear(
                 d, self.q if self.gate_per_head else self.q * self.hd, bias=False)

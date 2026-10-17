@@ -455,6 +455,8 @@ JUDGES = [
     # logit 参与 softmax）。实测逐位一致；另外还钉了一条反直觉的语义：
     # **sink 清零 不等于没有 sink**（分母多一个 e^0）。
     ('by1gptoss.py', 4),
+    # head gate：**同名不同义**的典型（Laguna softplus / Ling sigmoid）。
+    ('by1laguna.py', 4),
     # 前向，**真实维度**（14 个真实模型里唯一在这台机器上跑得动的）
     ('by1instella.py', 4),
     # 真实维度、官方 config 的前向 —— **另一代**

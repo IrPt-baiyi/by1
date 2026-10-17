@@ -1,6 +1,6 @@
 # 这个仓库里每个文件是干什么的
 
-> 423 个跟踪文件。按"你会想找什么"分组，不按字母表。
+> 424 个跟踪文件。按"你会想找什么"分组，不按字母表。
 >
 > **这份文档是生成的**：`python src/by1files.py --write`。
 > 文件清单、每组的个数、每个文件的一句话都从目录树和 docstring 来 ——
@@ -43,7 +43,7 @@
 
 ---
 
-## `src/` —— 92 个模块 + 1 个非 .py
+## `src/` —— 93 个模块 + 1 个非 .py
 
 ### 底座（留在 src/ 顶层）
 
@@ -174,6 +174,7 @@
 | `by1kda.py` | KDA（Kimi Delta Attention）的验证。它在 `by1check` 里是独立种类，不是 GDN |
 | `by1sparse.py` | DSA 稀疏索引器的验证（对着 transformers 的 `GlmMoeDsaIndexer`）。**`index_kpool_compress_*` 那两个张量没验** —— 没有可比的官方实现 |
 | `by1gptoss.py` | GPT-OSS 的三处易错点：**注意力 sink / 滑窗 / YaRN** |
+| `by1laguna.py` | head gate** 的判卷人：by1 的 Attention  vs  官方 `LagunaAttention` |
 | `by1real.py` | 真权重、真维度，跑一个 27B 模型的前向 |
 | `by1load.py` | 把**真权重**装进 by1 生成的模型 |
 | `by1mem.py` | 从 IR 的 state 声明推出**内存计划**，并可选地用真实模型核它 |
@@ -579,7 +580,7 @@
 | `by1tens.py` | 张量契约实例化：把契约按等价类求值出形状 |
 | `by1vocab.py` | 真实数据的词汇表。模式从这里来，不从想象来 |
 
-## `src/modelcheck/` —— 18 个
+## `src/modelcheck/` —— 19 个
 
 | 文件 | 用途 |
 |---|---|
@@ -589,6 +590,7 @@
 | `by1gptoss.py` | GPT-OSS 的三处易错点：**注意力 sink / 滑窗 / YaRN** |
 | `by1instella.py` | Instella-3B 前向的差分验证，**用真实维度** |
 | `by1kda.py` | KDA（Kimi Delta Attention）的验证。它在 `by1check` 里是独立种类，不是 GDN |
+| `by1laguna.py` | head gate** 的判卷人：by1 的 Attention  vs  官方 `LagunaAttention` |
 | `by1load.py` | 把**真权重**装进 by1 生成的模型 |
 | `by1mem.py` | 从 IR 的 state 声明推出**内存计划**，并可选地用真实模型核它 |
 | `by1mla.py` | MLA 的差分验证 |
