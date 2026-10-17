@@ -383,6 +383,8 @@ JUDGES = [
     # 在这之前，"一个 refs 文件从哪来"从来没被问过 ——
     # 于是里面躺着一个 29 字节的 `Invalid username or password.`。
     ('by1refs.py', 2),
+    # 档位归属的自动判据：判卷人声明的档 vs 它真需要什么（T1~T5）。
+    ('by1tiers.py', 2),
     # 文档里写的**路径和数字**还在吗。它原来没有判定行、也没有
     # `__main__` 守卫（import 它就印一屏），所以既不能被判、也没人跑它。
     ('by1docs.py', 2),
@@ -419,7 +421,8 @@ JUDGES = [
     # 两列分开量（`ggml` / `ggml-graph`）：一列看迁移完成到哪，一列看默认行为。
     # 取值写法：语言层八种写法 -> IR 布尔、IR 门口的 schema、开/关确实改变图。
     # 判据只用 NumPy（档 2），不依赖 torch/gcc。
-    ('by1coerce.py', 2),
+    # 档位归属：它顶层 import numpy，按 `by1tiers` 的 T2 必须 >= 3。
+    ('by1coerce.py', 3),
     ('by1backends.py', 3),
 
     # ── 档 4：数值类。**要 torch 前向。** ────────────────────
