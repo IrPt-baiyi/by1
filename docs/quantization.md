@@ -55,6 +55,13 @@ emit torch.module {
 多装一个 `safetensors`。**这不是 Q2 通过**：运行期的数值内核仍
 无自研实现，且 GPU forward / generation / 显存对拍仍未运行。
 Q2 的 GPU forward / generation / 显存对拍仍未运行。现有 GPT-OSS checkpoint 可走原生 MXFP4 benchmark。FP8 首选现已固定为官方 `Qwen/Qwen3.8-27B-FP8`：它有独立量化描述 [Qwen3.8-27B-FP8.by1](../models/Qwen3.8-27B-FP8.by1)，基准使用完整 Qwen3.8 架构描述，覆盖文本、BF16 视觉塔、量化 MTP 和共享关系。原始 safetensors 头审计会核验合同声明的 BF16 scale、E4M3 权重、块形状与 `weight_scale_inv` 配对；运行时报告再记录实际 scale dtype。GPU 实测通过前不把 Q2 标为完成。Q3 仍未开始。
+**“无静默解量化”这一条（2026-10-17 第十四轮）**：运行时审计里的
+“声明了的张量被解量化”现在**直接点名**（`静默解量化：...`），
+而不是靠“配对失败”涋淄过去；配套的反例形态是
+**按真实 IR 的样子写**的（`quant.tensor` 列表 + 带前缀的张量名），
+含：FP8 声明了却被解量化成 bf16、MXFP4 声明了却没保留
+`_blocks`/`_scales`、FP8 的 scale 是 F16（运行时只接受 F32/BF16）。
+“共享/别名不许被拆开”那一条本来就有反例（tie 了但装成两份 / MTP 别名断了）。
 
 ## 共享/附属分支检查清单（Q2 验收逐项，2026-10-14 固化）
 

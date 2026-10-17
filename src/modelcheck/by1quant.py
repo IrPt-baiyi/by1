@@ -199,6 +199,18 @@ def audit_runtime_storage(model, quant, torch):
                   if name.endswith("_blocks")}
         scales = {name[:-7]: value for name, value in state.items()
                   if name.endswith("_scales")}
+        # **静默解量化**（Q2 的第一条不许）：声明要量化的张量，加载后
+        # 必须还是 `_blocks`/`_scales` 打包存储；掉回一个普通浮点张量就是
+        # 悄悄解量化了。原来这一点只能靠"配对失败"间接发现 —— 现在直接点名。
+        _logical = [str(n).strip() for n in (quant.get("tensor") or ())]
+        if _logical:
+            _deq = [name for name in state
+                    if any(name.endswith("." + ln) for ln in _logical)
+                    and not name.endswith(("_blocks", "_scales"))]
+            if _deq:
+                raise ValueError(
+                    "静默解量化：声明的 MXFP4 张量没有保留 _blocks/_scales：%s"
+                    % _deq[:4])
         if not packed or packed.keys() != scales.keys():
             raise ValueError("MXFP4 加载后缺少成对的 _blocks/_scales")
         wrong = [(name, str(value.dtype)) for name, value in
@@ -218,6 +230,17 @@ def audit_runtime_storage(model, quant, torch):
         scales = {name[:-len("weight_scale_inv")].rstrip("."): value
                   for name, value in state.items()
                   if name.endswith("weight_scale_inv")}
+        # **静默解量化**（同上，FP8 版）：声明的权重掉回 bf16/f16 就是
+        # 悄悄解量化了。
+        _logical = [str(n).strip() for n in (quant.get("tensor") or ())]
+        if _logical:
+            _deq = [(name, str(value.dtype)) for name, value in state.items()
+                    if name.endswith(".weight")
+                    and any(name.endswith("." + ln) for ln in _logical)
+                    and value.dtype != fp8_dtype]
+            if _deq:
+                raise ValueError(
+                    "静默解量化：声明的 E4M3 权重变成了 %s" % _deq[:4])
         if not weights or weights.keys() != scales.keys():
             raise ValueError("FP8 加载后必须保留成对的 E4M3 权重和 weight_scale_inv")
         expected_scale_dtype = quant.get("scale_dtype", "F32").upper()
@@ -649,6 +672,54 @@ def selftest():
         fallback_rejected = True
     if not fallback_rejected:
         raise RuntimeError("dequantized FP8 fallback passed the storage audit")
+
+    # ── **静默解量化**：声明了要量化的张量，装载后还得是量化存储
+    #
+    # 上面那条反例靠的是"配对失败"（声明里没给 tensor 列表，
+    # 于是不知道该等谁）。这里把 **声明了的张量** 喜欢成什么样
+    # 才算"静默解量化"，就像实际 IR 里那样。
+    _q_fp8 = {"format": "fp8_e4m3_block", "block": 128,
+              "tensor": ["layer.weight"], "scale": "weight_scale_inv"}
+
+    def _audit_red(tag, state, quant, want_msg=None):
+        try:
+            audit_runtime_storage(_Model(state), quant, _Torch)
+        except ValueError as exc:
+            if want_msg and want_msg not in str(exc):
+                return "%s 红了但理由不对：%s" % (tag, exc)
+            return None
+        return "%s 被放行了（反例没红）" % tag
+
+    bad_deq = []
+    # 正例：声明了 tensor，且真的是 E4M3 存储 -> 过
+    ok_deq = audit_runtime_storage(_Model({
+        "model.layer.weight": _Tensor("f8e4m3"),
+        "model.layer.weight_scale_inv": _Tensor("f32"),
+    }), _q_fp8, _Torch)
+    if ok_deq["weight_tensor_count"] != 1:
+        bad_deq.append("声明了 tensor 的正例没认出来")
+    # 反例：声明了、但理重跌成 bf16 -> 必须点名"静默解量化"
+    why = _audit_red("FP8 声明了却被解量化", {
+        "model.layer.weight": _Tensor("bf16"),
+        "model.layer.weight_scale_inv": _Tensor("f32"),
+    }, _q_fp8, "静默解量化")
+    if why:
+        bad_deq.append(why)
+    # 反例：MXFP4 声明了、但张量没保留 _blocks/_scales
+    why = _audit_red("MXFP4 声明了却被解量化", {
+        "model.expert.weight": _Tensor("bf16"),   # 同样要带前缀
+    }, {"format": "mxfp4", "tensor": ["expert.weight"]}, "静默解量化")
+    if why:
+        bad_deq.append(why)
+    # 反例：FP8 的 scale 是 F16（运行时只接受 F32/BF16）
+    why = _audit_red("FP8 scale 是 F16", {
+        "model.layer.weight": _Tensor("f8e4m3"),
+        "model.layer.weight_scale_inv": _Tensor("f16"),
+    }, _q_fp8)
+    if why:
+        bad_deq.append(why)
+    if bad_deq:
+        raise RuntimeError("静默解量化判据：" + "；".join(bad_deq))
 
     class _Module:
         def __init__(self, weight=None):
