@@ -17,6 +17,7 @@ by1 的 MLP（RUNTIME）有两条支：`gate = true` 的 SwiGLU 与 `gate = none
 
 参照物：transformers 的 `GemmaMLP`（models/gemma/modeling_gemma.py）与
 `NemotronMLP`（models/nemotron/modeling_nemotron.py，无门控、hidden_act=relu2）：
+与 `GptOssExperts`（models/gpt_oss/modeling_gpt_oss.py 的 _apply_gate：clampped swiglu）。
 `down_proj(act_fn(gate_proj(x)) * up_proj(x))`，`act_fn = ACT2FN["gelu_pytorch_tanh"]`
 （= tanh 近似）。本机 5.20.0 实测可取。
 """
@@ -57,6 +58,33 @@ def _official_nemotron():
     cfg = NemotronConfig(hidden_size=D, intermediate_size=H)
     return NemotronMLP(cfg)
 
+
+def _official_gptoss_gate(gate, up, limit=7.0, alpha=1.702):
+    """官方 GPT-OSS 的 clamped swiglu：**直接调 GptOssExperts._apply_gate**。
+
+    官方那四行（modeling_gpt_oss.py）：
+        gate = gate.clamp(min=None, max=self.limit)
+        up   = up.clamp(min=-self.limit, max=self.limit)
+        glu  = gate * torch.sigmoid(gate * self.alpha)
+        return (up + 1) * glu
+    它吃的是交错排布的 gate_up（[..., ::2] 是 gate、[..., 1::2] 是 up），所以这边
+    按同样的布局拼一份送进去 —— **不自己重写公式**，只用官方那个模块。
+    """
+    from transformers import GptOssConfig
+    from transformers.models.gpt_oss.modeling_gpt_oss import GptOssExperts
+    cfg = GptOssConfig(hidden_size=D, num_experts=1, swiglu_limit=limit,
+                       swiglu_alpha=alpha, num_experts_per_tok=1)
+    experts = GptOssExperts(cfg)
+    inter = torch.stack([gate, up], dim=-1).flatten(-2)   # [..., 2*H] 交错
+    return experts._apply_gate(inter)
+
+
+def _by1_swiglu():
+    """by1 RUNTIME 里的 `_swiglu`（FFN 门控支用的就是它）。"""
+    if not _NS:
+        import by1codegen as cg
+        exec(cg.RUNTIME, _NS)
+    return _NS["_swiglu"]
 
 def _tie_ungated(m, ref):
     """无门控那一支：w1->up_proj, w2->down_proj。"""
@@ -140,10 +168,30 @@ def main():
     if d5 <= 1e-3:
         bad.append("无门控 act=silu 竟然和 relu2 一样（%.3e）—— 分派没生效" % d5)
 
+    # ---- ⑥ 正例：gptoss 的 clamped swiglu（_swiglu 的第三个分支）----
+    sw = _by1_swiglu()
+    gg = torch.randn(2, 3, H) * 4.0       # *4 是为了让一部分值越过 limit=7
+    gu = torch.randn(2, 3, H) * 4.0
+    y6 = sw(gg, gu, "gptoss", 7.0, 1.702).detach()
+    r6 = _official_gptoss_gate(gg, gu).detach()
+    d6 = _diff(y6, r6)
+    print("  ⑥ gptoss    by1 _swiglu vs 官方 _apply_gate    %.3e  [%s]"
+          % (d6, "PASS" if d6 < 1e-6 else "FAIL"))
+    if d6 >= 1e-6:
+        bad.append("gptoss 分支与官方 _apply_gate 不一致（%.3e）" % d6)
+
+    # ---- ⑦ 可证伪：不 clamp 就不是它（输入必须越过 limit）----
+    noclamp = (gu + 1) * (gg * torch.sigmoid(gg * 1.702))
+    d7 = _diff(noclamp.detach(), r6)
+    print("  ⑦ 证伪 去掉 clamp       与官方差         %.3e  [%s]"
+          % (d7, "PASS" if d7 > 1e-2 else "FAIL"))
+    if d7 <= 1e-2:
+        bad.append("去掉 clamp 竟然和官方一样（%.3e）—— 输入没越过 limit，这条判据是空的" % d7)
+
     for b in bad:
         print("     ! " + b)
-    print("  [%s] FFN 激活分派：GeGLU 正例 %.2e、relu2 正例 %.2e；silu 两条 + 精确 gelu 一条可证伪都差得出来"
-          % ("PASS" if not bad else "FAIL", d1, d4))
+    print("  [%s] FFN 激活分派：GeGLU %.2e、relu2 %.2e、gptoss %.2e；四条可证伪都差得出来"
+          % ("PASS" if not bad else "FAIL", d1, d4, d6))
     return 0 if not bad else 1
 
 
