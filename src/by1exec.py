@@ -851,7 +851,7 @@ def op_ssm(P, a, ins, d):
         y_t = C_t · h_t + D * x_t
 
     **判卷人**：`src/modelcheck/by1ssm.py` —— 对着官方
-    `NemotronHMamba2Mixer` 验过（两种尺寸 + 三条反例）。
+    `NemotronHMamba2Mixer` 验过（形状×上下文 9 格网格 + 三条反例（并与本函数直连对拍））。
 
     状态是 `[b, heads, head_dim, ssm_state]`，所以两处最容易写反
     （写反了会炸在维度上，不会静默算错）：

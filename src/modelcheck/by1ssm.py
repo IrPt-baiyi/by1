@@ -19,6 +19,16 @@
 
 那 **`Nemotron-H` 那一版**的布局。判卷人换了就不是同一个判卷人。
 
+## 它现在验到哪（2026-10-17 第十二轮）
+
+    ① **形状 × 上下文 9 格网格**（seq 7/8/16/20，含分块残块；
+       n_groups 1/2/4/8；conv 2/4/7），逐格登记余量；
+    ② 三条反例（eps×4 / 卷积核翻转 / dt 不做 softplus）必须全红；
+    ③ **直连对拍**：把官方权重直接喂给 `by1exec.op_ssm`。
+       —— 上面验的是“by1 的**式子**”（本文件里另写一遍），
+       而真正跑模型的是那个算子。两条链各自对上官方
+       不等于**彼此一致** —— 实测：把 op_ssm 的 gate 顺序写错，
+       式子那些行照样绿，**直连行立刻红**（相对 2.4e-01~3.6e-01）。
 ## 它在验什么
 
     A  = -exp(A_log)                          逐头 (H,)
@@ -57,6 +67,7 @@ _SRC = os.path.dirname(_HERE)
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
+import by1exec
 import by1skip  # noqa: E402
 
 # 判卷人可选，不在只置 None（库代码不 sys.exit，by1lint 第⑩类）——
@@ -163,6 +174,31 @@ def _case(torch, d, h, hd, ssm, ng, k, seq, tag):
     return mx, x, ref
 
 
+def _params_from_official(mx):
+    """把官方 mixer 的 state_dict 换成 `by1exec.op_ssm` 要的 P。
+
+    **这就是直连对拍的关键一步**：同一个权重、两套代码。
+    """
+    sd = mx.state_dict()
+    P = {
+        'in_proj': sd['in_proj.weight'].detach().numpy(),
+        'conv': sd['conv1d.weight'].detach().numpy().squeeze(1),
+        'A_log': sd['A_log'].detach().numpy(),
+        'dt_bias': sd['dt_bias'].detach().numpy(),
+        'D': sd['D'].detach().numpy(),
+        'norm.w': sd['norm.weight'].detach().numpy(),
+        'out_proj': sd['out_proj.weight'].detach().numpy(),
+    }
+    if 'conv1d.bias' in sd:
+        P['conv.bias'] = sd['conv1d.bias'].detach().numpy()
+    return P
+
+
+def _attrs_of(h, hd, ng, ssm, k, eps):
+    return {'heads': h, 'head_dim': hd, 'n_groups': ng,
+            'ssm_state': ssm, 'conv_kernel': k,
+            'conv_bias': True, 'norm_eps': float(eps)}
+
 def main(argv):
     torch = _torch()
     selftest = '--selftest' in argv
@@ -220,6 +256,33 @@ def main(argv):
         print()
     print()
 
+    # ── **直连对拍**：官方 mixer -> by1 参数 -> `by1exec.op_ssm` ──────
+    #
+    # 上面那一段验的是"by1 的**式子**"（这个文件里另写一遍）对官方；
+    # 而真正跑模型的是 `by1exec.op_ssm`。两条链各自对上官方，不等于**彼此
+    # 一致** —— 这里把官方权重直接喂给后端算子，一步连起来。
+    if not selftest:
+        import numpy as _np
+        cross = [
+            ('小/残块', (32, 4, 8, 16, 2, 4, 7)),
+            ('小/单组', (32, 4, 8, 16, 1, 4, 13)),
+            ('小/组=头', (32, 4, 8, 16, 4, 2, 6)),
+        ]
+        for tag, (d, h, hd, ssm, ng, k, seq) in cross:
+            mx, x, ref = _case(torch, d, h, hd, ssm, ng, k, seq, tag)
+            print('     %-12s 官方 -> op_ssm …' % tag, end='')
+            P = _params_from_official(mx)
+            at = _attrs_of(h, hd, ng, ssm, k, mx.norm.variance_epsilon)
+            got = by1exec.op_ssm(P, at, [x.detach().numpy().astype(_np.float32)], d)
+            got = _np.asarray(got, dtype=_np.float64)
+            r = ref.detach().numpy().astype(_np.float64)
+            dd = float(_np.abs(got - r).max())
+            rr = dd / max(float(_np.abs(r).max()), 1e-12)
+            good = rr < 1e-5
+            ok = ok and good
+            print(' 绝对 %.3e  相对 %.3e  %s'
+                  % (dd, rr, '后端 op 与官方一致 ok' if good else '**不一致 FAIL**'))
+        print()
     # ── 反例：证明这个对拍碰得到东西 ────────────────────────────
     print('  ── 反例（每一条都必须红 —— 否则这个判卷人碰不到被测的东西）')
     mx, x, ref = _case(torch, 32, 4, 8, 16, 2, 4, 7, '反例基准')
@@ -238,7 +301,7 @@ def main(argv):
 
     print()
     print('  [%s] Mamba2 递推与官方同源%s'
-          % ('PASS' if ok else 'FAIL', '（反例也验过）' if ok else ''))
+          % ('PASS' if ok else 'FAIL',             '（9 格网格 · 反例 · 与 op_ssm 直连）' if ok else ''))
     return 0 if ok else 1
 
 
