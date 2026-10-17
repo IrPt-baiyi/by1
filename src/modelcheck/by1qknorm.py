@@ -259,10 +259,38 @@ def main():
         if d8 <= 1e-3:
             bad.append("关掉 one_plus 与开着算出一模一样（%.3e）—— 这个属性没生效" % d8)
 
+    # ---- ⑨ 机制级：两种归一约定 ↔ 两个官方类的**逐位**对应 ----
+    # 第 53 轮给 12 份模型补 `norm = zero_centered`，依据是"官方 RMSNorm 是 (1+w)"。
+    # 这一条把那个依据**量化**：by1 RMSNorm 的两个开关分别对上两个官方类。
+    from transformers.models.qwen3.modeling_qwen3 import Qwen3RMSNorm
+    from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5RMSNorm
+    z = torch.randn(3, 5, D)
+    w = torch.randn(D) * 0.3
+    for tag, one_plus, cls in (("普通 (w·x)", False, Qwen3RMSNorm),
+                             ("one_plus (1+w)", True, Qwen3_5RMSNorm)):
+        mine_n = ns["RMSNorm"](D, one_plus=one_plus, eps=1e-6)
+        ref_n = cls(D, eps=1e-6)
+        with torch.no_grad():
+            mine_n.w.copy_(w)
+            if one_plus:
+                ref_n.weight.copy_(w)          # 官方 zero-centered：存的就是 w
+            else:
+                ref_n.weight.copy_(w)          # 普通约定：存的也是 w
+            a = mine_n(z).detach()
+            b = ref_n(z).detach()
+        dn, _rn = _rel(a, b)
+        mark = "⑩" if not one_plus else "⑪"
+        print("  %s RMSNorm %-16s vs 官方 %-18s 绝对 %.3e  [%s]"
+              % (mark, tag, cls.__name__, dn, "PASS" if dn == 0.0 else "FAIL"))
+        if dn != 0.0:
+            bad.append("%s 与官方 %s 不逐位（%.3e）"
+                       % (tag, cls.__name__, dn))
+
     for b in bad:
         print("     ! " + b)
     print("  [%s] qk_norm：per_head 对 Qwen3、full 对 OLMo2（均逐位）；true 等价 per_head；"
-          "换轴 / 关归一约定 两条可证伪都差得出来；q_gate 对 Qwen3-Next 逐位"
+          "换轴 / 关归一约定 两条可证伪都差得出来；q_gate 对 Qwen3-Next 逐位；"
+          "两种归一约定各对一个官方类（均逐位）"
           % ("PASS" if not bad else "FAIL"))
     return 0 if not bad else 1
 
