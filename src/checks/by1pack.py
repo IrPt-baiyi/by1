@@ -96,6 +96,7 @@ WANT = [
     # 包里少了这 9 个判卷人，而打包脚本一声不吭。症状要到云端跑门禁才现形。
     ('by1fast.py', '快速检查：编译/import/解析/行尾（档 1 的判卷人）'),
     ('by1tiers.py', '档位归属的自动判据（档 2）'),
+    ('by1budget.py', '耗时判据（档 2）：总耗时上限 + 单段占比'),
     ('by1files.py', 'FILES.md 与目录树一致（生成的文档也会过期）'),
     ('by1mutate.py', '变异反例库：`by1ir.validate` 每条规则一个必红反例'),
     ('by1sample.py', '采样链逐 token 判卷人（对 sampler-probe）'),

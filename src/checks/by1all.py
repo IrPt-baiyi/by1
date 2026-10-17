@@ -375,6 +375,7 @@ JUDGE_CMDS = {
     # **logits 对拍的自检**：它原来只有 CLI 一个调用者、从没被跑过（D6 那类欠账）。
     # 七条：相同 / 一位不同 / 长度不同 / 空文件 / NaN vs NaN / NaN vs 数 / 逐行文本。
     'by1llama.py logits-selftest': ['by1llama.py', 'logits-selftest'],
+    'by1budget.py --selftest': ['by1budget.py', '--selftest'],
 }
 
 JUDGES = [
@@ -385,6 +386,8 @@ JUDGES = [
     ('by1refs.py', 2),
     # 档位归属的自动判据：判卷人声明的档 vs 它真需要什么（T1~T5）。
     ('by1tiers.py', 2),
+    # 耗时判据：超上限也是一项失败（实测基线 x 3；BY1_BUDGET_SCALE 可放宽）。
+    ('by1budget.py --selftest', 2),
     # 文档里写的**路径和数字**还在吗。它原来没有判定行、也没有
     # `__main__` 守卫（import 它就印一屏），所以既不能被判、也没人跑它。
     ('by1docs.py', 2),
@@ -1212,6 +1215,24 @@ def main():
     broken = [(n, note) for n, st, note in rows if _st(st) == 'broken']
     caller = [(n, note) for n, st, note in rows if _st(st) == 'caller']
 
+    # ---- 耗时判据：**超上限也是一项失败** ----
+    # 一直在算、一直在打印，但**从来没有上限**。一个判卷人从 3 秒变 30 秒，
+    # 门禁照样绿 —— 而"慢到没人跑"和"没写"是同一种结果。
+    _total = sum(x for _l, x in _TIMING)
+    try:
+        import by1budget
+        _bprobs, _bnotes = by1budget.evaluate(TIER, _total, _TIMING)
+    except Exception as exc:   # 工具坏了不能当通过
+        _bprobs, _bnotes = ['耗时判据跑不了：%r' % (exc,)], []
+    for _p in _bprobs:
+        rows.append(('耗时', 'fail', _p))
+        fails.append('耗时判据')
+    for _n in _bnotes:
+        rows.append(('耗时', 'skip', _n))
+    if not _bprobs and not _bnotes:
+        _cap = by1budget.limit(TIER)
+        rows.append(('耗时', 'ok', '预算 %.0f 秒 / 实测 %.1f 秒'
+                     % (_cap, _total)))
     known, real = [], []
     for f in fails + gaps + [n for n, _ in broken] + [n for n, _ in caller]:
         hit = next((why for pre, why in KNOWN if f.startswith(pre)), None)
@@ -1260,7 +1281,15 @@ def main():
     total = sum(s for _l, s in _TIMING)
     if _TIMING:
         print()
-        print('  各段耗时（合计 %.1f 秒）:' % total)
+        _bcap = None
+        try:
+            import by1budget as _bg
+            _bcap = _bg.limit(TIER)
+        except Exception:
+            _bcap = None
+        _extra = ('' if _bcap is None else
+                  ' · 上限 %.0f 秒（实测基线 x3）' % _bcap)
+        print('  各段耗时（合计 %.1f 秒%s）:' % (total, _extra))
         for label, s in sorted(_TIMING, key=lambda x: -x[1]):
             bar = '#' * max(1, int(round(s / max(total, 0.01) * 40)))
             print('    %-22s %7.1f 秒  %s' % (label, s, bar))
