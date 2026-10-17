@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """by1gptoss -- GPT-OSS 的三处易错点：**注意力 sink / 滑窗 / YaRN**。
+参照物：transformers 的 GptOssAttention / GptOssRotaryEmbedding
 
 ## 为什么值得单独一个判卷人
 

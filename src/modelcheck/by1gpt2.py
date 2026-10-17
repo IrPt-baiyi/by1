@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """by1gpt2 -- GPT-2 前向的差分验证，**用真的 GPT-2**。
+参照物：official GPT2LMHeadModel（transformers，124M 官方权重）
 
 为什么是它：这是语言里"另一代"的第一个模型。
 前面十三个全是 Llama 家族（或从它长出来的），所以语言里长出来的东西

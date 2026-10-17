@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """by1ssm -- **Mamba2 的判卷人**：by1 要生成的递推 vs 官方 mixer。
+参照物：transformers 的 NemotronHMamba2Mixer
 
 ## 它为什么存在
 

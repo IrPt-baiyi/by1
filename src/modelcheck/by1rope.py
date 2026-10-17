@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """by1rope -- **RoPE 逆频率三支的网格判卷人**（default / yarn / llama3）。
+参照物：transformers 的 ROPE_INIT_FUNCTIONS 与 LlamaRotaryEmbedding
 
 ## 为什么值得单独一个判卷人
 

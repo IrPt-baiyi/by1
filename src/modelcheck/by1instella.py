@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """by1instella -- Instella-3B 前向的差分验证，**用真实维度**。
+参照物：官方仓库的 modeling_instella.py（AMD 自己写的，按文件路径加载）
 
 为什么单独做这一步：在它之前，"**14 个真实模型全中**"的准确版本是
 **"config 与命名全中，数值行为只在合成维度上验过"**。

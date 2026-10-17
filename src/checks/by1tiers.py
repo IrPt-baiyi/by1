@@ -18,6 +18,9 @@ CI 的"纯标准库"那条腿就会红；反过来一个只要标准库的挂在
     T3 范围      档位必须是 2..6 的整数；
     T4 命令名    `JUDGE_CMDS` 的键必须是 `<文件> <子命令>`，且那个 `<文件>` 必须在 `JUDGES` 里；
     T5 全覆盖    `src/modelcheck/*.py` 每个都要么被 `JUDGES` 跑，要么在 `EXEMPT` 里**写明理由**。
+    T6 参照物    判卷人的 docstring 里必须有一行 `参照物：...`，
+                 且它里面的至少一个 **CamelCase 名字**要真的出现在那个文件里（防“文档写的参照物早就不存在了”）。
+                 不是参照对比类的记在 `NO_REF` 里。
                  （modelcheck 是"一个模型一个判卷人"，漏一个就是漏一整条判据。）
 
 ## 自检
@@ -28,6 +31,7 @@ CI 的"纯标准库"那条腿就会红；反过来一个只要标准库的挂在
 
 import ast
 import pathlib
+import re
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
@@ -36,6 +40,11 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 MIN_TIER = {'torch': 4, 'transformers': 4, 'numpy': 3}
 
 #: `src/modelcheck/` 里**不是判卷人**的东西，逐条写理由（T5 要它）。
+#: 不是“对着官方实现比”的判卷人：它们自带自测。
+NO_REF = {
+    'by1dev.py': '设备无关性：验的是前向不依赖 CPU 默认，没有官方对照物',
+}
+
 EXEMPT = {
     'by1load.py': '库：量化权重的装载路径，由 by1gpubench / by1full 调',
     'by1mem.py': '库：显存估算，由 GPU 日的脚本调',
@@ -146,6 +155,32 @@ def check(root=ROOT, tiers_path=None, modelcheck_dir=None):
                             % (parts[0], key))
         if not (isinstance(argv, list) and argv and argv[0] == parts[0]):
             problems.append('T4 %s 的 argv %r 与命令名对不上' % (key, argv))
+    # T6：参照对比类判卷人要写出参照物，且名字真在文件里。
+    for name in sorted(names):
+        base = str(name).split()[0]
+        if base in NO_REF:
+            continue
+        path = find_file(root, base)
+        if path is None or pathlib.Path(path).parent.name != 'modelcheck':
+            continue        # T1 已报；非 modelcheck 的不强求
+        text = pathlib.Path(path).read_text(encoding='utf-8', errors='replace')
+        try:
+            doc = ast.get_docstring(ast.parse(text)) or ''
+        except SyntaxError:
+            problems.append('T6 %s 语法错，读不到 docstring' % base)
+            continue
+        line = next((ln.strip() for ln in doc.splitlines()
+                     if ln.strip().startswith('参照物')), None)
+        if line is None:
+            problems.append('T6 %s 的 docstring 里没有 <参照物：...> —— 判卷人得说清它在对着谁比' % base)
+            continue
+        caps = re.findall(r'[A-Z][A-Za-z0-9]{4,}', line)
+        # 也接受 `某某.py` 这种文件名形式的参照物（by1instella 就是这种）
+        caps += re.findall(r'[A-Za-z_][A-Za-z0-9_]*\.py', line)
+        # **必须在 docstring 之外**——否则“参照物那行自己”就能通过
+        code_only = text.replace(doc, '')
+        if not caps or not any(c in code_only for c in caps):
+            problems.append('T6 %s 的参照物名字 %r 在文件里找不到（文档过期）' % (base, caps[:3]))
     if mc.is_dir():
         for f in sorted(mc.glob('*.py')):
             if f.name == '__init__.py' or f.name in names:
@@ -173,8 +208,10 @@ def _selftest():
                                                  encoding='utf-8')
         (d / 'src/checks/by1helper.py').write_text('import numpy\n',
                                                    encoding='utf-8')
-        (d / 'src/modelcheck/by1judge.py').write_text('import os\n',
-                                                      encoding='utf-8')
+        (d / 'src/modelcheck/by1judge.py').write_text(
+            '"""by1judge -- fake.\n参照物：官方 FakeJudge\n"""\n'
+            'import os  # FakeJudge\n',
+            encoding='utf-8')
 
         def table(text):
             p = d / 'src/checks/by1all.py'
@@ -214,6 +251,17 @@ def _selftest():
                'T4')
         (d / 'src/modelcheck/by1orphan.py').write_text('import os',
                                                        encoding='utf-8')
+        (d / 'src/modelcheck/by1noref.py').write_text('import os\n',
+                                                       encoding='utf-8')
+        expect('T6 没写参照物',
+               "JUDGES = [('by1noref.py', 2), ('by1judge.py', 2)]\n"
+               "JUDGE_CMDS = {}\n", 'T6')
+        (d / 'src/modelcheck/by1stale.py').write_text(
+            '"""by1stale -- fake.\n参照物：官方 NoSuchClassAtAll\n"""\nimport os\n',
+            encoding='utf-8')
+        expect('T6 参照物名字过期',
+               "JUDGES = [('by1stale.py', 2), ('by1judge.py', 2)]\n"
+               "JUDGE_CMDS = {}\n", 'T6')
         expect('T5 modelcheck 漏了',
                "JUDGES = [('by1plain.py', 2), ('by1judge.py', 2)]\n"
                "JUDGE_CMDS = {}\n", 'T5')

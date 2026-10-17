@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """by1laguna -- **head gate** 的判卷人：by1 的 Attention  vs  官方 `LagunaAttention`。
+参照物：transformers 的 LagunaAttention / LagunaRotaryEmbedding
 
 ## 为什么值得单独一个判卷人
 

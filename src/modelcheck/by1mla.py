@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """by1mla -- MLA 的差分验证。
+参照物：transformers 的 DeepseekV3Attention（MLA 同构）
 
 把 by1 生成的 MLAttention 和 **transformers 的 DeepseekV3Attention** 放在一起，
 喂同样的权重，比输出。

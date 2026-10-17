@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """by1sparse -- **DSA 稀疏索引器**的差分验证。
+参照物：transformers 的 GlmMoeDsaIndexer
 
 把 by1 生成的 `DSAIndexer` 和 **transformers 的 `GlmMoeDsaIndexer`** 放在一起，
 喂同样的权重、同样的输入，比"每个 query 挑中了哪些 key"。

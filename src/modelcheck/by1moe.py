@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """by1moe -- MoE 路由的差分验证：**分组选法** + **打分函数**。
+参照物：transformers 的 DeepseekV3TopkRouter / DeepseekV4TopKRouter / DeepseekV3MoE
 
 两把尺子，各自对一层的不同东西：
 
