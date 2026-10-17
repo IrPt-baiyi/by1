@@ -372,6 +372,9 @@ SHAPED = ['llama-shaped.by1', 'mixtral-shaped.by1', 'gpt-oss-shaped.by1',
 JUDGE_CMDS = {
     'by1llama.py pin-check': ['by1llama.py', 'pin-check'],
     'by1llama.py bench-run': ['by1llama.py', 'bench-run'],
+    # **logits 对拍的自检**：它原来只有 CLI 一个调用者、从没被跑过（D6 那类欠账）。
+    # 七条：相同 / 一位不同 / 长度不同 / 空文件 / NaN vs NaN / NaN vs 数 / 逐行文本。
+    'by1llama.py logits-selftest': ['by1llama.py', 'logits-selftest'],
 }
 
 JUDGES = [
@@ -466,6 +469,9 @@ JUDGES = [
     # 小模型 bench（1.1 MB、sha256 钉住）：证明钉定的 llama.cpp 能**真跑出一个数**。
     # 没构建/没模型就 [跳过]。
     ('by1llama.py bench-run', 5),
+    # logits 逐位对拍这条检查**原来没有任何门禁跑它**（只有 CLI 一个调用者）。
+    # 现在它自己带七条自检（含 NaN 与长度不同的反例），跑在档 5。
+    ('by1llama.py logits-selftest', 5),
     ('by1extdemo.py', 5),
     # 端到端：真产物 -> IR -> 三个后端 -> 对官方实现。
     # 没下载过 gpt2 的话它自己会跳过（返回 2）。

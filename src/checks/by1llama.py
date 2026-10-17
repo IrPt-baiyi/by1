@@ -26,6 +26,9 @@ SHA-256、构建法），但"跑基线那台机器到底是什么"和"logits 对
         --ref upstream-f32.gguf --arch qwen3 --n-blocks 28
 """
 
+import contextlib
+import io
+import math
 import os as _os
 import sys as _sys
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
@@ -351,12 +354,24 @@ def logits_compare(ref_path, got_path, out_path=None):
     first = None
     bitwise = True
     max_abs = 0.0
+    # **NaN 要单独查**：`nan != nan` 恒真，所以两个 NaN 会被记成"首个分歧"，
+    # 而真正的信息是"dump 里有 NaN" —— 上游算坏了，不是两边差了一点。
+    nans_ref = sum(1 for v in ref if math.isnan(v))
+    nans_got = sum(1 for v in got if math.isnan(v))
+    if nans_ref or nans_got:
+        problems.append("dump 里有 NaN（ref=%d, got=%d）—— 上游算坏了"
+                        % (nans_ref, nans_got))
     for i in range(n):
-        if ref[i] != got[i]:
+        a_v, b_v = ref[i], got[i]
+        same = (a_v == b_v) or (math.isnan(a_v) and math.isnan(b_v))
+        if not same:
             bitwise = False
             if first is None:
                 first = i
-            max_abs = max(max_abs, abs(ref[i] - got[i]))
+            if math.isnan(a_v) or math.isnan(b_v):
+                max_abs = float("nan")
+            else:
+                max_abs = max(max_abs, abs(a_v - b_v))
     report = {'schema': 1, 'kind': 'llama-logits-compare',
               'generated_at': datetime.datetime.now(datetime.timezone.utc).isoformat(),
               'ref': str(ref_path), 'got': str(got_path),
@@ -364,12 +379,14 @@ def logits_compare(ref_path, got_path, out_path=None):
               'bitwise_identical': bitwise and len(ref) == len(got) and n > 0,
               'first_mismatch_index': first, 'max_absolute': max_abs,
               'problems': problems}
+    ok = report['bitwise_identical'] and not problems
+    report['ok'] = ok
     if out_path:
         pathlib.Path(out_path).parent.mkdir(parents=True, exist_ok=True)
         pathlib.Path(out_path).write_text(
             json.dumps(report, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
         print('  报告写了 %s' % out_path)
-    if report['bitwise_identical']:
+    if ok:
         print('  [PASS] logits 逐位相同（%d 个值）' % n)
         return 0
     print('  [FAIL] logits 不逐位：首个分歧 @ %s，max|Δ|=%.3e，长度 %d/%d'
@@ -1295,6 +1312,89 @@ def block_audit(src_gguf, quant_gguf):
     return 0
 
 
+def logits_selftest():
+    """**logits 对拍的自检**：这条检查原来只有 CLI 一个调用者、从没跑过。
+
+    七条：相同 / 一位不同 / 长度不同 / 空文件 / NaN 对 / NaN vs 数 / 廿进制行文本。
+    每条断言返回码**和**报告字段（不只看码：报告就是证据，证据题对不上也算错）。
+    """
+    import tempfile
+    d = pathlib.Path(tempfile.mkdtemp(prefix="by1-logits-"))
+    bad = []
+
+    def w(name, values):
+        pth = d / name
+        pth.write_text(json.dumps(values), encoding="utf-8")
+        return str(pth)
+
+    def quiet(*a):
+        # 被调的那个函数**自己会打 [PASS]/[FAIL]**（它是判卷人）；
+        # 而 by1all 的 `confirmed()` 规则是：**退出码 0 但输出里有 [FAIL] 就算失败**。
+        # 这个自检故意跑六条应该红的路，所以要把它们的输出接住
+        # —— 否则工具自己的正常行为会把它污成失败。
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = logits_compare(*a)
+        return rc
+    def rep(name):
+        pth = d / name
+        if not pth.exists():
+            return None
+        return json.loads(pth.read_text(encoding="utf-8"))
+
+    try:
+        a = w("a.json", [0.5, -1.25, 3.0, 0.0])
+        # ① 相同
+        rc = quiet(a, a, str(d / "r0.json"))
+        r0 = rep("r0.json") or {}
+        if rc != 0 or not r0.get("bitwise_identical") or not r0.get("ok"):
+            bad.append("① 相同的 dump 没过（rc=%r report=%r）" % (rc, r0))
+        # ② 一位不同 -> rc1，首个分歧与 max|D| 要对
+        b = w("b.json", [0.5, -1.25, 3.5, 0.0])
+        rc = quiet(a, b, str(d / "r1.json"))
+        r1 = rep("r1.json") or {}
+        if (rc != 1 or r1.get("first_mismatch_index") != 2
+                or abs((r1.get("max_absolute") or 0) - 0.5) > 1e-12):
+            bad.append("② 一位不同的报告对不上：%r" % (r1,))
+        # ③ 长度不同 -> rc1 + problems
+        c = w("c.json", [0.5, -1.25])
+        rc = quiet(a, c, str(d / "r2.json"))
+        r2 = rep("r2.json") or {}
+        if rc != 1 or not r2.get("problems"):
+            bad.append("③ 长度不同没报：%r" % (r2,))
+        # ④ 空文件 -> rc1
+        empty = d / "empty.json"
+        empty.write_text("", encoding="utf-8")
+        rc = quiet(a, str(empty), str(d / "r3.json"))
+        if rc != 1:
+            bad.append("④ 空 dump 没红")
+        # ⑤ 两边都 NaN -> 不能当成“相同”放行
+        na = d / "na.json"
+        na.write_text("[0.5, NaN, 3.0]", encoding="utf-8")
+        rc = quiet(str(na), str(na), str(d / "r4.json"))
+        r4 = rep("r4.json") or {}
+        if rc != 1 or "NaN" not in " ".join(r4.get("problems") or []):
+            bad.append("⑤ NaN vs NaN 的报告不对：%r" % (r4,))
+        # ⑥ NaN vs 数 -> rc1
+        nb = w("nb.json", [0.5, 1.0, 3.0])
+        rc = quiet(str(na), nb, str(d / "r5.json"))
+        if rc != 1:
+            bad.append("⑥ NaN vs 数 没红")
+        # ⑦ 逐行文本也能读（llama-eval-callback 的输出就是逐行）
+        t1 = d / "t1.txt"
+        t1.write_text("0.5\n-1.25\n3.0\n0.0\n", encoding="utf-8")
+        rc = quiet(str(t1), a, str(d / "r6.json"))
+        if rc != 0:
+            bad.append("⑦ 逐行文本没读对")
+    finally:
+        import shutil as _sh
+        _sh.rmtree(d, ignore_errors=True)
+    for b in bad:
+        print("     ! " + b)
+    ok = not bad
+    print("  [%s] logits 对照自检：%d 条全过" % ("PASS" if ok else "FAIL", 7 if ok else 7 - len(bad)))
+    return 0 if ok else 1
+
 def logits_run(gguf, prompt, out_path, llama_cli=None):
     """跑 llama.cpp 产 logits dump（要本机构建）。命令本身进报告 ——
     "每项可从报告追溯到命令"。"""
@@ -1330,6 +1430,7 @@ def main(argv=None):
     pc.add_argument('--bin-dir')
     g = sub.add_parser('gguf-check', help='对照固定清单验 GGUF 文件')
     g.add_argument('--dir', default='.')
+    sub.add_parser('logits-selftest', help='logits 对照的自检（相同/不同/长度/空/NaN/逐行）')
     c = sub.add_parser('logits-compare', help='两个 logits dump 逐位比较')
     c.add_argument('ref')
     c.add_argument('got')
@@ -1377,6 +1478,8 @@ def main(argv=None):
         return pin_check(args.build_dir, args.bin_dir)
     if args.cmd == 'gguf-check':
         return gguf_check(args.dir)
+    if args.cmd == 'logits-selftest':
+        return logits_selftest()
     if args.cmd == 'logits-compare':
         return logits_compare(args.ref, args.got, args.out)
     if args.cmd == 'manifest-audit':
