@@ -75,7 +75,9 @@ def evaluate(tier, total, sections=None, scale=None):
                 100.0 * slowest[1] / max(total, 0.01))
         problems.append('B1 总耗时 %.1f 秒 > 上限 %.1f 秒（实测基线 %.1f x %.0f）%s'
                         % (total, cap, MEASURED[tier], FACTOR, extra))
-    if sections and total > 0:
+    # **B2 只在有两段以上时成立**：档 1 只有"0. 静态"一段，它占 100% 是应该的，
+    # 不是"一段吃掉大半"。CI 的档 1 腿就是这么红的（实测）。
+    if len(sections) >= 2 and total > 0:
         for label, sec in sections:
             share = sec / total
             if share > SECTION_SHARE:
@@ -108,6 +110,10 @@ def _selftest():
     probs, notes = evaluate(2, 10_000.0, [('x', 10_000.0)])
     if probs or not notes:
         bad.append('未知档位应当只给说明：problems=%r notes=%r' % (probs, notes))
+    # 正例 4：**只有一段**时 100%% 也不算独占（档 1 就是这种形状）
+    probs, _notes = evaluate(1, 20.0, [('0. 静态', 20.0)], scale=1.0)
+    if probs:
+        bad.append('只有一段时被误判成独占：%r' % (probs,))
     # 正例 3：单段 60% 不算独占
     probs, _notes = evaluate(5, 100.0, [('8. 判卷人', 60.0), ('0. 静态', 40.0)])
     if probs:
