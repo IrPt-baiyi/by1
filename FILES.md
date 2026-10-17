@@ -167,7 +167,7 @@
 | `by1instella.py` | Instella-3B 前向的差分验证，**用真实维度** |
 | `by1mla.py` | MLA 的差分验证 |
 | `by1moe.py` | MoE 路由的差分验证：**分组选法** + **打分函数** |
-| `by1rope.py` | llama3 式 RoPE 缩放的差分验证 |
+| `by1rope.py` | RoPE 逆频率三支的网格判卷人**（default / yarn / llama3） |
 | `by1ssm.py` | Mamba2 的判卷人**：by1 要生成的递推 vs 官方 mixer |
 | `by1kda.py` | KDA（Kimi Delta Attention）的验证。它在 `by1check` 里是独立种类，不是 GDN |
 | `by1sparse.py` | DSA 稀疏索引器的验证（对着 transformers 的 `GlmMoeDsaIndexer`）。**`index_kpool_compress_*` 那两个张量没验** —— 没有可比的官方实现 |
@@ -590,7 +590,7 @@
 | `by1q2schema.py` | Q2 报告 schema：指标与容差写死在一处，报告必须带 |
 | `by1quant.py` | 量化 checkpoint 的存储契约与权重/scale manifest 审计 |
 | `by1real.py` | 真权重、真维度，跑一个 27B 模型的前向 |
-| `by1rope.py` | llama3 式 RoPE 缩放的差分验证 |
+| `by1rope.py` | RoPE 逆频率三支的网格判卷人**（default / yarn / llama3） |
 | `by1shadow.py` | 影子 checkpoint：真格式、随机值，数值对拍不需要下载权重 |
 | `by1sparse.py` | DSA 稀疏索引器的验证（对着 transformers 的 `GlmMoeDsaIndexer`）。**`index_kpool_compress_*` 那两个张量没验** —— 没有可比的官方实现 |
 | `by1ssm.py` | Mamba2 的判卷人**：by1 要生成的递推 vs 官方 mixer |
