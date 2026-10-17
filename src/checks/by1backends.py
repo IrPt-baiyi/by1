@@ -46,7 +46,7 @@ PROBES = [
     ('hello.by1', 'Attention + FFN（最小完整）'),
     ('attn-fused-shaped.by1', 'Attention（融合 qkv + 门）'),
     ('attn-qgate-shaped.by1', 'Attention（q_gate：q 投影宽一倍）'),
-    ('linear-gdn-shaped.by1', 'Linear（GDN 线性注意力 · 映射未收口）'),
+    ('linear-gdn-shaped.by1', 'Linear（GDN 线性注意力）'),
     ('mla-shaped.by1', 'MLA'),
     ('mla-sparse-shaped.by1', 'MLA + 稀疏索引（DSA）'),
     ('moe-routing-shaped.by1', 'MoE（路由）'),
@@ -72,7 +72,10 @@ PROBES = [
     ('gpt2-tiny.by1', 'Attention + FFN（learned 位置）'),
 ]
 
-BACKEND_NAMES = ('codegen', 'c', 'ggml', 'exec', 'full')
+#: `ggml` = **IR 路**（`--from-ir`，按算子手写发射）；`ggml-graph` = **图路**
+#: （默认路，PRIMS 图的机械翻译）。两条路的支持集不一样，所以两列分开量 ——
+#: 一列是"迁移完成到哪"，另一列是"**今天默认给用户的是哪一条**"。
+BACKEND_NAMES = ('codegen', 'c', 'ggml', 'ggml-graph', 'exec', 'full')
 
 #: **两扇门要分开算。** `codegen / c / ggml / exec` 吃的是**串行 IR**
 #: （一层一个混合器的机制组合）；`full` 吃的是**官方家族**
@@ -82,6 +85,10 @@ BACKEND_NAMES = ('codegen', 'c', 'ggml', 'exec', 'full')
 #:   · **IR 路公共子集**（四后端交集）—— 这是"机制层面的承诺"；
 #:   · **五后端交集** —— 顺带记下"没有任何声明同时走两扇门"这个事实。
 IR_PATH = ('codegen', 'c', 'ggml', 'exec')
+
+#: **默认路**的四后端交集：`ggml` 这一列换成 `ggml-graph`（不加开关时
+#: 走的就是它）。两行数字的差 = 迁移把多少格从"拒绝"变成了"接受"。
+DEFAULT_PATH = ('codegen', 'c', 'ggml-graph', 'exec')
 
 #: **拒绝的两条通道都要接。** 这个仓库里 `by1c` 的拒绝是 `raise SystemExit`、
 #: `by1exec` 也是（`[不支持] 这个后端还没有实现 X`）—— `SystemExit` 不是
@@ -143,6 +150,27 @@ def _probe_ggml(info, ir):
     return _accept()
 
 
+def _probe_ggml_graph(info, ir):
+    """ggml **图路**（`by1ggml` 的默认路，A3-2 起）：lowering + 发射。
+
+    和 `_probe_ggml`（IR 路）分开量：2026-10-17 图路把 MoE / KDA / Linear
+    收进了支持集（数值对拍 1e-7 量级），而 IR 路还是按算子手写、
+    这三族仍然点名拒绝。两列都留着 —— 一列是迁移现状，一列是默认行为。
+    """
+    if ir is None:
+        return None, '上游 codegen 先拒（本后端未到）'
+    try:
+        import by1exec
+        import by1graph
+        import by1ggml
+        g = by1graph.lower_model(ir, 'model')
+        order = by1ggml.load('by1ir').weight_plan(ir)
+        by1ggml.emit_model_c_graph(g, ir, order, by1exec.shapes_of(ir))
+    except _REFUSAL as ex:
+        return False, str(ex) or type(ex).__name__
+    return _accept()
+
+
 def _probe_exec(info, ir):
     """NumPy 执行器：支持集就是 `OPS` 表（前向里 `OPS.get(kind)` 那一步）。
 
@@ -177,6 +205,7 @@ def _probe_full(info, ir):
 
 PROBES_FN = {
     'codegen': _probe_codegen, 'c': _probe_c, 'ggml': _probe_ggml,
+    'ggml-graph': _probe_ggml_graph,
     'exec': _probe_exec, 'full': _probe_full,
 }
 
@@ -269,6 +298,10 @@ def render(rows, problems):
                '— = 根本没走到（上游 `codegen` 先拒，本后端无从表态）；'
                '? = 没验（缺依赖，**不算通过**）。')
     out.append('')
+    out.append('`ggml` 与 `ggml-graph` 是**两条路**：前者是 IR 路（`by1ggml --from-ir`，'
+               '按算子手写发射），后者是**默认图路**（不加开关时走的那条，PRIMS 图的机械翻译）。'
+               '两列的支持集不同 —— 一列看迁移完成到哪，一列看今天默认给用户的是哪一条。')
+    out.append('')
     out.append('## 二、每一个拒绝的**原文**')
     out.append('')
     out.append('> 这张表是"要么实现，要么拒绝"的落点：越界不是沉默，是一句'
@@ -296,7 +329,20 @@ def render(rows, problems):
     else:
         out.append('**一个都没有。**')
     out.append('')
-    out.append('### 3.2 五后端交集（含 `full`）')
+    out.append('### 3.2 默认路（`codegen` / `c` / `ggml-graph` / `exec` 四后端交集）')
+    out.append('')
+    out.append('`ggml` 这一列换成**默认图路**（不加 `--from-ir` 时走的那条）。')
+    out.append('和 3.1 的差 = 迁移把多少格从"拒绝"变成了"接受"。')
+    out.append('')
+    def_common = [r for r in rows
+                  if all(r[2].get(b, (None, ''))[0] is True for b in DEFAULT_PATH)]
+    if def_common:
+        for name, label, _r in def_common:
+            out.append('- `%s` —— %s' % (name, label))
+    else:
+        out.append('**一个都没有。**')
+    out.append('')
+    out.append('### 3.3 五后端交集（含 `full`）')
     out.append('')
     if common:
         for name, label, _r in common:
@@ -359,18 +405,16 @@ def classify(probe, backend, msg):
         # `enum ggml_op`（101 个）之后发现 **`GGML_OP_TOP_K`、
         # `GGML_OP_ARGSORT`、`GGML_OP_LIGHTNING_INDEXER`（DSA 索引器）
         # 全在**。缺的是映射实现，不是上游能力 —— 归"可补"。
-        return "可补", ("ggml 有 `TOP_K`/`ARGSORT`/`LIGHTNING_INDEXER`"
-                       "（2026-10-17 逐个数过 enum ggml_op，101 个）—— "
-                       "缺的是路由语义到这些原语的映射实现")
+        return "可补", ("**图路（默认）已经收口**；IR 路（`--from-ir`）还按算子手写、"
+                       "没接这一族 —— 要么把映射搬过去，要么按 A3-3 删掉 IR 路")
     if ("delta_rule" in msg or "算子 KDA 还没有 ggml 映射" in msg
             or "算子 Linear 还没有 ggml 映射" in msg
             or ("递推" in msg and backend == "ggml")):
         # 同上：`GGML_OP_GATED_DELTA_NET` 与 `GGML_OP_GATED_LINEAR_ATTN`
         # 就是 delta-rule / GDN 族的原语（`RWKV_WKV7` 也在）。与 by1 的
         # KDA/Linear 逐项对表是**实现工作**（可能要折算，像 SSM 那次）。
-        return "可补", ("ggml 有 `GATED_DELTA_NET`/`GATED_LINEAR_ATTN`"
-                       "（delta-rule/GDN 族原语）—— 与 by1 的 KDA/Linear "
-                       "对表是实现工作（可能要折算）")
+        return "可补", ("**图路（默认）已经收口**（KDA/Linear 都走 `GATED_DELTA_NET`）；"
+                       "IR 路还按算子手写、没接 —— 要么搬过去，要么删掉 IR 路")
     if "数值未收口" in msg:
         # 发射器写好了、**数值差没进判据** —— 按纪律拒绝，不冒充支持。
         # 这是"可补"里最诚实的一种状态：实现进行中、收口未完。
@@ -392,6 +436,18 @@ def classify(probe, backend, msg):
         return "设计如此", ("两层分工：`Raw`（第一层）的契约是 PyTorch 工厂；"
                           "c/exec 的逃生舱走**第二层 `External`（.so）** —— "
                           "已由 by1extdemo 三后端验过，不是缺口")
+    if "Raw" in msg and backend == "ggml-graph":
+        # 图路的 Raw 和 IR 路同一条边界：图发射装不下任意外部调用。
+        return "设计如此", ("ggml 是**图发射**，装不下任意外部调用"
+                          "（进图要 custom op）—— 这是结构边界")
+    if ("index_kpool" in msg or "原语还没有 ggml 映射" in msg) \
+            and backend == "ggml-graph":
+        # 图路上剩下的几格：① SparseMLA 的 k-pool 路径（低秩池化，图里
+        # 还没有对应的原语组合）；② SSM 的 ssm_scan（IR 路已在用
+        # `ggml_ssm_scan`，图路只是还没写这条映射）。两件都是工程活。
+        return "可补", ("图路上的映射还没写：SparseMLA 的 k-pool 组合 / "
+                       "SSM 的 ssm_scan 映射 —— 原语在（IR 路已在用），"
+                       "缺的是图路这一层的翻译")
     if "Raw" in msg and backend == "ggml":
         return "设计如此", ("ggml 是**图发射**，装不下任意外部调用"
                           "（进图要 custom op）—— 两层逃生舱在 ggml 上"
@@ -460,6 +516,10 @@ def main(argv=None):
     print()
     print('  IR 路公共子集（codegen/c/ggml/exec）：%d / %d 个探针四后端全通'
           % (ir_common, len(rows)))
+    def_common = sum(1 for r in rows
+                     if all(r[2].get(b, (None, ''))[0] is True for b in DEFAULT_PATH))
+    print('  默认路公共子集（codegen/c/ggml-graph/exec）：%d / %d'
+          % (def_common, len(rows)))
     print('  五后端交集（含 full）：%d / %d' % (common, len(rows)))
     print()
     if write:

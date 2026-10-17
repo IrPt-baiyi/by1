@@ -201,6 +201,15 @@ static struct ggml_tensor * wt2(struct ggml_context * ctx, const float * data,
     return t;
 }
 
+static struct ggml_tensor * wt3(struct ggml_context * ctx, const float * data,
+                                int64_t ne0, int64_t ne1, int64_t ne2,
+                                const char * nm) {
+    struct ggml_tensor * t = ggml_new_tensor_3d(ctx, GGML_TYPE_F32, ne0, ne1, ne2);
+    ggml_set_name(t, nm);
+    t->data = (void *) data;
+    return t;
+}
+
 /* ── T16 第二批：轴约定族的运行时 helper ─────────────────────────────
    逐节点发射在编译期不知道动态轴（seq 那一维是 None），所以这几个
    走**运行时元数据**（照 wt1 的先例：结构体是公开的）。轴都是 ggml
@@ -254,6 +263,136 @@ static struct ggml_tensor * sum_ax(struct ggml_context * ctx,
         r = ggml_reshape_4d(ctx, r, ne[0], ne[1], ne[2], ne[3]);
     }
     return r;
+}
+
+/* 沿 ggml 轴 axis 把每一份**整块**重复 reps 次（np.repeat 语义：
+   [q0,q0,q1,q1]）。**不是 ggml_repeat 的平铺**（平铺给 [q0,q1,q0,q1]）
+   —— 两者只在"被重复的轴是最外轴"或"该轴本来就只有 1 份"时相同，
+   所以此前只有 Linear 的 GQA 复制露了马脚（axis=1）。
+
+   一般情形：把该轴的每一份**单独切片**，各自重复 reps 次再按块拼回去。
+   （两次失败留在注释里：① "插一条长度 1 的轴再 repeat"——reps 轴在内存里
+   落在被复制轴的**后面**，折回去仍是平铺；② "整体 concat 自身 reps 次"——
+   a||a 就是 [h0,h1,h0,h1]，也是平铺。实测都在 dump 里露了头 1 没复制。） */
+static struct ggml_tensor * blk_rep_axis(struct ggml_context * ctx,
+                                         struct ggml_tensor * x, int axis,
+                                         int reps) {
+    if (reps <= 1) return x;
+    const int nd = ggml_n_dims(x);
+    if (axis < 0 || axis >= nd) return NULL;           /* 不猜 */
+    if (axis == 0 || x->ne[axis] == 1) {
+        /* 最外轴（或本来只有 1 份）：整块平铺 == 整块重复 */
+        int64_t ne[4];
+        for (int i = 0; i < nd; i++) ne[i] = x->ne[i];
+        ne[axis] = ne[axis] * reps;
+        struct ggml_tensor * pat = ggml_new_tensor(ctx, GGML_TYPE_F32, nd, ne);
+        return ggml_repeat(ctx, x, pat);
+    }
+    struct ggml_tensor * out = NULL;
+    const int64_t na = x->ne[axis];
+    for (int64_t k = 0; k < na; k++) {
+        struct ggml_tensor * sl = sl_ax(ctx, x, axis, k, k + 1);
+        for (int r = 0; r < reps; r++) {
+            out = out ? ggml_concat(ctx, out, sl, axis) : sl;
+        }
+    }
+    return out;
+}
+
+/* numpy 风格的**双向广播**二元运算。ggml 的原生二元算子只允许第二个
+   参数被广播（第一个参数必须是结果形状）—— 而图的 ref 是 numpy 的
+   `a op b`（两边都可能小）。于是：
+     · 加/乘（可交换）：谁大谁当第一个；
+     · 减/除：小的那条先 repeat 到大的形状（repeat 是整块平铺，广播语义
+       下小的那条在这个轴上只有 1 份，所以平铺 == 广播）。
+   第一版直接 `ggml_mul(ctx, ea, tt)`（ea 是 [1, nv] 的衰减系数）——
+   KDA 的 `gate_lower` 支当场撞在 ggml_can_repeat 上。 */
+enum { BY1_BIN_ADD = 0, BY1_BIN_SUB = 1, BY1_BIN_MUL = 2, BY1_BIN_DIV = 3 };
+static struct ggml_tensor * by1_bin_bcast(struct ggml_context * ctx,
+                                          struct ggml_tensor * a,
+                                          struct ggml_tensor * b, int op) {
+    if (!ggml_can_repeat(b, a) && ggml_can_repeat(a, b)) {
+        if (op == BY1_BIN_ADD || op == BY1_BIN_MUL) {
+            struct ggml_tensor * t = a; a = b; b = t;
+        } else {
+            a = ggml_repeat(ctx, a, b);
+        }
+    }
+    switch (op) {
+        case BY1_BIN_ADD: return ggml_add(ctx, a, b);
+        case BY1_BIN_SUB: return ggml_sub(ctx, a, b);
+        case BY1_BIN_MUL: return ggml_mul(ctx, a, b);
+        default:          return ggml_div(ctx, a, b);
+    }
+}
+
+/* 深度可分离因果卷积，**F32 im2col**。
+   ggml_conv_1d_dw 的 im2col 输出类型是 F16（除非核是 BF16）—— 它把输入
+   先round 到 fp16，实测 conv 输出相对差 ~1e-4，经过几层放大后把
+   1e-4 的判据顶爆（qwen3-next 5.5e-4 / ling-tiny 2e-4）。
+   这里照 conv_1d_dw 的三步自己走一遍，只把 dst_type 换成 F32：
+     im2col(kernel, data, s0=1, s1=0, p0=k-1, p1=0, d0=d1=1, is_2D=false, F32)
+     -> mul_mat(im2col, kernel) -> reshape_3d [ne0, ne2, 1]
+   （p1=0 就是"只在左边补 kernel-1"的因果约定。） */
+static struct ggml_tensor * by1_conv1d_dw_f32(struct ggml_context * ctx,
+                                              struct ggml_tensor * w,
+                                              struct ggml_tensor * x,
+                                              int pad) {
+    struct ggml_tensor * nb = ggml_reshape_4d(ctx, x, x->ne[0], 1,
+                                              x->ne[1], x->ne[2]);
+    struct ggml_tensor * im = ggml_im2col(ctx, w, nb, 1, 0, pad, 0, 1, 0,
+                                          false, GGML_TYPE_F32);
+    struct ggml_tensor * r = ggml_mul_mat(ctx, im, w);
+    return ggml_reshape_3d(ctx, r, r->ne[0], r->ne[2], 1);
+}
+
+/* le：out = (a <= b) ? 1 : 0（PRIMS 原文；**1/0 不是 bool** —— 它要能
+   进 masked_fill 的 `m > 0`，也要能乘）。ggml 这版没有比较算子，走
+   map_custom2；两边**先都 repeat 到广播后的形状**（map_custom2 的结果
+   形状取第一个参数，而 DSA 的 le 是对 [n,1] 与 [1,n] 做外积，两边都不是、
+   也都不等于结果形状）。 */
+static void by1_le_f32(struct ggml_tensor * dst, const struct ggml_tensor * a,
+                       const struct ggml_tensor * b, int ith, int nth,
+                       void * userdata) {
+    (void) nth; (void) userdata;
+    if (ith != 0) return;
+    for (int64_t i3 = 0; i3 < dst->ne[3]; i3++)
+     for (int64_t i2 = 0; i2 < dst->ne[2]; i2++)
+      for (int64_t i1 = 0; i1 < dst->ne[1]; i1++)
+       for (int64_t i0 = 0; i0 < dst->ne[0]; i0++) {
+           const float va = *(const float *) ((const char *) a->data
+               + i0 * a->nb[0] + i1 * a->nb[1] + i2 * a->nb[2] + i3 * a->nb[3]);
+           const float vb = *(const float *) ((const char *) b->data
+               + i0 * b->nb[0] + i1 * b->nb[1] + i2 * b->nb[2] + i3 * b->nb[3]);
+           *(float *) ((char *) dst->data + i0 * dst->nb[0] + i1 * dst->nb[1]
+               + i2 * dst->nb[2] + i3 * dst->nb[3]) = (va <= vb) ? 1.0f : 0.0f;
+       }
+}
+
+/* ── masked_fill 的逐元算子（out = m > 0 ? x : v）─────────────────────
+   ggml 没有 select；用算术拼（x*m + v*(1-m)）在 v = -inf 时出 nan
+   （-inf·0），而 MoE 的分组路由正是要把非选中组填 -inf —— 所以这条走
+   map_custom2，语义**逐字**照 PRIMS（单线程：n_tasks=1）。 */
+static void by1_masked_fill_f32(struct ggml_tensor * dst,
+                                const struct ggml_tensor * a,
+                                const struct ggml_tensor * b,
+                                int ith, int nth, void * userdata) {
+    (void) nth;
+    if (ith != 0) return;
+    const float v = *(const float *) userdata;
+    for (int64_t i3 = 0; i3 < dst->ne[3]; i3++)
+     for (int64_t i2 = 0; i2 < dst->ne[2]; i2++)
+      for (int64_t i1 = 0; i1 < dst->ne[1]; i1++)
+       for (int64_t i0 = 0; i0 < dst->ne[0]; i0++) {
+           const float * pa = (const float *) ((const char *) a->data
+               + (i0 % a->ne[0]) * a->nb[0] + (i1 % a->ne[1]) * a->nb[1]
+               + (i2 % a->ne[2]) * a->nb[2] + (i3 % a->ne[3]) * a->nb[3]);
+           const float * pb = (const float *) ((const char *) b->data
+               + (i0 % b->ne[0]) * b->nb[0] + (i1 % b->ne[1]) * b->nb[1]
+               + (i2 % b->ne[2]) * b->nb[2] + (i3 % b->ne[3]) * b->nb[3]);
+           *(float *) ((char *) dst->data + i0 * dst->nb[0] + i1 * dst->nb[1]
+               + i2 * dst->nb[2] + i3 * dst->nb[3]) = (*pb > 0.0f) ? *pa : v;
+       }
 }
 '''
 
@@ -337,6 +476,12 @@ def _weight_lines(order, params):
             out.append(f"    struct ggml_tensor * t_{macro.lower()} = "
                        f"wt2(ctx, P({macro}), {int(shp[1])}, {int(shp[0])}, "
                        f"\"{nm}\");")
+        elif len(shp) == 3:
+            # 3 维（MoE 专家权重 (E, out, in)）：by1 的 [E][out][in] 行主序
+            # 就是 ggml 的 [in, out, E] —— 和前两维同一个"零转换"约定。
+            out.append(f"    struct ggml_tensor * t_{macro.lower()} = "
+                       f"wt3(ctx, P({macro}), {int(shp[2])}, {int(shp[1])}, "
+                       f"{int(shp[0])}, \"{nm}\");")
         else:
             raise SystemExit(f"  [不支持] {pname} 是 {len(shp)} 维张量 —— "
                              "只实现了 1D/2D")
@@ -434,9 +579,11 @@ def emit_model_c_graph(g, ir, order, params, dump=()):
     body = _weight_lines(order, params)
 
     # 掩码：从**节点**里认（`soft_max` 的第二个输入叫 mask_<window>）
+    # **soft_max_sink 也要收**（第一版只扫 soft_max，gpt-oss 的 sink 那条
+    # 引用到一个从来没发射过的 msk_0 —— 编译当场报 undeclared）。
     wins = sorted({int(n["ins"][1].rsplit("_", 1)[-1]) for n in g.nodes
-                   if n["prim"] == "soft_max" and len(n["ins"]) > 1
-                   and "mask_" in n["ins"][1]})
+                   if n["prim"] in ("soft_max", "soft_max_sink")
+                   and len(n["ins"]) > 1 and "mask_" in n["ins"][1]})
     _mlines, mask_var = _mask_lines(wins)
     body += _mlines
     # 标量组合族（log1p / softplus）要的 1 元素常量张量；wt1 挂指针，
@@ -451,7 +598,9 @@ def emit_model_c_graph(g, ir, order, params, dump=()):
             return pmap[name]
         if name == "tok" or name == "pos":
             return name
-        if name.startswith("mask_"):
+        # 掩码叶子的名字是**带前缀**的（`L0O1_mask_0`）—— 第一版只认
+        # `mask_*` 开头，于是 soft_max_sink 的 a[1] 变成未定义变量。
+        if "mask_" in name:
             return mask_var[int(name.rsplit("_", 1)[-1])]
         return _gvar(name)
 
@@ -473,21 +622,123 @@ def emit_model_c_graph(g, ir, order, params, dump=()):
 
     body.append("")
     body.append("    /* ---- 逐节点发射（PRIMS -> ggml） ---- */")
+    # **非连续值的账本**：permute 的产物是视图，ggml_reshape 要求连续 ——
+    # 图里 `_b4` 那种 "permute 再 view" 的组合会在 reshape 的 assert 上炸
+    # （qwen3-next 实测）。view 的 ref 是 np.reshape（逻辑序，必要时自己拷），
+    # 所以这里对非连续输入先 cont 一次，语义逐位相同。
+    noncont = set()
     for node in g.nodes:
         prim, ins, at = node["prim"], node["ins"], node["attrs"]
         a = [_ref(x) for x in ins]
         if prim == "get_rows":
-            _put(body, prim, node, f"ggml_get_rows(ctx, {a[0]}, {a[1]})")
-        elif prim == "add":
-            _put(body, prim, node, f"ggml_add(ctx, {a[0]}, {a[1]})")
-        elif prim == "mul":
-            _put(body, prim, node, f"ggml_mul(ctx, {a[0]}, {a[1]})")
+            # numpy 的 `table[ids]` = **沿表的第一条 exec 轴（= ggml 的最后一条）**
+            # 取整块。两条路：
+            #   ① ids 是 1 维（embedding 的 tok）-> ggml_get_rows（原语）；
+            #   ② ids 是多维（MoE 的 (K, n)）-> 用乘法写成加权和
+            #      out[io, m] = Σ_e table[io, e] · EQ[e, m]：
+            #      ggml_get_rows 的契约是 idx 只在 dim1 上取、dim2/3 整块搬
+            #      （src0->ne2 == src1->ne1），铺在 (K, n) 上的下标它接不住
+            #      —— 实测 assert 在 ne2 上就炸。
+            tab, ids_ = a[0], a[1]
+            # 表的形状：权重在 params 里，中间值在 g.vals 里 —— 两处都查。
+            shp_t = params.get(node["ins"][0]) or g.vals.get(node["ins"][0]) or ()
+            shp_i = g.vals.get(node["ins"][1]) or ()
+            if len(shp_i) <= 1:
+                _put(body, prim, node,
+                     f"ggml_get_rows(ctx, {tab}, {ids_})")
+            else:
+                if len(shp_t) not in (2, 3):
+                    raise SystemExit("  [不支持] get_rows 的表是 %d 维" % len(shp_t))
+                u = _gvar(node["outs"][0])
+                # **取整块的那条轴是 exec 的形状第 0 位**（= ggml 的最后一位）。
+                # 第一版写成 shp_t[-1]（exec 的最后一维 = 行的宽度），于是
+                # 表的转置拿错轴：mul_mat 出来 256x32 而不是 2048x32。
+                e_ = int(shp_t[0])
+                io_ = 1
+                for _x in shp_t[1:]:
+                    io_ *= int(_x)
+                body.append(f"    int64_t {u}_e = {e_};"
+                            )
+                body.append(f"    int64_t {u}_io = {io_};"
+                            )
+                body.append(f"    int64_t {u}_m = {ids_}->ne[0] * {ids_}->ne[1];"
+                            )
+                body.append(f"    struct ggml_tensor * {u}_t = ggml_reshape_2d("
+                            f"ctx, {tab}, {u}_io, {u}_e);")
+                body.append(f"    struct ggml_tensor * {u}_a = ggml_cont(ctx, "
+                            f"ggml_transpose(ctx, {u}_t));")
+                body.append(f"    int64_t {u}_p[2] = {{ {u}_e, {u}_m }};")
+                body.append(f"    struct ggml_tensor * {u}_pat = ggml_new_tensor("
+                            f"ctx, GGML_TYPE_F32, 2, {u}_p);")
+                body.append(f"    struct ggml_tensor * {u}_A = ggml_repeat(ctx, "
+                            f"ggml_reshape_2d(ctx, ggml_arange(ctx, 0.0f, "
+                            f"(float) {u}_e, 1.0f), {u}_e, 1), {u}_pat);")
+                body.append(f"    struct ggml_tensor * {u}_B = ggml_repeat(ctx, "
+                            f"ggml_reshape_2d(ctx, ggml_cast(ctx, "
+                            f"ggml_cont(ctx, {ids_}), GGML_TYPE_F32), "
+                            f"1, {u}_m), {u}_pat);")
+                body.append(f"    struct ggml_tensor * {u}_EQ = ggml_clamp(ctx, "
+                            f"ggml_add1(ctx, ggml_neg(ctx, ggml_sqrt(ctx, "
+                            f"ggml_sqr(ctx, ggml_sub(ctx, {u}_A, {u}_B)))), "
+                            f"t_one), 0.0f, 1.0f);")
+                body.append(f"    struct ggml_tensor * {u}_r = ggml_mul_mat(ctx, "
+                            f"{u}_a, {u}_EQ);")
+                out_shp = g.vals.get(node["outs"][0]) or ()
+                dims = ["%d" % int(x) if x is not None else f"{ids_}->ne[1]"
+                        for x in out_shp]
+                while len(dims) < 4:
+                    dims.append("1")
+                _put(body, prim, node,
+                     f"ggml_reshape_4d(ctx, {u}_r, " + ", ".join(dims) + ")")
+        elif prim in ("add", "mul"):
+            # **双向广播**：ggml 只许第二个参数被广播（见 by1_bin_bcast）。
+            _op = "BY1_BIN_ADD" if prim == "add" else "BY1_BIN_MUL"
+            _put(body, prim, node,
+                 f"by1_bin_bcast(ctx, {a[0]}, {a[1]}, {_op})")
         elif prim == "scale":
             _put(body, prim, node,
                  f"ggml_scale(ctx, {a[0]}, {_f(at['s'])})")
         elif prim in ("matmul", "batch_matmul"):
-            # ggml_mul_mat(W, x) —— 图里的 matmul 也是 (权重, 输入)
-            _put(body, prim, node, f"ggml_mul_mat(ctx, {a[0]}, {a[1]})")
+            # ggml_mul_mat(W, x) —— 图里的 matmul 也是 (权重, 输入)。
+            #
+            # **批维方向不一致时要先补**：numpy 的广播是双向的，而
+            # ggml_mul_mat 只允许"第一个参数的批维整除第二个"（a 被摊到 b 上）。
+            # MoE 的专家乘是 wir 反的那一支：权重带批维 (K, n)、输入是 (1, n)
+            # —— 实测 ggml_can_mul_mat 在 ne2 上就炸。这里按**静态形状**
+            # 把小的那条 rep_ax 到大的（运行期 n 两条相等，不用碰）。
+            u = _gvar(node["outs"][0])
+
+            def _shp_of(nm):
+                v = params.get(nm)
+                if v is None:
+                    v = g.vals.get(nm)
+                return v or ()
+
+            def _dim(sh, k):
+                return int(sh[k]) if len(sh) > k and sh[k] is not None else None
+
+            xa, xb = a[0], a[1]
+            # **mul_mat 不吃 permuted 的操作数**（ops.cpp 的注释与断言：
+            # nb10 必须是元素大小）。图里的 permute 是视图 —— 要 positional
+            # 语义就先物化。（DSA 的 qp 就是这么撞上 ggml-cpu.c:1289 的。）
+            if ins[0] in noncont:
+                body.append(f"    struct ggml_tensor * {u}_ca = ggml_cont(ctx, {xa});")
+                xa = f"{u}_ca"
+            if ins[1] in noncont:
+                body.append(f"    struct ggml_tensor * {u}_cb = ggml_cont(ctx, {xb});")
+                xb = f"{u}_cb"
+            sa, sb = _shp_of(ins[0]), _shp_of(ins[1])
+            a2, a3 = _dim(sa, 2), _dim(sa, 3)
+            b2, b3 = _dim(sb, 2), _dim(sb, 3)
+            if a2 and b2 and a2 > b2 and a2 % b2 == 0:
+                body.append(f"    struct ggml_tensor * {u}_b2 = rep_ax(ctx, "
+                            f"{xb}, 2, {a2 // b2});")
+                xb = f"{u}_b2"
+            if a3 and b3 and a3 > b3 and a3 % b3 == 0:
+                body.append(f"    struct ggml_tensor * {u}_b3 = rep_ax(ctx, "
+                            f"{xb}, 3, {a3 // b3});")
+                xb = f"{u}_b3"
+            _put(body, prim, node, f"ggml_mul_mat(ctx, {xa}, {xb})")
         elif prim == "rms_norm":
             eps, one = _f(at["eps"]), bool(at.get("one_plus"))
             r = f"_r{len(body)}"
@@ -555,13 +806,29 @@ def emit_model_c_graph(g, ir, order, params, dump=()):
                  f"ggml_soft_max_ext(ctx, {a[0]}, {mask_var[w]}, "
                  f"{_f(at['scale'])}, 0.0f)")
         elif prim == "view":
+            src = a[0]
+            if node["ins"][0] in noncont:
+                u = _gvar(node["outs"][0])
+                body.append(f"    struct ggml_tensor * {u}_c = ggml_cont(ctx, {src});")
+                src = f"{u}_c"
             _put(body, prim, node,
-                 _reshape("ggml_reshape_%dd" % len(at["shape"]), a[0],
+                 _reshape("ggml_reshape_%dd" % len(at["shape"]), src,
                           at["shape"]))
         elif prim == "permute":
             ax = list(at["axes"]) + [3, 2, 1][:4 - len(at["axes"])]
+            # **轴要取逆**：图的约定是「结果轴 j = 输入轴 axes[j]」
+            # （PRIMS 的 ref 原文，by1c 的图路径就是这么做的），而
+            # ggml_permute 的约定是「结果轴 axes[j] = 输入轴 j」——
+            # 两者只在**对合**置换上相同（[0,2,1]/[1,0] 都是），所以
+            # 此前一直没露；DSA 的 [2,0,1] 是三循环，实测轴位错了
+            # （mul_mat 的收缩维 4 vs 16 当场炸）。
+            inv = [0, 0, 0, 0]
+            for _j, _a in enumerate(ax):
+                inv[_a] = _j
             _put(body, prim, node,
-                 f"ggml_permute(ctx, {a[0]}, {ax[0]}, {ax[1]}, {ax[2]}, {ax[3]})")
+                 f"ggml_permute(ctx, {a[0]}, {inv[0]}, {inv[1]}, "
+                 f"{inv[2]}, {inv[3]})")
+            noncont.add(node["outs"][0])
         elif prim == "cont":
             sh = at.get("shape")
             if sh:
@@ -573,7 +840,8 @@ def emit_model_c_graph(g, ir, order, params, dump=()):
         elif prim in ("exp", "sqrt", "neg", "log"):
             _put(body, prim, node, f"ggml_{prim}(ctx, {a[0]})")
         elif prim == "div":
-            _put(body, prim, node, f"ggml_div(ctx, {a[0]}, {a[1]})")
+            _put(body, prim, node,
+                 f"by1_bin_bcast(ctx, {a[0]}, {a[1]}, BY1_BIN_DIV)")
         elif prim == "clamp_min":
             # PRIMS 的 bound：`max(x, m)` —— 上界给满
             _put(body, prim, node,
@@ -629,8 +897,12 @@ def emit_model_c_graph(g, ir, order, params, dump=()):
                  f"sum_ax(ctx, {a[0]}, {int(at['axis'])}, "
                  f"{1 if at.get('keepdims', True) else 0})")
         elif prim == "repeat":
-            _put(body, prim, node,
-                 f"rep_ax(ctx, {a[0]}, {int(at['axis'])}, {int(at['reps'])})")
+            # **np.repeat 的整块重复**，不是 ggml_repeat 的平铺（见 blk_rep_axis）。
+            u = _gvar(node["outs"][0])
+            body.append(f"    struct ggml_tensor * {u}_br = blk_rep_axis(ctx, "
+                        f"{a[0]}, {int(at['axis'])}, {int(at['reps'])});")
+            body.append(f"    if (!{u}_br) GGML_ABORT(\"blk_rep_axis: axis range\");")
+            _put(body, prim, node, f"{u}_br")
         elif prim == "concat":
             _put(body, prim, node,
                  f"ggml_concat(ctx, {a[0]}, {a[1]}, {int(at['axis'])})")
@@ -673,12 +945,155 @@ def emit_model_c_graph(g, ir, order, params, dump=()):
                         f"ggml_cont(ctx, ggml_permute(ctx, {a[0]}, 1, 0, 2, 3));")
             body.append(f"    struct ggml_tensor * {u}_w = "
                         f"ggml_reshape_3d(ctx, {a[1]}, {k}, 1, {a[0]}->ne[0]);")
+            # **F32 im2col**（ggml_conv_1d_dw 会落到 F16，实测差 1e-4）
             body.append(f"    struct ggml_tensor * {u}_c = "
-                        f"ggml_conv_1d_dw(ctx, {u}_w, {u}_x, 1, {k - 1}, 1);")
+                        f"by1_conv1d_dw_f32(ctx, {u}_w, {u}_x, {k - 1});")
             body.append(f"    struct ggml_tensor * {u}_b = "
                         f"ggml_cont(ctx, ggml_permute(ctx, {u}_c, 1, 0, 2, 3));")
             body.append(f"    int64_t {u}_s = {a[0]}->ne[1];")
             _put(body, prim, node, f"sl_ax(ctx, {u}_b, 1, 0, {u}_s)")
+        elif prim == "top_k":
+            # ggml_top_k 正是「沿 ne0 取每行前 k 大的下标」（PRIMS 的 ref
+            # 是 `argsort(-x, stable)[..., :k]`）。**并列处取谁没有定义**
+            # （PRIMS 原文）—— ggml 用不稳定的 partial_sort 且故意把前两个
+            # 换序（ops.cpp 8785：「emphasize that the order is not important」），
+            # 这与承诺不冲突：并列的选择本来就不是语义的一部分。
+            u = _gvar(node["outs"][0])
+            body.append(f"    int {u}_k = {int(at['k'])};")
+            body.append(f"    if ({u}_k > (int) {a[0]}->ne[0]) "
+                        f"{u}_k = (int) {a[0]}->ne[0];")
+            _put(body, prim, node, f"ggml_top_k(ctx, {a[0]}, {u}_k)")
+        elif prim in ("one_hot", "gather"):
+            # 这两条都靠**一个加法拼出来的相等判定**（ggml 这版没有 EQ/LE
+            # 逐元算子；GGML_OP_LE 最近的邻居是 ARGSORT，不是比较）：
+            #   eq(a,b) = clamp(1 - |a-b|, 0, 1),  |d| = sqrt(d²)（无 abs 算子）
+            # 取值是**整数**（下标），所以 |a-b| ∈ {0, 1, 2, …}，判定精确。
+            #
+            # one_hot: out[W, I, d1, d2] = Σ_i eq(arange(W), ids[i, d1, d2])
+            # gather : out[K, d1, d2]    = Σ_m eq(arange(M), idx[k, d1, d2])·x[m]
+            #   （gather = take_along_axis 沿 dim0；用 one-hot 矩阵把"取值"
+            #    写成"加权求和"—— 图的维度里没有逐列 gather 原语。）
+            u = _gvar(node["outs"][0])
+            if prim == "one_hot":
+                ids, ref = a[0], a[1]
+                body.append(f"    int64_t {u}_w = {ref}->ne[0];")
+                body.append(f"    int64_t {u}_i = {ids}->ne[0];")
+                body.append(f"    int64_t {u}_d[4] = {{ {u}_w, {u}_i, "
+                            f"{ids}->ne[1], {ids}->ne[2] }};")
+                ids4 = (f"ggml_reshape_4d(ctx, {ids}, 1, {u}_i, "
+                        f"{ids}->ne[1], {ids}->ne[2])")
+                ar4 = (f"ggml_reshape_4d(ctx, ggml_arange(ctx, 0.0f, "
+                       f"(float) {u}_w, 1.0f), {u}_w, 1, 1, 1)")
+                ax = 1
+            else:
+                x, idx = a[0], a[1]
+                body.append(f"    int64_t {u}_m = {x}->ne[0];")
+                body.append(f"    int64_t {u}_d[4] = {{ {u}_m, {idx}->ne[0], "
+                            f"{x}->ne[1], {x}->ne[2] }};")
+                ids4 = (f"ggml_reshape_4d(ctx, {idx}, 1, {idx}->ne[0], "
+                        f"{x}->ne[1], {x}->ne[2])")
+                ar4 = (f"ggml_reshape_4d(ctx, ggml_arange(ctx, 0.0f, "
+                       f"(float) {u}_m, 1.0f), {u}_m, 1, 1, 1)")
+                ax = 0
+            body.append(f"    struct ggml_tensor * {u}_pat = ggml_new_tensor(ctx, "
+                        f"GGML_TYPE_F32, 4, {u}_d);")
+            body.append(f"    struct ggml_tensor * {u}_A = ggml_repeat(ctx, "
+                        f"{ar4}, {u}_pat);")
+            # 下标是 I32（top_k 的输出），比对要在 F32 上做 —— 先 cast。
+            # \`ggml_sub\` 的 assert 是"同类型"，混着会当场炸（不是静默）。
+            body.append(f"    struct ggml_tensor * {u}_B = ggml_repeat(ctx, "
+                        f"ggml_cast(ctx, {ids4}, GGML_TYPE_F32), {u}_pat);")
+            body.append(f"    struct ggml_tensor * {u}_EQ = ggml_clamp(ctx, "
+                        f"ggml_add1(ctx, ggml_neg(ctx, ggml_sqrt(ctx, "
+                        f"ggml_sqr(ctx, ggml_sub(ctx, {u}_A, {u}_B)))), t_one), "
+                        f"0.0f, 1.0f);")
+            if prim == "gather":
+                body.append(f"    struct ggml_tensor * {u}_xv = ggml_reshape_4d("
+                            f"ctx, ggml_cont(ctx, {x}), {u}_m, 1, "
+                            f"{x}->ne[1], {x}->ne[2]);")
+                _put(body, prim, node,
+                     f"sum_ax(ctx, ggml_mul(ctx, {u}_EQ, {u}_xv), 0, 0)")
+            else:
+                _put(body, prim, node, f"sum_ax(ctx, {u}_EQ, {ax}, 0)")
+        elif prim == "le":
+            # out = (a <= b) ? 1 : 0 —— ggml 没有比较算子，走 map_custom2。
+            # 两边先 repeat 到**广播后的形状**（结果形状取第一个参数，而
+            # DSA 的外积两边都不是结果形状）。
+            u = _gvar(node["outs"][0])
+            out_shp2 = g.vals.get(node["outs"][0]) or ()
+            _dims2 = [(str(int(x)) if x is not None else "n") for x in out_shp2]
+            while len(_dims2) < 4:
+                _dims2.append("1")
+            body.append(f"    int64_t {u}_bn[4] = {{ " + ", ".join(_dims2) + " };")
+            body.append(f"    struct ggml_tensor * {u}_pat = ggml_new_tensor(ctx, "
+                        f"GGML_TYPE_F32, 4, {u}_bn);")
+            body.append(f"    struct ggml_tensor * {u}_A = ggml_repeat(ctx, "
+                        f"{a[0]}, {u}_pat);")
+            body.append(f"    struct ggml_tensor * {u}_B = ggml_repeat(ctx, "
+                        f"{a[1]}, {u}_pat);")
+            _put(body, prim, node,
+                 f"ggml_map_custom2(ctx, {u}_A, {u}_B, by1_le_f32, 1, NULL)")
+        elif prim == "masked_fill":
+            # out = m > 0 ? x : v（PRIMS 原文）。**ggml 没有 select**，而
+            # `x*m + v*(1-m)` 在 v = -inf 时出 nan（-inf·0）——所以这条走
+            # map_custom2 落**精确**语义（单线程，n_tasks=1）。
+            u = _gvar(node["outs"][0])
+            sv = u + "_v"
+            # -inf 不能写成 -inff（C 里没有这个字面量，实测编译不过）。
+            _vv = float(at["value"])
+            if _vv == float("-inf"):
+                _vs = "(-INFINITY)"
+            elif _vv == float("inf"):
+                _vs = "INFINITY"
+            else:
+                _vs = _f(_vv)
+            body.append(f"    static float {sv} = {_vs};")
+            _put(body, prim, node,
+                 f"ggml_map_custom2(ctx, {a[0]}, {a[1]}, "
+                 f"by1_masked_fill_f32, 1, &{sv})")
+        elif prim == "delta_rule":
+            # **delta 规则 -> ggml_gated_delta_net**（Linear 的 GDN 与 KDA
+            # 共用这一条；内核按 g->ne[0] 自己分派：1=逐头、S_v=逐维）。
+            #
+            # 布局：图里是 exec [1, 头, n, dim] = ggml [dim, n, 头, 1]，
+            # 内核要 [S, 头, n_tokens, n_seqs] —— **头和 token 要对调**。
+            # 输出内核给 [S_v, H, n]（与 IR 路径的 y4 视图同一个约定），
+            # 再对调回图的 [dim, n, 头, 1]。
+            #
+            # ⚠ 内核内部乘 `scale = 1/sqrt(S_v)`（ops.cpp 11193），而图的
+            # q 已经带 lowering 给的 `dk^-0.5` —— **这里补乘 sqrt(S_v)
+            # 抵消**，否则 q 被缩放两次（差 1/S_v）。
+            sq = _gvar(node["ins"][2])
+            shp_v = g.vals.get(node["ins"][2]) or (None, None, None, None)
+            shp_q = g.vals.get(node["ins"][0]) or (None, None, None, None)
+            if shp_q[0] is None or shp_v[0] is None or shp_v[2] is None:
+                raise SystemExit("  [不支持] delta_rule 的静态维推不出来")
+            dk_, dv_, nv_ = int(shp_q[0]), int(shp_v[0]), int(shp_v[2])
+            if dk_ != dv_:
+                raise SystemExit(
+                    "  [不支持] delta_rule：ggml 内核要求 k_dim == v_dim"
+                    "（%d vs %d）" % (dk_, dv_))
+            u = _gvar(node["outs"][0])
+            for nm, xx in (("q", a[0]), ("k", a[1]), ("v", a[2]),
+                           ("be", a[3]), ("g", a[4])):
+                body.append(f"    struct ggml_tensor * {u}_{nm} = "
+                            f"ggml_cont(ctx, ggml_permute(ctx, {xx}, 0, 2, 1, 3));")
+            body.append(f"    float * {u}_s0b = (float *) calloc("
+                        f"(size_t) {dv_} * {dv_} * {nv_}, sizeof(float));")
+            body.append(f"    int64_t {u}_sn[4] = {{ {dv_}, {dv_}, {nv_}, 1 }};")
+            body.append(f"    struct ggml_tensor * {u}_s0 = ggml_new_tensor(ctx, "
+                        f"GGML_TYPE_F32, 4, {u}_sn);")
+            body.append(f"    {u}_s0->data = {u}_s0b;")
+            body.append(f"    struct ggml_tensor * {u}_res = ggml_gated_delta_net("
+                        f"ctx, {u}_q, {u}_k, {u}_v, {u}_g, {u}_be, {u}_s0, 1);")
+            body.append(f"    struct ggml_tensor * {u}_y4 = ggml_view_4d(ctx, "
+                        f"{u}_res, {dv_}, {nv_}, n, 1, "
+                        f"(size_t) {dv_} * {u}_res->nb[0], "
+                        f"(size_t) {dv_} * {nv_} * {u}_res->nb[0], 0, 0);")
+            body.append(f"    struct ggml_tensor * {u}_yp = ggml_cont(ctx, "
+                        f"ggml_permute(ctx, {u}_y4, 0, 2, 1, 3));")
+            _put(body, prim, node,
+                 f"ggml_scale(ctx, {u}_yp, sqrtf((float) {dv_}))")
         else:
             # **要么实现，要么拒绝。** 这几族现在仍然拒绝，但 2026-10-17
             # **修正了一条过时的摸底结论** —— 原来写"这版 ggml 没有 top_k
@@ -1119,10 +1534,10 @@ def emit_model_c(ir, order, params, dump=()):
                 lines.append(f"{indent}{dst} = ggml_add(ctx, {dst}, {W_('dense.bias')});")
         elif k == "Linear":
             # **GDN 线性注意力** —— 语义唯一在 `by1exec.op_linear`。
-            # ⚠ **这段当前是 WIP**：数值差 ~2.7e-3 未收口，`check_support`
-            # 对 `Linear` 一律拒绝（数值没对上的实现不许冒充支持）——
-            # 所以正常路径进不到这里。调试台账见
-            # `docs/ggml-gaps-feasibility.md` 第三·五节。
+            # 已收口（2026-10-17）：`linear-gdn-shaped` 对拍 **4.49e-08**、
+            # `clef-tiny` **1.22e-07**。27 刀的调试台账（含五个读数假象）见
+            # `docs/ggml-gaps-feasibility.md` 第三·五节 —— 那段排除表是这笔收口的
+            # 真实成本，别再重走。图路上这一族走 `delta_rule` 原语（同一内核）。
             #
             #   ① in_proj_qkvz -> [q|k|v|z]、in_proj_ba -> [bb|aa]（**逐头块**）；
             #   ② [q|k|v] 过深度可分离因果卷积 + silu，再切回 q/k/v
@@ -1682,7 +2097,8 @@ def selftest(args):
        ③ gemma 孪生        qk_norm+interleaved+window+kv_tie  数值对拍
        ④ mla-shaped        轴约定族（slice/repeat/sum/concat/l2_norm）数值对拍
        ⑤ gemma-4-31B       真实 IR（87 层，含视觉塔）          仅编译
-       ⑥ qwen3-next-shaped  GDN/MoE 落在支持集外               必须拒绝
+       ⑥ moe-routing/kda/glm-text-tiny/qwen3-next  MoE·KDA·Linear  数值对拍
+          （A3-4 起这三族在图路径上"要么实现，要么拒绝"变成了**数值判据**）
     """
     root = by1paths.root()
     twin_path = os.path.join(root, "_gemma-shaped.by1")
@@ -1695,7 +2111,14 @@ def selftest(args):
         # T16 第二批的整模判卷人：MLA 图用满 slice/repeat/sum/concat/l2_norm
         (os.path.join(root, "models", "mla-shaped.by1"), True, "pass"),
         (os.path.join(root, "models", "gemma-4-31B.by1"), False, "pass"),
-        (os.path.join(root, "models", "qwen3-next-shaped.by1"), False, "reject"),
+        # **A3-4（2026-10-17）：MoE / KDA / Linear 进了图路径的支持集。**
+        # 这三条原来写的是"必须拒绝"—— 图路径只会点名拒绝。现在它们是
+        # **数值判据**（判卷人是 by1exec）：拒绝不再是正确行为，
+        # 数值对不上才是不支持。
+        (os.path.join(root, "models", "moe-routing-shaped.by1"), True, "pass"),
+        (os.path.join(root, "models", "kda-shaped.by1"), True, "pass"),
+        (os.path.join(root, "models", "glm-text-tiny.by1"), True, "pass"),
+        (os.path.join(root, "models", "qwen3-next-shaped.by1"), True, "pass"),
     ]
     results = []
     for path, run, expect in cases:

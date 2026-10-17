@@ -287,6 +287,19 @@ EXEC_SEQ = {'mla-sparse-shaped.by1': 16}
 GGML_IR_MODELS = ['hello.by1', 'attn-fused-shaped.by1', 'ssm-shaped.by1',
                   'mla-shaped.by1', 'llama3-shaped.by1', 'attn-qgate-shaped.by1']
 
+#: **图路径（`by1ggml` 的默认路，A3-2 起）要进门槛的探针。** 2026-10-17 之前
+#: 图路径只会点名拒绝 MoE / KDA / Linear（映射没写）；那一天收口之后，
+#: 这三族变成**数值判据**（判卷人是 by1exec）—— 所以它们必须在门里，
+#: 否则"收口"只是这一天的记忆，下一个人改坏了不会有人知道（同 D6）。
+#: MoE 四种路由 / 三种打分（moe-routing 一份覆盖三条分支）+ KDA 三变体 +
+#: Linear（GDN）+ 两个真实结构的机械缩小版（Ling / GLM 文本主干）。
+GGML_GRAPH_MODELS = ['moe-routing-shaped.by1', 'mixtral-shaped.by1',
+                     'gpt-oss-shaped.by1', 'qwen3-next-shaped.by1',
+                     'ling-tiny.by1', 'glm-text-tiny.by1',
+                     'kda-shaped.by1', 'kda-gva-shaped.by1',
+                     'kda-lowrank-shaped.by1', 'linear-gdn-shaped.by1',
+                     'clef-tiny.by1']
+
 SHAPED = ['llama-shaped.by1', 'mixtral-shaped.by1', 'gpt-oss-shaped.by1',
           'qwen3-next-shaped.by1', 'mla-shaped.by1', 'llama3-shaped.by1',
           # **SparseMLA**：MLA 加一个 DSA 稀疏索引器（GLM-5.3-Flash 那一路）。
@@ -372,9 +385,9 @@ JUDGES = [
     # 后端 × 机制矩阵：**承诺的公共子集到底有多大**（T30 那条"未定"）。
     # 21 个探针 × 5 个后端；拒绝必须带理由且**必须分类**（可补/卡上游/设计如此）；
     # docs/backend-matrix.md 是生成物。
-    # 实测（2026-10-17）：IR 路公共子集 = **8/22**
-    # （hello / attn-fused / attn-qgate / mla / ssm / llama-shaped / gpt2-tiny /
-    # llama3），五后端交集 = 0 —— 这些数字是量出来的，不是宣传出来的。
+    # 实测（2026-10-17 晚）：**IR 路公共子集 = 10/23**、**默认路（图路）= 18/23**，
+    # 五后端交集 = 0 —— 这些数字是量出来的，不是宣传出来的。
+    # 两列分开量（`ggml` / `ggml-graph`）：一列看迁移完成到哪，一列看默认行为。
     ('by1backends.py', 3),
 
     # ── 档 4：数值类。**要 torch 前向。** ────────────────────
@@ -1057,6 +1070,19 @@ def main():
                              note_of(st, out, line, empty='').replace('   ', ' ')))
                 if st == 'fail':
                     fails.append('ggml-ir ' + f)
+            # **图路径（默认路）的数值对拍** —— MoE / KDA / Linear。见
+            # `GGML_GRAPH_MODELS` 处：这三族的"要么实现，要么拒绝"在
+            # 2026-10-17 变成了**数值判据**，放进门里才不会烂。
+            for f, (st, out) in zip(GGML_GRAPH_MODELS, run_many(
+                    [(['by1ggml.py', f], 'ggml ' + f)
+                     for f in GGML_GRAPH_MODELS])):
+                line = [l.strip() for l in out.splitlines()
+                        if '最大绝对差' in l]
+                st = confirmed(st, out, line)
+                rows.append(('ggml 图 ' + f, st,
+                             note_of(st, out, line, empty='').replace('   ', ' ')))
+                if st == 'fail':
+                    fails.append('ggml-graph ' + f)
 
         t0 = _tick('6. C 后端', t0)
 

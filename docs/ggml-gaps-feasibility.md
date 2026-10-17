@@ -651,3 +651,90 @@ RMS·norm.w·z / 权重布局 / mul_mat 契约 / 内核布局）全部留档 —
 - ggml 上游**改掉**这些算子的签名（那就重新对表）；
 - `op_linear`/`op_kda` 的语义与原语**差一截**（折算不出来）——
   那就按"要么实现，要么拒绝"记回矩阵，理由写**实测差异**，不再写"缺原语"。
+
+## 六、图路收口：MoE · KDA · Linear（2026-10-17 · A3-4）
+
+> **这一节是「剩 10 格可补」的落点。** 判据是 `by1ggml` 的**默认图路**
+> （不加 `--from-ir`），判卷人是 by1exec（seq=16，相对差容差 1e-4）。
+
+| 探针 | 机制 | 相对差 |
+|---|---|---|
+| `moe-routing-shaped.by1` | MoE 的三种选法 + sqrtsoftplus 打分 | 2.254e-07 |
+| `mixtral-shaped.by1` | MoE（softmax_topk） | 2.171e-07 |
+| `gpt-oss-shaped.by1` | MoE（topk_softmax + expert_bias + gptoss 激活） | 1.237e-07 |
+| `qwen3-next-shaped.by1` | Linear + MoE + Attention | 6.990e-07 |
+| `ling-tiny.by1` | KDA + MLA + MoE | 1.944e-07 |
+| `glm-text-tiny.by1` | KDA（低秩门）+ SparseMLA（DSA）+ MoE | 1.968e-07 |
+| `kda-shaped.by1` | KDA | 1.317e-07 |
+| `kda-gva-shaped.by1` | KDA（GVA） | 2.199e-07 |
+| `kda-lowrank-shaped.by1` | KDA（低秩） | 2.140e-07 |
+| `linear-gdn-shaped.by1` | Linear（GDN） | 1.201e-07 |
+| `clef-tiny.by1` | Linear + FFN + Attention（视觉塔布局） | 2.203e-07 |
+
+**矩阵上的结果**（[backend-matrix](backend-matrix.md) 两列分开量）：
+IR 路公共子集仍是 **10 / 23**（这一轮没动 `--from-ir`）；**默认路 18 / 23**。
+
+### 6.1 写进发射器的映射
+
+| 原语 | 映射 | 折算的要点 |
+|---|---|---|
+| `top_k` | `ggml_top_k` | 并列/顺序**没有定义**（PRIMS 原文），ggml 用不稳定 partial_sort 且故意换序 —— 与承诺不冲突 |
+| `gather` | 一组算术 | `take_along_axis` 沿 dim0：写成 `Σ_m eq(arange, idx)·x`（one-hot 加权和） |
+| `one_hot` | 一组算术 | `eq = clamp(1-|a-b|, 0, 1)`，`|d| = sqrt(d²)`（ggml 无 abs/比较算子）；下标是整数所以判定精确 |
+| `get_rows` | 原语 / one-hot + `mul_mat` | 1 维下标走 `ggml_get_rows`；**多维下标走加权和**（ggml_get_rows 只许下标铺在 dim1） |
+| `masked_fill` | `map_custom2` | 算术拼 `x·m + v·(1-m)` 在 `v = -inf` 时出 nan（`-inf·0`），所以走自定义逐元算子 |
+| `le` | `map_custom2` | 同上（ggml 这版没有比较算子）；两边先 repeat 到广播后的形状 |
+| `delta_rule` | `ggml_gated_delta_net` | GDN 与 KDA **共用**：内核按 `g->ne[0]` 分派（1 = 逐头、`S_v` = 逐维）。q 已带 lowering 的 `dk^-0.5`，而内核内部再乘 `1/sqrt(S_v)` —— **输出补乘 `sqrt(S_v)` 抵消** |
+| 3 维权重 | `wt3` | MoE 专家 (E,out,in) 行主序 = ggml [in,out,E]，和前两维同一个「零转换」 |
+| 二元算子 | `by1_bin_bcast` | numpy 是**双向**广播，ggml 只许第二个参数被广播；加/乘可换序，减/除把小的一侧 repeat 上去 |
+| `repeat` | `blk_rep_axis` | **np.repeat 的整块重复**，不是 `ggml_repeat` 的平铺（见 6.2 ①） |
+| `conv1d_causal` | `by1_conv1d_dw_f32` | `ggml_conv_1d_dw` 的 im2col 落 **F16**（见 6.2 ②）；换成 F32 的 im2col + mul_mat |
+| `permute` | `ggml_permute`（轴取逆） | 图的约定与 ggml 的约定**互为逆**（见 6.2 ③） |
+| `matmul` | `ggml_mul_mat` + 修补 | 非连续操作数先 `cont`（mul_mat 不吃 permuted）；批维方向反了先 `rep_ax` |
+
+### 6.2 五个「静默算错」的坑（都只有数值判据抓得住）
+
+① **`ggml_repeat` 是平铺，`np.repeat` 是整块重复。** `[q0,q1,q0,q1]` vs
+`[q0,q0,q1,q1]`。两者在 **axis 0** 上相同 —— 所以 MoE 的分组掩码（axis 0）
+一直是对的，而 Linear 的 GQA 复制（axis 1）当场差 5.5e-3。
+试过两条错路：插一条长度 1 的轴再 repeat（reps 轴在内存里落在被复制轴**后面**，
+折回去还是平铺）、整体 concat 自身 reps 次（`a||a` 也是平铺）。
+正解：把该轴的每一份单独切片、各自重复、再按块拼回去。
+
+② **`ggml_conv_1d_dw` 的 im2col 落 F16。** 它内部是 `a->type == BF16 ? F32 : F16`，
+而我们的核是 F32 —— 于是输入先 round 到 fp16，conv 输出相对差 ~1e-4。
+单层看是「勉强过」，过几层就顶爆判据（qwen3-next 5.5e-4、ling-tiny 2e-4 →
+换 F32 im2col 后 6.99e-07 / 1.94e-07）。**同一个道理适用于任何「照抄上游封装」的映射：
+封装里的默认精度也是语义的一部分。**
+
+③ **`ggml_permute` 的轴约定与 PRIMS 的 ref 互为逆。**
+ggml 是「结果轴 `axes[j]` = 输入轴 `j`」，PRIMS 的 ref 是「结果轴 `j` = 输入轴 `axes[j]`」。
+两者在**对合**置换上相同（`[0,2,1]`、`[1,0]`），所以注意力那一路一直没露；
+DSA 的 `[2,0,1]` 是三循环，当场让 `mul_mat` 的收缩维变成 4 vs 16。
+
+④ **ggml 的二元算子只许第二个参数被广播**（`ggml_can_repeat(b, a)`），
+而 numpy 是双向的。KDA 的 `gate_lower` 支 `ea[1,nv] · tt[dk,nv,n]` 直接撞断言。
+（**注意**：`mul_mat` 的批维方向也是单向的 —— 权重带批维、输入是 1 时要把
+**输入** repeat 上去，见 MoE 的专家乘。）
+
+⑤ **`ggml_get_rows` 的下标只能铺在 dim1**（dim2/3 整块搬，`src0->ne2 == src1->ne1`），
+而 MoE 的下标是 `(K, n)` 铺在两个维度上的 —— 专家整行取改成
+`one-hot × mul_mat`（`out[io, m] = Σ_e table[io, e]·EQ[e, m]`）。
+**这条也顺手解释了为什么 embedding 的 get_rows 一直对**：那一支的下标是 1 维。
+
+### 6.3 还差的两格（记档，不猜）
+
+- **`ssm_scan`（图路）**：`ggml_ssm_scan` 内部自己做 `softplus(dt + dt_bias)`，
+  而图的 `ssm_scan` 原语（ref）把 softplus 放在**外面**（lowering 先算 `d`）。
+  直接映射会算两次 softplus。要么给内核加一个「dt 已变换」的开关（上游改动），
+  要么把 lowering 的 softplus 挪进原语语义（会动 by1c/by1exec 的语义）——
+  **两条都不是「改一行」**，所以这一格仍是拒绝（IR 路继续覆盖它）。
+- **SparseMLA 的 k-pool（`index_kpool > 1`）**：lowering 还没收编。
+
+### 6.4 门禁（防「收口」变回记忆）
+
+- `by1ggml --selftest` 的 ⑥ 从「**必须拒绝** qwen3-next」改成
+  「**必须数值过** moe-routing / kda / glm-text-tiny / qwen3-next」。
+- `by1all` 的 6b 段新增 `GGML_GRAPH_MODELS`（11 份）—— 图路默认路逐份对拍。
+- `by1backends` 新增 **`ggml-graph` 列** + 「默认路公共子集」一行
+  （18/23，和 IR 路的 10/23 并排）。

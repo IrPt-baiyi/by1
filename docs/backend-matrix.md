@@ -6,33 +6,35 @@
 
 ## 一、矩阵
 
-| 探针 | 机制 | `codegen` | `c` | `ggml` | `exec` | `full` |
-|---|---|---|---|---|---|---|
-| `hello.by1` | Attention + FFN（最小完整） | ✅ | ✅ | ✅ | ✅ | ✗ |
-| `attn-fused-shaped.by1` | Attention（融合 qkv + 门） | ✅ | ✅ | ✅ | ✅ | ✗ |
-| `attn-qgate-shaped.by1` | Attention（q_gate：q 投影宽一倍） | ✅ | ✅ | ✅ | ✅ | ✗ |
-| `linear-gdn-shaped.by1` | Linear（GDN 线性注意力 · 映射未收口） | ✅ | ✅ | ✅ | ✅ | ✗ |
-| `mla-shaped.by1` | MLA | ✅ | ✅ | ✅ | ✅ | ✗ |
-| `mla-sparse-shaped.by1` | MLA + 稀疏索引（DSA） | ✅ | ✅ | ✗ | ✅ | ✗ |
-| `moe-routing-shaped.by1` | MoE（路由） | ✅ | ✅ | ✗ | ✅ | ✗ |
-| `kda-shaped.by1` | KDA | ✅ | ✅ | ✗ | ✅ | ✗ |
-| `kda-gva-shaped.by1` | KDA（GVA） | ✅ | ✅ | ✗ | ✅ | ✗ |
-| `kda-lowrank-shaped.by1` | KDA（低秩） | ✅ | ✅ | ✗ | ✅ | ✗ |
-| `ssm-shaped.by1` | SSM（Mamba2/Nemotron-H 参数化） | ✅ | ✅ | ✅ | ✅ | ✗ |
-| `raw-escape.by1` | Raw（逃生舱） | ✅ | ✗ | ✗ | ✗ | ✗ |
-| `complete-granite-4.0-h-350m.by1` | SSM2 + Attention（逐层混排） | ✗ | — | — | — | ✅ |
-| `complete-Falcon-H1-0.5B-Instruct.by1` | Parallel（层内并行：SSM2 + Attention） | ✗ | — | — | — | ✅ |
-| `llama-shaped.by1` | Attention + FFN（RoPE） | ✅ | ✅ | ✅ | ✅ | ✗ |
-| `llama3-shaped.by1` | Attention + FFN（LLaMA3 RoPE 缩放） | ✅ | ✅ | ✅ | ✅ | ✗ |
-| `mixtral-shaped.by1` | Attention + MoE | ✅ | ✅ | ✗ | ✅ | ✗ |
-| `gpt-oss-shaped.by1` | Attention + MoE（sigmoid 路由） | ✅ | ✅ | ✗ | ✅ | ✗ |
-| `qwen3-next-shaped.by1` | Linear + MoE + Attention（线性注意力） | ✅ | ✅ | ✗ | ✅ | ✗ |
-| `ling-tiny.by1` | KDA + MLA + MoE（Ling 结构的机械缩小版） | ✅ | ✅ | ✗ | ✅ | ✗ |
-| `glm-text-tiny.by1` | KDA（低秩门）+ SparseMLA + MoE | ✅ | ✅ | ✗ | ✅ | ✗ |
-| `clef-tiny.by1` | Linear + FFN + Attention（视觉塔布局） | ✅ | ✅ | ✅ | ✅ | ✗ |
-| `gpt2-tiny.by1` | Attention + FFN（learned 位置） | ✅ | ✅ | ✅ | ✅ | ✗ |
+| 探针 | 机制 | `codegen` | `c` | `ggml` | `ggml-graph` | `exec` | `full` |
+|---|---|---|---|---|---|---|---|
+| `hello.by1` | Attention + FFN（最小完整） | ✅ | ✅ | ✅ | ✅ | ✅ | ✗ |
+| `attn-fused-shaped.by1` | Attention（融合 qkv + 门） | ✅ | ✅ | ✅ | ✅ | ✅ | ✗ |
+| `attn-qgate-shaped.by1` | Attention（q_gate：q 投影宽一倍） | ✅ | ✅ | ✅ | ✅ | ✅ | ✗ |
+| `linear-gdn-shaped.by1` | Linear（GDN 线性注意力） | ✅ | ✅ | ✅ | ✅ | ✅ | ✗ |
+| `mla-shaped.by1` | MLA | ✅ | ✅ | ✅ | ✅ | ✅ | ✗ |
+| `mla-sparse-shaped.by1` | MLA + 稀疏索引（DSA） | ✅ | ✅ | ✗ | ✗ | ✅ | ✗ |
+| `moe-routing-shaped.by1` | MoE（路由） | ✅ | ✅ | ✗ | ✅ | ✅ | ✗ |
+| `kda-shaped.by1` | KDA | ✅ | ✅ | ✗ | ✅ | ✅ | ✗ |
+| `kda-gva-shaped.by1` | KDA（GVA） | ✅ | ✅ | ✗ | ✅ | ✅ | ✗ |
+| `kda-lowrank-shaped.by1` | KDA（低秩） | ✅ | ✅ | ✗ | ✅ | ✅ | ✗ |
+| `ssm-shaped.by1` | SSM（Mamba2/Nemotron-H 参数化） | ✅ | ✅ | ✅ | ✗ | ✅ | ✗ |
+| `raw-escape.by1` | Raw（逃生舱） | ✅ | ✗ | ✗ | ✗ | ✗ | ✗ |
+| `complete-granite-4.0-h-350m.by1` | SSM2 + Attention（逐层混排） | ✗ | — | — | — | — | ✅ |
+| `complete-Falcon-H1-0.5B-Instruct.by1` | Parallel（层内并行：SSM2 + Attention） | ✗ | — | — | — | — | ✅ |
+| `llama-shaped.by1` | Attention + FFN（RoPE） | ✅ | ✅ | ✅ | ✅ | ✅ | ✗ |
+| `llama3-shaped.by1` | Attention + FFN（LLaMA3 RoPE 缩放） | ✅ | ✅ | ✅ | ✅ | ✅ | ✗ |
+| `mixtral-shaped.by1` | Attention + MoE | ✅ | ✅ | ✗ | ✅ | ✅ | ✗ |
+| `gpt-oss-shaped.by1` | Attention + MoE（sigmoid 路由） | ✅ | ✅ | ✗ | ✅ | ✅ | ✗ |
+| `qwen3-next-shaped.by1` | Linear + MoE + Attention（线性注意力） | ✅ | ✅ | ✗ | ✅ | ✅ | ✗ |
+| `ling-tiny.by1` | KDA + MLA + MoE（Ling 结构的机械缩小版） | ✅ | ✅ | ✗ | ✅ | ✅ | ✗ |
+| `glm-text-tiny.by1` | KDA（低秩门）+ SparseMLA + MoE | ✅ | ✅ | ✗ | ✅ | ✅ | ✗ |
+| `clef-tiny.by1` | Linear + FFN + Attention（视觉塔布局） | ✅ | ✅ | ✅ | ✅ | ✅ | ✗ |
+| `gpt2-tiny.by1` | Attention + FFN（learned 位置） | ✅ | ✅ | ✅ | ✅ | ✅ | ✗ |
 
 **读法**：✅ = 后端接受并给出产物；✗ = 明确拒绝（原文见第二节）；— = 根本没走到（上游 `codegen` 先拒，本后端无从表态）；? = 没验（缺依赖，**不算通过**）。
+
+`ggml` 与 `ggml-graph` 是**两条路**：前者是 IR 路（`by1ggml --from-ir`，按算子手写发射），后者是**默认图路**（不加开关时走的那条，PRIMS 图的机械翻译）。两列的支持集不同 —— 一列看迁移完成到哪，一列看今天默认给用户的是哪一条。
 
 ## 二、每一个拒绝的**原文**
 
@@ -46,6 +48,7 @@
 | `linear-gdn-shaped.by1` | `full` | 完整后端的 arch 必须是 qwen3, qwen2, gpt2, gpt_oss, qwen3_5, mamba, granitemoehybrid, falcon_h1 |
 | `mla-shaped.by1` | `full` | 完整后端的 arch 必须是 qwen3, qwen2, gpt2, gpt_oss, qwen3_5, mamba, granitemoehybrid, falcon_h1 |
 | `mla-sparse-shaped.by1` | `ggml` | 第 0 层 op1（MLA）：index_heads（SparseMLA/DSA 索引）还没实现 —— 原语 ggml 有（TOP_K/LIGHTNING_INDEXER），缺的是映射实现；第 1 层 op1（MLA）：index_heads（SparseMLA/DSA 索引）还没实现 —— 原语 ggml 有（TOP_K/LIGHTNING_INDEXER），缺的是映射实现；第 2 层 op1（MLA）：index_heads（SparseMLA/DSA 索引）还没实现 —— 原语 ggml 有（TOP_K/LIGHTNING_INDEXER），缺的是映射实现；第 2 层 op1（MLA）： |
+| `mla-sparse-shaped.by1` | `ggml-graph` | [不支持] MLA.index_kpool > 1（k-pool 路径还没收编） |
 | `mla-sparse-shaped.by1` | `full` | 完整后端的 arch 必须是 qwen3, qwen2, gpt2, gpt_oss, qwen3_5, mamba, granitemoehybrid, falcon_h1 |
 | `moe-routing-shaped.by1` | `ggml` | 第 0 层 op4（MoE）：算子 MoE 还没有 ggml 映射；第 1 层 op4（MoE）：算子 MoE 还没有 ggml 映射；第 2 层 op4（MoE）：算子 MoE 还没有 ggml 映射 |
 | `moe-routing-shaped.by1` | `full` | 完整后端的 arch 必须是 qwen3, qwen2, gpt2, gpt_oss, qwen3_5, mamba, granitemoehybrid, falcon_h1 |
@@ -55,9 +58,11 @@
 | `kda-gva-shaped.by1` | `full` | 完整后端的 arch 必须是 qwen3, qwen2, gpt2, gpt_oss, qwen3_5, mamba, granitemoehybrid, falcon_h1 |
 | `kda-lowrank-shaped.by1` | `ggml` | 第 0 层 op1（KDA）：算子 KDA 还没有 ggml 映射；第 1 层 op1（KDA）：算子 KDA 还没有 ggml 映射；第 2 层 op1（KDA）：算子 KDA 还没有 ggml 映射；第 3 层 op1（KDA）：算子 KDA 还没有 ggml 映射 |
 | `kda-lowrank-shaped.by1` | `full` | 完整后端的 arch 必须是 qwen3, qwen2, gpt2, gpt_oss, qwen3_5, mamba, granitemoehybrid, falcon_h1 |
+| `ssm-shaped.by1` | `ggml-graph` | [不支持] 图的 'ssm_scan' 原语还没有 ggml 映射 —— **要么实现、要么在 check_support 里拒绝** |
 | `ssm-shaped.by1` | `full` | 完整后端的 arch 必须是 qwen3, qwen2, gpt2, gpt_oss, qwen3_5, mamba, granitemoehybrid, falcon_h1 |
 | `raw-escape.by1` | `c` | [不支持] C 后端还没有 Raw |
 | `raw-escape.by1` | `ggml` | 第 0 层 op1（Raw）：算子 Raw 还没有 ggml 映射；第 1 层 op1（Raw）：算子 Raw 还没有 ggml 映射 |
+| `raw-escape.by1` | `ggml-graph` | [不支持] Raw 还没有 lowering（原语未收编，见 by1graph.UNLOWERED） |
 | `raw-escape.by1` | `exec` | 这个后端还没有实现 Raw |
 | `raw-escape.by1` | `full` | 完整后端的 arch 必须是 qwen3, qwen2, gpt2, gpt_oss, qwen3_5, mamba, granitemoehybrid, falcon_h1 |
 | `complete-granite-4.0-h-350m.by1` | `codegen` | 完整模型使用 transformers 后端；请用 by1 build，不能把多分支模型降成串行 IR |
@@ -86,7 +91,7 @@
 - `hello.by1` —— Attention + FFN（最小完整）
 - `attn-fused-shaped.by1` —— Attention（融合 qkv + 门）
 - `attn-qgate-shaped.by1` —— Attention（q_gate：q 投影宽一倍）
-- `linear-gdn-shaped.by1` —— Linear（GDN 线性注意力 · 映射未收口）
+- `linear-gdn-shaped.by1` —— Linear（GDN 线性注意力）
 - `mla-shaped.by1` —— MLA
 - `ssm-shaped.by1` —— SSM（Mamba2/Nemotron-H 参数化）
 - `llama-shaped.by1` —— Attention + FFN（RoPE）
@@ -94,7 +99,31 @@
 - `clef-tiny.by1` —— Linear + FFN + Attention（视觉塔布局）
 - `gpt2-tiny.by1` —— Attention + FFN（learned 位置）
 
-### 3.2 五后端交集（含 `full`）
+### 3.2 默认路（`codegen` / `c` / `ggml-graph` / `exec` 四后端交集）
+
+`ggml` 这一列换成**默认图路**（不加 `--from-ir` 时走的那条）。
+和 3.1 的差 = 迁移把多少格从"拒绝"变成了"接受"。
+
+- `hello.by1` —— Attention + FFN（最小完整）
+- `attn-fused-shaped.by1` —— Attention（融合 qkv + 门）
+- `attn-qgate-shaped.by1` —— Attention（q_gate：q 投影宽一倍）
+- `linear-gdn-shaped.by1` —— Linear（GDN 线性注意力）
+- `mla-shaped.by1` —— MLA
+- `moe-routing-shaped.by1` —— MoE（路由）
+- `kda-shaped.by1` —— KDA
+- `kda-gva-shaped.by1` —— KDA（GVA）
+- `kda-lowrank-shaped.by1` —— KDA（低秩）
+- `llama-shaped.by1` —— Attention + FFN（RoPE）
+- `llama3-shaped.by1` —— Attention + FFN（LLaMA3 RoPE 缩放）
+- `mixtral-shaped.by1` —— Attention + MoE
+- `gpt-oss-shaped.by1` —— Attention + MoE（sigmoid 路由）
+- `qwen3-next-shaped.by1` —— Linear + MoE + Attention（线性注意力）
+- `ling-tiny.by1` —— KDA + MLA + MoE（Ling 结构的机械缩小版）
+- `glm-text-tiny.by1` —— KDA（低秩门）+ SparseMLA + MoE
+- `clef-tiny.by1` —— Linear + FFN + Attention（视觉塔布局）
+- `gpt2-tiny.by1` —— Attention + FFN（learned 位置）
+
+### 3.3 五后端交集（含 `full`）
 
 **一个都没有。** 这不奇怪：`full` 是**另一扇门**（吃 `arch = qwen3 / granitemoehybrid / …` 的官方家族），而上面那些 shaped 探针走的是串行 IR 门。**但对外措辞要照实**：不存在"一份声明五后端通吃"，"多后端已支持"这句话现在不成立。
 
@@ -104,24 +133,26 @@
 > **可补** = 我们的工程活；**卡上游** = 缺 ggml/上游原语；
 > **设计如此** = 边界而非缺口。
 
-### 可补（10 格）
+### 可补（12 格）
 
-- `mla-sparse-shaped.by1` × `ggml` —— ggml 有 `TOP_K`/`ARGSORT`/`LIGHTNING_INDEXER`（2026-10-17 逐个数过 enum ggml_op，101 个）—— 缺的是路由语义到这些原语的映射实现
-- `moe-routing-shaped.by1` × `ggml` —— ggml 有 `TOP_K`/`ARGSORT`/`LIGHTNING_INDEXER`（2026-10-17 逐个数过 enum ggml_op，101 个）—— 缺的是路由语义到这些原语的映射实现
-- `kda-shaped.by1` × `ggml` —— ggml 有 `GATED_DELTA_NET`/`GATED_LINEAR_ATTN`（delta-rule/GDN 族原语）—— 与 by1 的 KDA/Linear 对表是实现工作（可能要折算）
-- `kda-gva-shaped.by1` × `ggml` —— ggml 有 `GATED_DELTA_NET`/`GATED_LINEAR_ATTN`（delta-rule/GDN 族原语）—— 与 by1 的 KDA/Linear 对表是实现工作（可能要折算）
-- `kda-lowrank-shaped.by1` × `ggml` —— ggml 有 `GATED_DELTA_NET`/`GATED_LINEAR_ATTN`（delta-rule/GDN 族原语）—— 与 by1 的 KDA/Linear 对表是实现工作（可能要折算）
-- `mixtral-shaped.by1` × `ggml` —— ggml 有 `TOP_K`/`ARGSORT`/`LIGHTNING_INDEXER`（2026-10-17 逐个数过 enum ggml_op，101 个）—— 缺的是路由语义到这些原语的映射实现
-- `gpt-oss-shaped.by1` × `ggml` —— ggml 有 `TOP_K`/`ARGSORT`/`LIGHTNING_INDEXER`（2026-10-17 逐个数过 enum ggml_op，101 个）—— 缺的是路由语义到这些原语的映射实现
-- `qwen3-next-shaped.by1` × `ggml` —— ggml 有 `TOP_K`/`ARGSORT`/`LIGHTNING_INDEXER`（2026-10-17 逐个数过 enum ggml_op，101 个）—— 缺的是路由语义到这些原语的映射实现
-- `ling-tiny.by1` × `ggml` —— ggml 有 `TOP_K`/`ARGSORT`/`LIGHTNING_INDEXER`（2026-10-17 逐个数过 enum ggml_op，101 个）—— 缺的是路由语义到这些原语的映射实现
-- `glm-text-tiny.by1` × `ggml` —— ggml 有 `TOP_K`/`ARGSORT`/`LIGHTNING_INDEXER`（2026-10-17 逐个数过 enum ggml_op，101 个）—— 缺的是路由语义到这些原语的映射实现
+- `mla-sparse-shaped.by1` × `ggml` —— **图路（默认）已经收口**；IR 路（`--from-ir`）还按算子手写、没接这一族 —— 要么把映射搬过去，要么按 A3-3 删掉 IR 路
+- `mla-sparse-shaped.by1` × `ggml-graph` —— 图路上的映射还没写：SparseMLA 的 k-pool 组合 / SSM 的 ssm_scan 映射 —— 原语在（IR 路已在用），缺的是图路这一层的翻译
+- `moe-routing-shaped.by1` × `ggml` —— **图路（默认）已经收口**；IR 路（`--from-ir`）还按算子手写、没接这一族 —— 要么把映射搬过去，要么按 A3-3 删掉 IR 路
+- `kda-shaped.by1` × `ggml` —— **图路（默认）已经收口**（KDA/Linear 都走 `GATED_DELTA_NET`）；IR 路还按算子手写、没接 —— 要么搬过去，要么删掉 IR 路
+- `kda-gva-shaped.by1` × `ggml` —— **图路（默认）已经收口**（KDA/Linear 都走 `GATED_DELTA_NET`）；IR 路还按算子手写、没接 —— 要么搬过去，要么删掉 IR 路
+- `kda-lowrank-shaped.by1` × `ggml` —— **图路（默认）已经收口**（KDA/Linear 都走 `GATED_DELTA_NET`）；IR 路还按算子手写、没接 —— 要么搬过去，要么删掉 IR 路
+- `ssm-shaped.by1` × `ggml-graph` —— 图路上的映射还没写：SparseMLA 的 k-pool 组合 / SSM 的 ssm_scan 映射 —— 原语在（IR 路已在用），缺的是图路这一层的翻译
+- `mixtral-shaped.by1` × `ggml` —— **图路（默认）已经收口**；IR 路（`--from-ir`）还按算子手写、没接这一族 —— 要么把映射搬过去，要么按 A3-3 删掉 IR 路
+- `gpt-oss-shaped.by1` × `ggml` —— **图路（默认）已经收口**；IR 路（`--from-ir`）还按算子手写、没接这一族 —— 要么把映射搬过去，要么按 A3-3 删掉 IR 路
+- `qwen3-next-shaped.by1` × `ggml` —— **图路（默认）已经收口**；IR 路（`--from-ir`）还按算子手写、没接这一族 —— 要么把映射搬过去，要么按 A3-3 删掉 IR 路
+- `ling-tiny.by1` × `ggml` —— **图路（默认）已经收口**；IR 路（`--from-ir`）还按算子手写、没接这一族 —— 要么把映射搬过去，要么按 A3-3 删掉 IR 路
+- `glm-text-tiny.by1` × `ggml` —— **图路（默认）已经收口**；IR 路（`--from-ir`）还按算子手写、没接这一族 —— 要么把映射搬过去，要么按 A3-3 删掉 IR 路
 
 ### 卡上游（0 格）
 
 **没有。**
 
-### 设计如此（26 格）
+### 设计如此（27 格）
 
 - `hello.by1` × `full` —— 两扇门：`full` 吃官方家族的 arch；`tensors{}` / `emit{}` 是 IR 路的契约块 —— 不是缺口
 - `attn-fused-shaped.by1` × `full` —— 两扇门：`full` 吃官方家族的 arch；`tensors{}` / `emit{}` 是 IR 路的契约块 —— 不是缺口
@@ -136,6 +167,7 @@
 - `ssm-shaped.by1` × `full` —— 两扇门：`full` 吃官方家族的 arch；`tensors{}` / `emit{}` 是 IR 路的契约块 —— 不是缺口
 - `raw-escape.by1` × `c` —— 两层分工：`Raw`（第一层）的契约是 PyTorch 工厂；c/exec 的逃生舱走**第二层 `External`（.so）** —— 已由 by1extdemo 三后端验过，不是缺口
 - `raw-escape.by1` × `ggml` —— ggml 是**图发射**，装不下任意外部调用（进图要 custom op）—— 两层逃生舱在 ggml 上没有对应的门，这是结构边界
+- `raw-escape.by1` × `ggml-graph` —— ggml 是**图发射**，装不下任意外部调用（进图要 custom op）—— 这是结构边界
 - `raw-escape.by1` × `exec` —— 两层分工：`Raw`（第一层）的契约是 PyTorch 工厂；c/exec 的逃生舱走**第二层 `External`（.so）** —— 已由 by1extdemo 三后端验过，不是缺口
 - `raw-escape.by1` × `full` —— 两扇门：`full` 吃官方家族的 arch；`tensors{}` / `emit{}` 是 IR 路的契约块 —— 不是缺口
 - `complete-granite-4.0-h-350m.by1` × `codegen` —— 两扇门：`full` 吃官方家族的 arch；`tensors{}` / `emit{}` 是 IR 路的契约块 —— 不是缺口

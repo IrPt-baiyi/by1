@@ -98,8 +98,13 @@ def run_ref(ref, x, q_resid, seq):
     cos = torch.randn(1, seq, w)
     sin = torch.randn(1, seq, w)
     pos = torch.arange(seq)[None]
+    # **因果掩码要显式给。** transformers 5.20 里这一句是
+    # `attention_mask.dtype == torch.bool` —— 传 None 当场 AttributeError
+    # （实测 2026-10-17）。而 by1 的 DSA 语义本来就是因果的（lowering 里
+    # 用 `le` 的外积掩码），所以这里给下三角 bool 掩码，两边同义。
+    amask = torch.tril(torch.ones(seq, seq, dtype=torch.bool))[None]
     with torch.no_grad():
-        out = ref(x, q_resid, (cos, sin), None, pos)
+        out = ref(x, q_resid, (cos, sin), amask, pos)
     return out, (cos, sin), pos
 
 
