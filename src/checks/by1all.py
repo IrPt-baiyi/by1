@@ -442,6 +442,10 @@ JUDGES = [
     # 在守。KDA 那个还要 `fla` 当参照物：拿不到就干净跳过（不是崩）。
     ('by1kda.py', 4),
     ('by1ssm.py', 4),
+    # 注意力 sink：对着 GPT-OSS 的 `GptOssAttention` 比（sink 作为额外一列
+    # logit 参与 softmax）。实测逐位一致；另外还钉了一条反直觉的语义：
+    # **sink 清零 不等于没有 sink**（分母多一个 e^0）。
+    ('by1gptoss.py', 4),
     # 前向，**真实维度**（14 个真实模型里唯一在这台机器上跑得动的）
     ('by1instella.py', 4),
     # 真实维度、官方 config 的前向 —— **另一代**
