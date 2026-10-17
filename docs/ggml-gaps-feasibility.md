@@ -424,6 +424,30 @@ step2 rms= 0.00252854  s1=-0.00000511  s2=-0.06409614  y3= 0.00005969
 3. 参照 `op_linear` 的 `@ out_proj.T` 是否与 `op_attention` 的 `Wo` 一致
    （若参照自己就不同款，那 C 侧也该不同款）。
 
+### 2026-10-17 早（第二十刀）：嫌疑 ③ 洗清（参照两款同构），剩 ①②
+
+读 `by1exec` 的两处收尾：
+
+```
+op_attention :  o = o @ P["wo"].T            （by1ggml 的 Attention 分支
+op_linear    :  return y.reshape(b, s, vd) @ P["out_proj"].T
+```
+
+**两款同构**，而 C 侧的 Attention 分支（`mul_mat(W('wo'), att)`）在多轮
+对拍里一直是通的 ✓ ⇒ **嫌疑 ③（参照自己不同款）洗清**。
+
+那么差异只可能在 **Linear 特有** 的那一步：
+- 嫌疑 ①：`ggml_mul_mat` 的行列约定 × `wt2` 转置（但 Attention 同款通过，
+  所以只剩 **`out_proj` 的形状 (out_dim, vd) vs `Wo` 的 (d_model, hd·nh)**
+  这种尺寸差异下的边界）；
+- 嫌疑 ②：**`cont_2d(y3, vd, n)`** —— Attention 的输入 `att` 是**原生 2D**，
+  而 Linear 的输入是 **3D 经 `cont_2d` 重排**（此前"cont↔reshape 等价"的
+  测试是在脏读数下做的，**不能算洗清**）。
+
+**下一轮一刀**（按嫌疑 ② 优先）：把 `cont_2d(y3, vd, n)` 换成
+`ggml_reshape_2d(y3, vd, n)` **并用 `--dump v_op1_out` 的稳定读数**重测 ——
+一次判定视图重排是否就是元凶。
+
 **收口判据**：`python src/by1ggml.py --from-ir linear-gdn-shaped.by1`
 对拍进 1e-6 以内，且 `clef-tiny` 同绿（那时 `check_support` 的拒绝一起撤）。
 
