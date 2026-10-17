@@ -636,6 +636,10 @@ RMS·norm.w·z / 权重布局 / mul_mat 契约 / 内核布局）全部留档 —
 
 ## 四、剩余 11 格的实施路线（按"一处实现关几格"排）
 
+> **2026-10-17 晚已按这张表的顺序收口 9 格**（MoE 四种路由 + KDA 三变体 +
+> Linear 两格；判据与踩坑见第六节）。剩下 `mla-sparse` 的 k-pool，与图路的
+> `ssm_scan`（不在本表里，是迁移带来的新缺口）。
+
 | 路线 | 关掉的格 | 依赖 |
 |---|---|---|
 | ① `Linear` -> `GATED_DELTA_NET`（GDN 模式） | clef-tiny · qwen3-next 的一半 | conv/gate/z/norm 的外围照 `op_linear` 拼 |
