@@ -34,12 +34,15 @@ import by1codegen as cg  # noqa: E402
 import by1skip  # noqa: E402
 
 try:
-    from transformers import Qwen3Config, Olmo2Config
+    from transformers import Qwen3Config, Olmo2Config, Qwen3NextConfig
     from transformers.models.qwen3.modeling_qwen3 import Qwen3Attention
     from transformers.models.olmo2.modeling_olmo2 import Olmo2Attention
+    from transformers.models.qwen3_next.modeling_qwen3_next import (
+        Qwen3NextAttention)
 except ImportError:
     Qwen3Config = Qwen3Attention = None
     Olmo2Config = Olmo2Attention = None
+    Qwen3NextConfig = Qwen3NextAttention = None
 
 D, NH, KV, HD, SEQ = 64, 4, 2, 16, 8
 
@@ -51,11 +54,12 @@ def _mask(seq):
     return m.masked_fill(~keep[None, None], float("-inf"))
 
 
-def _by1(ns, qk="per_head", qn=None, kn=None):
+def _by1(ns, qk="per_head", qn=None, kn=None, q_gate=False):
     a = {"q": NH, "kv": KV, "head_dim": HD, "v": HD, "bias": False,
          "out_dim": NH * HD, "window": None, "rope_pairing": "half",
          "qk_norm": qk, "norm_eps": 1e-6, "rope": False, "rope_base": 10000,
-         "rope_partial": 1.0, "sink": False, "head_gate": "off"}
+         "rope_partial": 1.0, "sink": False, "head_gate": "off",
+         "q_gate": q_gate}
     m = ns["Attention"](a, D).eval()
     if qn is not None:
         m.load_state_dict({"qn.w": qn, "kn.w": kn}, strict=False)
@@ -72,6 +76,32 @@ def _official():
     cfg._attn_implementation = "eager"
     return Qwen3Attention(cfg, layer_idx=0).eval()
 
+
+def _qwen3next_cfg():
+    cfg = Qwen3NextConfig(hidden_size=D, num_attention_heads=NH,
+                          num_key_value_heads=KV, head_dim=HD,
+                          num_hidden_layers=1, intermediate_size=64,
+                          max_position_embeddings=64, rms_norm_eps=1e-6,
+                          attention_bias=False, attention_dropout=0.0,
+                          layer_types=["full_attention"])
+    cfg._attn_implementation = "eager"
+    return cfg
+
+
+def _official_qwen3next():
+    """官方 `Qwen3NextAttention`：`q_proj` 出 2 倍宽，按**每头**切成 (q, gate)，
+
+    注意力算完之后 `attn_output = attn_output * torch.sigmoid(gate)`。
+    与 by1 的 `q_gate = true` 对应（同样每头一份门、同样乘在输出上）。
+    """
+    cfg = Qwen3NextConfig(hidden_size=D, num_attention_heads=NH,
+                          num_key_value_heads=KV, head_dim=HD,
+                          num_hidden_layers=1, intermediate_size=64,
+                          max_position_embeddings=64, rms_norm_eps=1e-6,
+                          attention_bias=False, attention_dropout=0.0,
+                          layer_types=["full_attention"])
+    cfg._attn_implementation = "eager"
+    return Qwen3NextAttention(cfg, layer_idx=0).eval()
 
 def _official_olmo2():
     """官方 `Olmo2Attention`：`q_norm`/`k_norm` 是**整宽** RMSNorm
