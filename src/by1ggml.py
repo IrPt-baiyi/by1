@@ -1260,7 +1260,7 @@ int main(int argc, char **argv) {{
         from by1ver import stamp as _stamp
         stamp = "/* %s */" % _stamp()
     except ImportError:
-        # **不能 `except: pass`** —— by1lint 的十一类静默写法之一：
+        # **不能 `except: pass`** —— by1lint 的静默写法之一：
         # 错误被吃掉，调用方看到"一切正常"，而 stamp 根本没打上。
         stamp = "/* by1ggml */"
     return stamp + GGML_HEAD + dump_c + "\n".join(head) + main, \

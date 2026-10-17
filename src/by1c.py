@@ -27,7 +27,7 @@ import by1paths
 # 这个文件里原来有 9 处 `1e-5`；C_HEAD 里那段"eps 必须由调用方传进来"
 # 的注释记的就是这一类 —— 而它当时没管住 `qk_norm()`。
 try:
-    from by1ir import (EPS_DEFAULT as _DEFAULT_EPS,
+    from by1ir import (qk_on as _qk_on, EPS_DEFAULT as _DEFAULT_EPS,
                    ROPE_PARTIAL_DEFAULT as _ROPE_PARTIAL,
                    ROPE_SCALE_DEFAULT as _ROPE_SCALE)
 except ImportError:                     # 单独拷一个文件出去时兜底
@@ -57,20 +57,6 @@ MANGLE = re.compile(r"[^0-9A-Za-z]")
 # 判据：`by1all` 的编译/数值档不退；`raw-escape.by1` 仍按承诺拒绝。
 C_KINDS = ("Norm", "Attention", "FFN", "Linear", "SSM", "KDA",
            "MLA", "MoE", "External", "Add")
-
-
-
-def _qk_on(v):
-    """qk_norm 的取值不只有真假：off / per_head / full。
-
-    "off" 是**真值字符串** —— 直接做真值判断会永远成立，于是给 q/k
-    悄悄加一层本不该有的 RMSNorm。PyTorch 那边写的是 not in (off, "", None)，
-    所以只有别的后端会错。实测 llama-shaped 的 NumPy↔PyTorch
-    从 2.505e-07 变成 3.362e-03。
-    """
-    if v is None or v is False:
-        return False
-    return str(v).strip().lower() not in ("off", "", "none", "false", "0")
 
 def load(name):
     spec = importlib.util.spec_from_file_location(

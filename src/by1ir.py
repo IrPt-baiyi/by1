@@ -618,15 +618,51 @@ def _check_fields(where, fields, obj, errs):
             errs.append("%s: %s" % (where, e))
 
 
-def _qk_on(v):
-    """qk_norm 的取值不只有真假：off / per_head / full。
+#: **qk_norm 的闭集**（IR 只有这三种取值）。语言层的旧写法
+#: `true` / `on` / `yes` / `1` 等价于 `per_head` —— 归一化在 `qk_norm_of`。
+QK_NORMS = ("off", "per_head", "full")
+QK_ON_SYNONYMS = ("true", "on", "yes", "1")
+QK_OFF_VALUES = ("off", "", "none", "false", "0")
 
-    "off" 是**真值字符串** —— 直接做真值判断会永远成立，于是给 q/k
-    悄悄加一层本不该有的 RMSNorm。这个小函数原来在 by1c / by1exec
-    各有一份，现在跟着 params_of 一起来到唯一定义这边。"""
+
+def qk_norm_of(v):
+    """把任意写法归一成 IR 的三值之一（`off` / `per_head` / `full`）。
+
+    **语言层 -> IR 的唯一映射**：`true`/`on`/`yes`/`1` 是旧写法、等价于
+    `per_head`；None 是 `off`；其余原样（小写、去空白）。
+    """
+    if v is None or v is False:
+        return "off"
+    t = str(v).strip().lower()
+    if t in QK_ON_SYNONYMS:
+        return "per_head"
+    return t if t else "off"
+
+
+def qk_on(v):
+    """`qk_norm` 到底开没开。**唯一实现**（这个谓词曾在五个模块各有一份）。
+
+    `"off"` 是**真值字符串** —— 直接做真值判断会永远成立，于是给 q/k
+    悄悄加一层本不该有的 RMSNorm。PyTorch 那边写的是
+    `not in (off, "", None)`，所以只有别的后端会错。实测 llama-shaped 的
+    NumPy↔PyTorch 从 2.505e-07 变成 3.362e-03。
+    """
     if v is None or v is False:
         return False
-    return str(v).strip().lower() not in ("off", "", "none", "false", "0")
+    return str(v).strip().lower() not in QK_OFF_VALUES
+
+
+def qk_is_full(v):
+    """`qk_norm = full`（拆头**之前**整宽归一化）—— 只在开着的时候才谈得上。"""
+    return qk_on(v) and qk_norm_of(v) == "full"
+
+
+#: `_qk_on` 是 `qk_on` 的旧名（by1c/by1exec/by1graph 都这么调）。
+_qk_on = qk_on
+
+#: **不许有第二份实现的谓词**（`by1lint` 的第⑫类按这张表查）。
+#: 这些名字一旦在别的文件里出现 `def`，就是又复制了一份。
+CANON_PREDICATES = ("qk_on", "qk_norm_of", "qk_is_full", "_qk_on")
 
 
 def _qk_norm_shapes(a, q, kv, hd):

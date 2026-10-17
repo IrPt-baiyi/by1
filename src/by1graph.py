@@ -48,7 +48,7 @@ import json
 import by1io      # noqa: F401  —— import 即钉 UTF-8
 
 try:
-    from by1ir import (EPS_DEFAULT as _DEFAULT_EPS, ALPHA_DEFAULT as _ALPHA,
+    from by1ir import (qk_on as _qk_on, qk_is_full, EPS_DEFAULT as _DEFAULT_EPS, ALPHA_DEFAULT as _ALPHA,
                    L2_EPS_DEFAULT as _L2_EPS, ROPE_PARTIAL_DEFAULT as _ROPE_PARTIAL,
                    ROPE_SCALE_DEFAULT as _ROPE_SCALE,
                    ROUTED_SCALE_DEFAULT as _ROUTED_SCALE)
@@ -850,12 +850,6 @@ class Graph:
 
     def sha(self):
         return hashlib.sha256(self.to_json().encode("utf-8")).hexdigest()[:16]
-
-
-def _qk_on(v):
-    if v is None or v is False:
-        return False
-    return str(v).strip().lower() not in ("off", "", "none", "false", "0")
 
 
 # ════════════════════════════════════════════════════════════════════
@@ -2021,7 +2015,7 @@ def _lower_attn(g, p, x, dst, w, a, d, cache=None):
     kq_ = g.add("matmul", [WK, x], [p + "k0"], shapes=[(nkv * hd, None)])
     if bias:
         kq_ = g.add("add", [kq_, BK], [p + "k1"], shapes=[(nkv * hd, None)])
-    if _qk_on(a.get("qk_norm")) and str(a.get("qk_norm")).lower() == "full":
+    if qk_is_full(a.get("qk_norm")):
         # **full：拆头之前按整宽归一**（torch 同句；Instella 实测
         # `q_norm.weight` [q*head_dim]）。per_head 在拆头之后按 head_dim ——
         # 名字一样、位置不同、宽度也不同，不许混。
@@ -2051,7 +2045,7 @@ def _lower_attn(g, p, x, dst, w, a, d, cache=None):
                shapes=[(hd, nh, None)])
     k3 = g.add("view", [kq_], [p + "k3"], attrs={"shape": [hd, nkv, None]},
                shapes=[(hd, nkv, None)])
-    if _qk_on(a.get("qk_norm")) and str(a.get("qk_norm")).lower() == "per_head":
+    if _qk_on(a.get("qk_norm")) and not qk_is_full(a.get("qk_norm")):
         # full 在上面（拆头之前）已经归过了 —— 这里只管 per_head
         eps = float(a.get("norm_eps", _DEFAULT_EPS))
         # **one_plus 是属性，不是常量** —— 第一版这里写死 False，于是

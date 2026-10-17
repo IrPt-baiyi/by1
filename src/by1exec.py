@@ -32,7 +32,7 @@ import by1paths
 # 这个文件里原来有 11 处 `1e-5`；那些形状本身没错，
 # 错在"哪一处漏了传参"没有结构性征兆 —— 见 by1ir 里那段注释。
 try:
-    from by1ir import (EPS_DEFAULT as _DEFAULT_EPS, ALPHA_DEFAULT as _ALPHA,
+    from by1ir import (qk_on as _qk_on, qk_is_full, EPS_DEFAULT as _DEFAULT_EPS, ALPHA_DEFAULT as _ALPHA,
                    L2_EPS_DEFAULT as _L2_EPS, ROPE_PARTIAL_DEFAULT as _ROPE_PARTIAL,
                    ROPE_SCALE_DEFAULT as _ROPE_SCALE,
                    ROUTED_SCALE_DEFAULT as _ROUTED_SCALE)
@@ -156,19 +156,6 @@ def apply_rope(x, cos, sin, pairing="interleaved"):
     return np.concatenate([x1 * cos - x2 * sin, x1 * sin + x2 * cos], -1)
 
 
-def _qk_on(v):
-    """qk_norm 的取值不只有真假：off / per_head / full。
-
-    "off" 是**真值字符串** —— 直接做真值判断会永远成立，于是给 q/k
-    悄悄加一层本不该有的 RMSNorm。PyTorch 那边写的是 not in (off, "", None)，
-    所以只有别的后端会错。实测 llama-shaped 的 NumPy↔PyTorch
-    从 2.505e-07 变成 3.362e-03。
-    """
-    if v is None or v is False:
-        return False
-    return str(v).strip().lower() not in ("off", "", "none", "false", "0")
-
-
 # ── 每个 op 一个函数：签名统一 (params, attrs, inputs, d_model) ────
 
 def op_norm(P, a, ins, d):
@@ -213,7 +200,7 @@ def op_attention(P, a, ins, d):
     #   full      拆头**之前**，按 q*head_dim 整宽（Instella 实测
     #             `q_norm.weight` 是 [2560] 不是 [80]）
     # 这里原来**不分 full**，一律按头算 —— 和契约的 (80,) 一致地错。
-    _qfull = str(a.get("qk_norm", "")).strip().lower() == "full"
+    _qfull = qk_is_full(a.get("qk_norm"))
     _qeps = float(a.get("norm_eps", _DEFAULT_EPS))
     _qop = a.get("norm_one_plus", False)
     qq = x @ P["wq"].T

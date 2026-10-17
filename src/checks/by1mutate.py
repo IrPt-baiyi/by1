@@ -15,7 +15,7 @@
   · by1ir.validate 的字段/闭集/跨字段/宽度规则 —— **本文件**（逐条变异）
   · 解析器 9 条错（selftest.by1 的"正好 9 错"）  —— by1fast ③
   · 取值门（gate-probe.by1 的不存在取值）          —— by1gate（档 2）
-  · 十一类静默写法（by1lint 自己的反例）             —— by1lint --selftest
+  · 静默写法（by1lint 自己的反例）             —— by1lint --selftest
   · 推导↔契约（1152 bug 注入）                    —— by1sync --selftest
   · 宽度推导的 3 组反例                            —— by1ir --selftest
 

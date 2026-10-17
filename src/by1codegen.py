@@ -47,6 +47,7 @@ except ImportError:                     # 单独拷一个文件出去时兜底
 #     第一版我一把全换成常量名，生成出来的代码当场 NameError。
 try:
     from by1ir import EPS_DEFAULT as _DEFAULT_EPS
+    from by1ir import qk_norm_of
 except ImportError:                     # 单独拷一个文件出去时兜底
     _DEFAULT_EPS = 1e-5
 
@@ -553,11 +554,7 @@ def compile_ir(info: Dict[str, Any]) -> Dict[str, Any]:
                 # 以前直接把原文透传，于是 IR 里混着 `true`，
                 # 而三个后端各自 `not in ("off","",None)` 恰好都对。
                 # **恰好都对**是这类 bug 的典型长相。
-                "qk_norm": ("per_head"
-                            if str(attrs.get("qk_norm", "")).strip().lower()
-                            in ("true", "on", "yes", "1") else
-                            (str(attrs.get("qk_norm", "")).strip().lower()
-                             if attrs.get("qk_norm") is not None else "off")),
+                "qk_norm": qk_norm_of(attrs.get("qk_norm")),
                 # 归一化的 eps 跟着模型的 rms_norm_eps 走（曾因此出错三次）
                 "norm_eps": float(_num(attrs.get("norm_eps"),
                                        _num(hp.get("rms_eps"), _DEFAULT_EPS))),

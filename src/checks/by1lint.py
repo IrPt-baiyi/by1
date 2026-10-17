@@ -18,7 +18,7 @@
 
 **所以这个脚本只查那些"会让错误不出声"的写法。**
 
-## 查十一类
+## 查十二类
 
     ① `except: pass` / `except Exception: pass`   把错误吃掉
     ② 光秃秃的 `except:`                            连 KeyboardInterrupt 都吃
@@ -54,6 +54,7 @@ import sys
 from collections import defaultdict
 import by1io
 # 属性默认值的**唯一源头**（第⑪类按它查"取值点写死"与"模板不等于源头"）。
+import by1ir as _ir_mod  # noqa: E402
 from by1ir import ATTR_DEFAULTS as _ATTR_DEFAULTS  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -399,6 +400,19 @@ def lint_text(fname, src):
                 r = r.value
             if isinstance(r, ast.Name):
                 used_attr.add(r.id)
+    # ⑫ 同一个谓词不许有第二份实现
+    #
+    # `qk_on`（`qk_norm` 的真值判定）曾经在 by1c / by1exec / by1graph /
+    # by1ir / by1codegen 各有一份，四份逐字相同。它是“一条规则”的
+    # 模样：只要有两份，就有一天会只改一份。现在它们只能在 `by1ir.py`
+    # 里定义；别的文件只能 import。
+    _canon = set(getattr(_ir_mod, "CANON_PREDICATES", ()))
+    if _canon and not fname.endswith("by1ir.py"):
+        _dupes = [n.name for n in ast.walk(tree)
+                  if isinstance(n, ast.FunctionDef) and n.name in _canon]
+        for _dn in _dupes:
+            v.hits["⑫ 谓词重复实现"].append(
+                (0, "%s 又定义了一份（应该 import）" % _dn))
     for nm, ln in sorted(v.imported.items(), key=lambda kv: kv[1]):
         if ln in noqa_lines:
             continue
@@ -445,7 +459,8 @@ def main():
 
     print()
     print('=' * 78)
-    print('  by1 的十一类"不出声"写法 —— %d 个文件' % len(files))
+    print('  by1 的 %d 类"不出声"写法 —— %d 个文件'
+          % (len(_SELFTEST), len(files)))
     print('=' * 78)
     print()
 
@@ -472,7 +487,7 @@ def main():
     # 一个不可能红的检查，等于一个不存在的检查（而这个仓库的
     # `KNOWN` 清单、`by1skip` 三态、`confirmed()` 都是为了反这一条）。
     #
-    # 现在它有一条判定线：**这十一类的命中数必须是 0**。
+    # 现在它有一条判定线：**命中数必须是 0**（类数由 _SELFTEST 派生，不再手写）。
     # 之所以能要求 0，是因为把这条线接进 `by1all` 之前，
     # 树上已经清干净了 —— 而"清干净"这件事本身要能被复查。
     # 要豁免某一条，就写进 `ALLOW`，**并且写清楚为什么**。
@@ -508,8 +523,8 @@ def main():
     total = sum(len(v) for v in allhits.values())
     print()
     ok = total == 0
-    print('  [%s] lint 十一类静默写法 %d 处%s'
-          % ('PASS' if ok else 'FAIL', total,
+    print('  [%s] lint %d 类静默写法 %d 处%s'
+          % ('PASS' if ok else 'FAIL', len(_SELFTEST), total,
              '（这一类必须一直是 0）' if ok else ' —— 上面逐条列出来了'))
     return 0 if ok else 1
 
@@ -533,11 +548,13 @@ _SELFTEST = (
      'import sys\n\n\ndef main():\n    return 0\n\n\nsys.exit(main())\n'),
     ('⑪ 属性默认值写死',
      'def f(a):\n    return a.get("norm_eps", 1e-5)\n'),
+    ('⑫ 谓词重复实现',
+     'def qk_on(v):\n    return v not in (None, "off")\n'),
 )
 
 
 def _selftest():
-    """**十一条规则各有一个必须红的反例。** 外加三个必须不红的正例。"""
+    """**每条规则各有一个必须红的反例**（条数 = len(_SELFTEST)）。外加几个必须不红的正例。"""
     print()
     print('=' * 78)
     print('  by1lint 自检：每条规则都要在反例上真的红一次')
@@ -572,7 +589,7 @@ def _selftest():
     print()
     print('  [%s] lint 自检 %s'
           % ('PASS' if not bad else 'FAIL',
-             '十一条规则都会红，三个正例都没误报'
+             '%d 条规则都会红，%d 个正例都没误报' % (len(_SELFTEST), len(GOOD))
              if not bad else '%d 条不对' % bad))
     return 0 if not bad else 1
 
