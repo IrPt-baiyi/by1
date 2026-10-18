@@ -117,7 +117,12 @@
   function renderLayers(m) {
     var box = $("layers");
     box.innerHTML = "";
-    (m.layers || []).forEach(function (L) {
+    var items = m.layers || [];
+    if (!items.length) {
+      box.innerHTML = "<p class='bad'>这份模型一层都没有 —— 先查 schedule 是否被 stack 引用（见 by1attrs A13）。</p>";
+      return;
+    }
+    function layerRow(L) {
       var row = document.createElement("div");
       row.className = "layer";
       var no = document.createElement("div");
@@ -146,16 +151,29 @@
       });
       row.appendChild(no);
       row.appendChild(chain);
-      box.appendChild(row);
-    });
-    if (!(m.layers || []).length) {
-      box.innerHTML = "<p class='bad'>这份模型一层都没有 —— 先查 schedule 是否被 stack 引用（见 by1attrs A13）。</p>";
+      return row;
     }
+    // **重复周期合并**：结构签名（机制序列）找主周期；少量例外不打断合并。
+    var segs = collapseLayers(items, function (L) {
+      return (L.ops || []).map(function (o) {
+        return o.kind + "/" + o.mech;
+      }).join(">");
+    }, sameAttrsVaries);
+    segs.forEach(function (seg) {
+      if (seg.collapsed) {
+        box.appendChild(segRow(seg, function () {
+          seg.expanded = !seg.expanded;
+          renderLayers(m);
+        }));
+        if (!seg.expanded) {
+          seg.exceptions.forEach(function (i) { box.appendChild(layerRow(items[i])); });
+          return;
+        }
+      }
+      for (var i = seg.from; i <= seg.to; i++) box.appendChild(layerRow(items[i]));
+    });
   }
 
-
-  /* ---- 图（M3）---------------------------------------------------- */
-  var tab = "struct";
 
   function showTab(name) {
     tab = name;
@@ -225,7 +243,11 @@
       });
       box.appendChild(hist);
 
-      (g.layers || []).forEach(function (L) {
+      // **重复周期合并**：原语链签名找主周期（与结构页同一套折叠）。
+      var segs = collapseLayers(g.layers || [], function (L) {
+        return (L.prims || []).join(">");
+      }, null);
+      function gLayerRow(L) {
         var row = document.createElement("div");
         row.className = "layer";
         var no = document.createElement("div");
@@ -241,7 +263,24 @@
         chain.onclick = function () { showGraphLayer(g, L); };
         row.appendChild(no);
         row.appendChild(chain);
-        box.appendChild(row);
+        return row;
+      }
+      segs.forEach(function (seg) {
+        if (seg.collapsed) {
+          box.appendChild(segRow(seg, function () {
+            seg.expanded = !seg.expanded;
+            renderGraph(current);
+          }));
+          if (!seg.expanded) {
+            seg.exceptions.forEach(function (i) {
+              box.appendChild(gLayerRow((g.layers || [])[i]));
+            });
+            return;
+          }
+        }
+        for (var gi = seg.from; gi <= seg.to; gi++) {
+          box.appendChild(gLayerRow((g.layers || [])[gi]));
+        }
       });
     }).catch(function (e) {
       box.innerHTML = "<p class='bad'>数据加载不了：" + esc(e.message) +
@@ -396,6 +435,114 @@
 
 
 
+
+  /* ---- 层折叠：重复周期合并，少量例外不打断合并 -------------------- */
+  function collapseLayers(items, sigOf, varyFn) {
+    // **重复周期合并**：从左到右按「最长覆盖」分解 ——
+    //   ① 重复周期（motif 至少重复 2 次）优先；② 相同层游程；③ 单层。
+    // 零星的不同层**单独成行**，不打断后面的合并（L0 例外就把 L0 单列）。
+    var n = items.length;
+    var sigs = items.map(sigOf);
+    var segs = [];
+    var k = 0;
+    function mk(from, to, p, reps, collapsed) {
+      var sub = items.slice(from, to + 1);
+      return {
+        collapsed: collapsed, expanded: false,
+        from: from, to: to, period: p, times: reps,
+        template: sigs.slice(from, from + p),
+        items: sub, exceptions: [],
+        vary: (collapsed && varyFn) ? varyFn(sub, p) : false,
+      };
+    }
+    while (k < n) {
+      // ① 重复周期：覆盖长度最大者胜（保证 Lin×3+GQA×16 赢过 Lin×3 游程）
+      var best = null;
+      for (var p = 2; k + 2 * p <= n; p++) {
+        var reps = 0;
+        var i2 = k;
+        while (i2 + p <= n) {
+          var ok = true;
+          for (var t = 0; t < p; t++) {
+            if (sigs[i2 + t] !== sigs[k + t]) { ok = false; break; }
+          }
+          if (!ok) break;
+          reps++;
+          i2 += p;
+        }
+        if (reps >= 2 && (!best || reps * p > best.reps * best.p)) {
+          best = { p: p, reps: reps };
+        }
+      }
+      if (best) {
+        segs.push(mk(k, k + best.p * best.reps - 1, best.p, best.reps, true));
+        k += best.p * best.reps;
+        continue;
+      }
+      // ② 相同层游程
+      var j = k + 1;
+      while (j < n && sigs[j] === sigs[k]) j++;
+      if (j - k >= 2) {
+        segs.push(mk(k, j - 1, 1, j - k, true));
+        k = j;
+        continue;
+      }
+      // ③ 单层（零星差异层就在这里，各自成行）
+      segs.push(mk(k, k, 1, 1, false));
+      k++;
+    }
+    return segs;
+  }
+  function sameAttrsVaries(items, period) {
+    // 同一周期位置的层，attrs 逐字节比较；不同 -> 逐层属性不同（不打断合并）。
+    for (var off = 0; off < period; off++) {
+      for (var i = off; i < items.length; i += period) {
+        var a = JSON.stringify((items[i].ops || items[i].prims) || []);
+        var b = JSON.stringify((items[off].ops || items[off].prims) || []);
+        if (a !== b) return true;
+      }
+    }
+    return false;
+  }
+
+  function segRow(seg, onToggle) {
+    var row = document.createElement("div");
+    row.className = "layer seg";
+    var no = document.createElement("div");
+    no.className = "lno";
+    no.textContent = "L" + seg.from + "–" + seg.to;
+    var chain = document.createElement("div");
+    chain.className = "chain";
+    chain.style.cursor = "pointer";
+    chain.onclick = onToggle;
+    var arrow = document.createElement("span");
+    arrow.className = "arrow";
+    arrow.textContent = seg.expanded ? "\u25be" : "\u25b8";
+    chain.appendChild(arrow);
+    var txt = document.createElement("span");
+    var txt = document.createElement("span");
+    txt.className = "gchain";
+    var pretty = seg.template.map(function (s) {
+      return s.split(">").map(function (part) { return part.split("/").pop(); }).join(" → ");
+    }).join(" | ");
+    txt.textContent = seg.times + " × (" + pretty + ")";
+    chain.appendChild(txt);
+    if (seg.vary) {
+      var v = document.createElement("span");
+      v.className = "a";
+      v.textContent = "属性逐层不同";
+      chain.appendChild(v);
+    }
+    if (seg.exceptions.length) {
+      var e = document.createElement("span");
+      e.className = "a";
+      e.textContent = "例外: " + seg.exceptions.map(function (i) { return "L" + i; }).join(",");
+      chain.appendChild(e);
+    }
+    row.appendChild(no);
+    row.appendChild(chain);
+    return row;
+  }
   var VKIND = { ok: "ok", "!!": "fail", "--": "skip", "??": "broken" };
   var vTier = 3;
 

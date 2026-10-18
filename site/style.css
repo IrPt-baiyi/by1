@@ -88,3 +88,7 @@ table.attrs td:last-child{word-break:break-all}
 .vtabs{display:inline-flex;gap:4px;margin-left:10px}
 .vtab{padding:1px 8px;font-size:10.5px;border-radius:4px;border:1px solid #263041;background:#10161f;color:#8b98a9;cursor:pointer}
 .vtab.active{background:#1d2b40;border-color:#2f4a6d;color:#cfe2ff}
+
+.seg .chain{border-style:dashed;border-color:#2c3a4d;background:#0e1420}
+.seg .chain:hover{border-color:#3d5a80}
+.layer.seg .lno{color:#6c86a3}
