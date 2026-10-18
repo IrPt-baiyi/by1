@@ -1,0 +1,15 @@
+# ── distill-teacher.by1 ──────────────────────────────────────────────
+# 蒸馏 MVP 的**教师**：一个由 by1 描述、随机初始化的模型，在 `1.md` 上训练到收敛。
+# 它不是任何官方 checkpoint —— 这一轮的判据是"学生能不能从教师学到东西"，
+# 不是"教师有多好"。教师权重存到 build/distill-teacher.pt，学生复用同一份语料。
+#
+#   python tools/by1distill.py --teacher models/distill-teacher.by1 \
+#          --student models/distill-student.by1 --text 1.md --steps 300
+model DistillTeacher {
+  ctx 128
+  hparams { d_model = 128, vocab = 256, n_layer = 2 }
+  stack main {
+    pattern = 2 * Attention(q = 4, kv = 2, head_dim = 32)
+    main[:] >> FFN(hidden = 512)
+  }
+}

@@ -23,6 +23,8 @@
  "attn-qgate-shaped.by1": "d2157832db010d42",
  "clef-tiny.by1": "5120aac52b8c8caf",
  "clef.by1": "cde0532825c49602",
+ "distill-student.by1": "36cd0c0f7e6fe94e",
+ "distill-teacher.by1": "0a015cb1bad17178",
  "embeddinggemma-2.by1": "70fd76f4af0e13c6",
  "gelu-shaped.by1": "533e979d2a4dee90",
  "gemma-4-12B.by1": "00623d4e0dae3044",

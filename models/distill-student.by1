@@ -1,0 +1,14 @@
+# ── distill-student.by1 ──────────────────────────────────────────────
+# 教师（distill-teacher.by1）的**机械缩小版**：d_model 128 -> 64、FFN 512 -> 256、
+# 层数 2 -> 2（只缩宽度）。结构与教师同族，参数量约为教师的 1/4。
+#
+#   python tools/by1distill.py --teacher models/distill-teacher.by1 \
+#          --student models/distill-student.by1 --text 1.md --steps 300
+model DistillStudent {
+  ctx 128
+  hparams { d_model = 64, vocab = 256, n_layer = 2 }
+  stack main {
+    pattern = 2 * Attention(q = 4, kv = 2, head_dim = 16)
+    main[:] >> FFN(hidden = 256)
+  }
+}

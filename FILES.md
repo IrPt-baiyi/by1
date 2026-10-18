@@ -1,6 +1,6 @@
 # 这个仓库里每个文件是干什么的
 
-> 546 个跟踪文件。按"你会想找什么"分组，不按字母表。
+> 554 个跟踪文件。按"你会想找什么"分组，不按字母表。
 >
 > **这份文档是生成的**：`python src/by1files.py --write`。
 > 文件清单、每组的个数、每个文件的一句话都从目录树和 docstring 来 ——
@@ -241,7 +241,7 @@
 | `fig3-schools.png` | article/ 配图：Q3 五大流派对比（含 Kimi-K3） |
 | `fig4-shape.png` | article/ 配图：收敛出的公共形状示意图 |
 
-## `docs/` —— 40 个
+## `docs/` —— 41 个
 
 活的文档 —— 还没做完的事记在这里，做完的挪去 `history/`。
 
@@ -257,6 +257,7 @@
 | `complete-models.md` | 完整模型：参数共享、视觉与 MTP |
 | `convert-diff.md` | by1 build-gguf 与上游 convert_hf_to_gguf 的结构差异（T24） |
 | `criteria-review.md` | **请人重算**的任务卡：判据本身没人验过，这一份是那份活。含"refs 判 by1 不是外部判卷"那一节 |
+| `distill-plan.md` | 蒸馏计划（A 层 MVP，2026-10-18） |
 | `gap-analysis.md` | 缺口盘点（rc1 后）：真 bug / 证据缺口 / 范围缺口 / 环境缺口 / 计划缺口 五类分账，每条带证据与收口路径 |
 | `ggml-gaps-feasibility.md` | ggml 缺口可行性（2026-10-17） |
 | `ggml-plan.md` | ggml 数值对拍：测量与判据 |
@@ -352,7 +353,7 @@
 | `expected.json` | "_comment": [ |
 | `run-audit.py` | 把外部复现从"报告级"升到"审计级" |
 
-## `models/` —— 69 个
+## `models/` —— 71 个
 
 命名规矩：**文件名 = 长名 = HF 的模型名（去掉 owner）**，
 `model` 声明 = 短名（手写的）。两列的对照见 `models.tsv`。
@@ -395,6 +396,8 @@
 | `complete-granite-4.0-h-1b.by1` | 完整 granite-4.0-h-1b（T28）：**混合栈的第二个成员** —— 同族、**图案不同** |
 | `complete-granite-4.0-h-350m.by1` | 完整 granite-4.0-h-350m（T27）：**混合栈** —— 同一个主干里既有注意力层、 |
 | `complete-mamba-130m-hf.by1` | 完整 mamba-130m-hf（T26 第二架构毕业）：**没有 Attention、没有 KV cache** |
+| `distill-student.by1` | 教师（distill-teacher.by1）的**机械缩小版**：d_model 128 -> 64、FFN 512 -> 256、 |
+| `distill-teacher.by1` | 蒸馏 MVP 的**教师**：一个由 by1 描述、随机初始化的模型，在 `1.md` 上训练到收敛 |
 | `embeddinggemma-2.by1` | 真实模型 · HF id `google/embeddinggemma-2` |
 | `gate-probe.by1` | 取值门的**反例**：故意写一个 codegen 没实现的取值 |
 | `gelu-shaped.by1` | 最小的一个探针模型：把图原语 `gelu` 走到 |
@@ -512,7 +515,7 @@
 | `index.html` | <!DOCTYPE html> |
 | `style.css` | --bg:#0d1117; --panel:#151b23; --line:#263041; --txt:#d6deea; |
 
-## `site/data/` —— 105 个
+## `site/data/` —— 109 个
 
 | 文件 | 用途 |
 |---|---|
@@ -564,6 +567,10 @@
 | `clef-tiny.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
 | `clef.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
 | `clef.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `distill-student.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
+| `distill-student.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `distill-teacher.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
+| `distill-teacher.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
 | `embeddinggemma-2.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
 | `embeddinggemma-2.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
 | `gelu-shaped.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
@@ -744,13 +751,14 @@
 | `by1ssm.py` | Mamba2 的判卷人**：by1 要生成的递推 vs 官方 mixer |
 | `by1train.py` | 按 .by1 的描述搭一个模型，训练它，然后让它写字 |
 
-## `tools/` —— 15 个
+## `tools/` —— 16 个
 
 一次性脚本。**没有任何代码引用它们。**
 
 | 文件 | 用途 |
 |---|---|
 | `audio-mel-probe.cpp` | T21 judge: audio preprocessing boundary (mtmd side). |
+| `by1distill.py` | 用 by1 描述出**学生形状**，再从 by1 描述的教师蒸馏（A 层 MVP） |
 | `by1site.py` | 把 .by1 模型导成**纯静态站点**能直接加载的数据 |
 | `ggml-smoke.c` | **M0 的判卷人**：ggml 的 mul_mat / rms_norm / silu 对手算。接 llama.cpp 那一轮的构建自检（编译命令在文件头注） |
 | `instella-greedy.py` | by1 side of the T25-1 greedy judge. |
