@@ -484,6 +484,20 @@ def main():
         if os.path.isfile(s):
             put(s, 'docs/gpu-results/' + os.path.basename(s))
 
+    # site/ 整层（架构浏览器 + 生成的数据）。
+    # 为什么不逐条写：`site/data/` 是 53 份导出物，手写清单必然漏；
+    # 而 FILES.md 列了它们，包里缺一个 -> `by1files` 在包里红
+    # （CI 的发布包腿正是"解到仓外跑档 1"）。
+    for s in sorted(glob.glob(norm('site/*')) + glob.glob(norm('site/data/*'))):
+        if os.path.isfile(s):
+            rel = os.path.relpath(s, ROOT).replace(os.sep, '/')
+            put(s, rel)
+
+    # tools/ 整层：站点导出器、神谕、探针脚本都在这里（文档与 FILES.md 都指着它们）。
+    for s in sorted(glob.glob(norm('tools/*'))):
+        if os.path.isfile(s):
+            put(s, 'tools/' + os.path.basename(s))
+
     # ── 把"外部产物"名单写进包里 ────────────────────────────────
     #
     # 包里不是 git 检出，所以它没法自己回答"这个缺失的路径是不是**故意不在库**"。
