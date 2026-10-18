@@ -182,9 +182,12 @@ def main():
         bad.append("gptoss 分支与官方 _apply_gate 不一致（%.3e）" % d6)
 
     # ---- ⑦ 可证伪：不 clamp 就不是它（输入必须越过 limit）----
-    noclamp = (gu + 1) * (gg * torch.sigmoid(gg * 1.702))
-    d7 = _diff(noclamp.detach(), r6)
-    print("  ⑦ 证伪 去掉 clamp       与官方差         %.3e  [%s]"
+    #
+    # **用 by1 自己的路径**（`limit = None` -> 那一支不发 clamp），不是在判卷人里
+    # 手写一遍公式 —— 手写等于只测自己的转写，测不到实现里的 if 分支。
+    noclamp = sw(gg, gu, "gptoss", None, 1.702).detach()
+    d7 = _diff(noclamp, r6)
+    print("  ⑦ 证伪 by1 limit=None   与官方差         %.3e  [%s]"
           % (d7, "PASS" if d7 > 1e-2 else "FAIL"))
     if d7 <= 1e-2:
         bad.append("去掉 clamp 竟然和官方一样（%.3e）—— 输入没越过 limit，这条判据是空的" % d7)
@@ -209,10 +212,17 @@ def main():
     if d8 >= 1e-6:
         bad.append("silu 与官方 LlamaMLP 不一致（%.3e）" % d8)
 
+    # ---- ⑨ 同一支的另一个方向：by1 发 clamp 与不发 clamp 必须差 ----
+    d9 = _diff(noclamp, y6)
+    print("  ⑨ limit=None vs limit=7.0 by1 自比      %.3e  [%s]"
+          % (d9, "PASS" if d9 > 1e-2 else "FAIL"))
+    if d9 <= 1e-2:
+        bad.append("by1 的 limit=None 与 limit=7.0 算出一模一样（%.3e）—— limit 没生效" % d9)
+
     for b in bad:
         print("     ! " + b)
     print("  [%s] FFN 激活分派：GeGLU %.2e、relu2 %.2e、gptoss %.2e、silu %.2e；"
-          "四条可证伪都差得出来"
+          "五条可证伪都差得出来（含 by1 自己的 limit 开关）"
           % ("PASS" if not bad else "FAIL", d1, d4, d6, d8))
     return 0 if not bad else 1
 

@@ -1,6 +1,6 @@
 # 这个仓库里每个文件是干什么的
 
-> 429 个跟踪文件。按"你会想找什么"分组，不按字母表。
+> 430 个跟踪文件。按"你会想找什么"分组，不按字母表。
 >
 > **这份文档是生成的**：`python src/by1files.py --write`。
 > 文件清单、每组的个数、每个文件的一句话都从目录树和 docstring 来 ——
@@ -240,7 +240,7 @@
 | `fig3-schools.png` | article/ 配图：Q3 五大流派对比（含 Kimi-K3） |
 | `fig4-shape.png` | article/ 配图：收敛出的公共形状示意图 |
 
-## `docs/` —— 38 个
+## `docs/` —— 39 个
 
 活的文档 —— 还没做完的事记在这里，做完的挪去 `history/`。
 
@@ -252,6 +252,7 @@
 | `backend-matrix.md` | 后端 × 机制矩阵（生成物，别手改） |
 | `by1-language-spec.md` | T2 语言合同（可执行规范）：语法骨架/错误模型/版本策略/最小绿红例；一致性判卷人 by1langspec.py |
 | `check-map.md` | `check()` 的结构图 |
+| `closing-plan.md` | 收尾计划（2026-10-18 · 大收尾） |
 | `complete-models.md` | 完整模型：参数共享、视觉与 MTP |
 | `convert-diff.md` | by1 build-gguf 与上游 convert_hf_to_gguf 的结构差异（T24） |
 | `criteria-review.md` | **请人重算**的任务卡：判据本身没人验过，这一份是那份活。含"refs 判 by1 不是外部判卷"那一节 |
