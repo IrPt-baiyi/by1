@@ -42,6 +42,7 @@ python3 -m venv --without-pip .venv && python3 -m pip --python .venv install -e 
 - 退出码 **0**。
 - "13 项跳过"不是失败 —— 那是"这一档没验"，档 1 不做档 2 以后的事。
 - 这一步**故意不装任何依赖**：它同时是"档 1 只要标准库"这句话的证明。
+- 想要英文输出：`BY1_LANG=en python3 src/checks/by1all.py --tier 1`；`BY1_LANG=both` 出中英两行，默认 `zh`。
 
 > `python3 -m venv` 在 `ensurepip` 那一步挂掉过（某些托管 Linux 上见过），
 > 所以上面用的是 `--without-pip` 的写法。README 里也有这一段。

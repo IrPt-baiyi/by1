@@ -384,6 +384,8 @@ JUDGE_CMDS = {
     'by1llama.py logits-selftest': ['by1llama.py', 'logits-selftest'],
     'by1budget.py --selftest': ['by1budget.py', '--selftest'],
     'by1attrs.py --selftest': ['by1attrs.py', '--selftest'],
+    # 壳层双语的自检（不跑门禁，只比 SHELL 表：英文无 CJK、中文有 CJK）。
+    'by1all.py --lang-check': ['by1all.py', '--lang-check'],
     'by1attrs.py --artifacts': ['by1attrs.py', '--artifacts'],
     'by1sitedata.py --check': ['by1sitedata.py', '--check'],
 }
@@ -400,6 +402,7 @@ JUDGES = [
     ('by1budget.py --selftest', 2),
     # 机制属性的闭集与官方出处（A1/A2/A3）。
     ('by1attrs.py --selftest', 2),
+    ('by1all.py --lang-check', 2),      # 壳层双语：英文无 CJK / 中文有 CJK
     ('by1attrs.py --artifacts', 3),          # 主模式：属性/图原语/发射器+产物证据（要 gcc）
     ('by1sitedata.py --check', 3),          # 站点数据 == 现算 IR（逐字节，漂移必红）
     # 文档里写的**路径和数字**还在吗。它原来没有判定行、也没有
@@ -519,6 +522,119 @@ TIER_WHAT = {
     5: '环境 —— 前向对拍 HF · C 后端（**要 gcc / 要下载**）',
     6: '真机 —— 真权重 · 显卡（**要卡**）',
 }
+
+
+# ── 壳层输出：中文 / 英文 / 两行（BY1_LANG）─────────────────────
+#
+# **默认 zh，跟以前一模一样** —— 文档里所有「你应该看到」、CI 日志、判据
+# 都在比对那几行中文。要英文就设 BY1_LANG=en，要对照就 both。
+#
+# 范围：只覆盖**壳层**（档位表头、汇总、跳过/失败清单、耗时）。
+# 判卷人自己的消息（130 处）不翻译：它们每条都带文件名与数字，PASS/FAIL 是通用词。
+BY1_LANG = os.environ.get('BY1_LANG', 'zh').strip().lower()
+
+TIER_WHAT_EN = {
+    1: 'static — compile · import · parse · docs (**no external dependencies**)',
+    2: 'structure — checkers · patterns · static checks · value gates (+numpy)',
+    3: 'contract — config field by field · tensor names and shapes (+refs/)',
+    4: 'numeric — oracles · three backends · numeric judges (**needs torch**)',
+    5: 'environment — forward vs HF · C backend (**needs gcc / downloads**)',
+    6: 'real machine — real weights · GPU (**needs a GPU**)',
+}
+
+SHELL = {
+    'tier': ('  by1 验证 · **档 %d / 6**',
+             '  by1 verification · **tier %d / 6**'),
+    'shallower': ('  浅一点 --tier 1（11 秒） · 深一点 --tier 5/6（要 gcc / 显卡）',
+                  '  lighter: --tier 1 (~11 s) · deeper: --tier 5/6 (needs gcc / a GPU)'),
+    'skip': ('  跳过（**没验** —— 不算失败，但也不是通过）:',
+             '  skipped (**not verified** — not a failure, but not a pass):'),
+    'broken': ('  检查器自己坏了（**去修工具，不是修模型**）:',
+               '  the checker itself is broken (**fix the tool, not the model**):'),
+    'caller': ('  调用方用错了（**去改调用，不是改模型**）:',
+               '  the caller passed bad arguments (**fix the call, not the model**):'),
+    'known': ('  已知缺口（不算失败，但仍然存在）:',
+              '  known gaps (not failures, but still there):'),
+    'total': ('  %d 项，%d 项失败%s%s%s%s',
+              '  %d checks, %d failed%s%s%s%s'),
+    'skip_suffix': ('，%d 项跳过', ' · %d skipped'),
+    'broken_suffix': ('，%d 项检查器坏了', ' · %d checker(s) broken'),
+    'caller_suffix': ('，%d 项调用方错了', ' · %d caller error(s)'),
+    'known_suffix': ('，另有 %d 项已知缺口', ' · %d known gap(s)'),
+    'failed_list': ('  失败: %s', '  failed: %s'),
+    'timing': ('  各段耗时（合计 %.1f 秒%s）:', '  section timings (total %.1f s%s):'),
+    'timing_cap': (' · 上限 %.0f 秒（实测基线 x3）', ' · cap %.0f s (measured baseline x3)'),
+    'secs': ('    %-22s %7.1f 秒  %s', '    %-22s %7.1f s   %s'),
+    'verdict_fail': ('有失败', 'FAILED'),
+    'verdict_pass': ('全过', 'ALL PASS'),
+    'verdict_pass_skip': ('全过（%d 项没验）', 'ALL PASS (%d unverified)'),
+}
+
+_CJK = re.compile('[\u4e00-\u9fff]')
+
+
+def msg(key, *args):
+    """壳层一行：zh / en / both（两行，缩进由两条消息自己带）。"""
+    zh, en = SHELL[key]
+    if args:
+        zh, en = zh % args, en % args
+    if BY1_LANG == 'en':
+        return en
+    if BY1_LANG == 'both':
+        return zh + '\n' + en
+    return zh
+
+
+def msg2(key, zh_args, en_args):
+    """**参数也要双语**的那种消息（汇总行、耗时行：后缀/上限各翻各的）。"""
+    zh, en = SHELL[key]
+    if BY1_LANG == 'en':
+        return en % en_args
+    if BY1_LANG == 'both':
+        return (zh % zh_args) + '\n' + (en % en_args)
+    return zh % zh_args
+
+
+def one(zh, en):
+    """**单行**场景（如最后那行 [全过]）：both 时用 ' / ' 并列。"""
+    if BY1_LANG == 'en':
+        return en
+    if BY1_LANG == 'both':
+        return zh + ' / ' + en
+    return zh
+
+
+def tier_what(n):
+    zh, en = TIER_WHAT[n], TIER_WHAT_EN[n]
+    if BY1_LANG == 'en':
+        return '  ' + en
+    if BY1_LANG == 'both':
+        return '  ' + zh + '\n  ' + en
+    return '  ' + zh
+
+
+def lang_check():
+    """**判据**：英文模式下壳层不许出现 CJK；中文模式下必须出现。
+
+    它比的是 SHELL 这张表本身 —— 表就是壳层的全部消息，
+    新加一行输出忘了给英文，这里会红。
+    """
+    bad = []
+    for key, (zh, en) in SHELL.items():
+        if not _CJK.search(zh):
+            bad.append('%s 的中文里没有 CJK' % key)
+        if _CJK.search(en):
+            bad.append('%s 的英文里有 CJK: %r' % (key, en[:40]))
+    for n, en in TIER_WHAT_EN.items():
+        if _CJK.search(en):
+            bad.append('TIER_WHAT_EN[%d] 有 CJK' % n)
+    if bad:
+        print('  [FAIL] 壳层双语：%s' % '；'.join(bad[:6]))
+        return 1
+    print('  [PASS] 壳层双语：%d 条消息，英文无 CJK、中文有 CJK（%s）'
+          % (len(SHELL) + len(TIER_WHAT_EN), BY1_LANG or 'zh'))
+    return 0
+
 
 SECTION_TIER = {
     '1': 2, '1.4': 2, '1.6': 2, '7': 2, '8': 2,
@@ -726,6 +842,10 @@ def main():
     # 默认给最慢的那个（档 6 要 gcc、要下载、要显卡，好几分钟），
     # 第一步体验就是"卡住了"。默认给档 4（约 50 秒，含数值），
     # 深的浅的都写在开头那一行里。
+    # **壳层双语的自检**：不跑门禁，只比 SHELL 这张表（英文无 CJK / 中文有 CJK）。
+    if '--lang-check' in sys.argv:
+        return lang_check()
+
     TIER = 4
     if '--tier' in sys.argv:
         TIER = int(sys.argv[sys.argv.index('--tier') + 1])
@@ -1236,9 +1356,9 @@ def main():
 
     # ---- 输出 ----
     print('=' * 78)
-    print('  by1 验证 · **档 %d / 6**' % TIER)
-    print('  %s' % TIER_WHAT[TIER])
-    print('  浅一点 --tier 1（11 秒） · 深一点 --tier 5/6（要 gcc / 显卡）')
+    print(msg('tier', TIER))
+    print(tier_what(TIER))
+    print(msg('shallower'))
     print('=' * 78)
     for name, st, note in rows:
         print('%s%-30s %s' % (by1skip.mark(_st(st)), name, note[:80]))
@@ -1278,40 +1398,52 @@ def main():
     # 藏起来的话，读者会把"总数 − 失败数"读成"验过的数"。
     skipped = [(n, note) for n, st, note in rows if _st(st) == 'skip']
     if skipped:
-        print('  跳过（**没验** —— 不算失败，但也不是通过）:')
+        print(msg('skip'))
         for n, note in skipped:
             print('    - %-30s %s' % (n, note[:70]))
     if broken:
         # **单独一节。** 它和"失败"的修法完全不同 ——
         # 失败去改模型，这个去改工具。挤在一起的话，
         # **一个坏掉的检查器看起来像"这个模型有问题"**。
-        print('  检查器自己坏了（**去修工具，不是修模型**）:')
+        print(msg('broken'))
         for n, note in broken:
             print('    - %-30s %s' % (n, note[:70]))
     if caller:
-        print('  调用方用错了（**去改调用，不是改模型**）:')
+        print(msg('caller'))
         for n, note in caller:
             print('    - %-30s %s' % (n, note[:70]))
     if known:
-        print('  已知缺口（不算失败，但仍然存在）:')
+        print(msg('known'))
         for f, why in known:
             print('    - %s\n      %s' % (f, why))
-    print('  %d 项，%d 项失败%s%s%s%s'
-          % (len(rows), len(real),
-             ('，%d 项跳过' % len(skipped)) if skipped else '',
-             ('，%d 项检查器坏了' % len(broken)) if broken else '',
-             ('，%d 项调用方错了' % len(caller)) if caller else '',
-             ('，另有 %d 项已知缺口' % len(known)) if known else ''))
+    def _sfx(key, n, on):
+        if not on:
+            return ''
+        return (SHELL[key][0] % n, SHELL[key][1] % n)
+
+    _zh = [x[0] if isinstance(x, tuple) else x for x in
+           (_sfx('skip_suffix', len(skipped), skipped),
+            _sfx('broken_suffix', len(broken), broken),
+            _sfx('caller_suffix', len(caller), caller),
+            _sfx('known_suffix', len(known), known))]
+    _en = [x[1] if isinstance(x, tuple) else x for x in
+           (_sfx('skip_suffix', len(skipped), skipped),
+            _sfx('broken_suffix', len(broken), broken),
+            _sfx('caller_suffix', len(caller), caller),
+            _sfx('known_suffix', len(known), known))]
+    print(msg2('total', (len(rows), len(real)) + tuple(_zh),
+               (len(rows), len(real)) + tuple(_en)))
     if real:
-        print('  失败: %s' % ', '.join(f for f, _ in real))
+        print(msg('failed_list', ', '.join(f for f, _ in real)))
     if real:
-        verdict = '有失败'
+        verdict = one(*SHELL['verdict_fail'])
     elif skipped:
         # **带着 3 项"没验"还说"全过"，那就是骗人。** 跳过不拦退出码，
         # 但它必须出现在这最后一行里。
-        verdict = '全过（%d 项没验）' % len(skipped)
+        verdict = one(SHELL['verdict_pass_skip'][0] % len(skipped),
+                      SHELL['verdict_pass_skip'][1] % len(skipped))
     else:
-        verdict = '全过'
+        verdict = one(*SHELL['verdict_pass'])
     print('  [%s]' % verdict)
 
     # ---- 耗时：**分档的判据** ----
@@ -1324,12 +1456,12 @@ def main():
             _bcap = _bg.limit(TIER)
         except Exception:
             _bcap = None
-        _extra = ('' if _bcap is None else
-                  ' · 上限 %.0f 秒（实测基线 x3）' % _bcap)
-        print('  各段耗时（合计 %.1f 秒%s）:' % (total, _extra))
+        _zh_cap = '' if _bcap is None else SHELL['timing_cap'][0] % _bcap
+        _en_cap = '' if _bcap is None else SHELL['timing_cap'][1] % _bcap
+        print(msg2('timing', (total, _zh_cap), (total, _en_cap)))
         for label, s in sorted(_TIMING, key=lambda x: -x[1]):
             bar = '#' * max(1, int(round(s / max(total, 0.01) * 40)))
-            print('    %-22s %7.1f 秒  %s' % (label, s, bar))
+            print(msg('secs', label, s, bar))
     return 0 if not real else 1
 
 
