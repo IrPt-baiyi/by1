@@ -101,7 +101,7 @@ GROUPS = [
         'by1irentry', 'by1gate', 'by1docs', 'by1files', 'by1lint', 'by1langspec',
         'by1blind', 'by1debt', 'by1pat', 'by1smoke', 'by1pack',
         'by1rebuild', 'by1bootir', 'by1oracles', 'by1oracle', 'by1coerce',
-        'by1run', 'by1fast', 'by1tiers', 'by1budget', 'by1attrs', 'by1gpu', 'by1gpusmoke', 'by1gpubench', 'by1gputrain', 'by1gpuday', 'by1llama', 'by1rules', 'by1backends', 'by1sync', 'by1mutate', 'by1complete']),
+        'by1run', 'by1fast', 'by1tiers', 'by1budget', 'by1attrs', 'by1gpu', 'by1gpusmoke', 'by1gpubench', 'by1gputrain', 'by1gpuday', 'by1llama', 'by1rules', 'by1sitedata', 'by1backends', 'by1sync', 'by1mutate', 'by1complete']),
 
     ('`modelcheck/` —— 一个模型一个判卷人', 'modelcheck', '''每个都用自己的官方产物当真相源。''', [
         'by1gpt2', 'by1instella', 'by1mla', 'by1moe', 'by1rope',

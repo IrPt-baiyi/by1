@@ -385,6 +385,7 @@ JUDGE_CMDS = {
     'by1budget.py --selftest': ['by1budget.py', '--selftest'],
     'by1attrs.py --selftest': ['by1attrs.py', '--selftest'],
     'by1attrs.py --artifacts': ['by1attrs.py', '--artifacts'],
+    'by1sitedata.py --check': ['by1sitedata.py', '--check'],
 }
 
 JUDGES = [
@@ -400,6 +401,7 @@ JUDGES = [
     # 机制属性的闭集与官方出处（A1/A2/A3）。
     ('by1attrs.py --selftest', 2),
     ('by1attrs.py --artifacts', 3),          # 主模式：属性/图原语/发射器+产物证据（要 gcc）
+    ('by1sitedata.py --check', 3),          # 站点数据 == 现算 IR（逐字节，漂移必红）
     # 文档里写的**路径和数字**还在吗。它原来没有判定行、也没有
     # `__main__` 守卫（import 它就印一屏），所以既不能被判、也没人跑它。
     ('by1docs.py', 2),

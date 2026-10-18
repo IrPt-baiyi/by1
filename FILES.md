@@ -1,6 +1,6 @@
 # 这个仓库里每个文件是干什么的
 
-> 445 个跟踪文件。按"你会想找什么"分组，不按字母表。
+> 490 个跟踪文件。按"你会想找什么"分组，不按字母表。
 >
 > **这份文档是生成的**：`python src/by1files.py --write`。
 > 文件清单、每组的个数、每个文件的一句话都从目录树和 docstring 来 ——
@@ -43,7 +43,7 @@
 
 ---
 
-## `src/` —— 96 个模块 + 1 个非 .py
+## `src/` —— 97 个模块 + 1 个非 .py
 
 ### 底座（留在 src/ 顶层）
 
@@ -155,6 +155,7 @@
 | `by1gpuday.py` | GPU 日单入口**：一条命令把租卡那天该跑的按序跑完 |
 | `by1llama.py` | llama.cpp 基线记录、GGUF 清单校验、logits 逐位对拍 |
 | `by1rules.py` | 转换期改写表的判卷人 |
+| `by1sitedata.py` | 站点数据必须等于从 IR 现算的那份（判据） |
 | `by1backends.py` | 后端 × 机制矩阵：**承诺的公共子集到底有多大** |
 | `by1sync.py` | 推导 ↔ 契约 的同步报表**（1.0.0-rc0 的 T0.2） |
 | `by1mutate.py` | 变异反例库**（1.0.0-rc0 的 T0.3） |
@@ -240,7 +241,7 @@
 | `fig3-schools.png` | article/ 配图：Q3 五大流派对比（含 Kimi-K3） |
 | `fig4-shape.png` | article/ 配图：收敛出的公共形状示意图 |
 
-## `docs/` —— 39 个
+## `docs/` —— 40 个
 
 活的文档 —— 还没做完的事记在这里，做完的挪去 `history/`。
 
@@ -275,6 +276,7 @@
 | `qwen3asr-silent-load-report.md` | T21 取证报告：transformers 对 Qwen3-ASR-0.6B 静默装载错误模型（版本错配实录，A3 缺口的证据本体） |
 | `rc1-decision.md` | RC1 架构决策（T30） |
 | `repro-guide.md` | 复现指南：从零到绿的一条路 |
+| `site-plan.md` | 架构浏览器计划（2026-10-18） |
 | `step5-contract-plan.md` | A 线工作单：把 Step-5 反推草稿升格成 models/ 合同（① 95 层调度证据已就位 · ⑤ 六个语义未知项收缩到 1 个 · ③ 后端选择是方向题） |
 | `step5-convert-cheatsheet.md` | Step-5 发布日当天结构对账 + 转换速查（2449 张量逐项实测，非预测）：新张量名/新机制/转换器要改的 9 处/待确认坑 |
 | `step5-runbook.md` | Step-5 发布日快速反应手册：抓元数据/草稿 by1/合同审计/GGUF 产物/推销素材/风险预案 |
@@ -510,23 +512,66 @@
 | `index.html` | <!DOCTYPE html> |
 | `style.css` | --bg:#0d1117; --panel:#151b23; --line:#263041; --txt:#d6deea; |
 
-## `site/data/` —— 11 个
+## `site/data/` —— 54 个
 
 | 文件 | 用途 |
 |---|---|
+| `DeepSeek-R1-Distill-Qwen-1.5B.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `DeepSeek-R1-Distill-Qwen-7B.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `GLM-4.7-Flash.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `GLM-5.3-Flash.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `Instella-3B.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `Laguna-XS-2_1.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `Ling-3.0-tiny.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `Qwen3-Coder-Next.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `Qwen3-Omni-30B-A3B-Thinking.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `Qwen3-VL-235B-A22B-Thinking.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `Qwen3-VL-2B-Thinking.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `Qwen3-VL-30B-A3B-Thinking.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `Qwen3.5-0.8B.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `Qwen3.5-397B-A17B.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `Qwen3.5-9B.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `Qwen3.6-35B-A3B.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
 | `Qwen3.8-27B.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `Qwen3.8-Flash-Next.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `Step-3.7-Flash.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `attn-fused-shaped.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `attn-qgate-shaped.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
 | `clef-tiny.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `clef.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `embeddinggemma-2.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
 | `gelu-shaped.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `gemma-4-12B.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `gemma-4-26B-A4B.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `gemma-4-31B.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `gemma-4-E4B.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `glm-text-tiny.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `gpt-oss-120b.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `gpt-oss-20b.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
 | `gpt-oss-shaped.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `gpt2-tiny.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `gpt2.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `hello.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
 | `index.js` | window.BY1_INDEX = [ |
+| `kda-gva-shaped.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `kda-lowrank-shaped.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `kda-shaped.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
 | `laguna-tiny.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `linear-gdn-shaped.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `ling-tiny.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
 | `llama-shaped.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `llama3-shaped.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `minimind-3.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
 | `mixtral-shaped.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `mla-shaped.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
 | `mla-sparse-shaped.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `moe-routing-shaped.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
 | `qwen3-next-shaped.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `raw-escape.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
 | `ssm-shaped.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
 
-## `src/checks/` —— 38 个
+## `src/checks/` —— 39 个
 
 | 文件 | 用途 |
 |---|---|
@@ -564,6 +609,7 @@
 | `by1rebuild.py` | 删掉数据，能不能重建 |
 | `by1rules.py` | 转换期改写表的判卷人 |
 | `by1run.py` | 推送前的门，以及每四次一次数值档 |
+| `by1sitedata.py` | 站点数据必须等于从 IR 现算的那份（判据） |
 | `by1smoke.py` | """冒烟测：把每个 by1*.py 都单独跑一遍 |
 | `by1sync.py` | 推导 ↔ 契约 的同步报表**（1.0.0-rc0 的 T0.2） |
 | `by1tiers.py` | 档位归属的自动判据**：判卷人声明的档位 vs 它真的需要什么 |
