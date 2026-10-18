@@ -74,37 +74,68 @@ def export_one(root, name, check, codegen):
     """一份模型 -> 一份可 JSON 化的结构（层 / 机制 / 属性 / 摘要）。"""
     p = pathlib.Path(root) / "models" / name
     _rep, info = check.check(str(p))
-    ir = codegen.compile_ir(info)
-    layers = []
-    for i, L in enumerate(ir.get("layers") or []):
-        ops = []
-        for op in L.get("ops") or []:
-            ops.append({
-                "mech": op.get("mech"),
-                "kind": op.get("kind"),
-                "attrs": _trim_attrs(op.get("attrs")),
-                "inputs": [str(x) for x in (op.get("inputs") or [])],
-                "outputs": [str(x) for x in (op.get("outputs") or [])],
-            })
-        layers.append({"index": i, "ops": ops})
+    try:
+        ir = codegen.compile_ir(info)
+        layers = []
+        for i, L in enumerate(ir.get("layers") or []):
+            ops = []
+            for op in L.get("ops") or []:
+                ops.append({
+                    "mech": op.get("mech"),
+                    "kind": op.get("kind"),
+                    "attrs": _trim_attrs(op.get("attrs")),
+                    "inputs": [str(x) for x in (op.get("inputs") or [])],
+                    "outputs": [str(x) for x in (op.get("outputs") or [])],
+                })
+            layers.append({"index": i, "ops": ops})
+        dims = {"ctx": ir.get("ctx"), "d_model": ir.get("d_model"),
+                "vocab": ir.get("vocab"), "norm_kind": ir.get("norm_kind"),
+                "norm_one_plus": bool(ir.get("norm_one_plus")),
+                "norm_eps": ir.get("norm_eps"), "pos_kind": ir.get("pos_kind"),
+                "n_pos": ir.get("n_pos"), "globals": ir.get("globals") or []}
+        partial = None
+    except (Exception, SystemExit):
+        # **降级导出**：complete-* 是多分支模型，降不成串行 IR ——
+        # 但 by1check 的声明结构是完整的（layer_seq / 机制 / 属性）。
+        # 页面照样看结构；IR/图那一栏如实标"不适用"。
+        mechs = info.get("mechs") or {}
+        layers = []
+        for i, entry in enumerate(info.get("layer_seq") or []):
+            _stack, mech, attrs, _key, attached = entry
+            ops = [{"mech": mech, "kind": mechs.get(mech, "—"),
+                    "attrs": _trim_attrs(attrs), "inputs": [], "outputs": []}]
+            for att in (attached or []):
+                ops.append({"mech": str(att), "kind": mechs.get(str(att), "—"),
+                            "attrs": {}, "inputs": [], "outputs": []})
+            layers.append({"index": i, "ops": ops})
+        hp = info.get("hparams") or {}
+        nv = str(hp.get("norm", "")).strip().lower()
+        dims = {"ctx": info.get("ctx"), "d_model": hp.get("d_model"),
+                "vocab": hp.get("vocab"), "norm_kind": None,
+                "norm_one_plus": nv in ("zero_centered", "one_plus", "1+", "gemma"),
+                "norm_eps": None, "pos_kind": None, "n_pos": None,
+                "globals": []}
+        partial = "多分支模型：只导声明结构（layer_seq/机制/属性）；IR / 图不适用"
     tens = info.get("tens") or {}
     return {
         "name": name,
         "slug": _slug(name),
         "arch": info.get("arch"),
-        "ctx": ir.get("ctx"),
-        "d_model": ir.get("d_model"),
-        "vocab": ir.get("vocab"),
-        "norm_kind": ir.get("norm_kind"),
-        "norm_one_plus": bool(ir.get("norm_one_plus")),
-        "norm_eps": ir.get("norm_eps"),
-        "pos_kind": ir.get("pos_kind"),
-        "n_pos": ir.get("n_pos"),
+        "ir_lowered": True if partial is None else False,
+        "partial": partial,
+        "ctx": dims.get("ctx"),
+        "d_model": dims.get("d_model"),
+        "vocab": dims.get("vocab"),
+        "norm_kind": dims.get("norm_kind"),
+        "norm_one_plus": dims.get("norm_one_plus"),
+        "norm_eps": dims.get("norm_eps"),
+        "pos_kind": dims.get("pos_kind"),
+        "n_pos": dims.get("n_pos"),
         "hparams": {k: str(v) for k, v in (info.get("hparams") or {}).items()},
         "mechs": info.get("mechs") or {},
         "position": info.get("position") or {},
         "layers": layers,
-        "globals": ir.get("globals") or [],
+        "globals": dims.get("globals") or [],
         "n_tensors": _count_tensors(tens),
     }
 

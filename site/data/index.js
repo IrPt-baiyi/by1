@@ -117,7 +117,15 @@ window.BY1_INDEX = [
  {
   "name": "Qwen2.5-0.5B-Instruct.by1",
   "slug": "Qwen2.5-0.5B-Instruct",
-  "error": "完整模型使用 transformers 后端；请用 by1 build，不能把多分支模型降成串行 IR"
+  "arch": "qwen2",
+  "layers": 24,
+  "d_model": "896",
+  "ctx": 32768.0,
+  "n_tensors": 0,
+  "mechs": [
+   "Attention",
+   "FFN"
+  ]
  },
  {
   "name": "Qwen3-Coder-Next.by1",
@@ -266,7 +274,16 @@ window.BY1_INDEX = [
  {
   "name": "Qwen3.8-27B-FP8.by1",
   "slug": "Qwen3.8-27B-FP8",
-  "error": "hparams 里缺少 vocab —— 不知道词表多大"
+  "arch": "qwen3_5",
+  "layers": 65,
+  "d_model": "5120",
+  "ctx": 262144.0,
+  "n_tensors": 404,
+  "mechs": [
+   "A",
+   "D",
+   "F"
+  ]
  },
  {
   "name": "Qwen3.8-27B.by1",
@@ -377,52 +394,138 @@ window.BY1_INDEX = [
  {
   "name": "complete-Falcon-H1-0.5B-Instruct.by1",
   "slug": "complete-Falcon-H1-0.5B-Instruct",
-  "error": "完整模型使用 transformers 后端；请用 by1 build，不能把多分支模型降成串行 IR"
+  "arch": "falcon_h1",
+  "layers": 36,
+  "d_model": "1024",
+  "ctx": 16384.0,
+  "n_tensors": 0,
+  "mechs": [
+   "Attn",
+   "Both",
+   "MLP",
+   "Mixer"
+  ]
  },
  {
   "name": "complete-Qwen2.5-7B-Instruct.by1",
   "slug": "complete-Qwen2.5-7B-Instruct",
-  "error": "完整模型使用 transformers 后端；请用 by1 build，不能把多分支模型降成串行 IR"
+  "arch": "qwen2",
+  "layers": 28,
+  "d_model": "3584",
+  "ctx": 32768.0,
+  "n_tensors": 0,
+  "mechs": [
+   "Attention",
+   "FFN"
+  ]
  },
  {
   "name": "complete-Qwen3-0.6B.by1",
   "slug": "complete-Qwen3-0.6B",
-  "error": "完整模型使用 transformers 后端；请用 by1 build，不能把多分支模型降成串行 IR"
+  "arch": "qwen3",
+  "layers": 28,
+  "d_model": "1024",
+  "ctx": 40960.0,
+  "n_tensors": 0,
+  "mechs": [
+   "Attention",
+   "FFN"
+  ]
  },
  {
   "name": "complete-Qwen3-8B.by1",
   "slug": "complete-Qwen3-8B",
-  "error": "完整模型使用 transformers 后端；请用 by1 build，不能把多分支模型降成串行 IR"
+  "arch": "qwen3",
+  "layers": 36,
+  "d_model": "4096",
+  "ctx": 40960.0,
+  "n_tensors": 0,
+  "mechs": [
+   "Attention",
+   "FFN"
+  ]
  },
  {
   "name": "complete-Qwen3.8-27B.by1",
   "slug": "complete-Qwen3.8-27B",
-  "error": "完整模型使用 transformers 后端；请用 by1 build，不能把多分支模型降成串行 IR"
+  "arch": "qwen3_5",
+  "layers": 92,
+  "d_model": "5120",
+  "ctx": 262144.0,
+  "n_tensors": 0,
+  "mechs": [
+   "A",
+   "D",
+   "F",
+   "V",
+   "VF"
+  ]
  },
  {
   "name": "complete-gpt-oss-20b.by1",
   "slug": "complete-gpt-oss-20b",
-  "error": "完整模型使用 transformers 后端；请用 by1 build，不能把多分支模型降成串行 IR"
+  "arch": "gpt_oss",
+  "layers": 24,
+  "d_model": "2880",
+  "ctx": 131072.0,
+  "n_tensors": 0,
+  "mechs": [
+   "A",
+   "MoE"
+  ]
  },
  {
   "name": "complete-gpt2.by1",
   "slug": "complete-gpt2",
-  "error": "完整模型使用 transformers 后端；请用 by1 build，不能把多分支模型降成串行 IR"
+  "arch": "gpt2",
+  "layers": 12,
+  "d_model": "768",
+  "ctx": 1024.0,
+  "n_tensors": 0,
+  "mechs": [
+   "Attention",
+   "FFN"
+  ]
  },
  {
   "name": "complete-granite-4.0-h-1b.by1",
   "slug": "complete-granite-4.0-h-1b",
-  "error": "完整模型使用 transformers 后端；请用 by1 build，不能把多分支模型降成串行 IR"
+  "arch": "granitemoehybrid",
+  "layers": 40,
+  "d_model": "1536",
+  "ctx": 131072.0,
+  "n_tensors": 0,
+  "mechs": [
+   "Attn",
+   "MLP",
+   "Mixer"
+  ]
  },
  {
   "name": "complete-granite-4.0-h-350m.by1",
   "slug": "complete-granite-4.0-h-350m",
-  "error": "完整模型使用 transformers 后端；请用 by1 build，不能把多分支模型降成串行 IR"
+  "arch": "granitemoehybrid",
+  "layers": 32,
+  "d_model": "768",
+  "ctx": 32768.0,
+  "n_tensors": 0,
+  "mechs": [
+   "Attn",
+   "MLP",
+   "Mixer"
+  ]
  },
  {
   "name": "complete-mamba-130m-hf.by1",
   "slug": "complete-mamba-130m-hf",
-  "error": "完整模型使用 transformers 后端；请用 by1 build，不能把多分支模型降成串行 IR"
+  "arch": "mamba",
+  "layers": 24,
+  "d_model": "768",
+  "ctx": 2048.0,
+  "n_tensors": 0,
+  "mechs": [
+   "Mixer"
+  ]
  },
  {
   "name": "distill-student.by1",
@@ -470,7 +573,15 @@ window.BY1_INDEX = [
  {
   "name": "gate-probe.by1",
   "slug": "gate-probe",
-  "error": "  - 机制 'FFN_'（FFN）的 act = <nosuchactivation> —— codegen 只实现了 gelu / gelu_new / gptoss / relu2 / silu。按默认值生成会得到一个**看起来对但算错**的模型，所以拒绝"
+  "arch": "probe",
+  "layers": 2,
+  "d_model": "64",
+  "ctx": 512.0,
+  "n_tensors": 14,
+  "mechs": [
+   "Attn",
+   "FFN_"
+  ]
  },
  {
   "name": "gelu-shaped.by1",
@@ -748,7 +859,14 @@ window.BY1_INDEX = [
  {
   "name": "mamba-130m-hf.by1",
   "slug": "mamba-130m-hf",
-  "error": "  - 机制 'Mixer' 的 SSM 缺少 heads, head_dim, n_groups\n  - 第 1 层没有可用的 token 混合器 —— 生成不出来\n  - 第 2 层没有可用的 token 混合器 —— 生成不出来\n  - 第 3 层没有可用的 token 混合器 —— 生成不出来\n  - 第 4 "
+  "arch": "mamba",
+  "layers": 24,
+  "d_model": "768",
+  "ctx": 2048.0,
+  "n_tensors": 216,
+  "mechs": [
+   "Mixer"
+  ]
  },
  {
   "name": "minimind-3.by1",
@@ -848,7 +966,16 @@ window.BY1_INDEX = [
  {
   "name": "selftest.by1",
   "slug": "selftest",
-  "error": "hparams 里缺少 vocab —— 不知道词表多大"
+  "arch": "",
+  "layers": 9,
+  "d_model": "1024",
+  "ctx": 8192.0,
+  "n_tensors": 4,
+  "mechs": [
+   "FFN",
+   "Global",
+   "Local"
+  ]
  },
  {
   "name": "ssm-shaped.by1",

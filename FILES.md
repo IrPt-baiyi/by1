@@ -1,6 +1,6 @@
 # 这个仓库里每个文件是干什么的
 
-> 568 个跟踪文件。按"你会想找什么"分组，不按字母表。
+> 599 个跟踪文件。按"你会想找什么"分组，不按字母表。
 >
 > **这份文档是生成的**：`python src/by1files.py --write`。
 > 文件清单、每组的个数、每个文件的一句话都从目录树和 docstring 来 ——
@@ -523,7 +523,7 @@
 | `index.html` | <!DOCTYPE html> |
 | `style.css` | --bg:#0d1117; --panel:#151b23; --line:#263041; --txt:#d6deea; |
 
-## `site/data/` —— 113 个
+## `site/data/` —— 143 个
 
 | 文件 | 用途 |
 |---|---|
@@ -543,6 +543,8 @@
 | `Ling-3.0-tiny.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
 | `NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
 | `NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `Qwen2.5-0.5B-Instruct.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
+| `Qwen2.5-0.5B-Instruct.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
 | `Qwen3-Coder-Next.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
 | `Qwen3-Coder-Next.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
 | `Qwen3-Omni-30B-A3B-Thinking.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
@@ -561,6 +563,8 @@
 | `Qwen3.5-9B.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
 | `Qwen3.6-35B-A3B.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
 | `Qwen3.6-35B-A3B.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `Qwen3.8-27B-FP8.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
+| `Qwen3.8-27B-FP8.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
 | `Qwen3.8-27B.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
 | `Qwen3.8-27B.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
 | `Qwen3.8-Flash-Next.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
@@ -575,12 +579,34 @@
 | `clef-tiny.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
 | `clef.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
 | `clef.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `complete-Falcon-H1-0.5B-Instruct.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
+| `complete-Falcon-H1-0.5B-Instruct.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `complete-Qwen2.5-7B-Instruct.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
+| `complete-Qwen2.5-7B-Instruct.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `complete-Qwen3-0.6B.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
+| `complete-Qwen3-0.6B.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `complete-Qwen3-8B.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
+| `complete-Qwen3-8B.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `complete-Qwen3.8-27B.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
+| `complete-Qwen3.8-27B.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `complete-gpt-oss-20b.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
+| `complete-gpt-oss-20b.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `complete-gpt2.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
+| `complete-gpt2.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `complete-granite-4.0-h-1b.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
+| `complete-granite-4.0-h-1b.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `complete-granite-4.0-h-350m.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
+| `complete-granite-4.0-h-350m.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `complete-mamba-130m-hf.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
+| `complete-mamba-130m-hf.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
 | `distill-student.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
 | `distill-student.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
 | `distill-teacher.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
 | `distill-teacher.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
 | `embeddinggemma-2.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
 | `embeddinggemma-2.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `gate-probe.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
+| `gate-probe.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
 | `gelu-shaped.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
 | `gelu-shaped.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
 | `gemma-4-12B.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
@@ -622,6 +648,8 @@
 | `llama-shaped.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
 | `llama3-shaped.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
 | `llama3-shaped.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `mamba-130m-hf.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
+| `mamba-130m-hf.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
 | `minimind-3.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
 | `minimind-3.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
 | `mixtral-shaped.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
@@ -636,15 +664,18 @@
 | `qwen3-next-shaped.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
 | `raw-escape.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
 | `raw-escape.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `selftest.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
+| `selftest.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
 | `ssm-shaped.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
 | `ssm-shaped.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
 | `verdicts-t3.js` | by1sync.py                     Qwen2.5-0.5B-Instruct.by1  [跳过] UnsupportedError: 完整模型使用 transformers 后端；请用 by1 "]}; |
 | `verdicts-t5.js` | by1sync.py                     Qwen2.5-0.5B-Instruct.by1  [跳过] UnsupportedError: 完整模型使用 transformers 后端；请用 by1 "]}; |
 
-## `site/data/diff/` —— 5 个
+## `site/data/diff/` —— 6 个
 
 | 文件 | 用途 |
 |---|---|
+| `Qwen3.8-27B__complete-Qwen3.8-27B.js` | window.BY1_DIFF = window.BY1_DIFF || {}; |
 | `clef__clef-tiny.js` | window.BY1_DIFF = window.BY1_DIFF || {}; |
 | `gpt-oss-shaped__mixtral-shaped.js` | window.BY1_DIFF = window.BY1_DIFF || {}; |
 | `index.js` | window.BY1_DIFF_INDEX = [ |

@@ -1,5 +1,12 @@
 window.BY1_DIFF_INDEX = [
  {
+  "slug": "Qwen3.8-27B__complete-Qwen3.8-27B",
+  "a": "Qwen3.8-27B.by1",
+  "b": "complete-Qwen3.8-27B.by1",
+  "layer_diff": 92,
+  "attr_changed": 0
+ },
+ {
   "slug": "clef__clef-tiny",
   "a": "clef.by1",
   "b": "clef-tiny.by1",

@@ -62,7 +62,8 @@
       } else {
         li.innerHTML = '<span class="nm">' + esc(m.name) + '</span>' +
           '<span class="meta">' + esc(m.arch || "-") + " · " + m.layers + " 层" +
-          (m.n_tensors ? " · " + m.n_tensors + " 张量" : "") + "</span>";
+          (m.n_tensors ? " · " + m.n_tensors + " 张量" : "") +
+          (m.partial ? " · 多分支" : "") + "</span>";
         li.onclick = function () { select(m.slug); };
         if (current === m.slug) li.className = "active";
       }
@@ -111,7 +112,8 @@
       return esc(k) + "=" + esc(hp[k]);
     }).join(" · ");
     h.innerHTML = "<h2>" + esc(m.name) + "</h2><div class='kv'>" + bits.join("") + "</div>" +
-      (hpk ? "<div class='kv' style='margin-top:6px'>hparams: " + hpk + "</div>" : "");
+      (hpk ? "<div class='kv' style='margin-top:6px'>hparams: " + hpk + "</div>" : "") +
+      (m.partial ? "<div class='pmeta'>⚠ " + esc(m.partial) + "</div>" : "");
   }
 
   function renderLayers(m) {
@@ -217,7 +219,7 @@
         return;
       }
       if (g.error) {
-        box.innerHTML = "<p class='bad'>这份模型的图<b>导不出</b>（原语还没收编）。" +
+        box.innerHTML = "<p class='bad'>这份模型的图<b>导不出</b>。" +
           "<div class='pmeta'>" + esc(g.error) + "</div>" +
           "<div class='pmeta'>结构与属性仍可看（左边的页签）。</div></p>";
         return;
