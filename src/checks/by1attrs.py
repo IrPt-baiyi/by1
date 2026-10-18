@@ -264,6 +264,7 @@ CALL_COUNT = {
     "delta_rule": "p_delta_rule", "gather": "p_gather",
     "masked_fill": "p_masked_fill", "repeat": "p_repeat",
     "slice": "p_slice", "sum": "p_sum", "top_k": "p_top_k",
+    "ssm_scan": "p_ssm_scan",   # A12 从产物反推出来的（原表没有）
     "add_scalar": "p_add_scalar", "scale": "p_scale",
 }
 
@@ -316,6 +317,7 @@ def artifact_check(root=ROOT, models=A7_MODELS, emitter="c"):
     problems, rows = [], []
     covered = set()
     pairs8 = 0
+    seen = {}      # (prim, symbol) -> [(nodes, calls), ...]：给 C2 自检用
     total = len({p for p, v in symbols.items() if v})
     for name in models:
         p = root / "models" / name
@@ -361,6 +363,11 @@ def artifact_check(root=ROOT, models=A7_MODELS, emitter="c"):
                 counts = {}
                 for nd in g.nodes:
                     counts[nd["prim"]] = counts.get(nd["prim"], 0) + 1
+                for _prim, _k in counts.items():
+                    for _sym in sorted(symbols.get(_prim) or ()):
+                        _c = len(re.findall(r"\b" + _sym + r"\(", body))
+                        _v = len(re.findall(r"void\s+" + _sym + r"\(", body))
+                        seen.setdefault((_prim, _sym), []).append((_k, _c - _v))
                 _tbl = CALL_COUNT if emitter == "c" else CALL_COUNT_GGML
                 for prim, sym in sorted(_tbl.items()):
                     k = counts.get(prim, 0)
@@ -380,8 +387,15 @@ def artifact_check(root=ROOT, models=A7_MODELS, emitter="c"):
                                 % (name, ", ".join(missing[:4])))
         finally:
             _sh.rmtree(wd, ignore_errors=True)
+    cands = {}
+    for (_pp, _ss), _vals in seen.items():
+        if all(n == c for n, c in _vals):
+            cands.setdefault(_pp, []).append(_ss)
+    for _v in cands.values():
+        _v.sort()
     return rows, problems, {"covered": len(covered), "total": total,
-                               "pairs8": pairs8}
+                               "pairs8": pairs8,
+                               "cands": cands}
 
 #: 只在某个发射器里有、另一个没有的原语，若确实是有意的，写在这里（A6 要它）。
 EMIT_ASYM = {
@@ -612,16 +626,49 @@ def check(root=ROOT, enums=None, provenance=None, reserved=None):
     # A7：**产物里的证据** —— 分派表里有名字不等于产物里有调用。
     for side, side_models in (('c', A7_MODELS), ('ggml', A7_MODELS_GGML)):
         try:
-            rows7, probs7, why7 = artifact_check(root, side_models, side)
+            rows7, probs7, info7 = artifact_check(root, side_models, side)
         except (ImportError, FileNotFoundError) as exc:
             notes.append('产物证据没算（缺依赖/缺语料）：%r' % (exc,))
         except Exception as exc:
             problems.append('产物证据算不了：%r' % (exc,))
         else:
             if rows7 is None:
-                notes.append('产物证据没算：' + (why7 or ''))
+                notes.append('产物证据没算：' + (info7 or ''))
             else:
                 problems.extend(probs7)
+    # A12：**调用数表要被产物反推校验**（C2）。
+    # 表里的符号必须出自该原语的发射分支，且在产物里仍然是 1:1；
+    # 一旦内核改名或被内联，这两条会把表拉回来。
+    for side, _models, _tbl in (('c', A7_MODELS, CALL_COUNT),
+                                ('ggml', A7_MODELS_GGML, CALL_COUNT_GGML)):
+        try:
+            _r, _p, _info = artifact_check(root, _models, side)
+        except Exception as exc:
+            notes.append('A12 %s 没算：%r' % (side, exc))
+            continue
+        if not isinstance(_info, dict) or 'cands' not in _info:
+            notes.append('A12 %s 没算（缺产物）' % side)
+            continue
+        _cands = _info['cands']
+        _symtab = emit_symbols(root, 'by1c.py' if side == 'c' else 'by1ggml.py')
+        _extra = []
+        for _prim, _sym in sorted(_tbl.items()):
+            _branch = _symtab.get(_prim) or set()
+            if _branch and _sym not in _branch:
+                problems.append('A12 %s：表里 %s -> %s 不在该原语的发射分支里（内核改名了？）'
+                                % (side, _prim, _sym))
+            elif _prim in _cands and _sym not in _cands[_prim]:
+                problems.append('A12 %s：%s -> %s 在产物里不再是 1:1（内核改了或被内联）'
+                                % (side, _prim, _sym))
+            elif _prim not in _cands:
+                _extra.append(_prim)
+        _new = [p for p in sorted(_cands) if p not in _tbl]
+        if _new:
+            notes.append('A12 %s：产物里这些原语也是 1:1 但表里没有（同义内核？）：%s'
+                         % (side, ', '.join(_new[:6])))
+        if _extra:
+            notes.append('A12 %s：表里这些原语的见证模型没走到（没验）：%s'
+                         % (side, ', '.join(sorted(_extra)[:6])))
     # A9：`norm` 是**不过取值门**的开关 —— 拼错会静默按普通约定算（差 2 倍）。
     try:
         aliases, decls = norm_switches(root)
