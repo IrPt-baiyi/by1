@@ -84,3 +84,7 @@ table.attrs td:last-child{word-break:break-all}
 .v-ok{color:#3fb950} .v-fail{color:#f85149} .v-skip{color:#6e7681} .v-broken{color:#d29922}
 .vjudge{color:#8b98a9}
 .vnote{color:#b9c6d8;word-break:break-all}
+
+.vtabs{display:inline-flex;gap:4px;margin-left:10px}
+.vtab{padding:1px 8px;font-size:10.5px;border-radius:4px;border:1px solid #263041;background:#10161f;color:#8b98a9;cursor:pointer}
+.vtab.active{background:#1d2b40;border-color:#2f4a6d;color:#cfe2ff}

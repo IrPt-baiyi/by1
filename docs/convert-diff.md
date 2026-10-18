@@ -169,3 +169,27 @@ python src/checks/by1llama.py logits-compare cgen/ref.logits cgen/by1.logits
 （`main()` 的子命令里没有它，runbook 里那条命令跑不通），且 `arch` 硬编成
 `LLAMA`、`n_blocks` 默认 24 —— 那正是第 8 行"只 qwen2 档实证"的字面来源。
 现在按参数走，qwen3 档已实证（[P0 闭环报告](p0-loop-report.md)）。
+
+## GGUF 两条路对账（2026-10-19，本地，不需要 GPU）
+
+工具：`tools/by1ggufrecon.py`。**两条独立转换路径**产出的 GGUF 逐名逐形对账：
+by1 侧 = `by1llama.py build-gguf`（走 TensorNameMap），ref 侧 = 上游 convert 的 F32 产物。
+
+| 模型 | 张量（by1 / ref） | 名字+形状+dtype |
+|---|---|---|
+| qwen3-0.6b | 311 / 311 | **逐个相同** |
+| granite-350m | 402 / 402 | **逐个相同** |
+| granite-1b | 506 / 506 | **逐个相同** |
+| mamba-130m | 242 / 242 | **逐个相同** |
+| falcon-h1 | 579 / 579 | **逐个相同** |
+
+判据两条：① 张量名集合完全相同；② 同名张量的形状与 dtype 逐个相同。**5 对全过**。
+
+**没比的（说清楚，不算账）**：
+
+- `.by1` 契约一侧的形状账：`complete-*` 的契约由 `by1verify` 自己的解析器管
+  （`by1check` 的 `tens` 为空）—— 工具里显式报"未比"，不空跑成绿；
+- `by1llama.py manifest-audit` 只支持 OLMOE 一族（`TensorNameMap(MODEL_ARCH.OLMOE, …)`），
+  其它家族的 manifest 对账是缺口；
+- 张量**数据**本身不比（GB 级 IO）；两个文件大小相同是旁证，不是判据；
+- 依赖：`gguf-py` 需要 `pyyaml`（本机 `ci-venv-np` 已装）。

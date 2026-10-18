@@ -380,32 +380,39 @@ def export_verdicts(root, out, tier=3):
     models, lines = parse_by1all(text)
     # **只存模型行**：存全文会把“对 verdicts 的检查结果”也存进去 -> 自引用。
     data = {'tier': tier, 'models': models, 'lines': lines}
-    (out / 'verdicts.js').write_text(
-        'window.BY1_VERDICTS = %s;\n' % json.dumps(data, ensure_ascii=False,
-                                                    separators=(',', ':')),
-        encoding='utf-8', newline='\n')
+    body = ('window.BY1_VERDICTS = window.BY1_VERDICTS || {};\n'
+            + 'window.BY1_VERDICTS[%d] = %s;\n'
+            % (tier, json.dumps(data, ensure_ascii=False,
+                                separators=(',', ':'))))
+    (out / ('verdicts-t%d.js' % tier)).write_text(
+        body, encoding='utf-8', newline='\n')
     print('  门禁判定 %d 个模型（档 %d，rc=%d）' % (len(models), tier, r.returncode))
     return data
 
 
 def check_verdicts(out):
-    """**判据**：verdicts.js 里的 models 必须等于"对存档原文重新解析"的结果。
+    """**判据**：每份 verdicts-t*.js 的 models 必须等于"对存档模型行重新解析"的结果。
 
     不重跑门禁（否则 by1sitedata 会在 by1all 里递归），只保证
-    **数据文件没被手改**、解析器没漂。
+    **数据文件没被手改**、解析器没漂。每一档单独校验。
     """
-    f = out / 'verdicts.js'
-    if not f.exists():
-        return 0, ['没有 verdicts.js（可选）']
-    raw = f.read_text(encoding='utf-8').strip()
-    m = re.match(r'^window\.BY1_VERDICTS = (.*);$', raw)
-    if not m:
-        return 1, ['verdicts.js 格式不对']
-    data = json.loads(m.group(1))
-    want, _lines = parse_by1all(chr(10).join(data.get('lines', [])))
-    if want != data.get('models'):
-        return 1, ['verdicts.js 的 models 与存档原文重新解析的结果不一致']
-    return 0, ['门禁判定与存档原文一致：%d 个模型' % len(want)]
+    files = sorted(out.glob('verdicts-t*.js'))
+    if not files:
+        return 0, ['没有 verdicts-t*.js（可选）']
+    bad, ok = [], 0
+    for f in files:
+        raw = f.read_text(encoding='utf-8').strip()
+        m = re.search(r'window\.BY1_VERDICTS\[(\d+)\] = (.*);$', raw, re.M)
+        if not m:
+            bad.append('%s 格式不对' % f.name)
+            continue
+        data = json.loads(m.group(2))
+        want, _lines = parse_by1all('\n'.join(data.get('lines', [])))
+        if want != data.get('models'):
+            bad.append('%s 的 models 与存档行重新解析的结果不一致' % f.name)
+        else:
+            ok += 1
+    return (0 if not bad else 1), (bad or ['门禁判定与存档行一致：%d 档' % ok])
 
 
 def main(argv=None):

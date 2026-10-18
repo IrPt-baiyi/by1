@@ -387,29 +387,68 @@
   }
 
 
+
   var VKIND = { ok: "ok", "!!": "fail", "--": "skip", "??": "broken" };
+  var vTier = 3;
+
+  function loadVerdicts(tier) {
+    if (window.BY1_VERDICTS && window.BY1_VERDICTS[tier]) {
+      return Promise.resolve(window.BY1_VERDICTS[tier]);
+    }
+    return loadScript("data/verdicts-t" + tier + ".js").then(function () {
+      return (window.BY1_VERDICTS || {})[tier];
+    });
+  }
 
   function renderVerdicts(m) {
-    var all = window.BY1_VERDICTS;
-    if (!all || !all.models) return;
-    var rows = all.models[m.name];
-    if (!rows || !rows.length) return;
     var box = document.createElement("div");
     box.className = "verdicts";
+    $("mhead").appendChild(box);
     var head = document.createElement("div");
     head.className = "sect";
-    head.textContent = "门禁（档 " + all.tier + "）";
-    box.appendChild(head);
-    rows.forEach(function (r) {
-      var row = document.createElement("div");
-      row.className = "vrow";
-      var mk = VKIND[r.mark] || "broken";
-      row.innerHTML = "<span class='vmark v-" + mk + "'>" + esc(r.mark) + "</span>" +
-        "<span class='vjudge'>" + esc(r.judge || "—") + "</span>" +
-        "<span class='vnote'>" + esc(r.note) + "</span>";
-      box.appendChild(row);
+    head.textContent = "门禁";
+    var tabs = document.createElement("span");
+    tabs.className = "vtabs";
+    [3, 5].forEach(function (t) {
+      var b = document.createElement("button");
+      b.className = "vtab" + (t === vTier ? " active" : "");
+      b.textContent = "档 " + t;
+      b.onclick = function () {
+        vTier = t;
+        renderVerdicts(m);
+      };
+      tabs.appendChild(b);
     });
-    $("mhead").appendChild(box);
+    head.appendChild(tabs);
+    box.appendChild(head);
+    loadVerdicts(vTier).then(function (all) {
+      if (!all) {
+        var e = document.createElement("div");
+        e.className = "vrow";
+        e.innerHTML = "<span class='vnote'>档 " + vTier + " 的判定没导出</span>";
+        box.appendChild(e);
+        return;
+      }
+      var rows = all.models[m.name];
+      if (!rows || !rows.length) {
+        var e2 = document.createElement("div");
+        e2.className = "vrow";
+        e2.innerHTML = "<span class='vnote'>档 " + all.tier + " 里没有这份模型的判定行</span>";
+        box.appendChild(e2);
+        return;
+      }
+      rows.forEach(function (r) {
+        var row = document.createElement("div");
+        row.className = "vrow";
+        var mk = VKIND[r.mark] || "broken";
+        row.innerHTML = "<span class='vmark v-" + mk + "'>" + esc(r.mark) + "</span>" +
+          "<span class='vjudge'>" + esc(r.judge || "—") + "</span>" +
+          "<span class='vnote'>" + esc(r.note) + "</span>";
+        box.appendChild(row);
+      });
+    }).catch(function () {
+      box.innerHTML += "<div class='vrow'><span class='vnote'>判定数据加载失败</span></div>";
+    });
   }
   function showProps(L, op) {
     $("props-empty").hidden = true;
