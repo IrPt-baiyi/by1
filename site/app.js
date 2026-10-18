@@ -161,8 +161,10 @@
     }, sameAttrsVaries);
     segs.forEach(function (seg) {
       if (seg.collapsed) {
+        var skey = "L:" + m.name + ":" + seg.from;
+        seg.expanded = !!segOpen[skey];
         box.appendChild(segRow(seg, function () {
-          seg.expanded = !seg.expanded;
+          segOpen[skey] = !segOpen[skey];
           renderLayers(m);
         }));
         if (!seg.expanded) {
@@ -267,8 +269,10 @@
       }
       segs.forEach(function (seg) {
         if (seg.collapsed) {
+          var skey = "G:" + current + ":" + seg.from;
+          seg.expanded = !!segOpen[skey];
           box.appendChild(segRow(seg, function () {
-            seg.expanded = !seg.expanded;
+            segOpen[skey] = !segOpen[skey];
             renderGraph(current);
           }));
           if (!seg.expanded) {
@@ -437,6 +441,9 @@
 
 
   /* ---- 层折叠：重复周期合并，少量例外不打断合并 -------------------- */
+  // **展开状态放外部字典**：重渲染会重算 segs，设在 seg 上等于白设。
+  var segOpen = {};
+
   function collapseLayers(items, sigOf, varyFn) {
     // **重复周期合并**：从左到右按「最长覆盖」分解 ——
     //   ① 重复周期（motif 至少重复 2 次）优先；② 相同层游程；③ 单层。
