@@ -88,6 +88,36 @@ Qwen3-0.6B 真实 BF16 权重还跑过一次全参数反向传播和 AdamW 更�
 - [Qwen3.8-27B 最终报告（含图像与 MTP）](gpu-results/gpu-benchmark-qwen38-final.json)
 - [Qwen2.5-7B 与 Qwen3-8B 长上下文](gpu-results/gpu-long-context-large.json)
 - [Qwen3-8B 的 8K 上下文](gpu-results/gpu-long-context-8k.json)
+
+## T4 首次实测（2026-10-18，AutoDL）
+
+环境：**Tesla T4 16 GB**（compute 7.5）· torch **2.6.0+cu124** · transformers **5.19.0** · Python 3.12 · Ubuntu 22.04。
+
+| 判据 | 结果 | 报告 |
+|---|---|---|
+| GPU 冒烟（10 个 case，**随机权重**，bf16） | **10/10 PASS**，`gpu_verified: true` | [gpu-smoke-t4.json](gpu-results/gpu-smoke-t4.json) |
+| 训练步（影子 Qwen3-0.6B，bf16 反向 + AdamW） | **PASS**，完整梯度与更新参数逐位一致 | `gputrain-t4.json`（未入库，见下） |
+| 影子 bench（0.6B，seq 128，atol/rtol 0.002） | **PASS** | [gpu-benchmark-t4.json](gpu-results/gpu-benchmark-t4.json) |
+
+冒烟的 10 个 case：native-hello · Qwen3-0.6B · Qwen3-8B · Qwen2.5-7B · gpt2 · gpt-oss-20b · Qwen3.8-27B ·
+granite-4.0-h-350m · granite-4.0-h-1b · Falcon-H1-0.5B。**它们是随机权重**（报告的 `scope` 写明），
+验的是"接线"：by1 生成的原生模型 与 同一架构的官方模型，在 CUDA bf16 下前向/反向/更新逐位一致。
+
+**当天修掉/记档的三个环境坑**：
+
+1. transformers 5.19+ 要求 **torch ≥ 2.6**；镜像自带 2.5.1，于是所有判卷人报 "PyTorch was not found"。
+   升到 2.6.0+cu124 后恢复；
+2. **torchvision 与 torch 2.6 不兼容**（`torchvision::nms` 不存在）→ 卸掉 torchvision 后 transformers 正常。
+   代价：**视觉相关的 import 这台机器上没验**（只影响需要 torchvision 的路径）；
+3. `git archive` 上传的树缺 `.by1-ignored`，`by1docs` 把 `.gitignore` 挡住的历史脚本判成"不存在"（9 处假红）；
+   改传 `by1pack` 产物后 PASS。**包里必须带 `.by1-ignored`**。
+
+**明确没验的**（不写成通过）：
+
+- **真权重 27B / 8B 前向**：T4 只有 16 GB，27B bf16 约 55 GB —— 放不下；
+- **真权重 bench/train**：这台机器直连 `huggingface.co` 是 `Errno 99`（镜像未配），只有影子权重能跑；
+- **llama.cpp CUDA 构建**：镜像里没有 `nvcc`；
+- 多卡 / 张量并行：没有第二块卡。
 - [Qwen3-0.6B 真实权重训练步](gpu-results/gpu-real-traincheck.json)
 - [FP32 smoke 报告](gpu-results/gpu-smoke-fp32.json) · [BF16 smoke 报告](gpu-results/gpu-smoke-bf16.json)
 - [当前源码 FP32 smoke 复跑](gpu-results/gpu-smoke-fp32-20261013-2026.json) · [当前源码 BF16 smoke 复跑](gpu-results/gpu-smoke-bf16-20261013-2027.json)

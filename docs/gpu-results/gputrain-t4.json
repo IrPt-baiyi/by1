@@ -1,0 +1,92 @@
+{
+  "schema": 1,
+  "status": "passed",
+  "started_at": "2026-10-18T15:23:43.465558+00:00",
+  "repo": "Qwen/Qwen3-0.6B",
+  "model_file": "models/complete-Qwen3-0.6B.by1",
+  "dtype": "bfloat16",
+  "batch_size": 1,
+  "sequence_length": 16,
+  "optimizer": "AdamW",
+  "learning_rate": 0.0001,
+  "weights": "synthetic",
+  "gradient_relative_l2_tolerance": 0.002,
+  "gradient_relative_peak_tolerance": 0.02,
+  "parameter_update_relative_l2_tolerance": 0.002,
+  "parameter_update_relative_peak_tolerance": 0.02,
+  "device": "cuda",
+  "environment": {
+    "torch": "2.6.0+cu124",
+    "transformers": "5.19.0",
+    "device": "cuda",
+    "cuda": "12.4",
+    "gpu": "Tesla T4",
+    "gpu_memory_bytes": 16709648384
+  },
+  "revision": "synthetic",
+  "checkpoint_bytes": 1503264768,
+  "download_endpoint": "none",
+  "shadow": {
+    "schema": 1,
+    "kind": "by1-shadow",
+    "synthetic_values": true,
+    "note": "随机值、真格式。验接线，不验真值。",
+    "family": "qwen3",
+    "mtp": null,
+    "seed": 20261013,
+    "dtype": "bfloat16",
+    "init_std": 0.002672612419124244,
+    "config_sha256": "660db3b73d788119c04535e48cf9be5f55bc3100841a718637ae695b442f27dd",
+    "tensor_names": 311,
+    "shared_groups": 310,
+    "bytes": 1503264768,
+    "shards": [
+      "model.safetensors"
+    ],
+    "verified": [
+      "张量映射完整（missing/unexpected = 0）",
+      "tying / 共享参数（含 mtp.embed_tokens / mtp.lm_head）",
+      "声明 ↔ checkpoint config 逐字段一致（config 为真品时）",
+      "前向接线：logits 数值一致",
+      "贪心生成 token 一致"
+    ],
+    "not_verified": [
+      "真权重的数值语义（对拍本来就不比这个）",
+      "量化存储格式（MXFP4/FP8 打包块无法随机合成，量化模型走真权重）",
+      "checkpoint 命名与官方发布物的一致性（名字取自模型类；mtp.* 由真权重对拍兜底）"
+    ]
+  },
+  "phase": "complete",
+  "official": {
+    "loss": 11.970332145690918,
+    "gradient_l2": 29.26991298954881,
+    "gradient_values": 596049920,
+    "watched_parameter": "model.layers.0.self_attn.q_proj.weight",
+    "watched_parameter_max_update": 0.0001220703125,
+    "peak_allocated_bytes": 5984166400
+  },
+  "by1": {
+    "loss": 11.970332145690918,
+    "gradient_l2": 29.26991298954881,
+    "gradient_values": 596049920,
+    "watched_parameter": "model.layers.0.self_attn.q_proj.weight",
+    "watched_parameter_max_update": 0.0001220703125,
+    "peak_allocated_bytes": 5984166400
+  },
+  "forward": {
+    "max_absolute": 0.0,
+    "allclose": true
+  },
+  "gradients": {
+    "values": 596049920,
+    "max_absolute": 0.0,
+    "relative_l2": 0.0,
+    "relative_to_peak": 0.0
+  },
+  "updated_parameters": {
+    "values": 596049920,
+    "max_absolute": 0.0,
+    "relative_l2": 0.0,
+    "relative_to_peak": 0.0
+  }
+}

@@ -1,0 +1,145 @@
+{
+  "schema": 1,
+  "started_at": "2026-10-18T15:27:48.185097+00:00",
+  "dtype": "bfloat16",
+  "batch_size": 1,
+  "attention": "eager",
+  "warmup": 1,
+  "repeats": 2,
+  "lengths": [
+    128
+  ],
+  "new_tokens": 16,
+  "forward_atol": 0.002,
+  "forward_rtol": 0.002,
+  "scope": "Synthetic shadow checkpoint (real names/shapes/dtypes, real config.json, seeded random values); official config vs by1-compiled config, same Transformers operators. Verifies loading, wiring, tying, greedy-token agreement. NOT real weight values, NOT quantized storage.",
+  "models": [
+    {
+      "model": "complete-Qwen3-0.6B.by1",
+      "status": "passed",
+      "phase": "complete",
+      "repo": "Qwen/Qwen3-0.6B",
+      "revision": "synthetic",
+      "download_endpoint": "none",
+      "checkpoint_bytes": 1503264768,
+      "checkpoint_files": [
+        "model.safetensors"
+      ],
+      "repository_safetensors_bytes": 1503264768,
+      "weights": "synthetic",
+      "shadow": {
+        "schema": 1,
+        "kind": "by1-shadow",
+        "synthetic_values": true,
+        "note": "随机值、真格式。验接线，不验真值。",
+        "family": "qwen3",
+        "mtp": null,
+        "seed": 20261013,
+        "dtype": "bfloat16",
+        "init_std": 0.002672612419124244,
+        "config_sha256": "660db3b73d788119c04535e48cf9be5f55bc3100841a718637ae695b442f27dd",
+        "tensor_names": 311,
+        "shared_groups": 310,
+        "bytes": 1503264768,
+        "shards": [
+          "model.safetensors"
+        ],
+        "verified": [
+          "张量映射完整（missing/unexpected = 0）",
+          "tying / 共享参数（含 mtp.embed_tokens / mtp.lm_head）",
+          "声明 ↔ checkpoint config 逐字段一致（config 为真品时）",
+          "前向接线：logits 数值一致",
+          "贪心生成 token 一致"
+        ],
+        "not_verified": [
+          "真权重的数值语义（对拍本来就不比这个）",
+          "量化存储格式（MXFP4/FP8 打包块无法随机合成，量化模型走真权重）",
+          "checkpoint 命名与官方发布物的一致性（名字取自模型类；mtp.* 由真权重对拍兜底）"
+        ]
+      },
+      "checkpoint_config_sha256": "660db3b73d788119c04535e48cf9be5f55bc3100841a718637ae695b442f27dd",
+      "runs": {
+        "text-128": {
+          "input_shape": [
+            1,
+            128
+          ],
+          "original": {
+            "wall_median_ms": 90.91057628393173,
+            "wall_samples_ms": [
+              109.94581878185272,
+              71.87533378601074
+            ],
+            "cuda_median_ms": 90.77148818969727,
+            "tokens_per_second": 1407.9769948903486,
+            "peak_allocated_bytes": 1240318976,
+            "peak_reserved_bytes": 1673527296
+          },
+          "numerics": {
+            "max_absolute": 0.0,
+            "relative_to_peak": 0.0,
+            "argmax_agreement": 1.0
+          },
+          "by1": {
+            "wall_median_ms": 73.86860996484756,
+            "wall_samples_ms": [
+              74.9276801943779,
+              72.80953973531723
+            ],
+            "cuda_median_ms": 73.74256134033203,
+            "tokens_per_second": 1732.8063985624253,
+            "peak_allocated_bytes": 1240321024,
+            "peak_reserved_bytes": 1679818752
+          },
+          "latency_ratio_by1_over_original": 0.812541433398698
+        }
+      },
+      "load_seconds": {
+        "original": 0.9951186552643776,
+        "by1": 0.5119709372520447
+      },
+      "original_ignored_mtp_keys": 0,
+      "generation": {
+        "original": {
+          "wall_median_ms": 600.715309381485,
+          "wall_samples_ms": [
+            599.6723026037216,
+            601.7583161592484
+          ],
+          "cuda_median_ms": 600.6524353027344,
+          "tokens_per_second": 26.634912994766346,
+          "peak_allocated_bytes": 1222283264,
+          "peak_reserved_bytes": 1690304512
+        },
+        "identical_tokens": true,
+        "by1": {
+          "wall_median_ms": 610.840767621994,
+          "wall_samples_ms": [
+            609.8224818706512,
+            611.8590533733368
+          ],
+          "cuda_median_ms": 610.7820739746094,
+          "tokens_per_second": 26.19340562727677,
+          "peak_allocated_bytes": 1223033856,
+          "peak_reserved_bytes": 1696595968
+        }
+      },
+      "by1_parameters": 596049920,
+      "seconds": 9.862021014094353
+    }
+  ],
+  "environment": {
+    "torch": "2.6.0+cu124",
+    "transformers": "5.19.0",
+    "cuda": "12.4",
+    "gpu": "Tesla T4",
+    "gpu_memory_bytes": 16709648384
+  },
+  "source_sha256": {
+    "src/checks/by1gpubench.py": "808a1a808b7ba2f57d5cc2beca8879182e893c77d0a34a32c4cd69335fc602bd",
+    "src/by1full.py": "9509ed4aade6c10d7525438a81e788cbf131b588aefae60aa1cad1a2c8f5c6fb",
+    "src/modelcheck/by1quant.py": "91d185514f6e4f26aa89af62431f879fdd8fe056f24d19ea4a3e26a17f0b19ed",
+    "src/modelcheck/by1shadow.py": "4efc65dc23063c8ce1a872af2626ae8a63cf9917212b32c4ed5f12ec0c3b39ae"
+  },
+  "status": "passed"
+}

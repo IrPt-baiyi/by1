@@ -1,6 +1,6 @@
 # 这个仓库里每个文件是干什么的
 
-> 555 个跟踪文件。按"你会想找什么"分组，不按字母表。
+> 558 个跟踪文件。按"你会想找什么"分组，不按字母表。
 >
 > **这份文档是生成的**：`python src/by1files.py --write`。
 > 文件清单、每组的个数、每个文件的一句话都从目录树和 docstring 来 ——
@@ -289,12 +289,13 @@
 | `t29-plan.md` | T29：另一根轴 —— **层内并行**（Falcon-H1） |
 | `which-gpu.md` | > 从 `README.md` 挪出来的。它是一次**具体的调查** —— 这台开发机上 |
 
-## `docs/gpu-results/` —— 10 个
+## `docs/gpu-results/` —— 13 个
 
 | 文件 | 用途 |
 |---|---|
 | `gpu-benchmark-gptoss-final.json` | "schema": 1, |
 | `gpu-benchmark-qwen38-final.json` | "schema": 1, |
+| `gpu-benchmark-t4.json` | "schema": 1, |
 | `gpu-benchmark.json` | "schema": 1, |
 | `gpu-long-context-8k.json` | "schema": 1, |
 | `gpu-long-context-large.json` | "schema": 1, |
@@ -303,6 +304,8 @@
 | `gpu-smoke-bf16.json` | "schema": 1, |
 | `gpu-smoke-fp32-20261013-2026.json` | "schema": 1, |
 | `gpu-smoke-fp32.json` | "schema": 1, |
+| `gpu-smoke-t4.json` | "schema": 1, |
+| `gputrain-t4.json` | "schema": 1, |
 
 ## `drafts/` —— 5 个
 
