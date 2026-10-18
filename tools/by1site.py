@@ -165,7 +165,36 @@ def check_site(root, out):
             bad.append("%s 的图 sha 与 graphs-golden.json 不同（先重生成 golden）" % slug)
         else:
             ok += 1
-    return (0 if not bad else 1), (bad or ["站点数据（含图）与 IR 一致：%d 份" % ok])
+    # 对比（M4）：每份 diff 文件也逐字节比，索引同样比
+    dif = out / "diff"
+    if dif.is_dir():
+        for dj in sorted(dif.glob("*.js")):
+            if dj.name == "index.js":
+                continue
+            slug = dj.name[:-3]
+            a_name = b_name = None
+            for x, y in DIFF_PAIRS:
+                if _slug(x) + "__" + _slug(y) == slug:
+                    a_name, b_name = x, y
+                    break
+            if a_name is None:
+                bad.append("%s 不在 DIFF_PAIRS 里（哪来的？）" % slug)
+                continue
+            try:
+                d = export_diff(root, a_name, b_name, by1check, by1codegen)
+            except Exception:
+                continue
+            want = ("window.BY1_DIFF = window.BY1_DIFF || {};\n"
+                    "window.BY1_DIFF[%s] = %s;\n"
+                    % (json.dumps(slug), json.dumps(d, ensure_ascii=False,
+                                                    separators=(",", ":"))))
+            if dj.read_text(encoding="utf-8") != want:
+                bad.append("%s 的对比与现算不一致（重新导出：python tools/by1site.py --diffs）"
+                           % slug)
+            else:
+                ok += 1
+
+    return (0 if not bad else 1), (bad or ["站点数据（含图/对比）与 IR 一致：%d 份" % ok])
 
 
 FULL_NODES = 600      # 节点数不超过它就把节点表也导出来
@@ -216,6 +245,99 @@ def export_graph(root, name, check, codegen, graph, golden):
     return data
 
 
+#: M4 的对比清单：**只导这几对**（组合爆炸没必要，这几对各自压着不同的东西）。
+DIFF_PAIRS = (
+    ("Qwen3.8-27B.by1", "complete-Qwen3.8-27B.by1"),   # 手写 vs 由 config 生成
+    ("clef.by1", "clef-tiny.by1"),                     # 同一家族的两个尺度
+    ("llama-shaped.by1", "llama3-shaped.by1"),         # rope 基值 / 词表
+    ("qwen3-next-shaped.by1", "laguna-tiny.by1"),      # 线性+全量 混合 vs 纯全量
+    ("gpt-oss-shaped.by1", "mixtral-shaped.by1"),      # 两种 MoE 路由
+)
+
+
+def _flat_attrs(model):
+    """(层, 算子下标, 机制, 属性) -> 值。"""
+    out = {}
+    for L in model.get("layers") or []:
+        for j, op in enumerate(L.get("ops") or []):
+            for k, v in (op.get("attrs") or {}).items():
+                out["%d/%d/%s/%s" % (L["index"], j, op.get("mech"), k)] = v
+    return out
+
+
+def export_diff(root, a_name, b_name, check, codegen):
+    """两份模型的 IR 差异（M4）。**全部从 IR 现算**，页面只展示。"""
+    ia = export_one(root, a_name, check, codegen)
+    ib = export_one(root, b_name, check, codegen)
+    fields = []
+    for key, fa, fb in (
+            ("arch", ia.get("arch"), ib.get("arch")),
+            ("ctx", ia.get("ctx"), ib.get("ctx")),
+            ("d_model", ia.get("d_model"), ib.get("d_model")),
+            ("vocab", ia.get("vocab"), ib.get("vocab")),
+            ("norm", "%s/%s" % (ia.get("norm_kind"), "1+w" if ia.get("norm_one_plus") else "w"),
+             "%s/%s" % (ib.get("norm_kind"), "1+w" if ib.get("norm_one_plus") else "w")),
+            ("layers", len(ia.get("layers") or []), len(ib.get("layers") or [])),
+            ("tensors", ia.get("n_tensors"), ib.get("n_tensors")),
+    ):
+        fields.append({"key": key, "a": fa, "b": fb, "same": fa == fb})
+
+    ca = [[(op.get("mech"), op.get("kind")) for op in (L.get("ops") or [])]
+          for L in (ia.get("layers") or [])]
+    cb = [[(op.get("mech"), op.get("kind")) for op in (L.get("ops") or [])]
+          for L in (ib.get("layers") or [])]
+    layer_diffs = []
+    for i in range(max(len(ca), len(cb))):
+        va = ca[i] if i < len(ca) else None
+        vb = cb[i] if i < len(cb) else None
+        if va != vb:
+            layer_diffs.append({
+                "layer": i,
+                "a": None if va is None else [m + "(" + k + ")" for m, k in va],
+                "b": None if vb is None else [m + "(" + k + ")" for m, k in vb],
+            })
+
+    fa, fb = _flat_attrs(ia), _flat_attrs(ib)
+    changed = []
+    for k in sorted(set(fa) & set(fb)):
+        if fa[k] != fb[k]:
+            changed.append({"k": k, "a": fa[k], "b": fb[k]})
+    only_a = sorted(set(fa) - set(fb))
+    only_b = sorted(set(fb) - set(fa))
+    return {
+        "a": a_name, "b": b_name,
+        "a_slug": _slug(a_name), "b_slug": _slug(b_name),
+        "fields": fields,
+        "layer_diffs": layer_diffs,
+        "attr_changed": changed[:200],
+        "counts": {
+            "fields_same": sum(1 for f in fields if f["same"]),
+            "fields_total": len(fields),
+            "layer_diff": len(layer_diffs),
+            "attr_changed": len(changed),
+            "attr_only_a": len(only_a),
+            "attr_only_b": len(only_b),
+        },
+        "attr_only_a": only_a[:60],
+        "attr_only_b": only_b[:60],
+    }
+
+
+def write_diff(root, out, data):
+    """写一份 diff 的 .js，并返回索引条目。"""
+    slug = data["a_slug"] + "__" + data["b_slug"]
+    d = out / "diff"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / (slug + ".js")).write_text(
+        "window.BY1_DIFF = window.BY1_DIFF || {};\n"
+        "window.BY1_DIFF[%s] = %s;\n"
+        % (json.dumps(slug), json.dumps(data, ensure_ascii=False, separators=(",", ":"))),
+        encoding="utf-8", newline="\n")
+    return {"slug": slug, "a": data["a"], "b": data["b"],
+            "layer_diff": data["counts"]["layer_diff"],
+            "attr_changed": data["counts"]["attr_changed"]}
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="把 .by1 导成静态站点数据")
     ap.add_argument("--out", default="site/data", help="输出目录")
@@ -223,6 +345,8 @@ def main(argv=None):
     ap.add_argument("--all", action="store_true", help="导出 models/ 下全部")
     ap.add_argument("--root", default=None, help="仓库根（默认按脚本位置推断）")
     ap.add_argument("--check", action="store_true", help="只比对磁盘数据与 IR（不写文件）")
+    ap.add_argument("--diff", nargs=2, metavar=("A", "B"), help="导出两份模型的 IR 差异")
+    ap.add_argument("--diffs", action="store_true", help="导出 DIFF_PAIRS 全部")
     args = ap.parse_args(argv)
 
     root = pathlib.Path(args.root) if args.root else pathlib.Path(__file__).resolve().parent.parent
@@ -243,6 +367,27 @@ def main(argv=None):
             print(("  [%s] " % ("PASS" if rc == 0 else "FAIL")) + m)
         return rc
     out.mkdir(parents=True, exist_ok=True)
+    if args.diff or args.diffs:
+        pairs = [tuple(args.diff)] if args.diff else list(DIFF_PAIRS)
+        di = []
+        for a_name, b_name in pairs:
+            try:
+                d = export_diff(root, a_name, b_name, by1check, by1codegen)
+            except Exception as exc:
+                print("  对比导不出 %s vs %s: %r" % (a_name, b_name, exc))
+                continue
+            di.append(write_diff(root, out, d))
+            c = d["counts"]
+            print("  %-42s 层差 %-4d 属性差 %-4d"
+                  % (d["a_slug"] + " vs " + d["b_slug"],
+                     c["layer_diff"], c["attr_changed"]))
+        (out / "diff").mkdir(parents=True, exist_ok=True)
+        (out / "diff" / "index.js").write_text(
+            "window.BY1_DIFF_INDEX = %s;\n" % json.dumps(di, ensure_ascii=False, indent=1),
+            encoding="utf-8", newline="\n")
+        print("  对比索引 %s（%d 对）" % (out / "diff" / "index.js", len(di)))
+        return 0
+
     gp = root / "graphs-golden.json"
     golden = {}
     if gp.exists():

@@ -165,6 +165,10 @@
     });
     $("props").hidden = true;
     $("props-empty").hidden = false;
+    if (name === "diff") {
+      renderDiffList();
+      return;
+    }
     if (!current) return;
     if (name === "graph") {
       renderGraph(current);
@@ -260,6 +264,125 @@
     }).join("");
     p.innerHTML = "<h3>" + (L.index < 0 ? "全局" : "第 " + L.index + " 层") + "</h3>" +
       "<div class='pmeta'>" + (L.prims.length) + " 个节点</div>" + rows;
+  }
+
+
+  /* ---- 对比（M4）-------------------------------------------------- */
+  var diffIndex = null;
+
+  function loadDiffIndex() {
+    if (window.BY1_DIFF_INDEX) {
+      return Promise.resolve(window.BY1_DIFF_INDEX);
+    }
+    return loadScript("data/diff/index.js").then(function () {
+      return window.BY1_DIFF_INDEX || [];
+    });
+  }
+
+  function renderDiffList() {
+    var box = $("layers");
+    box.innerHTML = "<p class='empty small'>正在加载对比清单…</p>";
+    loadDiffIndex().then(function (idx) {
+      box.innerHTML = "";
+      if (!idx.length) {
+        box.innerHTML = "<p class='empty small'>没有预置的对比（python tools/by1site.py --diffs）。</p>";
+        return;
+      }
+      var t = document.createElement("div");
+      t.className = "gsum";
+      t.innerHTML = "<span>预置对比 <b>" + idx.length + "</b> 对</span>" +
+        "<span class='dim'>差异全部由 IR 现算，页面只展示</span>";
+      box.appendChild(t);
+      idx.forEach(function (d) {
+        var row = document.createElement("div");
+        row.className = "layer";
+        var no = document.createElement("div");
+        no.className = "lno";
+        no.textContent = "对比";
+        var chain = document.createElement("div");
+        chain.className = "chain";
+        chain.style.cursor = "pointer";
+        chain.innerHTML = "<span class='k'>" + esc(d.a) + "</span>" +
+          "<span class='arrow'>vs</span>" +
+          "<span class='k'>" + esc(d.b) + "</span>" +
+          "<span class='a'>层差 " + d.layer_diff + " · 属性差 " + d.attr_changed + "</span>";
+        chain.onclick = function () { renderDiff(d); };
+        row.appendChild(no);
+        row.appendChild(chain);
+        box.appendChild(row);
+      });
+    }).catch(function (e) {
+      box.innerHTML = "<p class='bad'>" + esc(e.message) + "</p>";
+    });
+  }
+
+  function renderDiff(entry) {
+    var slug = entry.a_slug + "__" + entry.b_slug;
+    var go = (window.BY1_DIFF && window.BY1_DIFF[slug])
+      ? Promise.resolve(window.BY1_DIFF[slug])
+      : loadScript("data/diff/" + slug + ".js").then(function () {
+          return (window.BY1_DIFF || {})[slug];
+        });
+    go.then(function (d) {
+      if (!d) { return; }
+      var box = $("layers");
+      box.innerHTML = "";
+      var sum = document.createElement("div");
+      sum.className = "gsum";
+      sum.innerHTML = "<span><b>" + esc(d.a) + "</b> vs <b>" + esc(d.b) + "</b></span>" +
+        "<span>层差 <b>" + d.counts.layer_diff + "</b></span>" +
+        "<span>属性改 <b>" + d.counts.attr_changed + "</b></span>" +
+        "<span>仅 A <b>" + d.counts.attr_only_a + "</b> · 仅 B <b>" +
+        d.counts.attr_only_b + "</b></span>";
+      box.appendChild(sum);
+
+      var ft = document.createElement("table");
+      ft.className = "attrs";
+      ft.innerHTML = d.fields.map(function (f) {
+        return "<tr><td>" + esc(f.key) + "</td><td>" +
+          (f.same
+            ? "<span class='dim'>" + esc(f.a) + "（同）</span>"
+            : esc(f.a) + " <span class='arrow'>→</span> " + esc(f.b)) + "</td></tr>";
+      }).join("");
+      box.appendChild(ft);
+
+      if ((d.layer_diffs || []).length) {
+        var h = document.createElement("div");
+        h.className = "sect";
+        h.textContent = "有差的层";
+        box.appendChild(h);
+        d.layer_diffs.slice(0, 60).forEach(function (L) {
+          var row = document.createElement("div");
+          row.className = "layer";
+          var no = document.createElement("div");
+          no.className = "lno";
+          no.textContent = "L" + L.layer;
+          var chain = document.createElement("div");
+          chain.className = "chain";
+          chain.innerHTML = "<span class='gchain'>A: " +
+            esc((L.a || ["（没有这一层）"]).join(" → ")) + "<br>B: " +
+            esc((L.b || ["（没有这一层）"]).join(" → ")) + "</span>";
+          row.appendChild(no);
+          row.appendChild(chain);
+          box.appendChild(row);
+        });
+      }
+      if ((d.attr_changed || []).length) {
+        var h2 = document.createElement("div");
+        h2.className = "sect";
+        h2.textContent = "属性差（前 " + Math.min(200, d.attr_changed.length) + " 条）";
+        box.appendChild(h2);
+        var at = document.createElement("table");
+        at.className = "attrs";
+        at.innerHTML = d.attr_changed.map(function (c) {
+          return "<tr><td>" + esc(c.k) + "</td><td>" + esc(c.a) +
+            " <span class='arrow'>→</span> " + esc(c.b) + "</td></tr>";
+        }).join("");
+        box.appendChild(at);
+      }
+    }).catch(function (e) {
+      $("layers").innerHTML = "<p class='bad'>" + esc(e.message) + "</p>";
+    });
   }
 
   function showProps(L, op) {

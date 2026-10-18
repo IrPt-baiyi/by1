@@ -1,6 +1,6 @@
 # 这个仓库里每个文件是干什么的
 
-> 541 个跟踪文件。按"你会想找什么"分组，不按字母表。
+> 546 个跟踪文件。按"你会想找什么"分组，不按字母表。
 >
 > **这份文档是生成的**：`python src/by1files.py --write`。
 > 文件清单、每组的个数、每个文件的一句话都从目录树和 docstring 来 ——
@@ -621,6 +621,16 @@
 | `qwen3-next-shaped.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
 | `raw-escape.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
 | `ssm-shaped.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+
+## `site/data/diff/` —— 5 个
+
+| 文件 | 用途 |
+|---|---|
+| `clef__clef-tiny.js` | window.BY1_DIFF = window.BY1_DIFF || {}; |
+| `gpt-oss-shaped__mixtral-shaped.js` | window.BY1_DIFF = window.BY1_DIFF || {}; |
+| `index.js` | window.BY1_DIFF_INDEX = [ |
+| `llama-shaped__llama3-shaped.js` | window.BY1_DIFF = window.BY1_DIFF || {}; |
+| `qwen3-next-shaped__laguna-tiny.js` | window.BY1_DIFF = window.BY1_DIFF || {}; |
 
 ## `src/checks/` —— 39 个
 
