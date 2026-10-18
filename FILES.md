@@ -1,6 +1,6 @@
 # 这个仓库里每个文件是干什么的
 
-> 442 个跟踪文件。按"你会想找什么"分组，不按字母表。
+> 445 个跟踪文件。按"你会想找什么"分组，不按字母表。
 >
 > **这份文档是生成的**：`python src/by1files.py --write`。
 > 文件清单、每组的个数、每个文件的一句话都从目录树和 docstring 来 ——
@@ -502,6 +502,14 @@
 | `ISTA-DASLab__Qwen3.8-27B-GSQ-RCO-GGUF.IQ2_S-mtp.alloc.txt` | 14 | |
 
 
+## `site/` —— 3 个
+
+| 文件 | 用途 |
+|---|---|
+| `app.js` | 纯静态，无构建 |
+| `index.html` | <!DOCTYPE html> |
+| `style.css` | --bg:#0d1117; --panel:#151b23; --line:#263041; --txt:#d6deea; |
+
 ## `site/data/` —— 11 个
 
 | 文件 | 用途 |
@@ -636,7 +644,7 @@
 | 文件 | 用途 |
 |---|---|
 | `audio-mel-probe.cpp` | T21 judge: audio preprocessing boundary (mtmd side). |
-| `by1export.py` | 把 .by1 模型导成**纯静态站点**能直接加载的数据 |
+| `by1site.py` | 把 .by1 模型导成**纯静态站点**能直接加载的数据 |
 | `ggml-smoke.c` | **M0 的判卷人**：ggml 的 mul_mat / rms_norm / silu 对手算。接 llama.cpp 那一轮的构建自检（编译命令在文件头注） |
 | `instella-greedy.py` | by1 side of the T25-1 greedy judge. |
 | `instella-ref-logits.py` | reference-side logits dump (T18 cross-check). |

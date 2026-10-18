@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>by1 架构浏览器</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <div class="brand">
+    <h1>by1 架构浏览器</h1>
+    <p class="sub">模型描述 -> IR -> 层结构。<b>数据来自 by1check / by1codegen，与门禁同一份 IR</b>；页面上没有第二套真相。</p>
+  </div>
+  <div class="stats" id="stats"></div>
+</header>
+
+<main>
+  <aside class="list-pane">
+    <input id="q" type="search" placeholder="搜索模型 / arch…" autocomplete="off">
+    <div class="count" id="count"></div>
+    <ul id="models"></ul>
+  </aside>
+
+  <section class="struct-pane">
+    <div id="empty" class="empty">
+      <p>左边选一份模型。</p>
+      <p class="hint">数据由 <code>tools/by1site.py</code> 生成；重新导出：<code>python tools/by1site.py --all</code></p>
+    </div>
+    <div id="model" hidden>
+      <div class="model-head" id="mhead"></div>
+      <div class="layers" id="layers"></div>
+    </div>
+  </section>
+
+  <aside class="props-pane">
+    <div id="props-empty" class="empty small"><p>点一个算子看它的属性。</p></div>
+    <div id="props" hidden></div>
+  </aside>
+</main>
+
+<script src="data/index.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

@@ -50,6 +50,24 @@ def _trim_attrs(attrs):
     return out
 
 
+def _count_tensors(tens):
+    """张量**个数**（不是分组数）。
+
+    by1check 的 tens 是分组表：[(机制, 属性签名, 张量数, [(名字, 形状, ...)]), ...]；
+    直接 len() 拿到的是组数（3、7），不是 1199 那种个数。
+    """
+    if not tens:
+        return 0
+    total = 0
+    for item in tens:
+        try:
+            # item = (机制, 属性签名, 展开层数, 每层张量表)
+            total += int(item[2]) * len(item[3] or [])
+        except (TypeError, ValueError, IndexError):
+            continue
+    return total
+
+
 def export_one(root, name, check, codegen):
     """一份模型 -> 一份可 JSON 化的结构（层 / 机制 / 属性 / 摘要）。"""
     p = pathlib.Path(root) / "models" / name
@@ -85,8 +103,47 @@ def export_one(root, name, check, codegen):
         "position": info.get("position") or {},
         "layers": layers,
         "globals": ir.get("globals") or [],
-        "n_tensors": len(tens) if hasattr(tens, "__len__") else None,
+        "n_tensors": _count_tensors(tens),
     }
+
+
+def check_site(root, out):
+    """**站点数据必须等于从 IR 重新导出的那份**（判据，不是生成）。
+
+    为什么需要：页面上的数字如果只靠'当初导出时是对的'，它就只是又一本文档。
+    这条把磁盘上的 .js 与 by1check/by1codegen 现算的结果逐字节比一遍。
+    """
+    sys.path.insert(0, str(root / "src"))
+    import by1paths  # noqa: F401
+    import by1check
+    import by1codegen
+
+    index_path = out / "index.js"
+    if not index_path.exists():
+        return 1, ["缺 %s（先跑一次不带 --check 的导出）" % index_path]
+    names = sorted(p.name for p in (root / "models").glob("*.by1"))
+    bad, ok = [], 0
+    seen = set()
+    for name in names:
+        try:
+            data = export_one(root, name, by1check, by1codegen)
+        except Exception:
+            continue
+        slug = data["slug"]
+        f = out / (slug + ".js")
+        if not f.exists():
+            continue      # 没导出的模型不算不一致（--all 是可选范围）
+        seen.add(slug)
+        want = ("window.BY1_MODELS = window.BY1_MODELS || {};\n"
+                "window.BY1_MODELS[%s] = %s;\n"
+                % (json.dumps(slug), json.dumps(data, ensure_ascii=False,
+                                               separators=(",", ":"))))
+        got = f.read_text(encoding="utf-8")
+        if got != want:
+            bad.append("%s 与 IR 不一致（重新导出：python tools/by1site.py）" % slug)
+        else:
+            ok += 1
+    return (0 if not bad else 1), (bad or ["站点数据与 IR 一致：%d 份" % ok])
 
 
 def main(argv=None):
@@ -95,6 +152,7 @@ def main(argv=None):
     ap.add_argument("--models", nargs="*", default=list(DEFAULT_MODELS))
     ap.add_argument("--all", action="store_true", help="导出 models/ 下全部")
     ap.add_argument("--root", default=None, help="仓库根（默认按脚本位置推断）")
+    ap.add_argument("--check", action="store_true", help="只比对磁盘数据与 IR（不写文件）")
     args = ap.parse_args(argv)
 
     root = pathlib.Path(args.root) if args.root else pathlib.Path(__file__).resolve().parent.parent
@@ -108,6 +166,11 @@ def main(argv=None):
         names = [n for n in args.models if n in set(names)]
 
     out = root / args.out
+    if args.check:
+        rc, msgs = check_site(root, out)
+        for m in msgs:
+            print(("  [%s] " % ("PASS" if rc == 0 else "FAIL")) + m)
+        return rc
     out.mkdir(parents=True, exist_ok=True)
 
     index = []

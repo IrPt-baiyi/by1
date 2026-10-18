@@ -45,7 +45,7 @@ window.BY1_INDEX = [
   "layers": 4,
   "d_model": 128,
   "ctx": 1024,
-  "n_tensors": 2,
+  "n_tensors": 44,
   "mechs": [
    "MLP_",
    "Mamba_"
@@ -58,7 +58,7 @@ window.BY1_INDEX = [
   "layers": 4,
   "d_model": 256,
   "ctx": 1024,
-  "n_tensors": 3,
+  "n_tensors": 68,
   "mechs": [
    "MLAK_",
    "MLA_",
@@ -83,7 +83,7 @@ window.BY1_INDEX = [
   "name": "laguna-tiny.by1",
   "slug": "laguna-tiny",
   "arch": "laguna",
-  "layers": 0,
+  "layers": 2,
   "d_model": 64,
   "ctx": 4096,
   "n_tensors": 0,
@@ -112,7 +112,7 @@ window.BY1_INDEX = [
   "layers": 8,
   "d_model": 256,
   "ctx": 262144,
-  "n_tensors": 3,
+  "n_tensors": 90,
   "mechs": [
    "FFN_",
    "GQA",
@@ -126,7 +126,7 @@ window.BY1_INDEX = [
   "layers": 92,
   "d_model": 5120,
   "ctx": 262144,
-  "n_tensors": 7,
+  "n_tensors": 945,
   "mechs": [
    "FFN_",
    "GQA",
