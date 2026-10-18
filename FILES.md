@@ -1,6 +1,6 @@
 # 这个仓库里每个文件是干什么的
 
-> 490 个跟踪文件。按"你会想找什么"分组，不按字母表。
+> 541 个跟踪文件。按"你会想找什么"分组，不按字母表。
 >
 > **这份文档是生成的**：`python src/by1files.py --write`。
 > 文件清单、每组的个数、每个文件的一句话都从目录树和 docstring 来 ——
@@ -512,61 +512,112 @@
 | `index.html` | <!DOCTYPE html> |
 | `style.css` | --bg:#0d1117; --panel:#151b23; --line:#263041; --txt:#d6deea; |
 
-## `site/data/` —— 54 个
+## `site/data/` —— 105 个
 
 | 文件 | 用途 |
 |---|---|
+| `DeepSeek-R1-Distill-Qwen-1.5B.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
 | `DeepSeek-R1-Distill-Qwen-1.5B.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `DeepSeek-R1-Distill-Qwen-7B.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
 | `DeepSeek-R1-Distill-Qwen-7B.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `GLM-4.7-Flash.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
 | `GLM-4.7-Flash.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `GLM-5.3-Flash.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
 | `GLM-5.3-Flash.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `Instella-3B.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
 | `Instella-3B.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `Laguna-XS-2_1.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
 | `Laguna-XS-2_1.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `Ling-3.0-tiny.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
 | `Ling-3.0-tiny.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
 | `NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `Qwen3-Coder-Next.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
 | `Qwen3-Coder-Next.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `Qwen3-Omni-30B-A3B-Thinking.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
 | `Qwen3-Omni-30B-A3B-Thinking.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `Qwen3-VL-235B-A22B-Thinking.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
 | `Qwen3-VL-235B-A22B-Thinking.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `Qwen3-VL-2B-Thinking.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
 | `Qwen3-VL-2B-Thinking.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `Qwen3-VL-30B-A3B-Thinking.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
 | `Qwen3-VL-30B-A3B-Thinking.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `Qwen3.5-0.8B.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
 | `Qwen3.5-0.8B.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `Qwen3.5-397B-A17B.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
 | `Qwen3.5-397B-A17B.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `Qwen3.5-9B.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
 | `Qwen3.5-9B.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `Qwen3.6-35B-A3B.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
 | `Qwen3.6-35B-A3B.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `Qwen3.8-27B.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
 | `Qwen3.8-27B.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `Qwen3.8-Flash-Next.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
 | `Qwen3.8-Flash-Next.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `Step-3.7-Flash.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
 | `Step-3.7-Flash.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `attn-fused-shaped.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
 | `attn-fused-shaped.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `attn-qgate-shaped.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
 | `attn-qgate-shaped.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `clef-tiny.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
 | `clef-tiny.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `clef.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
 | `clef.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `embeddinggemma-2.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
 | `embeddinggemma-2.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `gelu-shaped.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
 | `gelu-shaped.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `gemma-4-12B.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
 | `gemma-4-12B.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `gemma-4-26B-A4B.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
 | `gemma-4-26B-A4B.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `gemma-4-31B.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
 | `gemma-4-31B.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `gemma-4-E4B.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
 | `gemma-4-E4B.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `glm-text-tiny.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
 | `glm-text-tiny.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `gpt-oss-120b.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
 | `gpt-oss-120b.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `gpt-oss-20b.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
 | `gpt-oss-20b.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `gpt-oss-shaped.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
 | `gpt-oss-shaped.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `gpt2-tiny.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
 | `gpt2-tiny.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `gpt2.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
 | `gpt2.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `hello.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
 | `hello.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
 | `index.js` | window.BY1_INDEX = [ |
+| `kda-gva-shaped.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
 | `kda-gva-shaped.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `kda-lowrank-shaped.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
 | `kda-lowrank-shaped.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `kda-shaped.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
 | `kda-shaped.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `laguna-tiny.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
 | `laguna-tiny.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `linear-gdn-shaped.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
 | `linear-gdn-shaped.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `ling-tiny.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
 | `ling-tiny.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `llama-shaped.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
 | `llama-shaped.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `llama3-shaped.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
 | `llama3-shaped.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `minimind-3.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
 | `minimind-3.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `mixtral-shaped.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
 | `mixtral-shaped.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `mla-shaped.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
 | `mla-shaped.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `mla-sparse-shaped.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
 | `mla-sparse-shaped.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `moe-routing-shaped.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
 | `moe-routing-shaped.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `qwen3-next-shaped.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
 | `qwen3-next-shaped.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
 | `raw-escape.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
 | `ssm-shaped.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |

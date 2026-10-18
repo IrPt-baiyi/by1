@@ -91,8 +91,8 @@
     $("model").hidden = false;
     renderHead(m);
     renderLayers(m);
-    $("props").hidden = true;
-    $("props-empty").hidden = false;
+    $("tabs").hidden = false;
+    showTab("struct");
   }
 
   function renderHead(m) {
@@ -152,6 +152,116 @@
     }
   }
 
+
+  /* ---- 图（M3）---------------------------------------------------- */
+  var tab = "struct";
+
+  function showTab(name) {
+    tab = name;
+    var box = $("tabs");
+    if (!box) return;
+    Array.prototype.forEach.call(box.querySelectorAll(".tab"), function (b) {
+      b.classList.toggle("active", b.getAttribute("data-tab") === name);
+    });
+    $("props").hidden = true;
+    $("props-empty").hidden = false;
+    if (!current) return;
+    if (name === "graph") {
+      renderGraph(current);
+    } else {
+      var m = window.BY1_MODELS[current];
+      if (m) renderLayers(m);
+    }
+  }
+
+  function loadGraph(slug) {
+    if (window.BY1_GRAPH && window.BY1_GRAPH[slug]) {
+      return Promise.resolve(window.BY1_GRAPH[slug]);
+    }
+    return loadScript("data/" + slug + ".graph.js").then(function () {
+      return (window.BY1_GRAPH || {})[slug];
+    });
+  }
+
+  function renderGraph(slug) {
+    var box = $("layers");
+    box.innerHTML = "<p class='empty small'>正在导图…</p>";
+    loadGraph(slug).then(function (g) {
+      if (!g) {
+        box.innerHTML = "<p class='bad'>这份模型没有图数据（导出时这一步被跳过）。</p>";
+        return;
+      }
+      box.innerHTML = "";
+      var sum = document.createElement("div");
+      sum.className = "gsum";
+      sum.innerHTML = "<span>图 sha <b>" + esc(g.sha) + "</b></span>" +
+        (g.golden
+          ? "<span>golden " + (g.match ? "✅ 一致" : "❌ 不同") + "</span>"
+          : "<span>golden 里没有这份</span>") +
+        "<span>节点 <b>" + g.node_count + "</b></span>" +
+        "<span>原语 <b>" + Object.keys(g.prims).length + "</b> 种</span>" +
+        (g.nodes ? "<span class='dim'>节点表已导出（可点层看属性）</span>"
+                 : "<span class='dim'>大模型只导摘要</span>");
+      box.appendChild(sum);
+
+      var hist = document.createElement("div");
+      hist.className = "prims";
+      Object.keys(g.prims).sort().forEach(function (p) {
+        var s = document.createElement("span");
+        s.className = "pchip";
+        s.textContent = p + " × " + g.prims[p];
+        hist.appendChild(s);
+      });
+      box.appendChild(hist);
+
+      (g.layers || []).forEach(function (L) {
+        var row = document.createElement("div");
+        row.className = "layer";
+        var no = document.createElement("div");
+        no.className = "lno";
+        no.textContent = L.index < 0 ? "全局" : "L" + L.index;
+        var chain = document.createElement("div");
+        chain.className = "chain";
+        var txt = document.createElement("span");
+        txt.className = "gchain";
+        txt.textContent = L.prims.join(" → ");
+        chain.appendChild(txt);
+        chain.style.cursor = "pointer";
+        chain.onclick = function () { showGraphLayer(g, L); };
+        row.appendChild(no);
+        row.appendChild(chain);
+        box.appendChild(row);
+      });
+    }).catch(function (e) {
+      box.innerHTML = "<p class='bad'>" + esc(e.message) + "</p>";
+    });
+  }
+
+  function showGraphLayer(g, L) {
+    $("props-empty").hidden = true;
+    var p = $("props");
+    p.hidden = false;
+    if (!g.nodes) {
+      p.innerHTML = "<h3>" + (L.index < 0 ? "全局" : "第 " + L.index + " 层") + "</h3>" +
+        "<div class='pmeta'>这份模型只导了图摘要；节点表在节点 <= 600 的模型上有。</div>" +
+        "<div class='sect'>原语链</div><div class='gchain'>" + esc(L.prims.join(" → ")) + "</div>";
+      return;
+    }
+    var prefix = L.index < 0 ? null : ("L" + L.index);
+    var rows = (g.nodes || []).filter(function (n) {
+      if (!prefix) return !/^L\d/.test(n.outs.join(" "));
+      return n.outs.join(" ").indexOf(prefix) >= 0;
+    }).map(function (n) {
+      var attrs = Object.keys(n.attrs || {}).sort().map(function (k) {
+        return esc(k) + "=" + esc(n.attrs[k]);
+      }).join("  ");
+      return "<div style='margin:6px 0'><b>" + esc(n.prim) + "</b><div class='gchain'>" +
+        esc(attrs || "—") + "</div></div>";
+    }).join("");
+    p.innerHTML = "<h3>" + (L.index < 0 ? "全局" : "第 " + L.index + " 层") + "</h3>" +
+      "<div class='pmeta'>" + (L.prims.length) + " 个节点</div>" + rows;
+  }
+
   function showProps(L, op) {
     $("props-empty").hidden = true;
     var p = $("props");
@@ -171,6 +281,10 @@
   $("q").addEventListener("input", function (e) {
     filter = e.target.value;
     renderList();
+  });
+
+  Array.prototype.forEach.call($("tabs").querySelectorAll(".tab"), function (b) {
+    b.onclick = function () { showTab(b.getAttribute("data-tab")); };
   });
 
   $("stats").textContent = INDEX.length + " 份模型";

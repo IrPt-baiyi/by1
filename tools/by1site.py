@@ -14,6 +14,7 @@
 """
 
 import argparse
+import re
 import json
 import pathlib
 import sys
@@ -117,6 +118,7 @@ def check_site(root, out):
     import by1paths  # noqa: F401
     import by1check
     import by1codegen
+    import by1graph
 
     index_path = out / "index.js"
     if not index_path.exists():
@@ -143,7 +145,75 @@ def check_site(root, out):
             bad.append("%s 与 IR 不一致（重新导出：python tools/by1site.py）" % slug)
         else:
             ok += 1
-    return (0 if not bad else 1), (bad or ["站点数据与 IR 一致：%d 份" % ok])
+        # 图（M3）：同样逐字节比，而且对照 graphs-golden.json
+        gf = out / (slug + ".graph.js")
+        if not gf.exists():
+            continue
+        gp = root / "graphs-golden.json"
+        golden = json.loads(gp.read_text(encoding="utf-8")) if gp.exists() else {}
+        try:
+            gd = export_graph(root, name, by1check, by1codegen, by1graph, golden)
+        except Exception:
+            continue
+        gwant = ("window.BY1_GRAPH = window.BY1_GRAPH || {};\n"
+                 "window.BY1_GRAPH[%s] = %s;\n"
+                 % (json.dumps(slug), json.dumps(gd, ensure_ascii=False,
+                                                 separators=(",", ":"))))
+        if gf.read_text(encoding="utf-8") != gwant:
+            bad.append("%s 的图与现算不一致（重新导出：python tools/by1site.py）" % slug)
+        elif gd.get("match") is False:
+            bad.append("%s 的图 sha 与 graphs-golden.json 不同（先重生成 golden）" % slug)
+        else:
+            ok += 1
+    return (0 if not bad else 1), (bad or ["站点数据（含图）与 IR 一致：%d 份" % ok])
+
+
+FULL_NODES = 600      # 节点数不超过它就把节点表也导出来
+
+def export_graph(root, name, check, codegen, graph, golden):
+    """一份模型 -> 原语图（M3）：sha / 节点数 / 每个原语的计数 / 每层的原语链。
+
+    大模型的节点不逐条导出（Qwen3.8-27B 有 5093 个），只导摘要；
+    节点数 <= FULL_NODES 的（shaped 探针、小模型）连节点表一起导，前端可以点开看属性。
+    """
+    p = pathlib.Path(root) / "models" / name
+    _rep, info = check.check(str(p))
+    ir = codegen.compile_ir(info)
+    g = graph.lower_model(ir, name)
+    hist = {}
+    layers = {}
+    for nd in g.nodes:
+        prim = nd.get("prim")
+        hist[prim] = hist.get(prim, 0) + 1
+        lay = None
+        for out in (nd.get("outs") or []):
+            m = re.match(r"^L(\d+)", str(out))
+            if m:
+                lay = int(m.group(1))
+                break
+        layers.setdefault(-1 if lay is None else lay, []).append(prim)
+    sha = g.sha()
+    want = golden.get(name)
+    data = {
+        "slug": _slug(name),
+        "name": name,
+        "sha": sha,
+        "golden": want,
+        "match": (want == sha) if want else None,
+        "node_count": len(g.nodes),
+        "prims": dict(sorted(hist.items())),
+        "layers": [{"index": i, "prims": layers[i]} for i in sorted(layers)],
+        "nodes": None,
+    }
+    if len(g.nodes) <= FULL_NODES:
+        data["nodes"] = [
+            {"i": i, "prim": nd.get("prim"),
+             "ins": [str(x) for x in (nd.get("ins") or [])],
+             "outs": [str(x) for x in (nd.get("outs") or [])],
+             "attrs": _trim_attrs(nd.get("attrs"))}
+            for i, nd in enumerate(g.nodes)
+        ]
+    return data
 
 
 def main(argv=None):
@@ -161,6 +231,7 @@ def main(argv=None):
     import by1check
     import by1codegen
 
+    import by1graph
     names = sorted(p.name for p in (root / "models").glob("*.by1"))
     if not args.all:
         names = [n for n in args.models if n in set(names)]
@@ -172,6 +243,10 @@ def main(argv=None):
             print(("  [%s] " % ("PASS" if rc == 0 else "FAIL")) + m)
         return rc
     out.mkdir(parents=True, exist_ok=True)
+    gp = root / "graphs-golden.json"
+    golden = {}
+    if gp.exists():
+        golden = json.loads(gp.read_text(encoding="utf-8"))
 
     index = []
     for name in names:
@@ -193,6 +268,19 @@ def main(argv=None):
             "mechs": sorted(data["mechs"].keys()),
         })
         print("  %-32s 层 %-4d 张量 %s" % (name, len(data["layers"]), data["n_tensors"]))
+        try:
+            gd = export_graph(root, name, by1check, by1codegen, by1graph, golden)
+            (out / (data["slug"] + ".graph.js")).write_text(
+                "window.BY1_GRAPH = window.BY1_GRAPH || {};\n"
+                "window.BY1_GRAPH[%s] = %s;\n" % (json.dumps(data["slug"]),
+                                            json.dumps(gd, ensure_ascii=False,
+                                                       separators=(",", ":"))),
+                encoding="utf-8", newline="\n")
+            print("  %-32s 图 %-5d 节点 sha %s%s"
+                  % (name, gd["node_count"], gd["sha"],
+                     "" if gd["match"] in (None, True) else " (与 golden 不同!)"))
+        except Exception as exc:
+            print("  %-32s 图导不出 %r" % (name, exc))
 
     (out / "index.js").write_text(
         "window.BY1_INDEX = %s;\n" % json.dumps(index, ensure_ascii=False, indent=1),
