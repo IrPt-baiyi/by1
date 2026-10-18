@@ -1,6 +1,6 @@
 # 这个仓库里每个文件是干什么的
 
-> 561 个跟踪文件。按"你会想找什么"分组，不按字母表。
+> 563 个跟踪文件。按"你会想找什么"分组，不按字母表。
 >
 > **这份文档是生成的**：`python src/by1files.py --write`。
 > 文件清单、每组的个数、每个文件的一句话都从目录树和 docstring 来 ——
@@ -310,7 +310,7 @@
 | `gputrain-t4.json` | "schema": 1, |
 | `llama-bench-t4.txt` | ggml_cuda_init: found 1 CUDA devices (Total VRAM: 15935 MiB): |
 
-## `drafts/` —— 5 个
+## `drafts/` —— 7 个
 
 还没进 `models/` 的草稿。**没有判卷人，所以不算数。**
 
@@ -318,6 +318,8 @@
 |---|---|
 | `README.md` | 门面。是什么、怎么跑、数据从哪来 |
 | `deepseek-v4.1-flash.by1` | 验收 #5（最难的一个）。写它的目的就是逼出语法缺口，所以每一处当前草案 |
+| `discussion-next-steps.md` | 下一步做什么？—— 六个候选方向，各自带判据 |
+| `discussion-testing-feedback.md` | 怎么用 5 分钟验证 by1（以及我想听到哪些反馈） |
 | `qwen3.8-flash-next.by1` | model Qwen3.8-Flash-Next { |
 | `step5-preview-draft.by1` | by1boot 从 Step-5-Preview-BF16 产物反推的草稿合同（drafts/，没有判卷人，不算数） |
 | `step5-schedule-probe.by1` | Step-5 调度探针（**只验调度**，不验契约） |
