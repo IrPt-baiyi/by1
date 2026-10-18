@@ -318,8 +318,8 @@
 |---|---|
 | `README.md` | 门面。是什么、怎么跑、数据从哪来 |
 | `deepseek-v4.1-flash.by1` | 验收 #5（最难的一个）。写它的目的就是逼出语法缺口，所以每一处当前草案 |
-| `discussion-next-steps.md` | 下一步做什么？—— 六个候选方向，各自带判据 |
-| `discussion-testing-feedback.md` | 怎么用 5 分钟验证 by1（以及我想听到哪些反馈） |
+| `discussion-next-steps.md` | 想请教一下：下一步先做哪个方向？ |
+| `discussion-testing-feedback.md` | 想请人帮忙跑一下 5 分钟（零依赖） |
 | `qwen3.8-flash-next.by1` | model Qwen3.8-Flash-Next { |
 | `step5-preview-draft.by1` | by1boot 从 Step-5-Preview-BF16 产物反推的草稿合同（drafts/，没有判卷人，不算数） |
 | `step5-schedule-probe.by1` | Step-5 调度探针（**只验调度**，不验契约） |
