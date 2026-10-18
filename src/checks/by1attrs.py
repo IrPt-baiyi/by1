@@ -669,6 +669,34 @@ def check(root=ROOT, enums=None, provenance=None, reserved=None):
         if _extra:
             notes.append('A12 %s：表里这些原语的见证模型没走到（没验）：%s'
                          % (side, ', '.join(sorted(_extra)[:6])))
+    # A13：**有 hparams 却一层都没展开 = 假绿**。
+    # schedule 只是命名子序列，要由 stack 的 pattern 引用才会展开成层；
+    # 忘了写 stack 时 by1check 不报错、三个后端在空模型上对拍也全 PASS
+    # （laguna-tiny 就这样假绿过：图只有 3 个节点）。
+    try:
+        _empty = []
+        _root = pathlib.Path(root)
+        import by1paths  # noqa: F401
+        import by1check as _bc13
+        for _p in sorted((_root / "models").glob("*.by1")):
+            try:
+                _r13, _i13 = _bc13.check(str(_p))
+            except (SystemExit, Exception):
+                continue
+            _nl = (_i13.get("hparams") or {}).get("n_layer")
+            if _nl is None:
+                continue
+            try:
+                _n = int(str(_nl).strip())
+            except (TypeError, ValueError):
+                continue
+            if _n > 0 and not (_i13.get("layer_seq") or []):
+                _empty.append(_p.name)
+        problems.extend(
+            "A13 %s 声明了 n_layer > 0 但一层都没展开（schedule 没被 stack 引用？）"
+            % _n0 for _n0 in _empty)
+    except Exception as exc:
+        notes.append('A13 没算：%r' % (exc,))
     # A9：`norm` 是**不过取值门**的开关 —— 拼错会静默按普通约定算（差 2 倍）。
     try:
         aliases, decls = norm_switches(root)

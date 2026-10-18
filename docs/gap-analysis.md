@@ -9,6 +9,7 @@
 |---|---|---|---|---|
 | B1 | **已修 2026-10-15** · T26 采样矩阵 8/144 红：`top_k=0 + top_p=1.0 + min_p>0` 族，`chain_f32` 与 sampler-probe 语义不一致（我侧出错 token） | 根因 = min_p **两条路径**：数组未排序时按**当前存储序**过滤、不排序（`llama_sampler_min_p_apply` 未排序路），`chain_f32` 曾在 min_p 前擅自排序 —— 保留集合没变，但 dist 的 f32 求和序变了，选中 token 全变。修后 `--selftest` **144/144**；且已进 by1all 档 2 判卷人段（ok [PASS]） | 修前该参数族不可信；T25 的 3 配置全过不能外推到全网格 | **两项都已收口**：144/144 + 进门禁。顺带修了 dist 的 max_l 取法（未排序时须 max 全扫，不能取 x[0]） |
 | B2 | **已修 2026-10-18** · `by1llama.py pin-check` / `bench-run` 在没有 llama.cpp 构建时**返回 2**（跳过码是 **30**）—— 干净 clone 里两者被判成"失败（没有判定行）"，档 5 报 2 项红 | 根因：五态协议里 2 是历史码，`by1skip.CODE = 30`；`by1skip.py` docstring 里记着同一形状的旧事故（`by1e2e`/`by1extdemo` 退出码 2 长期躺在失败清单），这次是同一类**复发** | 已改成 `return by1skip.CODE`（4 处）；干净 clone 实测 rc=30 + `[跳过]`；这类"外部复核者必踩"的假红正是干净 clone 基线的用途 |
+| B3 | **已修 2026-10-18** · `models/laguna-tiny.by1` 只有 `schedule` 没有 `stack` —— `schedule` 只是命名子序列，**没被 stack 引用就不会展开成层**，于是 IR 里 0 层、图只有 3 个节点，三个后端在空模型上对拍**全 PASS**（旧数 2.259e-07 / 3.840e-07 都是假的） | 根因：`by1check` 对"有 hparams 却一层都没展开"不报错；`by1attrs` 加 **A13** 判据（有 `n_layer > 0` 却 `layer_seq` 为空 -> 红，实测去 stack 立刻红） | 修法：补 `stack main { pattern = full; main[:] >> Dense }`（FFN 是挂载支路，不能当主机制）—— 修真后 **2 层 / 图 77 节点**，新数值 ggml **1.358e-07**、图->C **3.222e-07**；golden 重生成 52 张 |
 
 > 注：by1sample 自检**已进 by1all 门禁表**（档 2 判卷人段，2026-10-15）—— 它原来不在表里，所以 B1 红了 8 格没人知道。同类欠账还剩 S5（by1langspec 未进门禁表）。
 

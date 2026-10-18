@@ -50,6 +50,15 @@ model Laguna-tiny {
   # 两层全量（Laguna 真模型是 1 全量 + 3 滑窗一组；缩到两层时全量即可，
   # 滑窗那条路由 `by1gptoss` 与 shaped 探针覆盖）
   schedule {
-    full = 1 * GQA(window = none, q = 4, out_dim = 64) + 1 * Dense()
+    full = 2 * GQA(window = none, q = 4, out_dim = 64)
+  }
+
+  # ⚠️ **没有 stack 就没有层**。`schedule` 只是命名子序列，
+  # 要由 stack 的 pattern 引用才会展开成层；Dense 是挂在层上的支路，
+  # 不能当主机制（否则 codegen 报“FFN 不是 token 混合器”）。
+  stack main {
+    pattern = full            # 2 层
+
+    main[:] >> Dense
   }
 }

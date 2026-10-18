@@ -1,6 +1,6 @@
 # 这个仓库里每个文件是干什么的
 
-> 430 个跟踪文件。按"你会想找什么"分组，不按字母表。
+> 442 个跟踪文件。按"你会想找什么"分组，不按字母表。
 >
 > **这份文档是生成的**：`python src/by1files.py --write`。
 > 文件清单、每组的个数、每个文件的一句话都从目录树和 docstring 来 ——
@@ -502,6 +502,22 @@
 | `ISTA-DASLab__Qwen3.8-27B-GSQ-RCO-GGUF.IQ2_S-mtp.alloc.txt` | 14 | |
 
 
+## `site/data/` —— 11 个
+
+| 文件 | 用途 |
+|---|---|
+| `Qwen3.8-27B.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `clef-tiny.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `gelu-shaped.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `gpt-oss-shaped.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `index.js` | window.BY1_INDEX = [ |
+| `laguna-tiny.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `llama-shaped.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `mixtral-shaped.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `mla-sparse-shaped.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `qwen3-next-shaped.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `ssm-shaped.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+
 ## `src/checks/` —— 38 个
 
 | 文件 | 用途 |
@@ -613,13 +629,14 @@
 | `by1ssm.py` | Mamba2 的判卷人**：by1 要生成的递推 vs 官方 mixer |
 | `by1train.py` | 按 .by1 的描述搭一个模型，训练它，然后让它写字 |
 
-## `tools/` —— 14 个
+## `tools/` —— 15 个
 
 一次性脚本。**没有任何代码引用它们。**
 
 | 文件 | 用途 |
 |---|---|
 | `audio-mel-probe.cpp` | T21 judge: audio preprocessing boundary (mtmd side). |
+| `by1export.py` | 把 .by1 模型导成**纯静态站点**能直接加载的数据 |
 | `ggml-smoke.c` | **M0 的判卷人**：ggml 的 mul_mat / rms_norm / silu 对手算。接 llama.cpp 那一轮的构建自检（编译命令在文件头注） |
 | `instella-greedy.py` | by1 side of the T25-1 greedy judge. |
 | `instella-ref-logits.py` | reference-side logits dump (T18 cross-check). |
