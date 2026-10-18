@@ -196,18 +196,18 @@ def bench_run(build_dir=None, bin_dir=None, model=None, reps=3):
     root = _find_build(build_dir)
     if root is None:
         print("  [跳过] 本机没有 llama.cpp 构建 —— 这一项没验")
-        return 2
+        return by1skip.CODE
     bin_dir = bin_dir or _os.path.join(root, "build", "bin")
     exe = _exe(bin_dir, "llama-bench")
     if not _os.path.exists(exe):
         print("  [跳过] 构建里没有 llama-bench —— 这一项没验")
-        return 2
+        return by1skip.CODE
     model = model or by1paths.root("models", "llama-tiny", TINY_MODEL["name"])
     if not _os.path.exists(model):
         print("  [跳过] 小模型没下载（%s）—— bench 没验"
               % TINY_MODEL["name"])
         print("    下载：%s" % TINY_MODEL["url"])
-        return 2
+        return by1skip.CODE
     got = sha256_of(model)
     if got != TINY_MODEL["sha256"]:
         print("  [FAIL] %s 的 sha256 不对：%s != %s"
@@ -263,7 +263,7 @@ def pin_check(build_dir=None, bin_dir=None):
     root = next((r for r in roots if r and _os.path.isdir(r)), None)
     if root is None:
         print("  [跳过] 本机没有 llama.cpp 构建 —— 这一项没验（不是通过）")
-        return 2
+        return by1skip.CODE
     bad = []
     sha = None
     if _os.path.isdir(_os.path.join(root, ".git")):
