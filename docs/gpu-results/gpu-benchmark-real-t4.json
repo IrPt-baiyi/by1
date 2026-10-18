@@ -1,0 +1,155 @@
+{
+  "schema": 1,
+  "started_at": "2026-10-18T16:19:22.163153+00:00",
+  "dtype": "bfloat16",
+  "batch_size": 1,
+  "attention": "eager",
+  "warmup": 2,
+  "repeats": 3,
+  "lengths": [
+    128,
+    512
+  ],
+  "new_tokens": 16,
+  "forward_atol": 0.002,
+  "forward_rtol": 0.002,
+  "scope": "Published checkpoint; official config vs by1-compiled config, same Transformers operators. Not an independent kernel comparison.",
+  "models": [
+    {
+      "model": "complete-Qwen3-0.6B.by1",
+      "status": "passed",
+      "phase": "complete",
+      "repo": "/root/models/Qwen3-0.6B",
+      "revision": "local",
+      "download_endpoint": "none",
+      "checkpoint_bytes": 1503300328,
+      "checkpoint_files": [
+        "model.safetensors"
+      ],
+      "repository_safetensors_bytes": 1503300328,
+      "checkpoint_config_sha256": "660db3b73d788119c04535e48cf9be5f55bc3100841a718637ae695b442f27dd",
+      "runs": {
+        "text-128": {
+          "input_shape": [
+            1,
+            128
+          ],
+          "original": {
+            "wall_median_ms": 77.41458714008331,
+            "wall_samples_ms": [
+              82.3836550116539,
+              77.41458714008331,
+              75.29392838478088
+            ],
+            "cuda_median_ms": 77.30585479736328,
+            "tokens_per_second": 1653.4351564567712,
+            "peak_allocated_bytes": 1240318976,
+            "peak_reserved_bytes": 1673527296
+          },
+          "numerics": {
+            "max_absolute": 0.0,
+            "relative_to_peak": 0.0,
+            "argmax_agreement": 1.0
+          },
+          "by1": {
+            "wall_median_ms": 73.59538972377777,
+            "wall_samples_ms": [
+              73.09170067310333,
+              75.61156898736954,
+              73.59538972377777
+            ],
+            "cuda_median_ms": 73.11593627929688,
+            "tokens_per_second": 1739.2393800809614,
+            "peak_allocated_bytes": 1240321024,
+            "peak_reserved_bytes": 1679818752
+          },
+          "latency_ratio_by1_over_original": 0.9506656618939965
+        },
+        "text-512": {
+          "input_shape": [
+            1,
+            512
+          ],
+          "original": {
+            "wall_median_ms": 254.3102502822876,
+            "wall_samples_ms": [
+              252.56869196891785,
+              255.07739186286926,
+              254.3102502822876
+            ],
+            "cuda_median_ms": 254.1724853515625,
+            "tokens_per_second": 2013.288884076334,
+            "peak_allocated_bytes": 1357798400,
+            "peak_reserved_bytes": 1835008000
+          },
+          "numerics": {
+            "max_absolute": 0.0,
+            "relative_to_peak": 0.0,
+            "argmax_agreement": 1.0
+          },
+          "by1": {
+            "wall_median_ms": 254.31081652641296,
+            "wall_samples_ms": [
+              251.3623982667923,
+              257.414273917675,
+              254.31081652641296
+            ],
+            "cuda_median_ms": 254.1876220703125,
+            "tokens_per_second": 2013.2844013216527,
+            "peak_allocated_bytes": 1357800448,
+            "peak_reserved_bytes": 1681915904
+          },
+          "latency_ratio_by1_over_original": 1.000002226587897
+        }
+      },
+      "load_seconds": {
+        "original": 1.266265131533146,
+        "by1": 0.6610247939825058
+      },
+      "original_ignored_mtp_keys": 0,
+      "generation": {
+        "original": {
+          "wall_median_ms": 612.4138683080673,
+          "wall_samples_ms": [
+            620.5928400158882,
+            612.4138683080673,
+            609.9266856908798
+          ],
+          "cuda_median_ms": 612.3584594726562,
+          "tokens_per_second": 26.126122917829477,
+          "peak_allocated_bytes": 1222289920,
+          "peak_reserved_bytes": 1849688064
+        },
+        "identical_tokens": true,
+        "by1": {
+          "wall_median_ms": 628.7977918982506,
+          "wall_samples_ms": [
+            624.6215626597404,
+            633.804015815258,
+            628.7977918982506
+          ],
+          "cuda_median_ms": 628.7443237304688,
+          "tokens_per_second": 25.44538197517884,
+          "peak_allocated_bytes": 1223040512,
+          "peak_reserved_bytes": 1696595968
+        }
+      },
+      "by1_parameters": 596049920,
+      "seconds": 18.592028312385082
+    }
+  ],
+  "environment": {
+    "torch": "2.6.0+cu124",
+    "transformers": "5.19.0",
+    "cuda": "12.4",
+    "gpu": "Tesla T4",
+    "gpu_memory_bytes": 16709648384
+  },
+  "source_sha256": {
+    "src/checks/by1gpubench.py": "1cbbdfbacf7166fac689033413ca8f28f26b8774811b71d9d4a7faa7e97bffec",
+    "src/by1full.py": "9509ed4aade6c10d7525438a81e788cbf131b588aefae60aa1cad1a2c8f5c6fb",
+    "src/modelcheck/by1quant.py": "91d185514f6e4f26aa89af62431f879fdd8fe056f24d19ea4a3e26a17f0b19ed",
+    "src/modelcheck/by1shadow.py": "4efc65dc23063c8ce1a872af2626ae8a63cf9917212b32c4ed5f12ec0c3b39ae"
+  },
+  "status": "passed"
+}

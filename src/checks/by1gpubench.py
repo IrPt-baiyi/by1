@@ -170,18 +170,33 @@ def benchmark(filename, repo, args, torch, T, hub, work, save, row):
                    repository_safetensors_bytes=manifest['bytes'],
                    weights='synthetic', shadow=manifest)
     else:
-        remote = hub.HfApi().model_info(repo,
-            revision=args.revision or PINNED_REVISIONS.get(repo), files_metadata=True, timeout=30)
-        repository_weights = [s for s in remote.siblings if s.rfilename.endswith('.safetensors')]
-        checkpoint_weights = [s for s in repository_weights if '/' not in s.rfilename]
-        row.update(repo=repo, revision=remote.sha, download_endpoint=os.environ.get('HF_ENDPOINT', 'https://huggingface.co'),
-                   checkpoint_bytes=sum(s.size or 0 for s in checkpoint_weights),
-                   checkpoint_files=[s.rfilename for s in checkpoint_weights],
-                   repository_safetensors_bytes=sum(s.size or 0 for s in repository_weights))
-        ignore_patterns = ['tokenizer.json'] if family == 'gpt_oss' else None
-        checkpoint = hub.snapshot_download(repo, revision=remote.sha,
-            allow_patterns=['*.json', '*.safetensors', '*.txt', '*.model', '*.jinja', '*.tiktoken'],
-            ignore_patterns=ignore_patterns, max_workers=4)
+        # **本地 checkpoint**（离线/镜像环境）：`--checkpoint` 指到一个已下好的目录，
+        # 就不去问 Hub。与 `by1gputrain --checkpoint` 同一套语义。
+        if args.checkpoint:
+            _ck = pathlib.Path(args.checkpoint)
+            _shards = sorted(_ck.glob('*.safetensors'))
+            checkpoint = str(_ck)
+            row.update(repo=repo, revision='local', download_endpoint='none',
+                       checkpoint_bytes=sum(p.stat().st_size for p in _shards),
+                       checkpoint_files=[p.name for p in _shards],
+                       repository_safetensors_bytes=sum(p.stat().st_size for p in _shards))
+            save()
+            remote = None
+        else:
+            remote = hub.HfApi().model_info(
+                repo, revision=args.revision or PINNED_REVISIONS.get(repo),
+                files_metadata=True, timeout=30)
+            repository_weights = [s for s in remote.siblings if s.rfilename.endswith('.safetensors')]
+            checkpoint_weights = [s for s in repository_weights if '/' not in s.rfilename]
+            row.update(repo=repo, revision=remote.sha,
+                       download_endpoint=os.environ.get('HF_ENDPOINT', 'https://huggingface.co'),
+                       checkpoint_bytes=sum(s.size or 0 for s in checkpoint_weights),
+                       checkpoint_files=[s.rfilename for s in checkpoint_weights],
+                       repository_safetensors_bytes=sum(s.size or 0 for s in repository_weights))
+            ignore_patterns = ['tokenizer.json'] if family == 'gpt_oss' else None
+            checkpoint = hub.snapshot_download(repo, revision=remote.sha,
+                allow_patterns=['*.json', '*.safetensors', '*.txt', '*.model', '*.jinja', '*.tiktoken'],
+                ignore_patterns=ignore_patterns, max_workers=4)
     if quantization:
         row['quantization_contract'] = quantization
     save()

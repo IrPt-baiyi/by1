@@ -114,8 +114,32 @@ granite-4.0-h-350m · granite-4.0-h-1b · Falcon-H1-0.5B。**它们是随机权�
 
 **明确没验的**（不写成通过）：
 
+
+### 真权重（2026-10-19，同一台 T4）
+
+权重：`Qwen/Qwen3-0.6B` 的**真 checkpoint**（1.50 GB，`model.safetensors`），经 `hf-mirror.com` 下载到本地目录，
+用 `--checkpoint` 指向它 —— 不走 Hub 的在线查询（`by1gpubench` 为此补了本地目录分支）。
+
+| 判据 | 结果 | 报告 |
+|---|---|---|
+| 前向（bf16） | **max\|Δ\| = 0.0**，`allclose: true` | [gputrain-real-t4.json](gpu-results/gputrain-real-t4.json) |
+| 梯度（596,049,920 个值） | **max\|Δ\| = 0.0**，relative_l2 = 0.0 | 同上 |
+| AdamW 一步后的参数 | **逐位一致**（watched 参数 max update 1.22e-04） | 同上 |
+| bench：text-128 / text-512 | **PASS** | [gpu-benchmark-real-t4.json](gpu-results/gpu-benchmark-real-t4.json) |
+| 生成 | **`identical_tokens: true`**（同一 prompt、贪心） | 同上 |
+
+吞吐（同一台 T4、bf16、贪心、单流）：
+
+    original  612.4 ms（26.13 tok/s）   peak allocated 1.22 GB
+    by1       628.8 ms                 load 0.66 s（original 1.27 s）
+
+**口径**：这是"同一份真权重、两条独立实现"的逐位对拍（前向/反向/更新），加上生成 token 序列相同；
+吞吐是**单机单次观测**，不当作跨机器/跨版本的性能结论（项目规矩：不把一次性观测写成普遍加速）。
+
+**仍未验**：27B/8B 的真权重前向（显存不够）、CUDA 构建的 llama.cpp（无 nvcc）、多卡。
+
 - **真权重 27B / 8B 前向**：T4 只有 16 GB，27B bf16 约 55 GB —— 放不下；
-- **真权重 bench/train**：这台机器直连 `huggingface.co` 是 `Errno 99`（镜像未配），只有影子权重能跑；
+- ~~真权重 bench/train~~ ✅ 已验（镜像下载 + `--checkpoint` 本地目录）；
 - **llama.cpp CUDA 构建**：镜像里没有 `nvcc`；
 - 多卡 / 张量并行：没有第二块卡。
 - [Qwen3-0.6B 真实权重训练步](gpu-results/gpu-real-traincheck.json)
