@@ -1,6 +1,6 @@
 # 这个仓库里每个文件是干什么的
 
-> 566 个跟踪文件。按"你会想找什么"分组，不按字母表。
+> 568 个跟踪文件。按"你会想找什么"分组，不按字母表。
 >
 > **这份文档是生成的**：`python src/by1files.py --write`。
 > 文件清单、每组的个数、每个文件的一句话都从目录树和 docstring 来 ——
@@ -523,7 +523,7 @@
 | `index.html` | <!DOCTYPE html> |
 | `style.css` | --bg:#0d1117; --panel:#151b23; --line:#263041; --txt:#d6deea; |
 
-## `site/data/` —— 111 个
+## `site/data/` —— 113 个
 
 | 文件 | 用途 |
 |---|---|
@@ -634,7 +634,9 @@
 | `moe-routing-shaped.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
 | `qwen3-next-shaped.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
 | `qwen3-next-shaped.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `raw-escape.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
 | `raw-escape.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `ssm-shaped.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
 | `ssm-shaped.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
 | `verdicts-t3.js` | by1sync.py                     Qwen2.5-0.5B-Instruct.by1  [跳过] UnsupportedError: 完整模型使用 transformers 后端；请用 by1 "]}; |
 | `verdicts-t5.js` | by1sync.py                     Qwen2.5-0.5B-Instruct.by1  [跳过] UnsupportedError: 完整模型使用 transformers 后端；请用 by1 "]}; |

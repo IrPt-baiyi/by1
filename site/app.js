@@ -196,6 +196,12 @@
         box.innerHTML = "<p class='bad'>这份模型没有图数据（导出时这一步被跳过）。</p>";
         return;
       }
+      if (g.error) {
+        box.innerHTML = "<p class='bad'>这份模型的图<b>导不出</b>（原语还没收编）。" +
+          "<div class='pmeta'>" + esc(g.error) + "</div>" +
+          "<div class='pmeta'>结构与属性仍可看（左边的页签）。</div></p>";
+        return;
+      }
       box.innerHTML = "";
       var sum = document.createElement("div");
       sum.className = "gsum";
@@ -238,7 +244,8 @@
         box.appendChild(row);
       });
     }).catch(function (e) {
-      box.innerHTML = "<p class='bad'>" + esc(e.message) + "</p>";
+      box.innerHTML = "<p class='bad'>数据加载不了：" + esc(e.message) +
+        "<div class='pmeta'>重新导出：python tools/by1site.py --all</div></p>";
     });
   }
 
@@ -313,7 +320,8 @@
         box.appendChild(row);
       });
     }).catch(function (e) {
-      box.innerHTML = "<p class='bad'>" + esc(e.message) + "</p>";
+      box.innerHTML = "<p class='bad'>数据加载不了：" + esc(e.message) +
+        "<div class='pmeta'>重新导出：python tools/by1site.py --all</div></p>";
     });
   }
 

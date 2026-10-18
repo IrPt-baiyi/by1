@@ -154,7 +154,17 @@ def check_site(root, out):
         golden = json.loads(gp.read_text(encoding="utf-8")) if gp.exists() else {}
         try:
             gd = export_graph(root, name, by1check, by1codegen, by1graph, golden)
-        except Exception:
+        except (Exception, SystemExit) as exc:   # SystemExit 同样要抓（by1graph 用它拒绝）
+            # 导不出的也比——占位不得被手改（error 字段要对得上）
+            stub = {"slug": slug, "name": name, "error": str(exc)[:160]}
+            gwant = ("window.BY1_GRAPH = window.BY1_GRAPH || {};\n"
+                     "window.BY1_GRAPH[%s] = %s;\n"
+                     % (json.dumps(slug), json.dumps(stub, ensure_ascii=False,
+                                                     separators=(",", ":"))))
+            if gf.read_text(encoding="utf-8") != gwant:
+                bad.append("%s 的图占位与现算不一致（重新导出：python tools/by1site.py）" % slug)
+            else:
+                ok += 1
             continue
         gwant = ("window.BY1_GRAPH = window.BY1_GRAPH || {};\n"
                  "window.BY1_GRAPH[%s] = %s;\n"
@@ -508,8 +518,21 @@ def main(argv=None):
             print("  %-32s 图 %-5d 节点 sha %s%s"
                   % (name, gd["node_count"], gd["sha"],
                      "" if gd["match"] in (None, True) else " (与 golden 不同!)"))
-        except Exception as exc:
-            print("  %-32s 图导不出 %r" % (name, exc))
+        # **SystemExit 也要抓**：by1graph 拒绝 lowering 用的是
+        # `raise SystemExit("  [不支持] …")` —— 它不是 Exception 的子类，
+        # 第一版就这样整个导出中断、占位也没写（前端裸报“加载失败”）。
+        except (Exception, SystemExit) as exc:
+            # **导不出也要写占位**（带原因）—— 否则前端点进去只会裸报
+            # "加载失败: data/xxx.graph.js" （raw-escape 的 Raw 没 lowering）。
+            stub = {"slug": data["slug"], "name": name,
+                    "error": str(exc)[:160]}
+            (out / (data["slug"] + ".graph.js")).write_text(
+                "window.BY1_GRAPH = window.BY1_GRAPH || {};\n"
+                "window.BY1_GRAPH[%s] = %s;\n"
+                % (json.dumps(data["slug"]), json.dumps(stub, ensure_ascii=False,
+                                                       separators=(",", ":"))),
+                encoding="utf-8", newline="\n")
+            print("  %-32s 图导不出（已写占位）%r" % (name, exc))
 
     (out / "index.js").write_text(
         "window.BY1_INDEX = %s;\n" % json.dumps(index, ensure_ascii=False, indent=1),

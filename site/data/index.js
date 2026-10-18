@@ -425,6 +425,32 @@ window.BY1_INDEX = [
   "error": "完整模型使用 transformers 后端；请用 by1 build，不能把多分支模型降成串行 IR"
  },
  {
+  "name": "distill-student.by1",
+  "slug": "distill-student",
+  "arch": "",
+  "layers": 2,
+  "d_model": 64,
+  "ctx": 128,
+  "n_tensors": 0,
+  "mechs": [
+   "Attention",
+   "FFN"
+  ]
+ },
+ {
+  "name": "distill-teacher.by1",
+  "slug": "distill-teacher",
+  "arch": "",
+  "layers": 2,
+  "d_model": 128,
+  "ctx": 128,
+  "n_tensors": 0,
+  "mechs": [
+   "Attention",
+   "FFN"
+  ]
+ },
+ {
   "name": "embeddinggemma-2.by1",
   "slug": "embeddinggemma-2",
   "arch": "embedding_gemma2",
