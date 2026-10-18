@@ -90,6 +90,7 @@
     $("empty").hidden = true;
     $("model").hidden = false;
     renderHead(m);
+    renderVerdicts(m);
     renderLayers(m);
     $("tabs").hidden = false;
     showTab("struct");
@@ -385,6 +386,31 @@
     });
   }
 
+
+  var VKIND = { ok: "ok", "!!": "fail", "--": "skip", "??": "broken" };
+
+  function renderVerdicts(m) {
+    var all = window.BY1_VERDICTS;
+    if (!all || !all.models) return;
+    var rows = all.models[m.name];
+    if (!rows || !rows.length) return;
+    var box = document.createElement("div");
+    box.className = "verdicts";
+    var head = document.createElement("div");
+    head.className = "sect";
+    head.textContent = "门禁（档 " + all.tier + "）";
+    box.appendChild(head);
+    rows.forEach(function (r) {
+      var row = document.createElement("div");
+      row.className = "vrow";
+      var mk = VKIND[r.mark] || "broken";
+      row.innerHTML = "<span class='vmark v-" + mk + "'>" + esc(r.mark) + "</span>" +
+        "<span class='vjudge'>" + esc(r.judge || "—") + "</span>" +
+        "<span class='vnote'>" + esc(r.note) + "</span>";
+      box.appendChild(row);
+    });
+    $("mhead").appendChild(box);
+  }
   function showProps(L, op) {
     $("props-empty").hidden = true;
     var p = $("props");

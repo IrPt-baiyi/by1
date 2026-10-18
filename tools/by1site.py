@@ -14,6 +14,7 @@
 """
 
 import argparse
+import os
 import re
 import json
 import pathlib
@@ -194,7 +195,9 @@ def check_site(root, out):
             else:
                 ok += 1
 
-    return (0 if not bad else 1), (bad or ["站点数据（含图/对比）与 IR 一致：%d 份" % ok])
+    vrc, vmsgs = check_verdicts(out)
+    bad.extend(vmsgs if vrc else [])
+    return (0 if not bad else 1), (bad or ["站点数据（含图/对比/门禁）与 IR 一致：%d 份" % ok])
 
 
 FULL_NODES = 600      # 节点数不超过它就把节点表也导出来
@@ -338,6 +341,73 @@ def write_diff(root, out, data):
             "attr_changed": data["counts"]["attr_changed"]}
 
 
+def parse_by1all(text):
+    """把 by1all 的判定行解析成 {模型: [{judge, mark, note}]}。
+
+    只收**带 .by1 的行**（模型相关）；其它行（静态、lint、判卷人自检）不归模型。
+    判据靠的是"同一段原文 -> 同一份解析"，所以原文也要存下来。
+    """
+    out = {}
+    lines = []
+    for line in (text or '').splitlines():
+        m = re.match(r'^  (\S+)\s+(.*)$', line)
+        if not m:
+            continue
+        mark, rest = m.group(1), m.group(2)
+        # **只要完整的文件名词**：`检查器 68 个 .by1` 这种行不能当模型。
+        m2 = re.search(r'([A-Za-z0-9][A-Za-z0-9._+%-]*\.by1)', rest)
+        if not m2:
+            continue
+        model = m2.group(1)
+        judge = rest[:m2.start()].strip()
+        note = rest[m2.end():].strip()
+        out.setdefault(model, []).append({
+            'judge': judge, 'mark': mark, 'note': note[:140],
+        })
+        lines.append(line)
+    return out, lines
+
+
+def export_verdicts(root, out, tier=3):
+    """跑一次 by1all 的某一档，把模型判定行存成站点数据（M5）。"""
+    import subprocess
+    cmd = [sys.executable, str(root / 'src' / 'checks' / 'by1all.py'),
+           '--tier', str(tier)]
+    env = dict(os.environ, PYTHONIOENCODING='utf-8')
+    r = subprocess.run(cmd, cwd=str(root), capture_output=True, text=True,
+                       encoding='utf-8', errors='replace', env=env, timeout=900)
+    text = r.stdout or ''
+    models, lines = parse_by1all(text)
+    # **只存模型行**：存全文会把“对 verdicts 的检查结果”也存进去 -> 自引用。
+    data = {'tier': tier, 'models': models, 'lines': lines}
+    (out / 'verdicts.js').write_text(
+        'window.BY1_VERDICTS = %s;\n' % json.dumps(data, ensure_ascii=False,
+                                                    separators=(',', ':')),
+        encoding='utf-8', newline='\n')
+    print('  门禁判定 %d 个模型（档 %d，rc=%d）' % (len(models), tier, r.returncode))
+    return data
+
+
+def check_verdicts(out):
+    """**判据**：verdicts.js 里的 models 必须等于"对存档原文重新解析"的结果。
+
+    不重跑门禁（否则 by1sitedata 会在 by1all 里递归），只保证
+    **数据文件没被手改**、解析器没漂。
+    """
+    f = out / 'verdicts.js'
+    if not f.exists():
+        return 0, ['没有 verdicts.js（可选）']
+    raw = f.read_text(encoding='utf-8').strip()
+    m = re.match(r'^window\.BY1_VERDICTS = (.*);$', raw)
+    if not m:
+        return 1, ['verdicts.js 格式不对']
+    data = json.loads(m.group(1))
+    want, _lines = parse_by1all(chr(10).join(data.get('lines', [])))
+    if want != data.get('models'):
+        return 1, ['verdicts.js 的 models 与存档原文重新解析的结果不一致']
+    return 0, ['门禁判定与存档原文一致：%d 个模型' % len(want)]
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="把 .by1 导成静态站点数据")
     ap.add_argument("--out", default="site/data", help="输出目录")
@@ -345,6 +415,8 @@ def main(argv=None):
     ap.add_argument("--all", action="store_true", help="导出 models/ 下全部")
     ap.add_argument("--root", default=None, help="仓库根（默认按脚本位置推断）")
     ap.add_argument("--check", action="store_true", help="只比对磁盘数据与 IR（不写文件）")
+    ap.add_argument("--verdicts", action="store_true", help="导出门禁判定行（M5）")
+    ap.add_argument("--verdict-tier", type=int, default=3)
     ap.add_argument("--diff", nargs=2, metavar=("A", "B"), help="导出两份模型的 IR 差异")
     ap.add_argument("--diffs", action="store_true", help="导出 DIFF_PAIRS 全部")
     args = ap.parse_args(argv)
@@ -367,6 +439,11 @@ def main(argv=None):
             print(("  [%s] " % ("PASS" if rc == 0 else "FAIL")) + m)
         return rc
     out.mkdir(parents=True, exist_ok=True)
+    if args.verdicts:
+        export_verdicts(root, out, args.verdict_tier)
+        return 0
+
+
     if args.diff or args.diffs:
         pairs = [tuple(args.diff)] if args.diff else list(DIFF_PAIRS)
         di = []
