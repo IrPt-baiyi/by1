@@ -1,6 +1,6 @@
 # 这个仓库里每个文件是干什么的
 
-> 560 个跟踪文件。按"你会想找什么"分组，不按字母表。
+> 561 个跟踪文件。按"你会想找什么"分组，不按字母表。
 >
 > **这份文档是生成的**：`python src/by1files.py --write`。
 > 文件清单、每组的个数、每个文件的一句话都从目录树和 docstring 来 ——
@@ -289,7 +289,7 @@
 | `t29-plan.md` | T29：另一根轴 —— **层内并行**（Falcon-H1） |
 | `which-gpu.md` | > 从 `README.md` 挪出来的。它是一次**具体的调查** —— 这台开发机上 |
 
-## `docs/gpu-results/` —— 15 个
+## `docs/gpu-results/` —— 16 个
 
 | 文件 | 用途 |
 |---|---|
@@ -308,6 +308,7 @@
 | `gpu-smoke-t4.json` | "schema": 1, |
 | `gputrain-real-t4.json` | "schema": 1, |
 | `gputrain-t4.json` | "schema": 1, |
+| `llama-bench-t4.txt` | ggml_cuda_init: found 1 CUDA devices (Total VRAM: 15935 MiB): |
 
 ## `drafts/` —— 5 个
 

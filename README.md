@@ -357,6 +357,15 @@ pip install -e .                         # 可选：装 `by1` 命令行
 
 ---
 
+## 关于这个项目 / About
+
+**中文**：我是十年级学生，正在准备中国的高考 —— 它非常严格，占去了我大部分时间。
+这是我推进这个项目的主要约束，**不是**对项目缺乏兴趣。……尽管如此，无论怎样我都会继续做下去。
+
+**English**：I’m Grade 10 and preparing for the National College Entrance Examination (gaokao) —
+it is very strict here in China, and it takes most of my time. This is the main constraint,
+not a lack of interest in this project......Nevertheless, I will continue to work on this project no matter what.
+
 ## License
 
 **GPL-3.0-or-later** —— 全文见 [`LICENSE`](LICENSE)，逐字未改。

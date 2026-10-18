@@ -136,7 +136,31 @@ granite-4.0-h-350m · granite-4.0-h-1b · Falcon-H1-0.5B。**它们是随机权�
 **口径**：这是"同一份真权重、两条独立实现"的逐位对拍（前向/反向/更新），加上生成 token 序列相同；
 吞吐是**单机单次观测**，不当作跨机器/跨版本的性能结论（项目规矩：不把一次性观测写成普遍加速）。
 
-**仍未验**：27B/8B 的真权重前向（显存不够）、CUDA 构建的 llama.cpp（无 nvcc）、多卡。
+
+### 上游 llama.cpp：CUDA 构建 + 数值（2026-10-19，同一台 T4）
+
+**构建**：`/root/llama.cpp`，tag `v0.6.0`（sha `d812350`），
+`cmake -DGGML_CUDA=ON -DCMAKE_BUILD_TYPE=Release -DLLAMA_CURL=OFF -DCMAKE_CUDA_ARCHITECTURES=75`，
+`llama-cli` / `llama-bench` 都产出。**没有改一行源码。**
+
+| 判据 | 结果 |
+|---|---|
+| `by1llama.py pin-check --build-dir /root/llama.cpp` | **PASS**（两个二进制的版本串都带 `d812350`） |
+| `llama-bench`（Qwen3-0.6B-Q8_0，CUDA，pp32/tg16） | **两次观测**：pp32 **1898 / 2424 t/s**，tg16 **174 / 190 t/s** |
+| `llama-cli` 生成（贪心，24 token） | prompt **621 t/s** · generation **120 t/s**，输出正常（Qwen3 thinking 模式） |
+
+报告：[llama-bench-t4.txt](gpu-results/llama-bench-t4.txt)（第二次观测原文）。
+
+**为什么给区间不给单值**：同一台机器、同一构建、同一 GGUF，两次跑出来的 pp32 是 1898 和 2424（+28%）。
+GPU 预热/频率/容器负载都会影响它 —— 项目规矩是**不把一次性观测写成性能结论**。
+
+**当天修的一处判据**：`by1llama.py pin-check` 原来只读 `--version` 的**第一行**；CUDA 构建的
+`llama-bench --version` 第一行是 `ggml_cuda_init: found 1 CUDA devices ...`（初始化日志），
+版本行在后面 —— 于是 CUDA 构建上假红。改成在**所有输出行**里找钉住的 commit 前缀，修后 PASS。
+
+**仍未验**：上游 GGUF 与 by1 产物的 logits 逐位对拍（`llama-eval-callback` 路径）· 其它量化档（Q4/Q2）· 视觉/MTP 路径 · 多卡。
+
+**仍未验**：27B/8B 的真权重前向（显存不够）、多卡。
 
 - **真权重 27B / 8B 前向**：T4 只有 16 GB，27B bf16 约 55 GB —— 放不下；
 - ~~真权重 bench/train~~ ✅ 已验（镜像下载 + `--checkpoint` 本地目录）；

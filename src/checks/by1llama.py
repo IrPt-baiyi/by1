@@ -283,10 +283,16 @@ def pin_check(build_dir=None, bin_dir=None):
             bad.append("缺 %s（干净 clone 构建没产出它）" % exe)
             continue
         out = _run('"%s" --version' % path)
-        line = out.splitlines()[0] if out else "(空)"
+        # **不能只看第一行**：CUDA 构建的 `llama-bench --version` 第一行是
+        # `ggml_cuda_init: found 1 CUDA devices ...`（初始化日志打在 stdout），
+        # 版本行在后面 —— 2026-10-19 在 T4 的 CUDA 构建上就是这么假红的。
+        lines = [l for l in (out or "").splitlines() if l.strip()]
+        hit = next((l for l in lines if want_sha in l), None)
+        line = hit or (lines[0] if lines else "(空)")
         print("  %-12s %s" % (exe, line))
-        if want_sha not in line:
-            bad.append("%s 的版本里没有 %s" % (exe, want_sha))
+        if hit is None:
+            bad.append("%s 的版本里没有 %s（共 %d 行，首行 %r）"
+                       % (exe, want_sha, len(lines), line[:60]))
     print()
     ok = not bad
     print("  [%s] llama.cpp 钉定版本（%s / %s）：%s"

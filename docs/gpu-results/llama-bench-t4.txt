@@ -1,0 +1,8 @@
+ggml_cuda_init: found 1 CUDA devices (Total VRAM: 15935 MiB):
+  Device 0: Tesla T4, compute capability 7.5, VMM: yes, VRAM: 15935 MiB
+| model                          |       size |     params | backend    | ngl |            test |                  t/s |
+| ------------------------------ | ---------: | ---------: | ---------- | --: | --------------: | -------------------: |
+| qwen3 0.6B Q8_0                | 604.15 MiB |   596.05 M | CUDA       |  -1 |            pp32 |     2423.55 ± 786.15 |
+| qwen3 0.6B Q8_0                | 604.15 MiB |   596.05 M | CUDA       |  -1 |            tg16 |       189.61 ± 34.49 |
+
+build: d812350 (1)
