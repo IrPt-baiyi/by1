@@ -10,6 +10,13 @@ by1 1.0.0-rc1 · by1-ir 1.1
 [English quick start](#english) · [中文入门](#中文) · [License](#license)
 
 Start with the CPU demo below: run a model, change one number, and see the result.
+
+**Gate output language:** `BY1_LANG=en` prints the gate summary in English, `both` prints
+Chinese and English, default is `zh`. Only the shell layer is translated (tier header,
+summary, skip/fail lists, timings); the per-check messages stay in Chinese.
+
+**门禁输出语言：** `BY1_LANG=en` 出英文，`both` 中英两行，默认 `zh`。
+只翻壳层（档位表头、汇总、跳过/失败清单、耗时）；各判卷人自己的消息仍是中文。
 先跑下面的 CPU 小模型，再改一个数字，看到架构实际发生变化。
 
 **Complete model definitions:** six examples now include actual parameter tying,
