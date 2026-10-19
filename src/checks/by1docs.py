@@ -109,7 +109,41 @@ def _pack_ignored(rel_path):
     return False
 
 
-_IGNORED = None
+_IGNORE_CACHE = {}
+
+
+def prefetch(paths):
+    """**一次问完一批路径**：`git check-ignore -- <p1> … <pN>` 会把被忽略的
+    逐个打印（缺席的路径照样答得对 —— 干净克隆的场景全在这）。返回码看：
+    0 = 有命中、1 = 全不命中、其余 = git 出错（不冤枉路径，当没忽略）。
+
+    **这里踩过两次**（2026-10-20，耗时判据 B1 红出来的）：
+    ① 老办法一路径一子进程 —— 877 次 spawn 占 28 秒里的 26.5 秒；
+    ② 第一次改成 `git ls-files --others --ignored` 一把抓 —— **语义错了**：
+      它只列"存在且被忽略"的文件，而干净克隆里 llamacpp/ 那些**根本不存在**
+      → CI 全线红（1/11）。修快不能换语义：批量的还是同一条 check-ignore。
+    """
+    todo = []
+    for p in paths:
+        k = p.replace('\\', '/')
+        if k not in _IGNORE_CACHE and k not in todo:
+            todo.append(k)
+    if not todo:
+        return
+    try:
+        done = subprocess.run(['git', 'check-ignore', '--'] + todo,
+                              cwd=ROOT, capture_output=True, text=True)
+        if done.returncode not in (0, 1):        # git 出错 ≠ 全都不忽略
+            for k in todo:
+                _IGNORE_CACHE[k] = False
+            return
+        hit = {ln.strip().replace('\\', '/')
+               for ln in (done.stdout or '').splitlines() if ln.strip()}
+        for k in todo:
+            _IGNORE_CACHE[k] = k in hit
+    except OSError:
+        for k in todo:
+            _IGNORE_CACHE[k] = False
 
 
 def ignored(rel_path):
@@ -120,45 +154,13 @@ def ignored(rel_path):
     在干净克隆里本来就不存在 —— 而文档**该**引用它们。
     把这些算成"路径坏了"，干净克隆就永远红：**那是判据错，不是文档错**。
     所以它们进单独一桶（既不算通过也不算失败），而不是判红。
-
-    **一次问完 git**（2026-10-20，耗时判据 B1 红出来的真回归）：
-    原来一路径一子进程 `git check-ignore` —— 877 次 spawn 占了 by1docs
-    28 秒里的 26.5 秒，而引用数只涨不跌。`git ls-files --others
-    --ignored` 一把列出**未跟踪且被忽略**的条目 —— 正是这个函数要回答的
-    （干净克隆里不在的那些），一个子进程 + 集合前缀查。
     """
-    global _IGNORED
     if not _at_repo_root():          # 包/副本里没有 gitignore 这回事
         return _pack_ignored(rel_path)
-    if _IGNORED is None:
-        try:
-            done = subprocess.run(
-                ['git', 'ls-files', '--others', '--ignored',
-                 '--exclude-standard', '--directory'],
-                cwd=ROOT, capture_output=True, text=True)
-            # **返回码要看**（by1lint 第⑨类盯这个）：git 说了不行时
-            # 不当「没有忽略条目」—— 那会把故意不在库的全算成路径坏。
-            if done.returncode == 0:
-                _IGNORED = [ln.strip().replace('\\', '/')
-                            for ln in (done.stdout or '').splitlines()
-                            if ln.strip()]
-            else:
-                _IGNORED = 'fallback'
-        except OSError:
-            _IGNORED = 'fallback'
-    if _IGNORED == 'fallback':
-        # 退回逐路径的老办法（慢但对）。
-        try:
-            done = subprocess.run(['git', 'check-ignore', '-q', '--', rel_path],
-                                  cwd=ROOT, capture_output=True)
-            return done.returncode == 0
-        except OSError:
-            return False
     p = rel_path.replace('\\', '/')
-    for e in _IGNORED:
-        if p == e.rstrip('/') or p.startswith(e if e.endswith('/') else e + '/'):
-            return True
-    return False
+    if p not in _IGNORE_CACHE:
+        prefetch([p])                # 兜底：没批过的单个也走同一条 git
+    return _IGNORE_CACHE[p]
 
 # 文档里写的路径（字面量）
 PAT_PATH = re.compile(r"(refs/[\w.\-]+\.json|[\w.\-]+\.by1)")
@@ -179,6 +181,7 @@ def md_files():
     读的人会连真的那条一起跳过。
     """
     out = []
+    cand = []
     for base, dirs, files in os.walk(ROOT):
         # **只扫本仓库自己写的文档。** `node_modules` / `.mimocode` /
         # `cgen` / `.venv` 里的 `.md` 是第三方或产物 —— 实测 npm 包的 README
@@ -204,9 +207,10 @@ def md_files():
             # 3 处假路径 —— 而 `build/` 在 `.gitignore` 里，本来就不该被扫。
             # 名字表（`cgen` / `.venv` / `llamacpp` …）保留：它们有些是
             # 可再生的检出，提前剪掉省一次 `git check-ignore`。
-            if ignored(by1paths.rel(p)):
-                continue
-            out.append(p)
+            cand.append(p)
+    # **一批问完**（老循环里逐文件一进程 —— 遍历 557 次 spawn 的出处）。
+    prefetch(by1paths.rel(p) for p in cand)
+    out = [p for p in cand if not ignored(by1paths.rel(p))]
     return sorted(out)
 
 
@@ -366,6 +370,7 @@ def main():
                             ('链接', t[:m.start()].count('\n') + 1))
         if not seen:
             continue
+        prefetch(seen)   # 一批问完（一路径一进程的老毛病在这 877 次）
         for k in seen:
             if ignored(k):
                 ignored_refs.add(k)
@@ -406,6 +411,7 @@ def main():
             calls.setdefault(m.group(1), {})[by1paths.rel(p)] = os.path.dirname(p)
     missing = [k for k in calls
                if not any(find(k, d) for d in calls[k].values())]
+    prefetch(list(calls))   # 下面三处都吃这一批
     ext_scripts = [k for k in sorted(missing) if ignored(k)]
     # **名单要收"被引用且 gitignored"的全部，不只是"缺的"。**
     # 第一版只收了 `missing` 里的 —— 而在开发树里那些探针脚本**是存在的**
