@@ -5,8 +5,8 @@
 >
 > **进度（2026-10-20）**：① 普查 ✅（〇 + 〇之二逐份表）· ③ 最小里程碑 ✅（二之二：
 > 装配模块 + exec 后端**两条判据**都进档 5）· ② 形状设计 ✅（三节：字段/语义/兼容 +
-> ir-spec 重生成 + by1bootir + **生产者与不拍平审计**）
-> · ④ 浏览器 partial ⏳（四·5，做不完就记延期）。
+> ir-spec 重生成 + by1bootir + 生产者与不拍平审计）· ④ 浏览器 ✅（四·5：partial 换真
+> IR 层结构，降不动的报文改真实原因）。**①②③ 全成，④ 尽力完成 —— A 弧线收账。**
 
 ## 〇、普查（70 份 `.by1`，`docs/ir-multibranch-survey.json`）
 
@@ -148,8 +148,16 @@ Qwen3.8-27B 实例 = stacks 三条（trunk / mtp / tower，层段 0 / 64 / 65）
 （语言层没有一份显式声明）—— 审计逐份列出、不冒充声明；`stack_modality` 已暴露，
 显式声明从此胜过约定。
 
-**待做**：exec 后端按接线跑通（visual → merger → main / MTP 并列；后端顺序：
-exec 先行，torch codegen / C / ggml 逐个跟）· ④ 浏览器 partial 换真结构。
+**已落地（同日第五步 · ④ 浏览器）**：partial 标记**换成真 IR 层结构** ——
+站点导出带上 `stacks/wiring/shared`，层视图顶栏渲染「分支与接线」（层段 L0–L63 /
+L64 / L65–L91 + 六条接线边）；列表徽标从「多分支」改成「N 分支」。**报文如实**：
+降不动的 11 份不再一律谎称「多分支」—— partial 文案改成 compile_ir 的**真实拒绝理由**
+（如 Falcon-H1：`机制 'Both' 的类型是 'Parallel'，codegen 还不支持`），并导出声明里
+的分支结构（role/modality 留空，不猜）。by1sitedata 判据 145 份全绿。
+
+**待做**（本弧线之外的下一条线）：exec 后端按接线跑通（visual → merger → main /
+MTP 并列；后端顺序：exec 先行，torch codegen / C / ggml 逐个跟）—— 真多分支
+（complete-Qwen3.8-27B）的 IR 放行留到那时（报文已如实说明）。
 
 ## 四、顺序
 

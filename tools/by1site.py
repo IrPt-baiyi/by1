@@ -93,11 +93,15 @@ def export_one(root, name, check, codegen):
                 "norm_one_plus": bool(ir.get("norm_one_plus")),
                 "norm_eps": ir.get("norm_eps"), "pos_kind": ir.get("pos_kind"),
                 "n_pos": ir.get("n_pos"), "globals": ir.get("globals") or []}
+        _stks, _wire, _shared = (ir.get("stacks") or []), \
+            (ir.get("wiring") or []), (ir.get("shared") or [])
         partial = None
-    except (Exception, SystemExit):
-        # **降级导出**：complete-* 是多分支模型，降不成串行 IR ——
-        # 但 by1check 的声明结构是完整的（layer_seq / 机制 / 属性）。
-        # 页面照样看结构；IR/图那一栏如实标"不适用"。
+    except (Exception, SystemExit) as _ex:
+        # **降级导出**：降不动的模型没有 IR —— 但 by1check 的声明结构是完整的
+        # （layer_seq / 机制 / 属性）。页面照样看结构；IR/图如实标"不适用"。
+        # **报文要说真话**：这里原来一律写"多分支模型"—— 而降不动的 11 份里
+        # 大半是 G-B 机制缺口（SSM2 / qkv_bias / 缺 vocab），和多分支无关。
+        # 现在把**真实原因**（compile_ir 的拒绝理由）写上去。
         mechs = info.get("mechs") or {}
         layers = []
         for i, entry in enumerate(info.get("layer_seq") or []):
@@ -115,7 +119,19 @@ def export_one(root, name, check, codegen):
                 "norm_one_plus": nv in ("zero_centered", "one_plus", "1+", "gemma"),
                 "norm_eps": None, "pos_kind": None, "n_pos": None,
                 "globals": []}
-        partial = "多分支模型：只导声明结构（layer_seq/机制/属性）；IR / 图不适用"
+        _why = str(_ex).strip().splitlines()[0][:110] if str(_ex).strip() \
+            else type(_ex).__name__
+        partial = "降不动（%s）：只导声明结构（layer_seq/机制/属性）；IR / 图不适用" % _why
+        # **声明里的分支结构照样导**（widths / 层段来自 info，不猜）：
+        # 降不动 ≠ 没有分支可看。
+        _stks, first = [], 0
+        for _nm, _al, _n in (info.get("stacks") or []):
+            _stks.append({"name": _nm, "modality": None, "role": None,
+                          "width": int((info.get("stack_d_model") or {}).get(_nm)
+                                       or (hp.get("d_model") or 0)),
+                          "first_layer": first, "n_layers": int(_n)})
+            first += int(_n)
+        _wire, _shared = [], []
     tens = info.get("tens") or {}
     return {
         "name": name,
@@ -136,6 +152,11 @@ def export_one(root, name, check, codegen):
         "position": info.get("position") or {},
         "layers": layers,
         "globals": dims.get("globals") or [],
+        # **1.2 多分支三件套**（真 IR 层结构：分支登记 / 接线 / 参数绑定）。
+        # 降不动的模型导声明里的分支（role/modality 为 null，不猜）。
+        "stacks": _stks,
+        "wiring": _wire,
+        "shared": _shared,
         "n_tensors": _count_tensors(tens),
     }
 

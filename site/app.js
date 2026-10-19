@@ -63,7 +63,8 @@
         li.innerHTML = '<span class="nm">' + esc(m.name) + '</span>' +
           '<span class="meta">' + esc(m.arch || "-") + " · " + m.layers + " 层" +
           (m.n_tensors ? " · " + m.n_tensors + " 张量" : "") +
-          (m.partial ? " · 多分支" : "") + "</span>";
+          (m.stacks && m.stacks.length > 1 ? " · " + m.stacks.length + " 分支" : "") +
+          (m.partial ? " · 降不动" : "") + "</span>";
         li.onclick = function () { select(m.slug); };
         if (current === m.slug) li.className = "active";
       }
@@ -154,6 +155,24 @@
       row.appendChild(no);
       row.appendChild(chain);
       return row;
+    }
+    // **真 IR 层结构**（1.2）：分支登记 + 显式接线 —— 回答两个问题：
+    // 这个节点在哪个分支上（层段）、接线从哪来到哪去（wiring）。
+    if (m.stacks && m.stacks.length) {
+      var bb = document.createElement("div");
+      bb.className = "pmeta";
+      var rows = m.stacks.map(function (s) {
+        return esc(s.name) + (s.role ? "（" + esc(s.role) +
+          (s.modality ? " · " + esc(s.modality) : "") + "）" : "") +
+          " 宽 " + esc(String(s.width)) + " · L" + s.first_layer + "–L" +
+          (s.first_layer + s.n_layers - 1);
+      });
+      var wires = (m.wiring || []).map(function (e) {
+        return esc(e.from) + " → " + esc(e.to) + "（" + esc(e.kind) + "）";
+      });
+      bb.innerHTML = "<b>分支与接线</b>：" + rows.join(" · ") +
+        (wires.length ? "<br>接线：" + wires.join(" ；") : "");
+      box.appendChild(bb);
     }
     // **重复周期合并**：结构签名（机制序列）找主周期；少量例外不打断合并。
     var segs = collapseLayers(items, function (L) {
