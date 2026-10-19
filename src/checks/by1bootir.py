@@ -91,7 +91,10 @@ def _one(f, cfg_p, ten_p):
     diffs, same = [], 0
 
     # ① 顶层
-    for k in ('vocab', 'd_model', 'ctx', 'pos_kind', 'norm_kind', 'norm_eps'):
+    for k in ('vocab', 'd_model', 'ctx', 'pos_kind', 'norm_kind', 'norm_eps',
+              # **1.2 的多分支三件套**（分支登记 / 接线 / 参数绑定）——
+              # 两条路都不出 = 都是单栈，也算一致；一边出一边不出就是差异。
+              'stacks', 'wiring', 'shared'):
         a, b = ir_a.get(k), ir_b.get(k)
         if a == b:
             same += 1

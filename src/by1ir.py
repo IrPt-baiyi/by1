@@ -106,21 +106,71 @@ ATTR_DEFAULTS = {
     "routed_scale": ROUTED_SCALE_DEFAULT,
 }
 
-# ── STACKS（by1-ir 1.1）：栈/塔登记表 ───────────────────────────────
+# ── STACKS：分支登记表（1.1 定字段 · 1.2 升格）─────────────────────
 # (名字, 类型, 必填, 说明)
 # 为什么要有它：源语言里 `stack vision { }`、MODAL 闭集早就有，但
 # **编译成 IR 后栈信息全丢**（by1ir 里 stack/modal 原本零命中）——
 # 于是护栏没法对塔说话。可缺省 = 单栈文本，**旧描述一个字不改照样
 # 合法**（T22 判据：旧描述继续有效）。
+#
+# **1.2 的「不拍平」判据不是「不能有平表」，是答得出两个问题：**
+#   这个节点在哪个分支上 —— 本表的层段划分（first_layer + n_layers）
+#   接线从哪来到哪去 —— WIRING 表
+# 节点表照旧是 `layers`（全局编号 —— 实测 91/92 层的多栈模型从不撞名，
+# params_of / 后端零改动）；分支不各持一份层表，是为了**不给同一个
+# 节点两个家**。
 STACKS = (
-    ("name", "str", True, "栈名（`text` 是主栈的缺省名）"),
+    ("name", "str", True, "分支名（`text` 是主栈的缺省名）"),
     ("modality", "enum:default,text,vision,audio,video", True,
      "模态。**和 by1blocks.MODAL 同一闭集** —— 两处各写一份迟早漂"),
     ("width", "int", True,
-     "该栈的残差流宽度。等于 `d_model` 的可以不登记；**不等的必须登记**"
+     "该分支的残差流宽度。等于 `d_model` 的可以不登记；**不等的必须登记**"
      "（视觉塔宽 1152 / d_model 5376 那种）"),
-    ("first_layer", "int", True, "该栈从第几层开始（0-based，按 layers 序）"),
-    ("n_layers", "int", True, "该栈占几层"),
+    ("first_layer", "int", True, "该分支从第几层开始（0-based，按 layers 序）"),
+    ("n_layers", "int", True, "该分支占几层"),
+    ("role", "enum:trunk,mtp,tower", False,
+     "分支的角色（1.2 新增）：`trunk` 主干（缺省）· `mtp` 并列预测头 · "
+     "`tower` 旁路塔（视觉/音频那种）。**role 和 modality 不是一回事**："
+     "mtp 是角色、vision 是模态"),
+)
+
+#: 端口文法里的模态闭集 —— **从 STACKS.modality 那格派生**，不抄第二份。
+MODALITIES = tuple(
+    t.split(":", 1)[1].split(",")
+    for _n, t, _r, _d in STACKS if _n == "modality")[0]
+
+# ── WIRING（by1-ir 1.2）：显式接线 ─────────────────────────────────
+# 端口文法（validate 按它查，spec 抄这一段）：
+#   `input:<模态>`        模态入口（input:text / input:image / …）
+#   `<分支>.in`           分支的入口
+#   `<分支>.out`          分支的输出（跑完它自己的层之后）
+#   `<分支>.hidden`       进输出头之前的隐藏态（MTP 头吃的是这个）
+#   `logits`              主输出头
+#   `logits.<分支>`       旁路输出头（MTP 的额外 logits）
+WIRING = (
+    ("kind", "enum:feed,concat,head", True,
+     "接线种类：`feed` 喂进分支入口 · `concat` 拼接进主干流（merger 那种）"
+     " · `head` 并列头（MTP 那种）"),
+    ("from", "str", True, "起点端口（文法见上）"),
+    ("to", "str", True, "终点端口（文法同上）"),
+    ("at", "str?", False,
+     "拼接落点的记号（如 `image_tokens`：拼在图像 token 的位置上）"),
+    ("via", "str?", False,
+     "经过的结构名（如 `merger`）—— 人看的路标，不参与计算"),
+    ("note", "str?", False, "自由说明（人看的，不参与计算）"),
+)
+
+# ── SHARED（by1-ir 1.2）：跨分支参数绑定 ───────────────────────────
+# 共享权重的两种形态（普查〇之二结论 3）：
+#   tie   —— 同一块权重两个名字（tie_word_embeddings）
+#   share —— 声明级共享（mtp 的 share_embeddings / share_head）
+# 两种都要在 IR 里**说**出来，不然搬权重的人只能靠猜。
+SHARED = (
+    ("param", "str", True,
+     "被绑定的参数，限定名 `<分支>.<名>`（globals 里的可以裸名，如 `head.weight`）"),
+    ("binds", "str", True, "绑定到的参数（同文法）"),
+    ("kind", "enum:tie,share", False, "`tie`=同一块权重；`share`=声明共享。缺省 tie"),
+    ("note", "str?", False, "自由说明（人看的，不参与计算）"),
 )
 
 # ── 顶层字段 ────────────────────────────────────────────────────────
@@ -128,8 +178,14 @@ STACKS = (
 TOP = [
     ("by1-ir", "str", True, "IR 版本。**读的一方必须拒绝不认识的大版本。**"),
     ("stacks", "list?", False,
-     "栈/塔登记表（1.1 新增，缺省 = 单栈文本）。每条见 STACKS 表；"
-     "非 `text` 栈的层必须给 `in_dim` 且必须等于栈宽（跨栈漂移当报红）"),
+     "分支登记表（1.1 新增、1.2 升格，缺省 = 单栈文本）。每条见 STACKS 表；"
+     "非 `text` 分支的层必须给 `in_dim` 且必须等于分支宽（跨栈漂移当报红）；"
+     "层段互不重叠、合起来可不满全部层"),
+    ("wiring", "list?", False,
+     "显式接线（1.2 新增），每条见 WIRING 表。**stacks 多于一条时必填**"
+     " —— 没有接线的分支登记表只是孤岛，等于没说"),
+    ("shared", "list?", False,
+     "跨分支参数绑定（1.2 新增），每条见 SHARED 表（tie / share 两种形态）"),
     ("vocab", "int", True, "词表大小"),
     ("ctx", "int", True, "上下文长度（位置能达到的最大值）"),
     ("d_model", "int", True, "残差流宽度"),
@@ -154,7 +210,9 @@ TOP = [
 ]
 
 LAYER = [
-    ("index", "int", True, "层号。**多栈时是各栈从 0 起**，不是全局序号"),
+    ("index", "int", True,
+     "层号。**全局序号**（多分支也连续编号 —— 实测 91/92 层的多栈模型"
+     "从不撞名；分支归属看 stacks 的层段，不看这里）"),
     # **这一层的残差流宽度。** 不给就是顶层 `d_model` —— 绝大多数模型
     # 每层都一样，所以是可选的；给了就是**这一栈自己的宽度**。
     #
@@ -1272,6 +1330,103 @@ def validate(ir):
                             "%s：第 %d 层 in_dim=%r 与栈宽 %r 不符"
                             "（跨栈漂移当报红）" % (sw, li, got, s.get("width")))
 
+    # ── 层段互不重叠：同一层被两个分支认领 = 接线无从谈起 ────────────
+    if isinstance(stk, list):
+        _rng = []
+        for s in stk:
+            if isinstance(s, dict) and isinstance(s.get("first_layer"), int) \
+                    and isinstance(s.get("n_layers"), int):
+                _rng.append((s.get("first_layer"),
+                             s.get("first_layer") + s.get("n_layers"),
+                             s.get("name")))
+        _rng.sort()
+        for (_a, _b, _n), (_c, _d, _m) in zip(_rng, _rng[1:]):
+            if _c < _b:
+                errs.append("stacks：%r 的层段 [%d, %d) 与 %r 的 [%d, %d) 重叠"
+                            " —— 同一层不许被两个分支认领"
+                            % (_n, _a, _b, _m, _c, _d))
+
+    # ── WIRING / SHARED（1.2）：显式接线与跨分支参数绑定 ────────────
+    _names = {s.get("name") for s in (stk or [])
+              if isinstance(s, dict) and s.get("name")}
+
+    def _port(where, p):
+        """端口文法（见 WIRING 表上方）。**说不清就是不合法。**"""
+        if not isinstance(p, str):
+            errs.append("%s：端口必须是字符串" % where)
+            return
+        if p.startswith("input:"):
+            m = p.split(":", 1)[1]
+            if m not in MODALITIES:
+                errs.append("%s：模态 %r 不在闭集 %s"
+                            % (where, m, "/".join(MODALITIES)))
+            return
+        if p == "logits":
+            return
+        if p.startswith("logits."):
+            n = p.split(".", 1)[1]
+            if n not in _names:
+                errs.append("%s：旁路头 %r 的分支没登记" % (where, p))
+            return
+        base, _, tail = p.partition(".")
+        if base not in _names:
+            errs.append("%s：端口 %r 的分支 %r 没登记" % (where, p, base))
+        elif tail not in ("in", "out", "hidden"):
+            errs.append("%s：端口 %r 的后缀只认 in / out / hidden" % (where, p))
+
+    wire = ir.get("wiring")
+    if wire is not None and not isinstance(wire, list):
+        errs.append("wiring 必须是列表")
+    for w_i, w in enumerate(wire if isinstance(wire, list) else []):
+        ww = "wiring[%d]" % w_i
+        _check_fields(ww, WIRING, w, errs)
+        if isinstance(w, dict):
+            _port(ww + ".from", w.get("from"))
+            _port(ww + ".to", w.get("to"))
+    if isinstance(stk, list) and len(stk) > 1 and not wire:
+        errs.append("stacks 有 %d 个分支而 wiring 缺失 —— 多分支必须给接线"
+                    "（不然这张图答不出「接线从哪来到哪去」）" % len(stk))
+    # **孤儿分支**：不出现在任何接线里 = 输出没人吃、输入没人喂 ——
+    # 登记了也白登记，恰恰是「拍平了没说」的另一种形状。
+    if isinstance(wire, list) and wire:
+        _touched = set()
+        for w in wire:
+            if not isinstance(w, dict):
+                continue
+            for p in (w.get("from"), w.get("to")):
+                if isinstance(p, str) and not p.startswith(("input:", "logits")):
+                    _touched.add(p.partition(".")[0])
+        for _n in sorted(_names - _touched):
+            errs.append("stacks：%r 没出现在任何接线里（孤儿分支）" % _n)
+    sh = ir.get("shared")
+    if sh is not None and not isinstance(sh, list):
+        errs.append("shared 必须是列表")
+    # 全局参数名（裸名绑定的白名单）—— 推不出来就跳过这项检查，
+    # **不让校验器自己崩**（它要面对的恰恰是坏 IR）。
+    try:
+        _globs = {k for k in params_of(ir) if not k.startswith("layers.")}
+    except Exception:
+        _globs = None
+    for k_i, k in enumerate(sh if isinstance(sh, list) else []):
+        kk = "shared[%d]" % k_i
+        _check_fields(kk, SHARED, k, errs)
+        if not isinstance(k, dict):
+            continue
+        pa, bn = k.get("param"), k.get("binds")
+        if pa == bn:
+            errs.append("%s：%r 自己绑自己 —— 绑定要说的是一块权重两个名字"
+                        % (kk, pa))
+        for who, p in (("param", pa), ("binds", bn)):
+            if not isinstance(p, str):
+                continue
+            _q = [n for n in _names if p.startswith(n + ".")]
+            if _q:
+                if len(p) <= len(_q[0]) + 1:
+                    errs.append("%s.%s：%r 分支限定名还缺参数名" % (kk, who, p))
+            elif _globs is not None and "." in p and p not in _globs:
+                errs.append("%s.%s：%r 不是已登记分支的限定名，"
+                            "也不在全局参数里" % (kk, who, p))
+
     # ── 值引用与宽度的静态推导（T0.1）────────────────────────────────
     # **换宽度的 `gaps` 不进 errs** —— 那是"没实现"不是"错了"，
     # 它由 `--selftest` / 后续的同步检查单独报，不冒充 IR 不合法。
@@ -1507,6 +1662,57 @@ def spec_markdown():
     L.append("|---|---|---|---|")
     for name, ty, req, doc in STATE:
         L.append("| `%s` | `%s` | %s | %s |" % (name, ty, "是" if req else "否", doc))
+    L.append("")
+    L.append("## 分支登记表（`stacks`）")
+    L.append("")
+    L.append("1.1 定字段、1.2 升格为**分支登记表**。缺省 = 单栈文本"
+             "（1.1 文件一个字不改照样合法）。")
+    L.append("")
+    L.append("| 字段 | 类型 | 必填 | 语义 |")
+    L.append("|---|---|---|---|")
+    for name, ty, req, doc in STACKS:
+        L.append("| `%s` | `%s` | %s | %s |" % (name, ty, "是" if req else "否", doc))
+    L.append("")
+    L.append("## 接线（`wiring`，1.2）")
+    L.append("")
+    L.append("显式接线：谁吃谁的输出。**stacks 多于一条时必填。**")
+    L.append("")
+    L.append("端口文法：")
+    L.append("")
+    L.append("    input:<模态>     模态入口（input:text / input:image / …）")
+    L.append("    <分支>.in        分支的入口")
+    L.append("    <分支>.out       分支的输出（跑完它自己的层之后）")
+    L.append("    <分支>.hidden    进输出头之前的隐藏态（MTP 头吃的是这个）")
+    L.append("    logits           主输出头")
+    L.append("    logits.<分支>    旁路输出头（MTP 的额外 logits）")
+    L.append("")
+    L.append("| 字段 | 类型 | 必填 | 语义 |")
+    L.append("|---|---|---|---|")
+    for name, ty, req, doc in WIRING:
+        L.append("| `%s` | `%s` | %s | %s |" % (name, ty, "是" if req else "否", doc))
+    L.append("")
+    L.append("## 跨分支参数绑定（`shared`，1.2）")
+    L.append("")
+    L.append("共享权重的两种形态：`tie` 同一块权重两个名字"
+             "（tie_word_embeddings）· `share` 声明级共享"
+             "（mtp 的 share_embeddings / share_head）。")
+    L.append("")
+    L.append("| 字段 | 类型 | 必填 | 语义 |")
+    L.append("|---|---|---|---|")
+    for name, ty, req, doc in SHARED:
+        L.append("| `%s` | `%s` | %s | %s |" % (name, ty, "是" if req else "否", doc))
+    L.append("")
+    L.append("## 不拍平判据（1.2）")
+    L.append("")
+    L.append("多分支的 IR 必须**答得出两个问题**：")
+    L.append("")
+    L.append("1. **这个节点在哪个分支上** —— `stacks` 的层段划分"
+             "（first_layer + n_layers；层段互不重叠）；")
+    L.append("2. **接线从哪来到哪去** —— `wiring`（端口按上面的文法，"
+             "分支不出现在任何接线里 = 孤儿分支，不合法）。")
+    L.append("")
+    L.append("节点表照旧是 `layers`（全局编号）—— 分支不各持一份层表，"
+             "是为了不给同一个节点两个家。")
     L.append("")
     L.append("## 每种算子的属性")
     L.append("")

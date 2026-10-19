@@ -235,6 +235,71 @@ MUTATIONS = [
      lambda b: _mut(lambda ir: ir.update({"stacks": [
          {"name": "vision", "modality": "vision", "width": 8,
           "first_layer": 9, "n_layers": 9}]}), b), "越界"),
+    # ── T23（by1-ir 1.2：层段 / 接线 / 参数绑定）─────────────────────
+    # **每条新规则配一个必红反例**（改规则必须配反例）。基线是 4 层的
+    # llama-shaped IR，所以多分支的用例都摆成 0..2 + 2..4 两段。
+    ("stacks-overlap", "分支层段互不重叠（同一层不许被两个分支认领）",
+     lambda b: _mut(lambda ir: ir.update({"stacks": [
+         {"name": "main", "modality": "text", "width": 4,
+          "first_layer": 0, "n_layers": 3},
+         {"name": "mtp", "modality": "text", "width": 4, "role": "mtp",
+          "first_layer": 2, "n_layers": 2}]}), b), "重叠"),
+    ("stacks-bad-role", "分支 role 闭集（trunk / mtp / tower）",
+     lambda b: _mut(lambda ir: ir.update({"stacks": [
+         {"name": "main", "modality": "text", "width": 4,
+          "first_layer": 0, "n_layers": 4, "role": "banana"}]}), b),
+     "不在闭集"),
+    ("wiring-missing", "多分支必须给接线（没有接线的登记表只是孤岛）",
+     lambda b: _mut(lambda ir: ir.update({"stacks": [
+         {"name": "main", "modality": "text", "width": 4,
+          "first_layer": 0, "n_layers": 2},
+         {"name": "mtp", "modality": "text", "width": 4, "role": "mtp",
+          "first_layer": 2, "n_layers": 2}]}), b), "必须给接线"),
+    ("wiring-orphan", "每个分支都要出现在接线里（孤儿分支不合法）",
+     lambda b: _mut(lambda ir: ir.update({"stacks": [
+         {"name": "main", "modality": "text", "width": 4,
+          "first_layer": 0, "n_layers": 2},
+         {"name": "mtp", "modality": "text", "width": 4, "role": "mtp",
+          "first_layer": 2, "n_layers": 2}],
+         "wiring": [{"kind": "feed", "from": "input:text",
+                     "to": "main.in"}]}), b), "孤儿分支"),
+    ("wiring-bad-port", "接线端口的分支必须登记",
+     lambda b: _mut(lambda ir: ir.update({"stacks": [
+         {"name": "main", "modality": "text", "width": 4,
+          "first_layer": 0, "n_layers": 2},
+         {"name": "mtp", "modality": "text", "width": 4, "role": "mtp",
+          "first_layer": 2, "n_layers": 2}],
+         "wiring": [{"kind": "feed", "from": "ghost.out", "to": "main.in"},
+                    {"kind": "head", "from": "main.hidden",
+                     "to": "mtp.in"}]}), b), "没登记"),
+    ("wiring-bad-suffix", "端口后缀闭集（in / out / hidden）",
+     lambda b: _mut(lambda ir: ir.update({"stacks": [
+         {"name": "main", "modality": "text", "width": 4,
+          "first_layer": 0, "n_layers": 2},
+         {"name": "mtp", "modality": "text", "width": 4, "role": "mtp",
+          "first_layer": 2, "n_layers": 2}],
+         "wiring": [{"kind": "feed", "from": "input:text",
+                     "to": "main.middle"},
+                    {"kind": "head", "from": "main.hidden",
+                     "to": "mtp.in"}]}), b), "只认"),
+    ("wiring-bad-modal", "input: 端口的模态闭集",
+     lambda b: _mut(lambda ir: ir.update({"stacks": [
+         {"name": "main", "modality": "text", "width": 4,
+          "first_layer": 0, "n_layers": 2},
+         {"name": "mtp", "modality": "text", "width": 4, "role": "mtp",
+          "first_layer": 2, "n_layers": 2}],
+         "wiring": [{"kind": "feed", "from": "input:television",
+                     "to": "main.in"},
+                    {"kind": "head", "from": "main.hidden",
+                     "to": "mtp.in"}]}), b), "不在闭集"),
+    ("shared-self-bind", "参数绑定不许自己绑自己",
+     lambda b: _mut(lambda ir: ir.update({"shared": [
+         {"param": "head.weight", "binds": "head.weight",
+          "kind": "tie"}]}), b), "自己绑自己"),
+    ("shared-ghost-branch", "参数绑定的分支限定名必须登记",
+     lambda b: _mut(lambda ir: ir.update({"shared": [
+         {"param": "ghost.head.weight", "binds": "head.weight"}]}), b),
+     "不在全局参数里"),
 ]
 
 #: 五类反例的**覆盖账**（阶段 A 判据：缺字段 / 冲突配置 / 未知 dtype /

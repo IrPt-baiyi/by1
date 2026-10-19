@@ -3,9 +3,10 @@
 > 解冻依据（rc1-decision F1–F6：动 IR 要先有新证据）：10 份 `complete-*` 降不进 IR 路，
 > 四路数值判据（exec / torch codegen / C / ggml）对它们一律绕开；浏览器里挂着 partial 标记。
 >
-> **进度（2026-10-19）**：① 普查 ✅（〇 + 〇之二逐份表）· ③ 最小里程碑 ✅（二之二：
-> 装配模块 + exec 后端**两条判据**都进档 5）· ② 形状设计 ⏳（三：草案已立，下一步
-> 字段/语义/兼容定稿 + ir-spec 重生成 + by1bootir）· ④ 浏览器 partial ⏳（四·5，做不完就记延期）。
+> **进度（2026-10-20）**：① 普查 ✅（〇 + 〇之二逐份表）· ③ 最小里程碑 ✅（二之二：
+> 装配模块 + exec 后端**两条判据**都进档 5）· ② 形状设计 ✅ schema/语义/兼容 + ir-spec
+> 重生成 + by1bootir 过关（三节）；**生产者与不拍平审计 ⏳（下一轮）**
+> · ④ 浏览器 partial ⏳（四·5，做不完就记延期）。
 
 ## 〇、普查（70 份 `.by1`，`docs/ir-multibranch-survey.json`）
 
@@ -109,15 +110,38 @@ NumPy 运行时**，与 transformers 官方前向**同权重同输入**对拍 �
 **契约装配的正确性**（config 映射 / 权重映射 / tie / MTP 接线），不是独立实现的一致性 ——
 两种结论都真，但要分清（T4 真权重那次同理）。
 
-## 三、by1-ir 1.2 形状草案（待快赢定型后细化）
+## 三、by1-ir 1.2 形状（2026-10-20 定稿，schema 已落地）
 
-- IR 增加 **branches**：每个分支自己的 layers + 挂载；`layers` 保留（serial = 单分支特例，
-  **1.1 文件不改一个字**）；
-- **wiring 显式**：谁吃谁的输出（visual → merger → main 的拼接点；MTP 并列头的输入；
-  audio/visual 的模态入口）；
-- `ir-spec.md` 由代码重新生成（by1docs 的生成物判据把关）；`by1bootir` 两条路同 IR；
-- 后端顺序：exec 先行（Python 好写），torch codegen / C / ggml 逐个跟；
-- **不拍平是硬规则**：1.2 的图必须能回答「这个节点在哪个分支上、接线从哪来到哪去」。
+**「不拍平」判据是可回答，不是「不能有平表」** —— 1.2 的 IR 必须答得出两个问题：
+① 这个节点在哪个分支上（`stacks` 的层段划分）；② 接线从哪来到哪去（`wiring`）。
+
+**形状（加法变更 —— 1.1 文件一个字不改照样合法）：**
+
+| 字段 | 版本 | 语义 |
+|---|---|---|
+| `stacks[]` | 1.1 定字段 · 1.2 升格 | 分支登记表：name / modality / width / **层段**（first_layer + n_layers，互不重叠）/ **role**（trunk / mtp / tower，1.2 新增） |
+| `wiring[]` | **1.2 新增** | 显式接线（stacks 多于一条时必填）：kind（feed / concat / head）+ 端口文法 `input:<模态>` / `<分支>.in\|out\|hidden` / `logits[.<分支>]`；孤儿分支不合法 |
+| `shared[]` | **1.2 新增** | 跨分支参数绑定：`tie`（一块权重两个名字）/ `share`（声明级共享）—— 普查〇之二结论 3 的两种形态 |
+
+**三个决定，各带理由：**
+
+1. **节点表照旧 `layers`（全局编号）** —— 不给分支各持一份层表：同一个节点两个家
+   就是下一种漂移（实测 91/92 层的多栈模型从不撞名，params_of / 后端零改动）。
+   分支归属由**层段**回答，不靠重排节点表。
+2. **`role` 与 `modality` 不是一回事** —— mtp 是角色、vision 是模态
+   （Qwen3.8-27B 的 mtp 分支 modality=text、role=mtp）。
+3. **兼容 = 加法 + 多余字段拒绝** —— 1.1 文件零改动；1.1 的工具读 1.2 的 IR 会被
+   未知字段检查**如实拒绝**（不静默忽略）—— 所以 IR_VERSION 动到 1.2、
+   TOOL_VERSION 跟到 rc2（by1ver 的家规：IR 动、工具必须跟）。
+
+**已落地（本轮）**：schema 三张表（STACKS 升格 + WIRING + SHARED）· validate 规则
+（层段重叠 / 端口文法 / 孤儿分支 / 绑定合法性）· **9 条必红反例**（by1mutate T23，
+30 → 39 全红）· `ir-spec.md` 由代码重新生成（by1docs 逐字符判据）· `by1bootir`
+两条路对拍加进三件套（273 处一致、0 差异）。
+
+**下一步**：compile_ir 生产者（21 份多栈模型填出 stacks + wiring + shared，
+逐份过不拍平审计）→ exec 后端按接线跑通（visual → merger → main / MTP 并列）→
+④ 浏览器 partial 换真结构。后端顺序：exec 先行，torch codegen / C / ggml 逐个跟。
 
 ## 四、顺序
 

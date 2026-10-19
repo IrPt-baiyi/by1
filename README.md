@@ -6,7 +6,7 @@
 **A declarative language for describing LLM architectures, with machine verification.**
 
 ```
-by1 1.0.0-rc1 · by1-ir 1.1
+by1 1.0.0-rc2 · by1-ir 1.2
 ```
 
 [English quick start](#english) · [中文入门](#中文) · [License](#license)
