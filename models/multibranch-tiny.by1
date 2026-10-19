@@ -1,0 +1,97 @@
+# multibranch-tiny.by1 —— **tiny 多分支夹具**（B 弧线①）：trunk + 视觉塔 + MTP 并列头。
+#
+# 结构 = complete-Qwen3.8-27B 的机械缩小（clef-tiny 同手法：只缩维度、不改结构）。
+# 参照物 = transformers.models.qwen3_5 的官方 tiny 前向（同权重同输入对拍，
+# 判据见 docs/branch-exec-plan.md）。
+model MultibranchTiny {
+  backend transformers
+  arch qwen3_5
+  ctx 4096
+
+  hparams {
+    d_model = 64
+    vocab = 128
+    rms_eps = 1e-6
+    norm = zero_centered
+    tie_word_embeddings = false
+    bos_token_id = 0
+    eos_token_id = 1
+  }
+
+  # 文本主干：D 线性注意力 + A 全量注意力（qwen3_5 混合栈家族口径），F 前馈
+  mech D : Linear {
+    k_heads = 2
+    k_dim = 8
+    v_heads = 4
+    v_dim = 8
+    conv_kernel = 4
+    act = silu
+  }
+
+  mech A : Attention {
+    heads = { q = 4, kv = 2, head_dim = 16 }
+    out_dim = 64
+    q_gate = true
+    qk_norm = per_head
+    partial = 0.5
+  }
+
+  mech F : FFN {
+    hidden = 128
+  }
+
+  stack main {
+    pattern = 2 * [D + A]
+    main[:] >> F
+  }
+
+  # MTP 预测分支：独立一层 decoder，复用 A / F（shared 声明绑定头部）
+  stack mtp {
+    aux = true
+    pattern = 1 * [A]
+    mtp[:] >> F
+  }
+
+  # 视觉塔：V 视觉注意力（qkv 融合 + bias），VF 视觉前馈
+  mech V : Attention {
+    heads = { q = 2, kv = 2, head_dim = 16 }
+    bias = true
+    qkv_fused = true
+  }
+
+  mech VF : FFN {
+    hidden = 64
+    act = gelu_new
+    gate = none
+    bias = true
+  }
+
+  stack visual {
+    aux = true
+    d_model = 32
+    pattern = 2 * V
+    visual[:] >> VF
+  }
+
+  position {
+    default = rope(base = 10000000, pairing = half)
+  }
+
+  vision {
+    patch_size = 2
+    temporal_patch_size = 1
+    spatial_merge_size = 2
+    num_position_embeddings = 16
+    in_channels = 3
+    mrope_section = [2, 1, 1]
+    image_token_id = 2
+    video_token_id = 3
+    vision_start_token_id = 4
+    vision_end_token_id = 5
+  }
+
+  mtp {
+    share_embeddings = true
+    share_head = true
+  }
+}

@@ -1,6 +1,6 @@
 # 这个仓库里每个文件是干什么的
 
-> 601 个跟踪文件。按"你会想找什么"分组，不按字母表。
+> 605 个跟踪文件。按"你会想找什么"分组，不按字母表。
 >
 > **这份文档是生成的**：`python src/by1files.py --write`。
 > 文件清单、每组的个数、每个文件的一句话都从目录树和 docstring 来 ——
@@ -241,7 +241,7 @@
 | `fig3-schools.png` | article/ 配图：Q3 五大流派对比（含 Kimi-K3） |
 | `fig4-shape.png` | article/ 配图：收敛出的公共形状示意图 |
 
-## `docs/` —— 43 个
+## `docs/` —— 44 个
 
 活的文档 —— 还没做完的事记在这里，做完的挪去 `history/`。
 
@@ -251,6 +251,7 @@
 | `INVENTORY.txt` | 验证清单：每个模型验到了什么、判卷人是谁 |
 | `autodl-file-storage.md` | AutoDL 文件存储操作单 —— 重租卡 0 下载 |
 | `backend-matrix.md` | 后端 × 机制矩阵（生成物，别手改） |
+| `branch-exec-plan.md` | B 弧线：多分支从「能表达」到「能执行」（2026-10-20 起） |
 | `by1-language-spec.md` | T2 语言合同（可执行规范）：语法骨架/错误模型/版本策略/最小绿红例；一致性判卷人 by1langspec.py |
 | `check-map.md` | `check()` 的结构图 |
 | `closing-plan.md` | 收尾计划（2026-10-18 · 大收尾） |
@@ -363,7 +364,7 @@
 | `expected.json` | "_comment": [ |
 | `run-audit.py` | 把外部复现从"报告级"升到"审计级" |
 
-## `models/` —— 71 个
+## `models/` —— 72 个
 
 命名规矩：**文件名 = 长名 = HF 的模型名（去掉 owner）**，
 `model` 声明 = 短名（手写的）。两列的对照见 `models.tsv`。
@@ -436,6 +437,7 @@
 | `mla-shaped.by1` | MLA 的最小可跑模型 |
 | `mla-sparse-shaped.by1` | SparseMLA** 的最小可跑模型：MLA 加一个 DSA 稀疏索引器 |
 | `moe-routing-shaped.by1` | MoE 的**三种选法 + 三种打分**。名字只差一个词，选出来的专家不一样： |
+| `multibranch-tiny.by1` | 结构 = complete-Qwen3.8-27B 的机械缩小（clef-tiny 同手法：只缩维度、不改结构） |
 | `qwen3-next-shaped.by1` | Block 1.3 的判卷对象：**混合栈 + 递归状态** |
 | `raw-escape.by1` | 逃生舱的**可证伪对照** |
 | `raw.py` | **不是模型，是逃生舱的工厂函数实现**。必须和 `raw-escape.by1` 挨着（`by1codegen` 按名字找它） |
@@ -525,7 +527,7 @@
 | `index.html` | <!DOCTYPE html> |
 | `style.css` | --bg:#0d1117; --panel:#151b23; --line:#263041; --txt:#d6deea; |
 
-## `site/data/` —— 143 个
+## `site/data/` —— 145 个
 
 | 文件 | 用途 |
 |---|---|
@@ -662,6 +664,8 @@
 | `mla-sparse-shaped.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
 | `moe-routing-shaped.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
 | `moe-routing-shaped.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
+| `multibranch-tiny.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
+| `multibranch-tiny.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
 | `qwen3-next-shaped.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |
 | `qwen3-next-shaped.js` | window.BY1_MODELS = window.BY1_MODELS || {}; |
 | `raw-escape.graph.js` | window.BY1_GRAPH = window.BY1_GRAPH || {}; |

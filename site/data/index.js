@@ -937,6 +937,22 @@ window.BY1_INDEX = [
   ]
  },
  {
+  "name": "multibranch-tiny.by1",
+  "slug": "multibranch-tiny",
+  "arch": "qwen3_5",
+  "layers": 7,
+  "d_model": "64",
+  "ctx": 4096.0,
+  "n_tensors": 0,
+  "mechs": [
+   "A",
+   "D",
+   "F",
+   "V",
+   "VF"
+  ]
+ },
+ {
   "name": "qwen3-next-shaped.by1",
   "slug": "qwen3-next-shaped",
   "arch": "",
