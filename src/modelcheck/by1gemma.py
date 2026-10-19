@@ -23,6 +23,17 @@ by1 的 MLP（RUNTIME）有两条支：`gate = true` 的 SwiGLU 与 `gate = none
 （= tanh 近似）。本机 5.20.0 实测可取。
 """
 
+import os as _os
+import sys as _sys
+# **引导：把自己上面那一层（`src/`）放上 sys.path。**
+# 加了它，`import by1paths` 才找得到；而 `by1paths` 在 import 时
+# 会把 `src/` 和每个子目录都放上 sys.path —— 于是 `import by1codegen`
+# 这种裸名 import 照旧能用。**这两行是生成的，别手改**
+# （判据在 `by1paths.check_boot()`）。
+# 这份原来漏了引导 —— `import by1codegen` 直接 ModuleNotFoundError，
+# 判卷人从出生起一次都没跑到自己的判据（档 5 一直挂「检查器坏了」）。
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import by1paths  # noqa: E402,F401
 import torch
 
 torch.manual_seed(0)
