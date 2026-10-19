@@ -376,6 +376,13 @@ def classify(probe, backend, msg):
         return "设计如此", ("ggml 是**图发射**，装不下任意外部调用"
                           "（进图要 custom op）—— 两扇门在 ggml 上"
                           "没有对应的入口，这是结构边界")
+    if "还不支持" in msg:
+        # G-A 放行（2026-10-19）之后浮出来的**真实缺口**：SSM2（granite）/
+        # Parallel（Falcon-H1）/qkv_bias（Qwen2.5-7B）—— codegen 还没收编的
+        # 类型或属性，可补（G-B），不是设计如此。
+        return "可补", ("机制/属性缺口（G-B）：codegen 还没收编的类型或属性"
+                           "（SSM2 / Parallel / qkv_bias 等）—— 可补，"
+                           "见 docs/ir-multibranch-plan.md")
     return None, ""
 
 

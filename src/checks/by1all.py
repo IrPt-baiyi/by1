@@ -1164,6 +1164,10 @@ def main():
                               'glm-text-tiny.by1', 'attn-fused-shaped.by1',
                               'llama3-shaped.by1',
                               'clef-tiny.by1', 'gpt2-tiny.by1', 'hello.by1')]
+        # **complete-Qwen3-0.6B 是第一个走通 IR 的完整模型**（G-A 快赢）。
+        # 判据 = 装配模块 vs transformers 官方前向（1e-3 族，实测 8.6e-07）。
+        # 注：by1diff 的 ref 侧必须读 hparams.tie_word_embeddings —— 不读就全乱（已修）。
+        _todo = _todo + ['complete-Qwen3-0.6B.by1']
         for f, (st, out) in zip(_todo, run_many(
                 [(['by1diff.py', f], 'diff ' + f) for f in _todo])):
             line = [l.strip() for l in out.splitlines() if '最大绝对差' in l]

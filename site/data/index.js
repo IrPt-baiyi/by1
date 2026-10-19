@@ -424,8 +424,8 @@ window.BY1_INDEX = [
   "slug": "complete-Qwen3-0.6B",
   "arch": "qwen3",
   "layers": 28,
-  "d_model": "1024",
-  "ctx": 40960.0,
+  "d_model": 1024,
+  "ctx": 40960,
   "n_tensors": 0,
   "mechs": [
    "Attention",
@@ -437,8 +437,8 @@ window.BY1_INDEX = [
   "slug": "complete-Qwen3-8B",
   "arch": "qwen3",
   "layers": 36,
-  "d_model": "4096",
-  "ctx": 40960.0,
+  "d_model": 4096,
+  "ctx": 40960,
   "n_tensors": 0,
   "mechs": [
    "Attention",
@@ -466,8 +466,8 @@ window.BY1_INDEX = [
   "slug": "complete-gpt-oss-20b",
   "arch": "gpt_oss",
   "layers": 24,
-  "d_model": "2880",
-  "ctx": 131072.0,
+  "d_model": 2880,
+  "ctx": 131072,
   "n_tensors": 0,
   "mechs": [
    "A",
@@ -479,8 +479,8 @@ window.BY1_INDEX = [
   "slug": "complete-gpt2",
   "arch": "gpt2",
   "layers": 12,
-  "d_model": "768",
-  "ctx": 1024.0,
+  "d_model": 768,
+  "ctx": 1024,
   "n_tensors": 0,
   "mechs": [
    "Attention",

@@ -434,9 +434,31 @@ MIXER_KINDS = ("Attention", "Linear", "MLA", "MoE", "SSM", "KDA", "Raw",
                "External")
 
 
+def _genuine_multibranch(info: Dict[str, Any]) -> bool:
+    """**真多分支**才有资格被拒 —— 按真实构造判，不按 backend 声明判。
+
+    普查（docs/ir-multibranch-plan.md）实证：10 份 complete-* 里 9 份是单栈，
+    1.1 的一刀切门把它们全拒了，报文还说「多分支降不成串行 IR」—— 失实。
+    真多分支的判据：aux 栈 / 多栈 / mtp / vision / state 声明，一个就够。
+    """
+    if len(info.get("stacks") or []) > 1:
+        return True
+    if any(v for v in (info.get("stack_aux") or {}).values()):
+        return True
+    if info.get("mtp") or info.get("vision") or info.get("states"):
+        return True
+    return False
+
+
 def compile_ir(info: Dict[str, Any]) -> Dict[str, Any]:
     if info.get("backend") == "transformers":
-        raise UnsupportedError("完整模型使用 transformers 后端；请用 by1 build，不能把多分支模型降成串行 IR")
+        if _genuine_multibranch(info):
+            raise UnsupportedError(
+                "完整模型使用 transformers 后端；它是真多分支"
+                "（aux/mtp/vision/状态）—— 1.1 的串行 IR 表达不了，等 by1-ir 1.2")
+        # **单栈放行**：数值判据（生成后端 vs transformers 官方前向）把关，
+        # 不靠这扇门兜底（普查见 docs/ir-multibranch-plan.md G-A）。
+
     errs: List[str] = []
     #: **"生成器还不认"单独一个桶。** 它和"写坏了"要分开报 ——
     #: 一份文件里两样都有时，**写坏了优先**（那就是一份坏文件）。

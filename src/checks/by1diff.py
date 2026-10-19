@@ -148,7 +148,11 @@ def main(argv=None):
                   # eps 就变成 None、参考实现全红。（第一版就是那样写的：
                   # 修好了 minimind-3，把四个 shaped 全弄崩了。）
                   rms_norm_eps=ir.get("norm_eps") or 1e-5,
-                  tie_word_embeddings=bool(ir.get("tie_word_embeddings")),
+                  # **tie 不在 ir 里**（ir 1.1 没这键）—— 完整模型在 hparams 里声明。
+                  # 不读它的话：ref 不 tie、mine tie，搬权重时同一绑定参数被写两次
+                  # （embed 与 lm_head 两个随机值），前向差 4.78e0（complete-Qwen3-0.6B 实测）。
+                  tie_word_embeddings=bool(ir.get("tie_word_embeddings")
+                                            or (info.get("hparams") or {}).get("tie_word_embeddings")),
                   attention_bias=attn["bias"],
                   # 基值必须从 .by1 传过来：各有各的默认（Llama 1e4 / Mixtral 1e6），
                   # 不传就是两边在转不同角度 —— 这个坑 Oracle 第一次就抓到了
@@ -483,6 +487,16 @@ def main(argv=None):
         print(f"  [注意] 参考实现里少了 {len(missing)} 个张量，例如 {missing[:3]}")
 
     own = mine.state_dict()
+    # **契约名就是 HF 名**（by1verify 的判据：名字+形状/dtype 一致）——
+    # complete-* 的生成模块按 tensors{} 命名参数，而上面那张模板表生成的键是
+    # layers.i.opj.* —— 两边对不上时整表作废，同名直搬（pairs 自记）。
+    # 没这步的话，9 份单栈 complete-* 全部“映射漏了”（G-A 快赢那一格）。
+    overlap = sum(1 for k in own if k in ref_sd)
+    if own and overlap * 2 >= len(own):
+        dst = Rec(ref_sd, [])
+        for k in own:
+            if k in ref_sd:
+                dst[k] = ref_sd[k]
     # 先查覆盖面：by1 侧有参数没被搬到，说明映射漏了 —— 它会**静默地**停在随机初始化上，
     # 而只检查"搬过去的那些对不对"是看不出来的。这条护栏今晚才补上。
     miss_keys = sorted(k for k in own if k not in dst)
@@ -509,7 +523,10 @@ def main(argv=None):
     ids = torch.randint(0, ir["vocab"], (1, args.seq))
     with torch.no_grad():
         a = ref(ids).logits.float()
-        b = mine(ids).float()
+        _b = mine(ids)
+        # complete-* 的生成模块返回 HF 式输出对象（CausalLMOutput），
+        # shaped 的返回张量 —— 两种都要。
+        b = (_b.logits if hasattr(_b, "logits") else _b).float()
 
     # ── 逐层（`--layers`）：哪一层的输出**先**偏离参考实现 ──────────
     #
@@ -760,7 +777,9 @@ def main(argv=None):
     print("\n  反向（梯度）对拍")
     for m in (mine, ref):
         m.zero_grad(set_to_none=True)
-    ra, ma = ref(ids).logits.float(), mine(ids).float()
+    ra = ref(ids).logits.float()
+    _ma = mine(ids)
+    ma = (_ma.logits if hasattr(_ma, "logits") else _ma).float()
     ra.pow(2).sum().backward()
     ma.pow(2).sum().backward()
     rp = dict(ref.named_parameters())
