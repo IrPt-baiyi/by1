@@ -158,7 +158,10 @@ GPU 预热/频率/容器负载都会影响它 —— 项目规矩是**不把一�
 `llama-bench --version` 第一行是 `ggml_cuda_init: found 1 CUDA devices ...`（初始化日志），
 版本行在后面 —— 于是 CUDA 构建上假红。改成在**所有输出行**里找钉住的 commit 前缀，修后 PASS。
 
-**仍未验**：上游 GGUF 与 by1 产物的 logits 逐位对拍（`llama-eval-callback` 路径）· 其它量化档（Q4/Q2）· 视觉/MTP 路径 · 多卡。
+**仍未验**：其它量化档（Q4/Q2）· 视觉/MTP 路径 · 多卡。
+
+~~上游 GGUF 与 by1 产物的 logits 逐位对拍~~ ✅ 2026-10-19 已做：5 对 527,802 值逐位相同（
+口径：同一运行时跑两个 GGUF，dump 是 eval-callback 调试视图 4 位小数，见 docs/convert-diff.md）
 
 **仍未验**：27B/8B 的真权重前向（显存不够）、多卡。
 

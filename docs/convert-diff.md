@@ -185,6 +185,32 @@ by1 侧 = `by1llama.py build-gguf`（走 TensorNameMap），ref 侧 = 上游 con
 
 判据两条：① 张量名集合完全相同；② 同名张量的形状与 dtype 逐个相同。**5 对全过**。
 
+
+### 逐 logits 对拍（同日补上，同一台机器）
+
+配方与 S2 销账那套一致（`convert-diff.md` 本文上面那两条命令）：两份 GGUF 各跑一次
+`llama-eval-callback`（同 prompt `The capital of France is`、同 `--seed 42`、`-n 1`），
+两份 dump 用 `by1llama.py logits-compare` 逐值比。
+
+| 模型 | 比对值数 | 结果 |
+|---|---|---|
+| qwen3-0.6b | 106,949 | **逐位相同** |
+| granite-350m | 89,474 | **逐位相同** |
+| granite-1b | 112,330 | **逐位相同** |
+| mamba-130m | 30,604 | **逐位相同** |
+| falcon | 188,445 | **逐位相同** |
+| **合计** | **527,802** | **5 / 5 对全过** |
+
+**口径（说清楚，别当成更硬的东西）**：
+
+- dump 是 `llama-eval-callback` 的**调试视图**（`common_debug_cb_eval` 的张量打印）——
+  数值按 **4 位小数**、带**截断窗口**。"逐位"指的是**这份文本解析出的值逐个相同**，
+  即 4 位小数级一致；**小于 5e-5 的差异不在这条判据的覆盖里**；
+- 两边走的是**同一个运行时**（llama.cpp），所以真正被检验的是 **转换忠实 + GGUF header 忠实**：
+  张量名/形状/数据之外，rope 参数、scale、arch 字符串这类 metadata 差异也会在这一步现形
+  （张量对账那一步看不见它们）；
+- **llama.cpp ↔ HF 的内核级边没有单测**：T4 上已覆盖 by1 ↔ HF 逐位 0.0，
+  llama.cpp ↔ by1 由本节覆盖，传递成立，但那条边本身没直接比。
 **没比的（说清楚，不算账）**：
 
 - `.by1` 契约一侧的形状账：`complete-*` 的契约由 `by1verify` 自己的解析器管
