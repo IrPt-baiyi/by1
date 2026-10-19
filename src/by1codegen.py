@@ -450,6 +450,96 @@ def _genuine_multibranch(info: Dict[str, Any]) -> bool:
     return False
 
 
+def _emit_multibranch(info: Dict[str, Any], ir: Dict[str, Any]) -> None:
+    """**1.2 多分支三件套的生产者**：分支登记（`stacks`）· 显式接线（`wiring`）·
+    跨分支参数绑定（`shared`）。**只对多栈生效** —— 单栈一个字段都不加，
+    1.1 的字节零变化。
+
+    推导口径（不拍平审计 `by1ir._selftest_branches` 逐份复查）：
+
+      role      非 aux = `trunk`；aux 且模态 vision/audio/video = `tower`；
+                其余 aux = `mtp`（aux 是显式声明的 —— 见 by1stacks._is_aux）
+      modality  栈块显式声明优先（`modality = ...`）；没声明的按**名约定**
+                （visual/vision → vision、audio → audio、video → video，其余
+                text）—— 和 by1full 取 `visual` 栈宽是同一个约定。**哪些是推的，
+                审计逐份列出，不冒充声明**
+      wiring    只发**结构边**（feed / concat / head）—— via / at 这类路标留给
+                显式声明，生产者不编（编出来的路标和猜的没两样）
+
+    答不出接线的拓扑（不止一个主栈）**一个字段都不写** —— 硬凑一张接线图
+    和拍平一样坏；审计会把它当红抓出来。
+    """
+    stks = info.get("stacks") or []
+    if len(stks) < 2:
+        return
+    aux = info.get("stack_aux") or {}
+    dm_of = info.get("stack_d_model") or {}
+    mod_of = info.get("stack_modality") or {}
+    d_model = int(_num(info.get("d_model"), 0) or 0)
+    _NAMES2MOD = {"visual": "vision", "vision": "vision",
+                  "audio": "audio", "video": "video"}
+
+    def _mod(name):
+        m = (mod_of.get(name) or "").strip().lower()
+        return m if m in ("default", "text", "vision", "audio", "video") \
+            else _NAMES2MOD.get(name.lower(), "text")
+
+    reg, first = [], 0
+    for name, _alias, n in stks:
+        m = _mod(name)
+        is_aux = bool(aux.get(name))
+        reg.append({
+            "name": name, "modality": m,
+            "width": int(dm_of[name]) if name in dm_of else d_model,
+            "first_layer": first, "n_layers": int(n),
+            "role": ("trunk" if not is_aux else
+                     ("tower" if m in ("vision", "audio", "video") else "mtp")),
+        })
+        first += int(n)
+    trunks = [s["name"] for s in reg if s["role"] == "trunk"]
+    if len(trunks) != 1:
+        return                      # 说不出主栈 —— 不硬凑，审计里红出来
+    trunk = trunks[0]
+
+    edges = []
+    for s in reg:
+        if s["role"] != "mtp":
+            edges.append({"kind": "feed", "from": "input:%s" % s["modality"],
+                          "to": "%s.in" % s["name"]})
+    for s in reg:
+        if s["role"] == "tower":
+            edges.append({"kind": "concat", "from": "%s.out" % s["name"],
+                          "to": "%s.in" % trunk})
+    for s in reg:
+        if s["role"] == "mtp":
+            edges.append({"kind": "head", "from": "%s.hidden" % trunk,
+                          "to": "%s.in" % s["name"]})
+            edges.append({"kind": "head", "from": "%s.out" % s["name"],
+                          "to": "logits.%s" % s["name"]})
+    edges.append({"kind": "head", "from": "%s.hidden" % trunk, "to": "logits"})
+
+    shared = []
+    hp = info.get("hparams") or {}
+    if _flag(hp.get("tie_word_embeddings")):
+        shared.append({"param": "head.weight", "binds": "embed.weight",
+                       "kind": "tie"})
+    md = info.get("mtp") or {}
+    for s in reg:
+        if s["role"] != "mtp":
+            continue
+        if _flag(md.get("share_embeddings")):
+            shared.append({"param": "%s.embed.weight" % s["name"],
+                           "binds": "embed.weight", "kind": "share"})
+        if _flag(md.get("share_head")):
+            shared.append({"param": "%s.head.weight" % s["name"],
+                           "binds": "head.weight", "kind": "share"})
+
+    ir["stacks"] = reg
+    ir["wiring"] = edges
+    if shared:
+        ir["shared"] = shared
+
+
 def compile_ir(info: Dict[str, Any]) -> Dict[str, Any]:
     if info.get("backend") == "transformers":
         if _genuine_multibranch(info):
@@ -1079,7 +1169,7 @@ def compile_ir(info: Dict[str, Any]) -> Dict[str, Any]:
     if unsup:
         raise UnsupportedError("\n".join("  - " + e for e in unsup))
 
-    return {
+    ir = {
         # **版本号。** 没有它的 IR 不该被接受 —— 读的一方无从判断
         # 自己理解的是哪一版。见 by1ir.py。
         "by1-ir": _IR_VER,
@@ -1109,6 +1199,9 @@ def compile_ir(info: Dict[str, Any]) -> Dict[str, Any]:
         ],
         "layers": layers,
     }
+    # **1.2 多分支三件套**（分支登记 / 接线 / 参数绑定）—— 只对多栈写。
+    _emit_multibranch(info, ir)
+    return ir
 
 
 # 旧名字保留一个薄封装，避免外部调用点忽然断掉

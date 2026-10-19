@@ -4,8 +4,8 @@
 > 四路数值判据（exec / torch codegen / C / ggml）对它们一律绕开；浏览器里挂着 partial 标记。
 >
 > **进度（2026-10-20）**：① 普查 ✅（〇 + 〇之二逐份表）· ③ 最小里程碑 ✅（二之二：
-> 装配模块 + exec 后端**两条判据**都进档 5）· ② 形状设计 ✅ schema/语义/兼容 + ir-spec
-> 重生成 + by1bootir 过关（三节）；**生产者与不拍平审计 ⏳（下一轮）**
+> 装配模块 + exec 后端**两条判据**都进档 5）· ② 形状设计 ✅（三节：字段/语义/兼容 +
+> ir-spec 重生成 + by1bootir + **生产者与不拍平审计**）
 > · ④ 浏览器 partial ⏳（四·5，做不完就记延期）。
 
 ## 〇、普查（70 份 `.by1`，`docs/ir-multibranch-survey.json`）
@@ -139,9 +139,17 @@ NumPy 运行时**，与 transformers 官方前向**同权重同输入**对拍 �
 30 → 39 全红）· `ir-spec.md` 由代码重新生成（by1docs 逐字符判据）· `by1bootir`
 两条路对拍加进三件套（273 处一致、0 差异）。
 
-**下一步**：compile_ir 生产者（21 份多栈模型填出 stacks + wiring + shared，
-逐份过不拍平审计）→ exec 后端按接线跑通（visual → merger → main / MTP 并列）→
-④ 浏览器 partial 换真结构。后端顺序：exec 先行，torch codegen / C / ggml 逐个跟。
+**已落地（同日第四步 · 生产者 + 不拍平审计）**：compile_ir 现在给多栈模型填三件套
+—— **19/21 份答得出两个问题**（另 2 份降不动、各有各的账：FP8 缺 vocab、
+complete-Qwen3.8-27B 真多分支等后端）。**不拍平审计**（by1ir 自检 T24）进门禁，
+档 1 起每档都跑：层段盖满 layers + wiring 非空 + validate 全绿，一条不满足逐份红。
+Qwen3.8-27B 实例 = stacks 三条（trunk / mtp / tower，层段 0 / 64 / 65）+ 六条接线边；
+`shared` 的 tie / share 三条合成验证（validate 0 问题）。**modality 49 处按名约定推**
+（语言层没有一份显式声明）—— 审计逐份列出、不冒充声明；`stack_modality` 已暴露，
+显式声明从此胜过约定。
+
+**待做**：exec 后端按接线跑通（visual → merger → main / MTP 并列；后端顺序：
+exec 先行，torch codegen / C / ggml 逐个跟）· ④ 浏览器 partial 换真结构。
 
 ## 四、顺序
 

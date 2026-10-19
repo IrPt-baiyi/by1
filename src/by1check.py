@@ -958,6 +958,11 @@ def check(path: str) -> Tuple[Report, dict]:
         #   就撞上了。** 说出来才有得查。
         "stack_index": {s.name: ((s.assigns.get("index") or "local").strip().lower())
                         for s in _['stacks']},
+        # **模态声明（1.2 的分支登记表要它）。** 和上面两个是同一类预防针：
+        #   语言层的 `modality = vision` 一直能写（进 assigns），但外面拿不到，
+        #   于是 IR 的分支登记表只能按名约定推。**暴露它，显式声明才胜过约定。**
+        "stack_modality": {s.name: ((s.assigns.get("modality") or "").strip().lower())
+                           for s in _['stacks']},
         # **每个栈自己的残差流宽度。** 不等于 `d_model` 的就是视觉塔那种
         # （clef 1152 / GLM 1024 / Step 1536，而模型宽度是 5120 / 4096 / 4096）。
         # ⚠ 这个键原来**根本没暴露** —— 和上面 `stack_index` 是同一个毛病：

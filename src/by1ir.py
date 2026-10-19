@@ -1860,6 +1860,79 @@ def _selftest_widths():
     return 0
 
 
+def _selftest_branches():
+    """T24 · **不拍平审计**：每份多栈模型的 IR 答得出两个问题吗。
+
+      ① 这个节点在哪个分支上 —— `stacks` 层段**互不重叠、盖满** layers
+      ② 接线从哪来到哪去 —— `wiring` 非空、端口全解析、无孤儿（文法归 validate）
+
+    另外两件**如实记录**的事：
+      · modality 按名约定推出来的逐份列出 —— 推的不冒充声明；
+      · 多栈却一个三件套都没写的（答不出接线的拓扑），逐份红出来。
+      · 降不动的模型（各有各的账：缺 vocab / 真多分支等）不算审计对象，
+        但要点名 —— **「没验」和「验过且对」是两件事**。
+    """
+    import glob as _g2
+    import importlib.util
+    import os as _os
+    sp = importlib.util.spec_from_file_location('bcm', by1paths.tool('by1check.py'))
+    bc = importlib.util.module_from_spec(sp)
+    sp.loader.exec_module(bc)
+    import by1codegen as cg
+
+    bad, inferred, skipped = [], [], []
+    n_multi = 0
+    for f in sorted(_g2.glob(by1paths.root('models', '*.by1'))):
+        if f.endswith('selftest.by1'):
+            continue
+        _r, info = bc.check(f)
+        if len(info.get('stacks') or []) < 2:
+            continue
+        n_multi += 1
+        name = _os.path.basename(f)
+        try:
+            ir = cg.compile_ir(info)
+        except Exception as ex:
+            skipped.append('%s（%s）' % (name, str(ex).splitlines()[0][:40]))
+            continue
+        if not ir.get('stacks'):
+            bad.append((name, '多栈却没写 stacks/wiring —— 两个问题都答不出'))
+            continue
+        cov = sorted((s['first_layer'], s['first_layer'] + s['n_layers'])
+                     for s in ir['stacks'])
+        full = (bool(cov) and cov[0][0] == 0 and cov[-1][1] == len(ir['layers'])
+                and all(b == c for (_a, b), (c, _d) in zip(cov, cov[1:])))
+        if not full:
+            bad.append((name, '层段没盖满 layers —— 答不出「节点在哪个分支上」'))
+        if not ir.get('wiring'):
+            bad.append((name, 'wiring 缺失 —— 答不出「接线从哪来到哪去」'))
+        errs = validate(ir)
+        if errs:
+            bad.append((name, 'validate：%s' % errs[0]))
+        for s in ir['stacks']:
+            if not (info.get('stack_modality') or {}).get(s['name']):
+                inferred.append('%s:%s=%s' % (name, s['name'], s['modality']))
+    print()
+    n_bad = len({n for n, _w in bad})
+    print('  ⑤ 多分支审计（T24 · 不拍平判据）')
+    print('     %d 份多栈模型 —— %d 份两个问题都答得出'
+          % (n_multi, n_multi - n_bad - len(skipped)))
+    if skipped:
+        print('     另有 %d 份降不动（各有各的账，不算审计对象）：%s'
+              % (len(skipped), '; '.join(skipped[:4])))
+    if inferred:
+        print('     modality 按名约定推的 %d 处（没有一份显式声明）：%s%s'
+              % (len(inferred), ', '.join(inferred[:8]),
+                 ' …' if len(inferred) > 8 else ''))
+    if bad:
+        for n, w in bad[:12]:
+            print('  [FAIL] %s：%s' % (n, w))
+        print('  [FAIL] 多分支审计：%d 份不合规' % n_bad)
+        return 1
+    print('     [PASS] 不拍平：节点归属（层段）+ 接线（wiring），每份都答得出')
+    return 0
+
+
 def _cli():
     import sys
     if '--help' in sys.argv or '-h' in sys.argv:
@@ -1887,7 +1960,8 @@ def _cli():
         print("  [%s] %d 个问题" % ("PASS" if not errs else "FAIL", len(errs)))
         return 0 if not errs else 1
     if '--selftest' in sys.argv:
-        return _selftest_widths()
+        _bad = _selftest_widths()
+        return _bad or _selftest_branches()
     print(__doc__)
     # 子命令不全 -> by1skip.CALLER
     return by1skip.CALLER
