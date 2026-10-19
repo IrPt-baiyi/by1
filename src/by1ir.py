@@ -262,6 +262,30 @@ STATE = [
 # (名字, 类型, 必填, 说明)。**这份表就是"IR 里合法的东西"的唯一定义。**
 KIND_ATTRS = {
     "Embed": {},
+    # ── 视觉入口/出口（1.2 · B 弧线）───────────────────────────────
+    # 官方参照物 transformers.models.qwen3_5 的视觉管线：
+    #   patch_embed(Conv3d) → pos_embed(查表) → blocks → merger(norm + 2 线性)
+    # blocks 有算子（就是 layers），**入口/出口原来没有家** ——
+    # complete-Qwen3.8-27B 契约 1199 张量 vs params_of 1036 的差就在这。
+    # 它们是**算子**、不藏进 wiring：不拍平判据要求每个节点答得出
+    # 「这个节点在哪个分支上」，接线只该说「谁吃谁的输出」。
+    "PatchEmbed": {
+        "in_channels": ("int", True, "输入通道（RGB = 3）"),
+        "patch_size": ("int", True, "空间 patch 边长"),
+        "temporal_patch_size": ("int", True, "时间 patch 步长（图像 = 1）"),
+    },
+    "PosEmbed": {
+        "n_pos": ("int", True,
+                  "位置表行数（vision{} 的 num_position_embeddings）"),
+    },
+    "Merger": {
+        "spatial_merge_size": ("int", True,
+            "空间合并边长（ms × ms 个 patch 的特征拼成一个 token）"),
+        "out_dim": ("int", True,
+            "合并后的宽度 —— **主干的残差流宽**（拼进主流）"),
+        "norm_eps": ("float", False,
+            "内部 LayerNorm 的 eps（官方实现写死 1e-6）"),
+    },
     "Norm": {
         "kind": ("enum:rms,layer", True, "和顶层 norm_kind 一致（冗余但显式）"),
         "eps": ("float", True, "来自顶层 norm_eps"),
@@ -796,6 +820,24 @@ def params_of(ir):
                 # GPT-2 的 ln_1.bias / ln_2.bias 在后端层面不存在。
                 if a.get("kind") == "layer":
                     out[pre + "b"] = (d,)
+            elif k == "PatchEmbed":
+                # Conv3d(C, H, kernel = [T, P, P], stride 同) —— 官方 patch_embed.proj
+                out[pre + "proj"] = (d, a["in_channels"], a["temporal_patch_size"],
+                                     a["patch_size"], a["patch_size"])
+                out[pre + "proj.bias"] = (d,)
+            elif k == "PosEmbed":
+                # 查表（n_pos, H）—— 官方 visual.pos_embed
+                out[pre + "weight"] = (a["n_pos"], d)
+            elif k == "Merger":
+                # 官方 Qwen3_5VisionPatchMerger：norm(H) + fc1(H·ms², H·ms²)
+                # + fc2(out_dim, H·ms²)；内部激活是 **erf-GELU**（nn.GELU 默认）。
+                ms2 = int(a["spatial_merge_size"]) ** 2
+                out[pre + "norm.w"] = (d,)
+                out[pre + "norm.b"] = (d,)
+                out[pre + "fc1"] = (d * ms2, d * ms2)
+                out[pre + "fc1.bias"] = (d * ms2,)
+                out[pre + "fc2"] = (int(a["out_dim"]), d * ms2)
+                out[pre + "fc2.bias"] = (int(a["out_dim"]),)
             elif k == "Attention":
                 hd, q, kv = a["head_dim"], a["q"], a["kv"]
                 if a.get("qkv_fused"):
@@ -1447,6 +1489,18 @@ def _check_op(where, op, errs):
     # 不经过 .by1。所以"编译器会拦"不再是理由：
     # `compile_ir` 里那些检查，走 IR 这条路根本跑不到。
     # 这一条就是这么漏的：External 声明空 weights 竟然通过了。
+    #
+    # **尺寸必须为正**（1.2 视觉入口/出口三算子）：0 或负的 patch/合并边长
+    # 没有意义，而形状表会算出 (d, 3, 0, 2, 2) 这种「合法形状的垃圾」。
+    if k in ("PatchEmbed", "Merger", "PosEmbed"):
+        _pf = {"PatchEmbed": ("in_channels", "patch_size",
+                              "temporal_patch_size"),
+               "Merger": ("spatial_merge_size", "out_dim"),
+               "PosEmbed": ("n_pos",)}[k]
+        for _f in _pf:
+            _v = (op.get("attrs") or {}).get(_f)
+            if isinstance(_v, int) and _v <= 0:
+                errs.append("%s (%s): %s = %d 必须为正" % (where, k, _f, _v))
     if k == "External":
         w = (op.get("attrs") or {}).get("weights")
         if isinstance(w, dict) and not w:
@@ -1764,6 +1818,42 @@ def _norm(x):
     return x
 
 
+_MODEL_CACHE = None
+
+
+def _compiled_models():
+    """models/ 每份 .by1 的 (名字, info, ir | None, 拒绝理由) —— **每份只编一次**。
+
+    宽度回归（③）和不拍平审计（T24）都吃它：两遍各编 71 份是白白翻倍 ——
+    档 1 的静态段一度因此从实测基线 18.0 秒涨到 75.6 秒（耗时判据 B1 红）。
+    缓存按进程活着（by1ir --selftest 一次进程里两个判据共享）。
+    """
+    global _MODEL_CACHE
+    if _MODEL_CACHE is not None:
+        return _MODEL_CACHE
+    import glob as _g2
+    import importlib.util
+    import os as _os
+    sp = importlib.util.spec_from_file_location('bcm', by1paths.tool('by1check.py'))
+    bc = importlib.util.module_from_spec(sp)
+    sp.loader.exec_module(bc)
+    import by1codegen as cg
+    out = []
+    for f in sorted(_g2.glob(by1paths.root('models', '*.by1'))):
+        if f.endswith('selftest.by1'):
+            continue
+        name = _os.path.basename(f)
+        _r, info = bc.check(f)
+        try:
+            ir = cg.compile_ir(info)
+        except Exception as ex:
+            out.append((name, info, None, str(ex).splitlines()[0][:60]))
+            continue
+        out.append((name, info, ir, None))
+    _MODEL_CACHE = out
+    return out
+
+
 def _selftest_widths():
     """T0.1 的判卷人：**反例必须红，正例必须绿。**
 
@@ -1831,27 +1921,17 @@ def _selftest_widths():
         return 1
 
     # ③ 回归：models/ 下每份 .by1（selftest.by1 是故意坏的，不算）
-    import importlib.util
-    sp = importlib.util.spec_from_file_location('bcm', by1paths.tool('by1check.py'))
-    bc = importlib.util.module_from_spec(sp)
-    sp.loader.exec_module(bc)
-    import by1codegen as cg
-    import glob as _g2
+    # **编译只做一次** —— 和不拍平审计共用 _compiled_models（见那里的注释）。
     n_ok, n_neg = 0, 0
-    for f in sorted(_g2.glob(by1paths.root('models', '*.by1'))):
-        if f.endswith('selftest.by1'):
-            continue
-        _r, info = bc.check(f)
-        try:
-            ir = cg.compile_ir(info)
-        except cg.CodegenError:
+    for name, _info, ir, _why in _compiled_models():
+        if ir is None:
             # **故意的反例模型**（gate-probe 那种：act 是不存在的取值，
-            # 编译就该拒）。编译被拒是设计，不是回归。
+            # 编译就该拒）+ 降不动的（各有各的账）。被拒是设计，不是回归。
             n_neg += 1
             continue
         _W, e, _gp = infer_widths(ir)
         if e:
-            print("  [FAIL] %s：%s" % (f, e[:2]))
+            print("  [FAIL] %s：%s" % (name, e[:2]))
             return 1
         n_ok += 1
     print("  [PASS] 宽度推导：3 组反例全红 + %d 份模型回归全绿"
@@ -1872,28 +1952,14 @@ def _selftest_branches():
       · 降不动的模型（各有各的账：缺 vocab / 真多分支等）不算审计对象，
         但要点名 —— **「没验」和「验过且对」是两件事**。
     """
-    import glob as _g2
-    import importlib.util
-    import os as _os
-    sp = importlib.util.spec_from_file_location('bcm', by1paths.tool('by1check.py'))
-    bc = importlib.util.module_from_spec(sp)
-    sp.loader.exec_module(bc)
-    import by1codegen as cg
-
     bad, inferred, skipped = [], [], []
     n_multi = 0
-    for f in sorted(_g2.glob(by1paths.root('models', '*.by1'))):
-        if f.endswith('selftest.by1'):
-            continue
-        _r, info = bc.check(f)
+    for name, info, ir, why in _compiled_models():
         if len(info.get('stacks') or []) < 2:
             continue
         n_multi += 1
-        name = _os.path.basename(f)
-        try:
-            ir = cg.compile_ir(info)
-        except Exception as ex:
-            skipped.append('%s（%s）' % (name, str(ex).splitlines()[0][:40]))
+        if ir is None:
+            skipped.append('%s（%s）' % (name, why))
             continue
         if not ir.get('stacks'):
             bad.append((name, '多栈却没写 stacks/wiring —— 两个问题都答不出'))

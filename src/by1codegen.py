@@ -500,6 +500,15 @@ def _emit_multibranch(info: Dict[str, Any], ir: Dict[str, Any]) -> None:
     if len(trunks) != 1:
         return                      # 说不出主栈 —— 不硬凑，审计里红出来
     trunk = trunks[0]
+    # **视觉入口/出口算子**（B 弧线）：vision{} 声明齐全才出。
+    _vd = info.get("vision") or {}
+    if _vd:
+        _tw = [s for s in reg if s["role"] == "tower"
+               and s["modality"] == "vision"]
+        if len(_tw) == 1:
+            _add_vision_entry_exit(
+                ir, reg, _tw[0],
+                [s for s in reg if s["role"] == "trunk"][0], _vd)
 
     edges = []
     for s in reg:
@@ -538,6 +547,59 @@ def _emit_multibranch(info: Dict[str, Any], ir: Dict[str, Any]) -> None:
     ir["wiring"] = edges
     if shared:
         ir["shared"] = shared
+
+
+def _add_vision_entry_exit(ir, reg, tower, trunk, vd):
+    """视觉塔的**入口**（patch_embed + pos_embed）与**出口**（merger）进层表：
+    分支段的头尾各插一层。节点表只有一个（layers）—— 不给节点第二个家。
+
+    形状照官方 `Qwen3_5VisionPatchEmbed` / `Qwen3_5VisionPatchMerger` 实测：
+      proj.weight = (H, C, T, P, P)（Conv3d，stride = kernel）
+      pos_embed   = (n_pos, H)
+      merger      = norm(H) + fc1(H·ms², H·ms²) + fc2(out_dim, H·ms²)
+    激活是 **erf-GELU**（官方 nn.GELU 默认）—— 写在规格里，不是 tanh 近似。
+
+    vision{} 声明不齐就**不出**（不猜）；审计会把没入口/出口的视觉塔记出来。
+    """
+
+    def _i(key, default=None):
+        try:
+            return int(vd.get(key))
+        except (TypeError, ValueError):
+            return default
+
+    pc, tp, ps = _i("in_channels", 3), _i("temporal_patch_size", 1), _i("patch_size")
+    npos, ms = _i("num_position_embeddings"), _i("spatial_merge_size", 2)
+    if not (pc and tp and ps and npos and ms):
+        return
+    H = tower["width"]
+    entry = {"index": -1, "in_dim": H, "attrs": {}, "state": [], "ops": [
+        {"kind": "PatchEmbed", "mech": "patch_embed",
+         "attrs": {"in_channels": pc, "patch_size": ps,
+                   "temporal_patch_size": tp},
+         "inputs": [], "outputs": ["op0.out"]},
+        {"kind": "PosEmbed", "mech": "pos_embed", "attrs": {"n_pos": npos},
+         "inputs": ["op0.out"], "outputs": ["op1.out"]}]}
+    exit_ = {"index": -1, "in_dim": H, "attrs": {}, "state": [], "ops": [
+        {"kind": "Merger", "mech": "merger",
+         "attrs": {"spatial_merge_size": ms, "out_dim": trunk["width"],
+                   "norm_eps": 1e-6},
+         "inputs": ["hidden"], "outputs": ["op0.out"]}]}
+    layers = ir["layers"]
+    lo, hi = tower["first_layer"], tower["first_layer"] + tower["n_layers"]
+    layers[lo:lo] = [entry]           # 入口插在分支段头
+    layers[hi + 1:hi + 1] = [exit_]   # 出口插在分支段尾（+1 = 入口已占位）
+    for _i2, _L in enumerate(layers):
+        _L["index"] = _i2             # 层号 = 全局位置（A 弧线的口径）
+    tower["n_layers"] += 2
+    for _s in reg:
+        if _s is tower:
+            continue
+        _f = _s["first_layer"]
+        if _f >= hi:
+            _s["first_layer"] = _f + 2
+        elif _f > lo:
+            _s["first_layer"] = _f + 1   # 段不重叠时不会命中；防御
 
 
 def compile_ir(info: Dict[str, Any]) -> Dict[str, Any]:

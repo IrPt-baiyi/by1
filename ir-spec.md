@@ -63,7 +63,7 @@ python src/by1irentry.py                    # 三个后端只从 IR 跑
 | `inputs` | `list[str]` | 是 | 输入的值引用（`hidden` 或 `opN.out`） |
 | `outputs` | `list[str]` | 是 | 输出的值引用 |
 
-`kind` 是**闭集**：`Add`, `Attention`, `Embed`, `External`, `FFN`, `Head`, `KDA`, `Linear`, `MLA`, `MoE`, `Norm`, `Raw`, `SSM`
+`kind` 是**闭集**：`Add`, `Attention`, `Embed`, `External`, `FFN`, `Head`, `KDA`, `Linear`, `MLA`, `Merger`, `MoE`, `Norm`, `PatchEmbed`, `PosEmbed`, `Raw`, `SSM`
 
 ## 状态
 
@@ -254,6 +254,14 @@ python src/by1irentry.py                    # 三个后端只从 IR 跑
 | `index_kpool` | `int` | 否 | 池大小。1 = 逐 key（缺省） |
 | `index_kpool_tail` | `bool` | 否 | 把可见的尾巴追加进来（宽度多 kpool-1） |
 
+### `Merger`
+
+| 属性 | 类型 | 必填 | 语义 |
+|---|---|---|---|
+| `spatial_merge_size` | `int` | 是 | 空间合并边长（ms × ms 个 patch 的特征拼成一个 token） |
+| `out_dim` | `int` | 是 | 合并后的宽度 —— **主干的残差流宽**（拼进主流） |
+| `norm_eps` | `float` | 否 | 内部 LayerNorm 的 eps（官方实现写死 1e-6） |
+
 ### `MoE`
 
 | 属性 | 类型 | 必填 | 语义 |
@@ -285,6 +293,20 @@ python src/by1irentry.py                    # 三个后端只从 IR 跑
 | `kind` | `enum:rms,layer` | 是 | 和顶层 norm_kind 一致（冗余但显式） |
 | `eps` | `float` | 是 | 来自顶层 norm_eps |
 | `one_plus` | `bool` | 是 |  |
+
+### `PatchEmbed`
+
+| 属性 | 类型 | 必填 | 语义 |
+|---|---|---|---|
+| `in_channels` | `int` | 是 | 输入通道（RGB = 3） |
+| `patch_size` | `int` | 是 | 空间 patch 边长 |
+| `temporal_patch_size` | `int` | 是 | 时间 patch 步长（图像 = 1） |
+
+### `PosEmbed`
+
+| 属性 | 类型 | 必填 | 语义 |
+|---|---|---|---|
+| `n_pos` | `int` | 是 | 位置表行数（vision{} 的 num_position_embeddings） |
 
 ### `Raw`
 

@@ -300,6 +300,21 @@ MUTATIONS = [
      lambda b: _mut(lambda ir: ir.update({"shared": [
          {"param": "ghost.head.weight", "binds": "head.weight"}]}), b),
      "不在全局参数里"),
+    # ── T25（1.2 视觉入口/出口三算子：尺寸必须为正）────────────────
+    ("patchembed-nonpositive", "PatchEmbed 的尺寸必须为正",
+     lambda b: _mut(lambda ir: _on_op(ir, 0, 0, lambda o: o.update({
+         "kind": "PatchEmbed", "mech": "patch_embed",
+         "attrs": {"in_channels": 3, "patch_size": 0,
+                   "temporal_patch_size": 1}})), b), "必须为正"),
+    ("merger-nonpositive", "Merger 的合并边长必须为正",
+     lambda b: _mut(lambda ir: _on_op(ir, 0, 0, lambda o: o.update({
+         "kind": "Merger", "mech": "merger",
+         "attrs": {"spatial_merge_size": 0, "out_dim": 4}})), b),
+     "必须为正"),
+    ("posembed-nonpositive", "PosEmbed 的位置表行数必须为正",
+     lambda b: _mut(lambda ir: _on_op(ir, 0, 0, lambda o: o.update({
+         "kind": "PosEmbed", "mech": "pos_embed",
+         "attrs": {"n_pos": -1}})), b), "必须为正"),
 ]
 
 #: 五类反例的**覆盖账**（阶段 A 判据：缺字段 / 冲突配置 / 未知 dtype /
