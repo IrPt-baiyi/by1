@@ -57,6 +57,63 @@ def op_index(layer, kinds, nth=0):
     return None
 
 
+def _exec_vs_hf(ir, ref, ref_sd, name_map, args):
+    """**③ 的字面判据**：IR → **exec 后端**（by1exec 的 NumPy 运行时）的前向，
+    与 transformers 官方前向对拍（1e-3 族）。
+
+    参照物：按 config 建的 HF 模型 —— **同权重、同输入**。
+    权重走和主流程同一张 HF→IR 映射表（按 IR 算子下标定位）；
+    IR 参数名是 `by1ir.params_of` 的（`layers.N.opj.wq`）—— 带 `.weight`
+    后缀的先试原名、再试去后缀（nn.Linear 的嵌套参数）。
+
+    **它和「装配模块 vs 官方」不是同一条判据**：那条两边都是官方类，
+    验的是契约装配（config / 权重映射 / tie / 接线）；这条验的是
+    **by1 自己的运行时**算得对不对。两条都留，各记各的数。
+    """
+    import re as _re
+    import numpy as np
+    import torch
+
+    ex_mod = load("by1exec")
+    shapes = ex_mod.shapes_of(ir)
+    params, used = {}, set()
+    for rn, kn in name_map:
+        cand = kn if kn in shapes else _re.sub(r"\.(weight|bias)$", "", kn)
+        if cand not in shapes or cand in used:
+            continue
+        v = ref_sd[rn].detach().cpu().numpy().astype(np.float32)
+        if int(v.size) != int(np.prod(shapes[cand])):
+            print(f"    [FAIL] {cand}: 权重个数 {int(v.size)} != IR 推出的 "
+                  f"{int(np.prod(shapes[cand]))}")
+            return 1
+        params[cand] = v.reshape(shapes[cand])
+        used.add(cand)
+    miss = sorted(set(shapes) - used)
+    if miss:
+        print(f"    [FAIL] exec 侧有 {len(miss)} 个参数没喂到（映射漏了）："
+              f"{miss[:6]}")
+        return 1
+    ex = ex_mod.Exec(ir, params)
+    ex.P["_g"] = {k: params[k] for k in
+                  ("embed.weight", "pos.weight", "final_norm.w",
+                   "final_norm.b", "head.weight") if k in params}
+    ids = torch.randint(0, ir["vocab"], (1, args.seq))
+    with torch.no_grad():
+        a = ref(ids).logits.float().numpy()
+    b = np.asarray(ex(ids.numpy()))
+    dd = float(np.abs(a - b).max())
+    amp = max(float(np.abs(a).max()), 1e-9)
+    print("\n  exec 后端（NumPy）vs transformers 官方前向")
+    print(f"    权重搬运 {len(params)} 个张量，同权重同输入 ✓")
+    print(f"    最大绝对差         {dd:.3e}")
+    print(f"    相对               {dd / amp:.3e}")
+    ok = dd < 1e-3
+    print("\n  [%s] exec 后端与官方前向%s" %
+          ("PASS" if ok else "FAIL",
+           "一致（1e-3 族内）" if ok else "不一致"))
+    return 0 if ok else 1
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="by1 前向对拍")
     ap.add_argument("by1")
@@ -73,6 +130,9 @@ def main(argv=None):
     ap.add_argument("--layers", action="store_true",
                     help="逐层对比：整模型的 logits 差 2e-02 时看不出差在哪，"
                          "这一步说得出是**哪一层**先偏离参考实现")
+    ap.add_argument("--exec", dest="exec_hf", action="store_true",
+                    help="③ 判据：IR → **exec 后端**（by1exec 的 NumPy 运行时）的前向"
+                         " vs transformers 官方前向（1e-3 族）——只跑这一条")
     args = ap.parse_args(argv)
 
     import torch
@@ -485,6 +545,13 @@ def main(argv=None):
                 (dst.__setitem__(d, ref_sd[src]) if src in ref_sd else missing.append(src))
     if missing:
         print(f"  [注意] 参考实现里少了 {len(missing)} 个张量，例如 {missing[:3]}")
+
+    # **映射表到此为止是全的**（ref 名 -> IR 名，按算子下标定位）。
+    # 后面那步「同名直搬」是给装配器（HF 名）用的，会把 pairs 换成
+    # (同名, 同名) —— 所以先存一份，--exec 那条判据吃的是这一份。
+    name_map = list(dst.pairs)
+    if args.exec_hf:
+        return _exec_vs_hf(ir, ref, ref_sd, name_map, args)
 
     own = mine.state_dict()
     # **契约名就是 HF 名**（by1verify 的判据：名字+形状/dtype 一致）——

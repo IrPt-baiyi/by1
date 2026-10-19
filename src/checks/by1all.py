@@ -1177,6 +1177,21 @@ def main():
             if st == 'fail':
                 fails.append('diff ' + f)
 
+        # **③ 的字面判据**（A 弧线）：complete-* 走 IR → **exec 后端**
+        # （by1exec 的 NumPy 运行时），与 transformers 官方前向对拍（1e-3 族）。
+        # 它和上面那条是**两条不同的判据**：上面验契约装配（两边都是官方类），
+        # 这条验 **by1 自己的运行时**算得对不对 —— 数字各记各的。
+        _exec_todo = ['complete-Qwen3-0.6B.by1']
+        for f, (st, out) in zip(_exec_todo, run_many(
+                [(['by1diff.py', f, '--exec'], 'execdiff ' + f)
+                 for f in _exec_todo])):
+            line = [l.strip() for l in out.splitlines() if '最大绝对差' in l]
+            st = confirmed(st, out, line)
+            rows.append(('exec 前向 ' + f, st,
+                         note_of(st, out, line, empty='').replace('   ', ' ')))
+            if st == 'fail':
+                fails.append('execdiff ' + f)
+
         t0 = _tick('4. 前向（对拍 HF）', t0)
 
     # ---- 5. 三后端 ----
