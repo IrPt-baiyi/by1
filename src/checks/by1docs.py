@@ -109,6 +109,9 @@ def _pack_ignored(rel_path):
     return False
 
 
+_IGNORED = None
+
+
 def ignored(rel_path):
     """这个路径是**故意不在库**的吗（被 `.gitignore` 挡着）？
 
@@ -117,15 +120,45 @@ def ignored(rel_path):
     在干净克隆里本来就不存在 —— 而文档**该**引用它们。
     把这些算成"路径坏了"，干净克隆就永远红：**那是判据错，不是文档错**。
     所以它们进单独一桶（既不算通过也不算失败），而不是判红。
+
+    **一次问完 git**（2026-10-20，耗时判据 B1 红出来的真回归）：
+    原来一路径一子进程 `git check-ignore` —— 877 次 spawn 占了 by1docs
+    28 秒里的 26.5 秒，而引用数只涨不跌。`git ls-files --others
+    --ignored` 一把列出**未跟踪且被忽略**的条目 —— 正是这个函数要回答的
+    （干净克隆里不在的那些），一个子进程 + 集合前缀查。
     """
+    global _IGNORED
     if not _at_repo_root():          # 包/副本里没有 gitignore 这回事
         return _pack_ignored(rel_path)
-    try:
-        done = subprocess.run(['git', 'check-ignore', '-q', '--', rel_path],
-                              cwd=ROOT, capture_output=True)
-        return done.returncode == 0
-    except OSError:
-        return False
+    if _IGNORED is None:
+        try:
+            done = subprocess.run(
+                ['git', 'ls-files', '--others', '--ignored',
+                 '--exclude-standard', '--directory'],
+                cwd=ROOT, capture_output=True, text=True)
+            # **返回码要看**（by1lint 第⑨类盯这个）：git 说了不行时
+            # 不当「没有忽略条目」—— 那会把故意不在库的全算成路径坏。
+            if done.returncode == 0:
+                _IGNORED = [ln.strip().replace('\\', '/')
+                            for ln in (done.stdout or '').splitlines()
+                            if ln.strip()]
+            else:
+                _IGNORED = 'fallback'
+        except OSError:
+            _IGNORED = 'fallback'
+    if _IGNORED == 'fallback':
+        # 退回逐路径的老办法（慢但对）。
+        try:
+            done = subprocess.run(['git', 'check-ignore', '-q', '--', rel_path],
+                                  cwd=ROOT, capture_output=True)
+            return done.returncode == 0
+        except OSError:
+            return False
+    p = rel_path.replace('\\', '/')
+    for e in _IGNORED:
+        if p == e.rstrip('/') or p.startswith(e if e.endswith('/') else e + '/'):
+            return True
+    return False
 
 # 文档里写的路径（字面量）
 PAT_PATH = re.compile(r"(refs/[\w.\-]+\.json|[\w.\-]+\.by1)")
