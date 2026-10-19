@@ -46,12 +46,29 @@
   2. **MTP logits** vs vLLM qwen3_5_mtp 语义（by1full 装配的那半）。
 - 进档 5（前向段新行）。
 
+## 〇之二、视觉塔执行语义清单（2026-10-20 · 逐条对官方源码钉死）
+
+blocks（= IR 的 layers）之外还有五件事，每件都得有家：
+
+| # | 语义 | 官方事实（`transformers.models.qwen3_5` 源码） | 状态 |
+|---|---|---|---|
+| 1 | patch_embed | `Conv3d(kernel = stride = [T,P,P])` —— 无重叠 = 矩阵乘 | ✅ `PatchEmbed` 算子（数学对拍 **2.384e-07**） |
+| 2 | pos_embed | **双线性插值**（`align_corners=True`，方表 `sqrt(n_pos)²` 重采样到图像网格）—— 不是查表 | ✅ `PosEmbed` 算子（角点退化 **0.000e+00**；一般插值进算子语义待做） |
+| 3 | merger | `norm(H)` → `ms²` 拼接 → `fc1` → **erf-GELU** → `fc2`（`postshuffle_norm=False` 口径） | ✅ `Merger` 算子（**4.768e-07**） |
+| 4 | 视觉注意力 | **按图打包 + 双向**（`cu_seqlens` 分块，非因果） | ⏳ **IR 语义缺口**：Attention 目前 = 1D 因果 |
+| 5 | 视觉旋转 | (h, w) 双轴 mrope（`q·cos + rotate_half(q)·sin`，位置来自图像网格） | ⏳ **IR 语义缺口**：rope 目前 = 1D 序号 |
+
+**④⑤ 就是「按接线跑通」只剩的两堵墙** —— 下一轮的 IR 扩展（Attention 的
+`causal` 与位置语义），三算子已落（1.3 闭集）。形状对拍：与 tiny 官方模型
+**9/9 逐个同形**（见上一轮）；数学对拍：算子级 1e-07 内（见上表）。
+
 ## 三、顺序（每节做到哪记到哪）
 
 1. **夹具 + 参照物可行**（本轮 ✅）：multibranch-tiny.by1 进 models/，
    by1check 过、by1full tiny 装配建得出官方类；
 2. **IR 算子**：PatchEmbed / PosEmbed / Merger + params_of + validate +
-   反例库（每条新规则配必红）+ ir-spec 重生成；
+   反例库（每条新规则配必红）+ ir-spec 重生成；（✅ 2026-10-20：三算子落 IR，
+   形状 9/9、数学 1e-07 内、T25 反例、ir-spec 重生成、by1-ir 1.2 → 1.3）
 3. **exec 按接线前向** + 判卷人进档 5（① 收账）；
 4. **真多分支放行**：complete-Qwen3.8-27B 降得出（②）—— 全尺寸前向装不下，
    **明记跳过、不假装验过**；
