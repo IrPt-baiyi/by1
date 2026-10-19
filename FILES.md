@@ -1,6 +1,6 @@
 # 这个仓库里每个文件是干什么的
 
-> 599 个跟踪文件。按"你会想找什么"分组，不按字母表。
+> 601 个跟踪文件。按"你会想找什么"分组，不按字母表。
 >
 > **这份文档是生成的**：`python src/by1files.py --write`。
 > 文件清单、每组的个数、每个文件的一句话都从目录树和 docstring 来 ——
@@ -241,7 +241,7 @@
 | `fig3-schools.png` | article/ 配图：Q3 五大流派对比（含 Kimi-K3） |
 | `fig4-shape.png` | article/ 配图：收敛出的公共形状示意图 |
 
-## `docs/` —— 41 个
+## `docs/` —— 43 个
 
 活的文档 —— 还没做完的事记在这里，做完的挪去 `history/`。
 
@@ -263,6 +263,8 @@
 | `ggml-plan.md` | ggml 数值对拍：测量与判据 |
 | `gpu-day-runbook.md` | GPU 日 runbook —— 租卡那天照这张纸走 |
 | `gpu-validation-results.md` | GPU Validation Results / GPU 验证结果 |
+| `ir-multibranch-plan.md` | by1-ir 1.2「多分支」计划（2026-10-19 · A 弧线第 1 轮） |
+| `ir-multibranch-survey.json` | "model": "attn-fused-shaped.by1", |
 | `llama.cpp-baseline.md` | 原版 llama.cpp 与固定 Qwen3.8 GGUF 的可复现 GPU 基线命令 |
 | `llamacpp-plan.md` | llama.cpp 集成策略 |
 | `multimodal-gaps.md` | 多模态缺口单（T21 判据之一）/ Multimodal gap list |

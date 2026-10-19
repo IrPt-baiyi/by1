@@ -1,0 +1,1321 @@
+[
+ {
+  "model": "attn-fused-shaped.by1",
+  "backend": null,
+  "stacks": [
+   [
+    "main",
+    2
+   ]
+  ],
+  "aux": [],
+  "mtp": [],
+  "vision": [],
+  "states": 0,
+  "lowered": true,
+  "why": ""
+ },
+ {
+  "model": "attn-qgate-shaped.by1",
+  "backend": null,
+  "stacks": [
+   [
+    "main",
+    2
+   ]
+  ],
+  "aux": [],
+  "mtp": [],
+  "vision": [],
+  "states": 0,
+  "lowered": true,
+  "why": ""
+ },
+ {
+  "model": "clef-tiny.by1",
+  "backend": null,
+  "stacks": [
+   [
+    "main",
+    8
+   ]
+  ],
+  "aux": [],
+  "mtp": [],
+  "vision": [],
+  "states": 0,
+  "lowered": true,
+  "why": ""
+ },
+ {
+  "model": "clef.by1",
+  "backend": null,
+  "stacks": [
+   [
+    "main",
+    64
+   ],
+   [
+    "visual",
+    27
+   ]
+  ],
+  "aux": [
+   "visual"
+  ],
+  "mtp": [],
+  "vision": [],
+  "states": 0,
+  "lowered": true,
+  "why": ""
+ },
+ {
+  "model": "complete-Falcon-H1-0.5B-Instruct.by1",
+  "backend": "transformers",
+  "stacks": [
+   [
+    "main",
+    36
+   ]
+  ],
+  "aux": [],
+  "mtp": [],
+  "vision": [],
+  "states": 0,
+  "lowered": false,
+  "why": "完整模型使用 transformers 后端；请用 by1 build，不能把多分支模型降成串行 IR"
+ },
+ {
+  "model": "complete-gpt-oss-20b.by1",
+  "backend": "transformers",
+  "stacks": [
+   [
+    "main",
+    24
+   ]
+  ],
+  "aux": [],
+  "mtp": [],
+  "vision": [],
+  "states": 0,
+  "lowered": false,
+  "why": "完整模型使用 transformers 后端；请用 by1 build，不能把多分支模型降成串行 IR"
+ },
+ {
+  "model": "complete-gpt2.by1",
+  "backend": "transformers",
+  "stacks": [
+   [
+    "main",
+    12
+   ]
+  ],
+  "aux": [],
+  "mtp": [],
+  "vision": [],
+  "states": 0,
+  "lowered": false,
+  "why": "完整模型使用 transformers 后端；请用 by1 build，不能把多分支模型降成串行 IR"
+ },
+ {
+  "model": "complete-granite-4.0-h-1b.by1",
+  "backend": "transformers",
+  "stacks": [
+   [
+    "main",
+    40
+   ]
+  ],
+  "aux": [],
+  "mtp": [],
+  "vision": [],
+  "states": 0,
+  "lowered": false,
+  "why": "完整模型使用 transformers 后端；请用 by1 build，不能把多分支模型降成串行 IR"
+ },
+ {
+  "model": "complete-granite-4.0-h-350m.by1",
+  "backend": "transformers",
+  "stacks": [
+   [
+    "main",
+    32
+   ]
+  ],
+  "aux": [],
+  "mtp": [],
+  "vision": [],
+  "states": 0,
+  "lowered": false,
+  "why": "完整模型使用 transformers 后端；请用 by1 build，不能把多分支模型降成串行 IR"
+ },
+ {
+  "model": "complete-mamba-130m-hf.by1",
+  "backend": "transformers",
+  "stacks": [
+   [
+    "main",
+    24
+   ]
+  ],
+  "aux": [],
+  "mtp": [],
+  "vision": [],
+  "states": 0,
+  "lowered": false,
+  "why": "完整模型使用 transformers 后端；请用 by1 build，不能把多分支模型降成串行 IR"
+ },
+ {
+  "model": "complete-Qwen2.5-7B-Instruct.by1",
+  "backend": "transformers",
+  "stacks": [
+   [
+    "main",
+    28
+   ]
+  ],
+  "aux": [],
+  "mtp": [],
+  "vision": [],
+  "states": 0,
+  "lowered": false,
+  "why": "完整模型使用 transformers 后端；请用 by1 build，不能把多分支模型降成串行 IR"
+ },
+ {
+  "model": "complete-Qwen3-0.6B.by1",
+  "backend": "transformers",
+  "stacks": [
+   [
+    "main",
+    28
+   ]
+  ],
+  "aux": [],
+  "mtp": [],
+  "vision": [],
+  "states": 0,
+  "lowered": false,
+  "why": "完整模型使用 transformers 后端；请用 by1 build，不能把多分支模型降成串行 IR"
+ },
+ {
+  "model": "complete-Qwen3-8B.by1",
+  "backend": "transformers",
+  "stacks": [
+   [
+    "main",
+    36
+   ]
+  ],
+  "aux": [],
+  "mtp": [],
+  "vision": [],
+  "states": 0,
+  "lowered": false,
+  "why": "完整模型使用 transformers 后端；请用 by1 build，不能把多分支模型降成串行 IR"
+ },
+ {
+  "model": "complete-Qwen3.8-27B.by1",
+  "backend": "transformers",
+  "stacks": [
+   [
+    "main",
+    64
+   ],
+   [
+    "mtp",
+    1
+   ],
+   [
+    "visual",
+    27
+   ]
+  ],
+  "aux": [
+   "mtp",
+   "visual"
+  ],
+  "mtp": [
+   "share_embeddings",
+   "share_head"
+  ],
+  "vision": [
+   "image_token_id",
+   "in_channels",
+   "mrope_section",
+   "num_position_embeddings",
+   "patch_size",
+   "spatial_merge_size"
+  ],
+  "states": 0,
+  "lowered": false,
+  "why": "完整模型使用 transformers 后端；请用 by1 build，不能把多分支模型降成串行 IR"
+ },
+ {
+  "model": "DeepSeek-R1-Distill-Qwen-1.5B.by1",
+  "backend": null,
+  "stacks": [
+   [
+    "main",
+    28
+   ]
+  ],
+  "aux": [],
+  "mtp": [],
+  "vision": [],
+  "states": 0,
+  "lowered": true,
+  "why": ""
+ },
+ {
+  "model": "DeepSeek-R1-Distill-Qwen-7B.by1",
+  "backend": null,
+  "stacks": [
+   [
+    "main",
+    28
+   ]
+  ],
+  "aux": [],
+  "mtp": [],
+  "vision": [],
+  "states": 0,
+  "lowered": true,
+  "why": ""
+ },
+ {
+  "model": "distill-student.by1",
+  "backend": null,
+  "stacks": [
+   [
+    "main",
+    2
+   ]
+  ],
+  "aux": [],
+  "mtp": [],
+  "vision": [],
+  "states": 0,
+  "lowered": true,
+  "why": ""
+ },
+ {
+  "model": "distill-teacher.by1",
+  "backend": null,
+  "stacks": [
+   [
+    "main",
+    2
+   ]
+  ],
+  "aux": [],
+  "mtp": [],
+  "vision": [],
+  "states": 0,
+  "lowered": true,
+  "why": ""
+ },
+ {
+  "model": "embeddinggemma-2.by1",
+  "backend": null,
+  "stacks": [
+   [
+    "text",
+    24
+   ],
+   [
+    "vision",
+    16
+   ],
+   [
+    "audio",
+    12
+   ]
+  ],
+  "aux": [
+   "audio",
+   "vision"
+  ],
+  "mtp": [],
+  "vision": [],
+  "states": 0,
+  "lowered": true,
+  "why": ""
+ },
+ {
+  "model": "gate-probe.by1",
+  "backend": null,
+  "stacks": [
+   [
+    "model",
+    2
+   ]
+  ],
+  "aux": [],
+  "mtp": [],
+  "vision": [],
+  "states": 0,
+  "lowered": false,
+  "why": "  - 机制 'FFN_'（FFN）的 act = <nosuchactivation> —— codegen 只实现了 gelu / ge"
+ },
+ {
+  "model": "gelu-shaped.by1",
+  "backend": null,
+  "stacks": [
+   [
+    "main",
+    1
+   ]
+  ],
+  "aux": [],
+  "mtp": [],
+  "vision": [],
+  "states": 0,
+  "lowered": true,
+  "why": ""
+ },
+ {
+  "model": "gemma-4-12B.by1",
+  "backend": null,
+  "stacks": [
+   [
+    "main",
+    48
+   ]
+  ],
+  "aux": [],
+  "mtp": [],
+  "vision": [],
+  "states": 0,
+  "lowered": true,
+  "why": ""
+ },
+ {
+  "model": "gemma-4-26B-A4B.by1",
+  "backend": null,
+  "stacks": [
+   [
+    "main",
+    30
+   ],
+   [
+    "vision",
+    27
+   ]
+  ],
+  "aux": [
+   "vision"
+  ],
+  "mtp": [],
+  "vision": [],
+  "states": 0,
+  "lowered": true,
+  "why": ""
+ },
+ {
+  "model": "gemma-4-31B.by1",
+  "backend": null,
+  "stacks": [
+   [
+    "main",
+    60
+   ],
+   [
+    "vision",
+    27
+   ]
+  ],
+  "aux": [
+   "vision"
+  ],
+  "mtp": [],
+  "vision": [],
+  "states": 0,
+  "lowered": true,
+  "why": ""
+ },
+ {
+  "model": "gemma-4-E4B.by1",
+  "backend": null,
+  "stacks": [
+   [
+    "text",
+    42
+   ],
+   [
+    "vision",
+    16
+   ],
+   [
+    "audio",
+    12
+   ]
+  ],
+  "aux": [
+   "audio",
+   "vision"
+  ],
+  "mtp": [],
+  "vision": [],
+  "states": 0,
+  "lowered": true,
+  "why": ""
+ },
+ {
+  "model": "GLM-4.7-Flash.by1",
+  "backend": null,
+  "stacks": [
+   [
+    "model",
+    47
+   ],
+   [
+    "mtp",
+    1
+   ]
+  ],
+  "aux": [
+   "mtp"
+  ],
+  "mtp": [],
+  "vision": [],
+  "states": 0,
+  "lowered": true,
+  "why": ""
+ },
+ {
+  "model": "GLM-5.3-Flash.by1",
+  "backend": null,
+  "stacks": [
+   [
+    "model",
+    45
+   ],
+   [
+    "mtp",
+    1
+   ],
+   [
+    "visual",
+    24
+   ]
+  ],
+  "aux": [
+   "mtp",
+   "visual"
+  ],
+  "mtp": [],
+  "vision": [],
+  "states": 0,
+  "lowered": true,
+  "why": ""
+ },
+ {
+  "model": "glm-text-tiny.by1",
+  "backend": null,
+  "stacks": [
+   [
+    "model",
+    4
+   ]
+  ],
+  "aux": [],
+  "mtp": [],
+  "vision": [],
+  "states": 0,
+  "lowered": true,
+  "why": ""
+ },
+ {
+  "model": "gpt-oss-120b.by1",
+  "backend": null,
+  "stacks": [
+   [
+    "main",
+    36
+   ]
+  ],
+  "aux": [],
+  "mtp": [],
+  "vision": [],
+  "states": 2,
+  "lowered": true,
+  "why": ""
+ },
+ {
+  "model": "gpt-oss-20b.by1",
+  "backend": null,
+  "stacks": [
+   [
+    "main",
+    24
+   ]
+  ],
+  "aux": [],
+  "mtp": [],
+  "vision": [],
+  "states": 2,
+  "lowered": true,
+  "why": ""
+ },
+ {
+  "model": "gpt-oss-shaped.by1",
+  "backend": null,
+  "stacks": [
+   [
+    "main",
+    2
+   ]
+  ],
+  "aux": [],
+  "mtp": [],
+  "vision": [],
+  "states": 0,
+  "lowered": true,
+  "why": ""
+ },
+ {
+  "model": "gpt2-tiny.by1",
+  "backend": null,
+  "stacks": [
+   [
+    "model",
+    2
+   ]
+  ],
+  "aux": [],
+  "mtp": [],
+  "vision": [],
+  "states": 0,
+  "lowered": true,
+  "why": ""
+ },
+ {
+  "model": "gpt2.by1",
+  "backend": null,
+  "stacks": [
+   [
+    "model",
+    12
+   ]
+  ],
+  "aux": [],
+  "mtp": [],
+  "vision": [],
+  "states": 0,
+  "lowered": true,
+  "why": ""
+ },
+ {
+  "model": "hello.by1",
+  "backend": null,
+  "stacks": [
+   [
+    "main",
+    4
+   ]
+  ],
+  "aux": [],
+  "mtp": [],
+  "vision": [],
+  "states": 0,
+  "lowered": true,
+  "why": ""
+ },
+ {
+  "model": "Instella-3B.by1",
+  "backend": null,
+  "stacks": [
+   [
+    "main",
+    36
+   ]
+  ],
+  "aux": [],
+  "mtp": [],
+  "vision": [],
+  "states": 0,
+  "lowered": true,
+  "why": ""
+ },
+ {
+  "model": "kda-gva-shaped.by1",
+  "backend": null,
+  "stacks": [
+   [
+    "main",
+    4
+   ]
+  ],
+  "aux": [],
+  "mtp": [],
+  "vision": [],
+  "states": 0,
+  "lowered": true,
+  "why": ""
+ },
+ {
+  "model": "kda-lowrank-shaped.by1",
+  "backend": null,
+  "stacks": [
+   [
+    "main",
+    4
+   ]
+  ],
+  "aux": [],
+  "mtp": [],
+  "vision": [],
+  "states": 0,
+  "lowered": true,
+  "why": ""
+ },
+ {
+  "model": "kda-shaped.by1",
+  "backend": null,
+  "stacks": [
+   [
+    "main",
+    4
+   ]
+  ],
+  "aux": [],
+  "mtp": [],
+  "vision": [],
+  "states": 0,
+  "lowered": true,
+  "why": ""
+ },
+ {
+  "model": "laguna-tiny.by1",
+  "backend": null,
+  "stacks": [
+   [
+    "main",
+    2
+   ]
+  ],
+  "aux": [],
+  "mtp": [],
+  "vision": [],
+  "states": 0,
+  "lowered": true,
+  "why": ""
+ },
+ {
+  "model": "Laguna-XS-2_1.by1",
+  "backend": null,
+  "stacks": [
+   [
+    "main",
+    40
+   ]
+  ],
+  "aux": [],
+  "mtp": [],
+  "vision": [],
+  "states": 0,
+  "lowered": true,
+  "why": ""
+ },
+ {
+  "model": "linear-gdn-shaped.by1",
+  "backend": null,
+  "stacks": [
+   [
+    "main",
+    2
+   ]
+  ],
+  "aux": [],
+  "mtp": [],
+  "vision": [],
+  "states": 0,
+  "lowered": true,
+  "why": ""
+ },
+ {
+  "model": "Ling-3.0-tiny.by1",
+  "backend": null,
+  "stacks": [
+   [
+    "main",
+    24
+   ]
+  ],
+  "aux": [],
+  "mtp": [],
+  "vision": [],
+  "states": 0,
+  "lowered": true,
+  "why": ""
+ },
+ {
+  "model": "ling-tiny.by1",
+  "backend": null,
+  "stacks": [
+   [
+    "main",
+    4
+   ]
+  ],
+  "aux": [],
+  "mtp": [],
+  "vision": [],
+  "states": 0,
+  "lowered": true,
+  "why": ""
+ },
+ {
+  "model": "llama-shaped.by1",
+  "backend": null,
+  "stacks": [
+   [
+    "main",
+    4
+   ]
+  ],
+  "aux": [],
+  "mtp": [],
+  "vision": [],
+  "states": 0,
+  "lowered": true,
+  "why": ""
+ },
+ {
+  "model": "llama3-shaped.by1",
+  "backend": null,
+  "stacks": [
+   [
+    "main",
+    4
+   ]
+  ],
+  "aux": [],
+  "mtp": [],
+  "vision": [],
+  "states": 0,
+  "lowered": true,
+  "why": ""
+ },
+ {
+  "model": "mamba-130m-hf.by1",
+  "backend": null,
+  "stacks": [
+   [
+    "main",
+    24
+   ]
+  ],
+  "aux": [],
+  "mtp": [],
+  "vision": [],
+  "states": 0,
+  "lowered": false,
+  "why": "  - 机制 'Mixer' 的 SSM 缺少 heads, head_dim, n_groups\n  - 第 1 层没有可用的 token"
+ },
+ {
+  "model": "minimind-3.by1",
+  "backend": null,
+  "stacks": [
+   [
+    "main",
+    8
+   ]
+  ],
+  "aux": [],
+  "mtp": [],
+  "vision": [],
+  "states": 0,
+  "lowered": true,
+  "why": ""
+ },
+ {
+  "model": "mixtral-shaped.by1",
+  "backend": null,
+  "stacks": [
+   [
+    "main",
+    4
+   ]
+  ],
+  "aux": [],
+  "mtp": [],
+  "vision": [],
+  "states": 0,
+  "lowered": true,
+  "why": ""
+ },
+ {
+  "model": "mla-shaped.by1",
+  "backend": null,
+  "stacks": [
+   [
+    "main",
+    4
+   ]
+  ],
+  "aux": [],
+  "mtp": [],
+  "vision": [],
+  "states": 0,
+  "lowered": true,
+  "why": ""
+ },
+ {
+  "model": "mla-sparse-shaped.by1",
+  "backend": null,
+  "stacks": [
+   [
+    "main",
+    4
+   ]
+  ],
+  "aux": [],
+  "mtp": [],
+  "vision": [],
+  "states": 0,
+  "lowered": true,
+  "why": ""
+ },
+ {
+  "model": "moe-routing-shaped.by1",
+  "backend": null,
+  "stacks": [
+   [
+    "main",
+    3
+   ]
+  ],
+  "aux": [],
+  "mtp": [],
+  "vision": [],
+  "states": 0,
+  "lowered": true,
+  "why": ""
+ },
+ {
+  "model": "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16.by1",
+  "backend": null,
+  "stacks": [
+   [
+    "model",
+    52
+   ],
+   [
+    "mtp",
+    2
+   ]
+  ],
+  "aux": [
+   "mtp"
+  ],
+  "mtp": [],
+  "vision": [],
+  "states": 0,
+  "lowered": true,
+  "why": ""
+ },
+ {
+  "model": "Qwen2.5-0.5B-Instruct.by1",
+  "backend": "transformers",
+  "stacks": [
+   [
+    "main",
+    24
+   ]
+  ],
+  "aux": [],
+  "mtp": [],
+  "vision": [],
+  "states": 0,
+  "lowered": false,
+  "why": "完整模型使用 transformers 后端；请用 by1 build，不能把多分支模型降成串行 IR"
+ },
+ {
+  "model": "Qwen3-Coder-Next.by1",
+  "backend": null,
+  "stacks": [
+   [
+    "model",
+    48
+   ]
+  ],
+  "aux": [],
+  "mtp": [],
+  "vision": [],
+  "states": 0,
+  "lowered": true,
+  "why": ""
+ },
+ {
+  "model": "qwen3-next-shaped.by1",
+  "backend": null,
+  "stacks": [
+   [
+    "main",
+    4
+   ]
+  ],
+  "aux": [],
+  "mtp": [],
+  "vision": [],
+  "states": 0,
+  "lowered": true,
+  "why": ""
+ },
+ {
+  "model": "Qwen3-Omni-30B-A3B-Thinking.by1",
+  "backend": null,
+  "stacks": [
+   [
+    "main",
+    48
+   ],
+   [
+    "visual",
+    27
+   ],
+   [
+    "audio",
+    32
+   ]
+  ],
+  "aux": [
+   "audio",
+   "visual"
+  ],
+  "mtp": [],
+  "vision": [],
+  "states": 0,
+  "lowered": true,
+  "why": ""
+ },
+ {
+  "model": "Qwen3-VL-235B-A22B-Thinking.by1",
+  "backend": null,
+  "stacks": [
+   [
+    "main",
+    94
+   ],
+   [
+    "visual",
+    27
+   ]
+  ],
+  "aux": [
+   "visual"
+  ],
+  "mtp": [],
+  "vision": [],
+  "states": 0,
+  "lowered": true,
+  "why": ""
+ },
+ {
+  "model": "Qwen3-VL-2B-Thinking.by1",
+  "backend": null,
+  "stacks": [
+   [
+    "main",
+    28
+   ],
+   [
+    "visual",
+    24
+   ]
+  ],
+  "aux": [
+   "visual"
+  ],
+  "mtp": [],
+  "vision": [],
+  "states": 0,
+  "lowered": true,
+  "why": ""
+ },
+ {
+  "model": "Qwen3-VL-30B-A3B-Thinking.by1",
+  "backend": null,
+  "stacks": [
+   [
+    "main",
+    48
+   ],
+   [
+    "visual",
+    27
+   ]
+  ],
+  "aux": [
+   "visual"
+  ],
+  "mtp": [],
+  "vision": [],
+  "states": 0,
+  "lowered": true,
+  "why": ""
+ },
+ {
+  "model": "Qwen3.5-0.8B.by1",
+  "backend": null,
+  "stacks": [
+   [
+    "model",
+    24
+   ],
+   [
+    "mtp",
+    1
+   ],
+   [
+    "visual",
+    12
+   ]
+  ],
+  "aux": [
+   "mtp",
+   "visual"
+  ],
+  "mtp": [],
+  "vision": [],
+  "states": 0,
+  "lowered": true,
+  "why": ""
+ },
+ {
+  "model": "Qwen3.5-397B-A17B.by1",
+  "backend": null,
+  "stacks": [
+   [
+    "model",
+    60
+   ],
+   [
+    "mtp",
+    1
+   ],
+   [
+    "visual",
+    27
+   ]
+  ],
+  "aux": [
+   "mtp",
+   "visual"
+  ],
+  "mtp": [],
+  "vision": [],
+  "states": 0,
+  "lowered": true,
+  "why": ""
+ },
+ {
+  "model": "Qwen3.5-9B.by1",
+  "backend": null,
+  "stacks": [
+   [
+    "model",
+    32
+   ],
+   [
+    "mtp",
+    1
+   ],
+   [
+    "visual",
+    27
+   ]
+  ],
+  "aux": [
+   "mtp",
+   "visual"
+  ],
+  "mtp": [],
+  "vision": [],
+  "states": 0,
+  "lowered": true,
+  "why": ""
+ },
+ {
+  "model": "Qwen3.6-35B-A3B.by1",
+  "backend": null,
+  "stacks": [
+   [
+    "model",
+    40
+   ],
+   [
+    "mtp",
+    1
+   ],
+   [
+    "visual",
+    27
+   ]
+  ],
+  "aux": [
+   "mtp",
+   "visual"
+  ],
+  "mtp": [],
+  "vision": [],
+  "states": 0,
+  "lowered": true,
+  "why": ""
+ },
+ {
+  "model": "Qwen3.8-27B-FP8.by1",
+  "backend": null,
+  "stacks": [
+   [
+    "main",
+    64
+   ],
+   [
+    "mtp",
+    1
+   ]
+  ],
+  "aux": [
+   "mtp"
+  ],
+  "mtp": [
+   "share_embeddings",
+   "share_head"
+  ],
+  "vision": [],
+  "states": 0,
+  "lowered": false,
+  "why": "hparams 里缺少 vocab —— 不知道词表多大"
+ },
+ {
+  "model": "Qwen3.8-27B.by1",
+  "backend": null,
+  "stacks": [
+   [
+    "model",
+    64
+   ],
+   [
+    "mtp",
+    1
+   ],
+   [
+    "visual",
+    27
+   ]
+  ],
+  "aux": [
+   "mtp",
+   "visual"
+  ],
+  "mtp": [],
+  "vision": [],
+  "states": 0,
+  "lowered": true,
+  "why": ""
+ },
+ {
+  "model": "Qwen3.8-Flash-Next.by1",
+  "backend": null,
+  "stacks": [
+   [
+    "model",
+    48
+   ],
+   [
+    "mtp",
+    1
+   ],
+   [
+    "visual",
+    27
+   ]
+  ],
+  "aux": [
+   "mtp",
+   "visual"
+  ],
+  "mtp": [],
+  "vision": [],
+  "states": 0,
+  "lowered": true,
+  "why": ""
+ },
+ {
+  "model": "raw-escape.by1",
+  "backend": null,
+  "stacks": [
+   [
+    "model",
+    2
+   ]
+  ],
+  "aux": [],
+  "mtp": [],
+  "vision": [],
+  "states": 0,
+  "lowered": true,
+  "why": ""
+ },
+ {
+  "model": "selftest.by1",
+  "backend": null,
+  "stacks": [
+   [
+    "main",
+    10
+   ]
+  ],
+  "aux": [],
+  "mtp": [],
+  "vision": [],
+  "states": 1,
+  "lowered": false,
+  "why": "hparams 里缺少 vocab —— 不知道词表多大"
+ },
+ {
+  "model": "ssm-shaped.by1",
+  "backend": null,
+  "stacks": [
+   [
+    "main",
+    4
+   ]
+  ],
+  "aux": [],
+  "mtp": [],
+  "vision": [],
+  "states": 0,
+  "lowered": true,
+  "why": ""
+ },
+ {
+  "model": "Step-3.7-Flash.by1",
+  "backend": null,
+  "stacks": [
+   [
+    "main",
+    45
+   ],
+   [
+    "mtp",
+    3
+   ],
+   [
+    "visual",
+    47
+   ]
+  ],
+  "aux": [
+   "mtp",
+   "visual"
+  ],
+  "mtp": [],
+  "vision": [],
+  "states": 0,
+  "lowered": true,
+  "why": ""
+ }
+]
