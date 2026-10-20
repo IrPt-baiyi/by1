@@ -131,6 +131,9 @@ history/_hf_probe/
 _*.txt
 _*.json
 _*.py
+# **`__init__.py` 不算临时文件**：包靠它（by1/__init__.py 里有旧名转发钩子）。
+# 上面那条 `_*.py` 会把它一起吞掉 —— 干净克隆里缺了它，`import by1paths` 全挂。
+!__init__.py
 _gemma-shaped.by1
 .by1run-state
 *.exe
