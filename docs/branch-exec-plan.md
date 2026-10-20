@@ -58,9 +58,43 @@ blocks（= IR 的 layers）之外还有五件事，每件都得有家：
 | 4 | 视觉注意力 | **按图打包 + 双向**（`cu_seqlens` 分块，非因果） | ⏳ **IR 语义缺口**：Attention 目前 = 1D 因果 |
 | 5 | 视觉旋转 | (h, w) 双轴 mrope（`q·cos + rotate_half(q)·sin`，位置来自图像网格） | ⏳ **IR 语义缺口**：rope 目前 = 1D 序号 |
 
-**④⑤ 就是「按接线跑通」只剩的两堵墙** —— 下一轮的 IR 扩展（Attention 的
-`causal` 与位置语义），三算子已落（1.3 闭集）。形状对拍：与 tiny 官方模型
-**9/9 逐个同形**（见上一轮）；数学对拍：算子级 1e-07 内（见上表）。
+**④⑤ 就是「按接线跑通」的墙** —— 三算子已落（1.3 闭集）。形状对拍：与 tiny
+官方模型 **9/9 逐个同形**（见上一轮）；数学对拍：算子级 1e-07 内（见上表）。
+
+## 〇之三、视觉塔执行公式（2026-10-20 · 源码逐字钉死，实现照抄这一节）
+
+1. **位置布局**（`get_vision_position_ids`）：每图 `(t, h, w)` 网格，
+   `(h,w)` 坐标按 **m×m 合并块为主序**（`reshape(h/m, m, w/m, m).transpose(1,2)`）
+   —— 这正是 merger 的 `view(-1, H·ms²)` 分组顺序，**喂 patch 时就按这个序**；
+2. **视觉旋转**（`Qwen3_5VisionRotaryEmbedding`）：`dim = head_dim // 2`，
+   `inv_freq = 1/10000^(arange(0, dim, 2)/dim)`；角 = (h 角, w 角) 拼接
+   （flatten(1)），再 `emb = cat(rot, rot)`（**half 重复**），
+   `q·cos + rotate_half(q)·sin`（rotate_half = `cat(-x[d/2:], x[:d/2])`）；
+3. **位置表插值**（`get_vision_interpolation_indices_and_weights`）：
+   复刻 `F.interpolate(bilinear, align_corners=True)` 的 4-tap 索引+权重，
+   方表 `sqrt(n_pos) × sqrt(n_pos)` 重采样到 `(h, w)` 网格；
+4. **打包**（`get_vision_attention_seqlens`）：**每图一段**（cu_seqlens 分块，
+   段内双向、段间隔离）。
+
+## 〇之四、第三堵墙：主干的 mrope（读公式时补进清单的）
+
+**不只视觉塔**：主干在**图像 token 位置**的 rope 也是多轴的 —— `mrope_section`
+就是它（三段 t/h/w 切开旋转维；夹具里 `[2,1,1]` 的和 = 旋转配对数，
+A 弧线校准时撞到的就是这个约束）。文本位置照旧 1D 递推、图像位置取 (t,h,w)。
+
+**所以 rope 的完整语义是**：
+
+| 位置 | rope |
+|---|---|
+| 主干 · 文本 token | 1D 序号（现状，不变） |
+| 主干 · 图像 token | **mrope**：rotary 维按 `mrope_section` 切 t/h/w 三段 |
+| 视觉塔 · patch | **双轴 (h,w)**，公式见〇之三·2 |
+
+**IR 扩展设计（下一轮落 schema）**：Attention 增两个可选字段 ——
+`causal`（bool，缺省 true；视觉塔层 = false，打包语义由分支的输入网格定义）与
+`rope_pos`（`enum:seq,mrope,grid_hw`，缺省 seq）；`mrope_section` 从 vision{} 进 IR
+顶层（可选）。**加字段 = IR_VERSION 1.3 → 1.4**（by1ver 家规）。生产者按分支
+模态填这三个值（显式优先），审计照旧逐份复查。
 
 ## 三、顺序（每节做到哪记到哪）
 

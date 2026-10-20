@@ -7,7 +7,7 @@
 > 它让读的人以为自己知道。这些表被 `validate()` 和
 > `by1all` 真的跑着，所以它们跟得上代码。
 
-**版本：`by1-ir: 1.3`**
+**版本：`by1-ir: 1.4`**
 
 ---
 
@@ -32,6 +32,7 @@ python src/by1irentry.py                    # 三个后端只从 IR 跑
 | `stacks` | `list?` | 否 | 分支登记表（1.1 新增、1.2 升格，缺省 = 单栈文本）。每条见 STACKS 表；非 `text` 分支的层必须给 `in_dim` 且必须等于分支宽（跨栈漂移当报红）；层段互不重叠、合起来可不满全部层 |
 | `wiring` | `list?` | 否 | 显式接线（1.2 新增），每条见 WIRING 表。**stacks 多于一条时必填** —— 没有接线的分支登记表只是孤岛，等于没说 |
 | `shared` | `list?` | 否 | 跨分支参数绑定（1.2 新增），每条见 SHARED 表（tie / share 两种形态） |
+| `mrope_section` | `list?` | 否 | mrope 的三段切分（1.4 新增，t/h/w 各占旋转维的几对；和 = 旋转配对数）。主干的图像 token 位置用它 —— 文本位置照旧 1D |
 | `vocab` | `int` | 是 | 词表大小 |
 | `ctx` | `int` | 是 | 上下文长度（位置能达到的最大值） |
 | `d_model` | `int` | 是 | 残差流宽度 |
@@ -156,6 +157,8 @@ python src/by1irentry.py                    # 三个后端只从 IR 跑
 | `rope` | `bool` | 是 | **要不要施加旋转**。false 时位置在输入上 |
 | `rope_base` | `int` | 是 |  |
 | `rope_pairing` | `enum:half,interleaved` | 是 | 配对约定 |
+| `causal` | `bool` | 否 | 注意力是不是因果的。**缺省 true**（文本口径）；视觉塔的层 = false（每图一段、段内双向 —— 打包语义由分支的输入网格定义） |
+| `rope_pos` | `enum:seq,mrope,grid_hw` | 否 | 位置来源。**缺省 seq**（1D 序号）；`mrope` = 图像 token 取 (t,h,w)、旋转维按顶层 mrope_section 切三段；`grid_hw` = 视觉塔 patch 的 (h,w) 双轴 |
 | `rope_partial` | `float` | 是 | 只转前多少比例 |
 | `rope_scale` | `float` | 是 | YaRN 的 attention_factor 之类 |
 | `yarn` | `dict?` | 是 |  |

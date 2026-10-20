@@ -186,6 +186,9 @@ TOP = [
      " —— 没有接线的分支登记表只是孤岛，等于没说"),
     ("shared", "list?", False,
      "跨分支参数绑定（1.2 新增），每条见 SHARED 表（tie / share 两种形态）"),
+    ("mrope_section", "list?", False,
+     "mrope 的三段切分（1.4 新增，t/h/w 各占旋转维的几对；和 = 旋转配对数）。"
+     "主干的图像 token 位置用它 —— 文本位置照旧 1D"),
     ("vocab", "int", True, "词表大小"),
     ("ctx", "int", True, "上下文长度（位置能达到的最大值）"),
     ("d_model", "int", True, "残差流宽度"),
@@ -310,6 +313,16 @@ KIND_ATTRS = {
         "rope": ("bool", True, "**要不要施加旋转**。false 时位置在输入上"),
         "rope_base": ("int", True, ""),
         "rope_pairing": ("enum:half,interleaved", True, "配对约定"),
+        # ── 多分支执行语义（1.4 · B 弧线）──────────────────────────
+        # 视觉塔的注意力是**每图一段、段内双向**（cu_seqlens 打包）；
+        # 位置还有三种来源（见 docs/branch-exec-plan.md 〇之三/四）。
+        # 都可缺省：缺省 = 文本口径（causal、1D 序号）—— 1.3 的 IR 一字不改。
+        "causal": ("bool", False,
+            "注意力是不是因果的。**缺省 true**（文本口径）；视觉塔的层 = false"
+            "（每图一段、段内双向 —— 打包语义由分支的输入网格定义）"),
+        "rope_pos": ("enum:seq,mrope,grid_hw", False,
+            "位置来源。**缺省 seq**（1D 序号）；`mrope` = 图像 token 取 (t,h,w)、"
+            "旋转维按顶层 mrope_section 切三段；`grid_hw` = 视觉塔 patch 的 (h,w) 双轴"),
         "rope_partial": ("float", True, "只转前多少比例"),
         "rope_scale": ("float", True, "YaRN 的 attention_factor 之类"),
         "yarn": ("dict?", True, ""),

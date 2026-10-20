@@ -509,6 +509,31 @@ def _emit_multibranch(info: Dict[str, Any], ir: Dict[str, Any]) -> None:
             _add_vision_entry_exit(
                 ir, reg, _tw[0],
                 [s for s in reg if s["role"] == "trunk"][0], _vd)
+            # **执行语义也在这填**（1.4）：视觉塔的注意力 = 每图一段、段内双向
+            # （causal=false、位置走图像网格的 (h,w)）；主干/头在图像 token 位置
+            # 的 rope = mrope（旋转维按 mrope_section 切 t/h/w 三段）。
+            # 只对 vision{} 声明齐全的填 —— 没声明的不猜（审计里如实记）。
+            _t = _tw[0]
+            _lo = _t["first_layer"]
+            _hi = _lo + _t["n_layers"]
+            for _L in ir["layers"][_lo:_hi]:
+                for _o in _L["ops"]:
+                    if _o["kind"] == "Attention":
+                        _o["attrs"]["causal"] = False
+                        _o["attrs"]["rope_pos"] = "grid_hw"
+            try:
+                _ms = [int(x) for x in str(_vd.get("mrope_section"))
+                       .strip().strip("[]").split(",") if x.strip()]
+            except ValueError:
+                _ms = []
+            if len(_ms) == 3 and all(v > 0 for v in _ms):
+                ir["mrope_section"] = _ms
+                for _L in ir["layers"]:
+                    if _lo <= _L["index"] < _hi:
+                        continue
+                    for _o in _L["ops"]:
+                        if _o["kind"] == "Attention":
+                            _o["attrs"]["rope_pos"] = "mrope"
 
     edges = []
     for s in reg:

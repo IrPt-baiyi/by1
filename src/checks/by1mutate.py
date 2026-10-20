@@ -315,6 +315,9 @@ MUTATIONS = [
      lambda b: _mut(lambda ir: _on_op(ir, 0, 0, lambda o: o.update({
          "kind": "PosEmbed", "mech": "pos_embed",
          "attrs": {"n_pos": -1}})), b), "必须为正"),
+    ("rope-pos-bad-enum", "rope_pos 闭集（seq / mrope / grid_hw）",
+     lambda b: _mut(lambda ir: _on_op(ir, 0, 1, lambda o: o["attrs"].update({
+         "rope_pos": "banana"})), b), "不在闭集"),
 ]
 
 #: 五类反例的**覆盖账**（阶段 A 判据：缺字段 / 冲突配置 / 未知 dtype /
