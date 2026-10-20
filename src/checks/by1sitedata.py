@@ -1,33 +1,27 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""by1sitedata -- 站点数据必须等于从 IR 现算的那份（判据）。
+"""迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.sitedata。
 
-页面上的数字如果只靠"当初导出时是对的"，它就只是又一本文档。
-这条把 site/data 里的 .js 与 by1check/by1codegen 现算的结果逐字节比一遍；
-漂移就红，重导一条命令（python tools/by1site.py）。
-
-    python src/checks/by1sitedata.py       # 档 3 判卷人
+**兼容期上限 2 个阶段**：拆完 shim 就删。它做两件事，缺一不可：
+  ① `globals().update(...)`：按**文件路径**装载的调用（`spec_from_file_location`）
+     拿到的是本 shim 对象，必须有属性；
+  ② `sys.modules[本名] = 真身`：按**名字** `import by1xxx` 的直接拿到真身，
+     循环 import / 后定义属性都按 Python 原生语义解析。
+当脚本执行时转发真身的 __main__（判卷人都当脚本跑）。
 """
+import os as _os
+import sys as _sys
+# 引导（生成的，别手改）：见 by1paths.check_boot
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import by1paths  # noqa: E402,F401
+import importlib as _il  # noqa: E402
 
-import pathlib
-import sys
+_m = _il.import_module('by1.checks.sitedata')
 
-ROOT = pathlib.Path(__file__).resolve().parents[2]
-
-
-def main():
-    sys.path.insert(0, str(ROOT / "tools"))
-    import by1site
-
-    out = ROOT / "site" / "data"
-    if not out.exists():
-        print("  [跳过] 没有 site/data —— 站点还没导出（先跑 python tools/by1site.py）")
-        return 2
-    rc, msgs = by1site.check_site(ROOT, out)
-    for m in msgs:
-        print("  [%s] %s" % ("PASS" if rc == 0 else "FAIL", m))
-    return rc
-
-
-if __name__ == "__main__":
-    sys.exit(main())
+if __name__ == '__main__':
+    import runpy
+    runpy.run_path(_m.__file__, run_name='__main__')
+else:
+    globals().update({_k: _v for _k, _v in vars(_m).items()
+                      if not _k.startswith('__')})
+    _sys.modules[__name__] = _m

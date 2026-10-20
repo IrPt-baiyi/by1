@@ -27,6 +27,16 @@ by1oracle、by1triage）—— 而它们会**各自过期**：
 
 规则写在一处，就不会有"谁忘了改"。
 """
+
+import os as _os
+import sys as _sys
+# 引导（生成的，别手改）：往上找到有 by1paths.py 的那一层 —— 迁移后
+# 模块可能在包内深处（src/by1/checks/…），固定层数会插错目录。
+_p = _os.path.dirname(_os.path.abspath(__file__))
+while _p and not _os.path.exists(_os.path.join(_p, 'by1paths.py')):
+    _p = _os.path.dirname(_p)
+_sys.path.insert(0, _p)
+import by1paths  # noqa: E402,F401
 import os
 import re
 import by1io

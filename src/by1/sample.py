@@ -25,6 +25,16 @@ mt19937 原始流 · uniform01 = (g0+g1·2^32)/2^64 · discrete 索引。
 float 运算，本文件是 Python float）——要逐位就得 np.float32 按同操作
 序复刻 top_k 排序序 / top_p 累计 / dist 内的 softmax。单列不冒充。
 """
+
+import os as _os
+import sys as _sys
+# 引导（生成的，别手改）：往上找到有 by1paths.py 的那一层 —— 迁移后
+# 模块可能在包内深处（src/by1/checks/…），固定层数会插错目录。
+_p = _os.path.dirname(_os.path.abspath(__file__))
+while _p and not _os.path.exists(_os.path.join(_p, 'by1paths.py')):
+    _p = _os.path.dirname(_p)
+_sys.path.insert(0, _p)
+import by1paths  # noqa: E402,F401
 import math
 
 

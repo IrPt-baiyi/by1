@@ -64,6 +64,16 @@ pre-push 钩子写的是 `exec "$PY" by1all.py --tier 1`，而 git 把非零
 
 和 `by1io` / `by1paths` 一样**只依赖标准库** —— 它会被最底层的脚本 import。
 """
+
+import os as _os
+import sys as _sys
+# 引导（生成的，别手改）：往上找到有 by1paths.py 的那一层 —— 迁移后
+# 模块可能在包内深处（src/by1/checks/…），固定层数会插错目录。
+_p = _os.path.dirname(_os.path.abspath(__file__))
+while _p and not _os.path.exists(_os.path.join(_p, 'by1paths.py')):
+    _p = _os.path.dirname(_p)
+_sys.path.insert(0, _p)
+import by1paths  # noqa: E402,F401
 import sys
 
 #: **没验**。这台机器上做不了（缺 gcc / 缺显卡 / 缺缓存）。

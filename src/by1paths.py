@@ -143,12 +143,45 @@ def root(*parts):
     return os.path.join(ROOT, *parts)
 
 
+_PKG_TOOLS = None
+
+
+def _pkg_tools():
+    """迁移期：包里真身的索引 `{stem: path}`（见 docs/TEMP-rename-plan.md）。
+
+    旧名 `by1<X>.py` 在包里的新名是 `<X>.py`。按路径装载 / 读源码的调用
+    **必须拿到真身** —— 旧路径现在只是 shim（只有转发，没有逻辑）。
+    """
+    global _PKG_TOOLS
+    if _PKG_TOOLS is not None:
+        return _PKG_TOOLS
+    found = {}
+    pkg = os.path.join(SRC, 'by1')
+    for base, dirs, files in os.walk(pkg):
+        dirs[:] = [d for d in dirs if d != '__pycache__']
+        for f in files:
+            if not f.endswith('.py') or f == '__init__.py':
+                continue
+            found.setdefault(f[:-3], os.path.join(base, f))
+    _PKG_TOOLS = found
+    return found
+
+
 def tool(name):
     """兄弟脚本的路径。**在 `src/` 和每个子目录里找。**
 
     调用处写的是裸名（`by1check.py`），**不关心它现在住在哪个子目录** ——
     搬过一次家就是这个理由：路径只在这一处推。
+
+    迁移期（docs/TEMP-rename-plan.md）：`by1<X>.py` 先问包里的 `<X>.py` ——
+    旧路径只剩 shim，读源码 / 按路径装载的调用要的是真身。
     """
+    if name.startswith('by1') and name.endswith('.py'):
+        stem = name[3:-3]
+        if stem:
+            hit = _pkg_tools().get(stem)
+            if hit:
+                return hit
     for d in (SRC,) + tuple(os.path.join(SRC, s) for s in SUBDIRS):
         p = os.path.join(d, name)
         if os.path.exists(p):

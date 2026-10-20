@@ -6,6 +6,16 @@
 Qwen 的 MTP 拼接、归一化与共享关系在本模块实现，不丢弃 checkpoint 的 mtp.*。
 MTP 组合依据 vLLM qwen3_5_mtp.py；它的输入 hidden_states 是主干最终归一化后的值。
 """
+
+import os as _os
+import sys as _sys
+# 引导（生成的，别手改）：往上找到有 by1paths.py 的那一层 —— 迁移后
+# 模块可能在包内深处（src/by1/checks/…），固定层数会插错目录。
+_p = _os.path.dirname(_os.path.abspath(__file__))
+while _p and not _os.path.exists(_os.path.join(_p, 'by1paths.py')):
+    _p = _os.path.dirname(_p)
+_sys.path.insert(0, _p)
+import by1paths  # noqa: E402,F401
 import argparse
 from by1ir import ALPHA_DEFAULT as _ALPHA
 import copy

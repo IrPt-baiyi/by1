@@ -17,6 +17,16 @@ Block 1.1：MoE 作为**一个算子 + 一组 attrs**，不是一族特例。
   位置       position { ... rope(base=…, pairing=…) ... }
 """
 
+import os as _os
+import sys as _sys
+# 引导（生成的，别手改）：往上找到有 by1paths.py 的那一层 —— 迁移后
+# 模块可能在包内深处（src/by1/checks/…），固定层数会插错目录。
+_p = _os.path.dirname(_os.path.abspath(__file__))
+while _p and not _os.path.exists(_os.path.join(_p, 'by1paths.py')):
+    _p = _os.path.dirname(_p)
+_sys.path.insert(0, _p)
+import by1paths  # noqa: E402,F401
+
 import argparse
 import importlib.util
 import math

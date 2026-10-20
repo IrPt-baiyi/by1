@@ -1,6 +1,6 @@
 # 这个仓库里每个文件是干什么的
 
-> 550 个跟踪文件。按"你会想找什么"分组，不按字母表。
+> 588 个跟踪文件。按"你会想找什么"分组，不按字母表。
 >
 > **这份文档是生成的**：`python src/by1files.py --write`。
 > 文件清单、每组的个数、每个文件的一句话都从目录树和 docstring 来 ——
@@ -43,7 +43,7 @@
 
 ---
 
-## `src/` —— 112 个模块 + 1 个非 .py
+## `src/` —— 150 个模块 + 1 个非 .py
 
 ### 底座（留在 src/ 顶层）
 
@@ -135,44 +135,44 @@
 
 | 文件 | 用途 |
 |---|---|
-| `by1all.py` | 一次跑完全部验证，失败就非零退出 |
-| `by1verify.py` | 差分验证：把 .by1 的展开结果与官方产物对拍 |
-| `by1diff.py` | 把 by1 生成的前向 与 transformers 的参考实现**逐位对拍** |
-| `by1opdiff.py` | 逐个算子**比 NumPy 和 PyTorch |
-| `by1e2e.py` | 端到端：真产物 -> IR -> 三个后端 -> 对官方实现 |
-| `by1irentry.py` | 三个后端必须能从 IR 入口跑通**，而不是只从 .by1 入口 |
-| `by1gate.py` | 取值门的**可证伪对照** |
-| `by1docs.py` | """文档里提到的每一个路径，都还在吗？ |
-| `by1files.py` | 生成并核对 `FILES.md` |
-| `by1lint.py` | 只盯这个项目真正怕的那几类 |
-| `by1langspec.py` | T2 判卷人：规范示例 x by1check x 错误输出三方一致（绿例绿/红例红/selftest 基线 9 错） |
-| `by1blind.py` | 量"看不见的东西" |
-| `by1debt.py` | 没干完的事，量出来，不凭印象列 |
-| `by1pat.py` | 哪些词是数据里的，哪些是我的想象 |
-| `by1smoke.py` | """冒烟测：把每个 by1*.py 都单独跑一遍 |
-| `by1pack.py` | 打出要上传到云端的那一包 |
-| `by1rebuild.py` | 删掉数据，能不能重建 |
-| `by1bootir.py` | 两条路的判卷人**：从 .by1 出来的 IR，和从产物反推出来的 IR |
-| `by1oracles.py` | 10 个神谕：每个都有独立的真相源 |
-| `by1oracle.py` | 执行神谕：把 .by1 声明的状态策略与**真实前向的行为**对拍 |
-| `by1coerce.py` | 同一个取值写法，读到同一个答案 |
-| `by1run.py` | 推送前的门，以及每四次一次数值档 |
-| `by1fast.py` | 快速检查：30 秒内告诉你有没有改坏 |
-| `by1tiers.py` | 档位归属的自动判据**：判卷人声明的档位 vs 它真的需要什么 |
-| `by1budget.py` | 门禁耗时的判据**：跑得慢过上限就不再是"通过" |
-| `by1attrs.py` | 机制属性的闭集 与 官方出处**：闭集里不许躺着一个谁都说不清来历的取值 |
-| `by1gpu.py` | 只有显卡能做的那几件验证 |
-| `by1gpusmoke.py` | CUDA 前向、梯度、参数更新与完整视觉/MTP 分支的可复现验收 |
-| `by1gpubench.py` | 真实权重与发布方 Transformers 模型的顺序加载、数值与性能对比 |
-| `by1gputrain.py` | 用真实 Qwen3-0.6B 权重对比 CUDA 反向传播和一次更新 |
-| `by1gpuday.py` | GPU 日单入口**：一条命令把租卡那天该跑的按序跑完 |
-| `by1llama.py` | llama.cpp 基线记录、GGUF 清单校验、logits 逐位对拍 |
-| `by1rules.py` | 转换期改写表的判卷人 |
-| `by1sitedata.py` | 站点数据必须等于从 IR 现算的那份（判据） |
-| `by1backends.py` | 后端 × 机制矩阵：**承诺的公共子集到底有多大** |
-| `by1sync.py` | 推导 ↔ 契约 的同步报表**（1.0.0-rc0 的 T0.2） |
-| `by1mutate.py` | 变异反例库**（1.0.0-rc0 的 T0.3） |
-| `by1complete.py` | 完整模型验收：参数共享、bias、梯度、视觉、MTP 与严格权重加载 |
+| `all.py` | 一次跑完全部验证，失败就非零退出 |
+| `verify.py` | 差分验证：把 .by1 的展开结果与官方产物对拍 |
+| `diff.py` | 把 by1 生成的前向 与 transformers 的参考实现**逐位对拍** |
+| `opdiff.py` | 逐个算子**比 NumPy 和 PyTorch |
+| `e2e.py` | 端到端：真产物 -> IR -> 三个后端 -> 对官方实现 |
+| `irentry.py` | 三个后端必须能从 IR 入口跑通**，而不是只从 .by1 入口 |
+| `gate.py` | 取值门的**可证伪对照** |
+| `docs.py` | """文档里提到的每一个路径，都还在吗？ |
+| `files.py` | 生成并核对 `FILES.md` |
+| `lint.py` | 只盯这个项目真正怕的那几类 |
+| `langspec.py` | `.by1` 语言合同的**一致性判卷人**（T2） |
+| `blind.py` | 量"看不见的东西" |
+| `debt.py` | 没干完的事，量出来，不凭印象列 |
+| `pat.py` | 哪些词是数据里的，哪些是我的想象 |
+| `smoke.py` | """冒烟测：把每个 by1*.py 都单独跑一遍 |
+| `pack.py` | 打出要上传到云端的那一包 |
+| `rebuild.py` | 删掉数据，能不能重建 |
+| `bootir.py` | 两条路的判卷人**：从 .by1 出来的 IR，和从产物反推出来的 IR |
+| `oracles.py` | 10 个神谕：每个都有独立的真相源 |
+| `oracle.py` | 执行神谕：把 .by1 声明的状态策略与**真实前向的行为**对拍 |
+| `coerce.py` | 同一个取值写法，读到同一个答案 |
+| `run.py` | 推送前的门，以及每四次一次数值档 |
+| `fast.py` | 快速检查：30 秒内告诉你有没有改坏 |
+| `tiers.py` | 档位归属的自动判据**：判卷人声明的档位 vs 它真的需要什么 |
+| `budget.py` | 门禁耗时的判据**：跑得慢过上限就不再是"通过" |
+| `attrs.py` | 机制属性的闭集 与 官方出处**：闭集里不许躺着一个谁都说不清来历的取值 |
+| `gpu.py` | 只有显卡能做的那几件验证 |
+| `gpusmoke.py` | CUDA 前向、梯度、参数更新与完整视觉/MTP 分支的可复现验收 |
+| `gpubench.py` | 真实权重与发布方 Transformers 模型的顺序加载、数值与性能对比 |
+| `gputrain.py` | 用真实 Qwen3-0.6B 权重对比 CUDA 反向传播和一次更新 |
+| `gpuday.py` | GPU 日单入口**：一条命令把租卡那天该跑的按序跑完 |
+| `llama.py` | llama.cpp 基线记录、GGUF 清单校验、logits 逐位对拍 |
+| `rules.py` | 转换期改写表的判卷人 |
+| `sitedata.py` | 站点数据必须等于从 IR 现算的那份（判据） |
+| `backends.py` | 后端 × 机制矩阵：**承诺的公共子集到底有多大** |
+| `sync.py` | 推导 ↔ 契约 的同步报表**（1.0.0-rc0 的 T0.2） |
+| `mutate.py` | 变异反例库**（1.0.0-rc0 的 T0.3） |
+| `complete.py` | 完整模型验收：参数共享、bias、梯度、视觉、MTP 与严格权重加载 |
 
 ### `modelcheck/` —— 一个模型一个判卷人
 
@@ -239,21 +239,59 @@
 
 | 文件 | 用途 |
 |---|---|
+| `by1all.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.all |
+| `by1attrs.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.attrs |
+| `by1backends.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.backends |
+| `by1blind.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.blind |
 | `by1boot.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.boot |
+| `by1bootir.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.bootir |
+| `by1budget.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.budget |
 | `by1c.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.c |
 | `by1check.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.check |
 | `by1codegen.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.codegen |
+| `by1coerce.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.coerce |
+| `by1complete.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.complete |
+| `by1debt.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.debt |
+| `by1diff.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.diff |
+| `by1docs.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.docs |
+| `by1e2e.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.e2e |
 | `by1exec.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.exec_ |
 | `by1ext.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.ext |
+| `by1fast.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.fast |
+| `by1files.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.files |
 | `by1full.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.full |
+| `by1gate.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.gate |
 | `by1ggml.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.ggml |
+| `by1gpu.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.gpu |
+| `by1gpubench.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.gpubench |
+| `by1gpuday.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.gpuday |
+| `by1gpusmoke.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.gpusmoke |
+| `by1gputrain.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.gputrain |
 | `by1graph.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.graph |
 | `by1io.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.io |
 | `by1ir.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.ir |
+| `by1irentry.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.irentry |
+| `by1langspec.py` | T2 判卷人：规范示例 x by1check x 错误输出三方一致（绿例绿/红例红/selftest 基线 9 错） |
+| `by1lint.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.lint |
+| `by1llama.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.llama |
+| `by1mutate.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.mutate |
+| `by1opdiff.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.opdiff |
+| `by1oracle.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.oracle |
+| `by1oracles.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.oracles |
+| `by1pack.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.pack |
+| `by1pat.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.pat |
+| `by1rebuild.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.rebuild |
 | `by1refs.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.refs |
+| `by1rules.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.rules |
+| `by1run.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.run |
 | `by1sample.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.sample |
+| `by1sitedata.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.sitedata |
 | `by1skip.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.skip |
+| `by1smoke.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.smoke |
+| `by1sync.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.sync |
+| `by1tiers.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.tiers |
 | `by1ver.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.ver |
+| `by1verify.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.verify |
 
 ---
 
@@ -625,49 +663,92 @@
 | `skip.py` | 一次检查有五种结论，不是两种 |
 | `ver.py` | 版本号的唯一真相源 |
 
+## `src/by1/checks/` —— 38 个
+
+| 文件 | 用途 |
+|---|---|
+| `all.py` | 一次跑完全部验证，失败就非零退出 |
+| `attrs.py` | 机制属性的闭集 与 官方出处**：闭集里不许躺着一个谁都说不清来历的取值 |
+| `backends.py` | 后端 × 机制矩阵：**承诺的公共子集到底有多大** |
+| `blind.py` | 量"看不见的东西" |
+| `bootir.py` | 两条路的判卷人**：从 .by1 出来的 IR，和从产物反推出来的 IR |
+| `budget.py` | 门禁耗时的判据**：跑得慢过上限就不再是"通过" |
+| `coerce.py` | 同一个取值写法，读到同一个答案 |
+| `complete.py` | 完整模型验收：参数共享、bias、梯度、视觉、MTP 与严格权重加载 |
+| `debt.py` | 没干完的事，量出来，不凭印象列 |
+| `diff.py` | 把 by1 生成的前向 与 transformers 的参考实现**逐位对拍** |
+| `docs.py` | """文档里提到的每一个路径，都还在吗？ |
+| `e2e.py` | 端到端：真产物 -> IR -> 三个后端 -> 对官方实现 |
+| `fast.py` | 快速检查：30 秒内告诉你有没有改坏 |
+| `files.py` | 生成并核对 `FILES.md` |
+| `gate.py` | 取值门的**可证伪对照** |
+| `gpu.py` | 只有显卡能做的那几件验证 |
+| `gpubench.py` | 真实权重与发布方 Transformers 模型的顺序加载、数值与性能对比 |
+| `gpuday.py` | GPU 日单入口**：一条命令把租卡那天该跑的按序跑完 |
+| `gpusmoke.py` | CUDA 前向、梯度、参数更新与完整视觉/MTP 分支的可复现验收 |
+| `gputrain.py` | 用真实 Qwen3-0.6B 权重对比 CUDA 反向传播和一次更新 |
+| `irentry.py` | 三个后端必须能从 IR 入口跑通**，而不是只从 .by1 入口 |
+| `langspec.py` | `.by1` 语言合同的**一致性判卷人**（T2） |
+| `lint.py` | 只盯这个项目真正怕的那几类 |
+| `llama.py` | llama.cpp 基线记录、GGUF 清单校验、logits 逐位对拍 |
+| `mutate.py` | 变异反例库**（1.0.0-rc0 的 T0.3） |
+| `opdiff.py` | 逐个算子**比 NumPy 和 PyTorch |
+| `oracle.py` | 执行神谕：把 .by1 声明的状态策略与**真实前向的行为**对拍 |
+| `oracles.py` | 10 个神谕：每个都有独立的真相源 |
+| `pack.py` | 打出要上传到云端的那一包 |
+| `pat.py` | 哪些词是数据里的，哪些是我的想象 |
+| `rebuild.py` | 删掉数据，能不能重建 |
+| `rules.py` | 转换期改写表的判卷人 |
+| `run.py` | 推送前的门，以及每四次一次数值档 |
+| `sitedata.py` | 站点数据必须等于从 IR 现算的那份（判据） |
+| `smoke.py` | """冒烟测：把每个 by1*.py 都单独跑一遍 |
+| `sync.py` | 推导 ↔ 契约 的同步报表**（1.0.0-rc0 的 T0.2） |
+| `tiers.py` | 档位归属的自动判据**：判卷人声明的档位 vs 它真的需要什么 |
+| `verify.py` | 差分验证：把 .by1 的展开结果与官方产物对拍 |
+
 ## `src/checks/` —— 39 个
 
 | 文件 | 用途 |
 |---|---|
 | `__init__.py` | 让这个目录成为一个包，这样 setuptools 装得上 |
-| `by1all.py` | 一次跑完全部验证，失败就非零退出 |
-| `by1attrs.py` | 机制属性的闭集 与 官方出处**：闭集里不许躺着一个谁都说不清来历的取值 |
-| `by1backends.py` | 后端 × 机制矩阵：**承诺的公共子集到底有多大** |
-| `by1blind.py` | 量"看不见的东西" |
-| `by1bootir.py` | 两条路的判卷人**：从 .by1 出来的 IR，和从产物反推出来的 IR |
-| `by1budget.py` | 门禁耗时的判据**：跑得慢过上限就不再是"通过" |
-| `by1coerce.py` | 同一个取值写法，读到同一个答案 |
-| `by1complete.py` | 完整模型验收：参数共享、bias、梯度、视觉、MTP 与严格权重加载 |
-| `by1debt.py` | 没干完的事，量出来，不凭印象列 |
-| `by1diff.py` | 把 by1 生成的前向 与 transformers 的参考实现**逐位对拍** |
-| `by1docs.py` | """文档里提到的每一个路径，都还在吗？ |
-| `by1e2e.py` | 端到端：真产物 -> IR -> 三个后端 -> 对官方实现 |
-| `by1fast.py` | 快速检查：30 秒内告诉你有没有改坏 |
-| `by1files.py` | 生成并核对 `FILES.md` |
-| `by1gate.py` | 取值门的**可证伪对照** |
-| `by1gpu.py` | 只有显卡能做的那几件验证 |
-| `by1gpubench.py` | 真实权重与发布方 Transformers 模型的顺序加载、数值与性能对比 |
-| `by1gpuday.py` | GPU 日单入口**：一条命令把租卡那天该跑的按序跑完 |
-| `by1gpusmoke.py` | CUDA 前向、梯度、参数更新与完整视觉/MTP 分支的可复现验收 |
-| `by1gputrain.py` | 用真实 Qwen3-0.6B 权重对比 CUDA 反向传播和一次更新 |
-| `by1irentry.py` | 三个后端必须能从 IR 入口跑通**，而不是只从 .by1 入口 |
+| `by1all.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.all |
+| `by1attrs.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.attrs |
+| `by1backends.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.backends |
+| `by1blind.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.blind |
+| `by1bootir.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.bootir |
+| `by1budget.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.budget |
+| `by1coerce.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.coerce |
+| `by1complete.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.complete |
+| `by1debt.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.debt |
+| `by1diff.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.diff |
+| `by1docs.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.docs |
+| `by1e2e.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.e2e |
+| `by1fast.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.fast |
+| `by1files.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.files |
+| `by1gate.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.gate |
+| `by1gpu.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.gpu |
+| `by1gpubench.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.gpubench |
+| `by1gpuday.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.gpuday |
+| `by1gpusmoke.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.gpusmoke |
+| `by1gputrain.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.gputrain |
+| `by1irentry.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.irentry |
 | `by1langspec.py` | T2 判卷人：规范示例 x by1check x 错误输出三方一致（绿例绿/红例红/selftest 基线 9 错） |
-| `by1lint.py` | 只盯这个项目真正怕的那几类 |
-| `by1llama.py` | llama.cpp 基线记录、GGUF 清单校验、logits 逐位对拍 |
-| `by1mutate.py` | 变异反例库**（1.0.0-rc0 的 T0.3） |
-| `by1opdiff.py` | 逐个算子**比 NumPy 和 PyTorch |
-| `by1oracle.py` | 执行神谕：把 .by1 声明的状态策略与**真实前向的行为**对拍 |
-| `by1oracles.py` | 10 个神谕：每个都有独立的真相源 |
-| `by1pack.py` | 打出要上传到云端的那一包 |
-| `by1pat.py` | 哪些词是数据里的，哪些是我的想象 |
-| `by1rebuild.py` | 删掉数据，能不能重建 |
-| `by1rules.py` | 转换期改写表的判卷人 |
-| `by1run.py` | 推送前的门，以及每四次一次数值档 |
-| `by1sitedata.py` | 站点数据必须等于从 IR 现算的那份（判据） |
-| `by1smoke.py` | """冒烟测：把每个 by1*.py 都单独跑一遍 |
-| `by1sync.py` | 推导 ↔ 契约 的同步报表**（1.0.0-rc0 的 T0.2） |
-| `by1tiers.py` | 档位归属的自动判据**：判卷人声明的档位 vs 它真的需要什么 |
-| `by1verify.py` | 差分验证：把 .by1 的展开结果与官方产物对拍 |
+| `by1lint.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.lint |
+| `by1llama.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.llama |
+| `by1mutate.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.mutate |
+| `by1opdiff.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.opdiff |
+| `by1oracle.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.oracle |
+| `by1oracles.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.oracles |
+| `by1pack.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.pack |
+| `by1pat.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.pat |
+| `by1rebuild.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.rebuild |
+| `by1rules.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.rules |
+| `by1run.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.run |
+| `by1sitedata.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.sitedata |
+| `by1smoke.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.smoke |
+| `by1sync.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.sync |
+| `by1tiers.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.tiers |
+| `by1verify.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.verify |
 
 ## `src/data/` —— 9 个
 
