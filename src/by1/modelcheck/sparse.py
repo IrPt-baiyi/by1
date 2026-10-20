@@ -117,25 +117,39 @@ def run_ref(ref, x, q_resid, seq):
     cos = torch.randn(1, seq, w)
     sin = torch.randn(1, seq, w)
     pos = torch.arange(seq)[None]
-    # **因果掩码要显式给。** transformers 5.20 里这一句是
-    # `attention_mask.dtype == torch.bool` —— 传 None 当场 AttributeError
-    # （实测 2026-10-17）。而 by1 的 DSA 语义本来就是因果的（lowering 里
-    # 用 `le` 的外积掩码），所以这里给下三角 bool 掩码，两边同义。
-    amask = torch.tril(torch.ones(seq, seq, dtype=torch.bool))[None]
+    # **因果掩码是「加性」的，不是 bool 保留下三角。**
+    #
+    # 官方 `GlmMoeDsaIndexer.forward` 这一句是 `index_scores = index_scores + attention_mask`
+    # —— 它要的是 **float 的加性掩码**（未来位置 -inf，可见位置 0）。
+    # 传 bool 下三角不会报错（bool 当 0/1 加），但**它什么都遮不住**：
+    # 每个位置只是 +0 或 +1，top-k 仍然在整行里挑 —— 于是参考会挑出
+    # 窗口外的下标。这是 2026-10-20 修掉的判据错误（by1 侧本来就是对的）。
+    amask = torch.triu(torch.full((1, seq, seq), float('-inf')), diagonal=1)
     with torch.no_grad():
         out = ref(x, q_resid, (cos, sin), amask, pos)
     return out, (cos, sin), pos
 
 
 def agree(a, b):
-    """两个 [1, S, K] 的挑选集合：每个 query 的选中集合都要相同。
+    """两个 [1, S, K] 的挑选集合：**只看因果窗口内**的选中项是否相同。
 
     **K 不同就是不同**（"topk 取满"那条反例正是靠它变红的）——
-    不做形状判断的话，sort 那一步会当场崩，而崩不是"变红"。"""
+    不做形状判断的话，sort 那一步会当场崩，而崩不是"变红"。
+
+    为什么只在窗口内比：`topk > 可见 key 数` 时，参考（`torch.topk`）和
+    我们（`argpartition`，并列取较小下标）会给被掩成 `-inf` 的位置填**不同的**
+    下标 —— 那些位置下游本来就会被 mask 掉，**语义上没有区别**，而"填哪几个"
+    这件事根本没有定义。2026-10-20 之前这里比全集合，于是判据红在
+    "填充下标不同"上，掩盖了真正的问题（参考那边的掩码约定传错了）。"""
     if tuple(a.shape) != tuple(b.shape):
         return False
-    return bool((torch.sort(a[0], dim=-1).values
-                 == torch.sort(b[0], dim=-1).values).all())
+    seq = a.shape[1]
+    for i in range(seq):
+        va = {int(v) for v in a[0, i] if int(v) <= i}
+        vb = {int(v) for v in b[0, i] if int(v) <= i}
+        if va != vb:
+            return False
+    return True
 
 
 def run_pair(mine, ref, seq, pairing, seed=0):
