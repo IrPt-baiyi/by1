@@ -248,7 +248,7 @@ def install_hook():
     body = (HOOK_BODY
             .replace('{py}', sys.executable)
             .replace('{self}', rel(os.path.abspath(__file__)))
-            .replace('{all}', rel(os.path.join(HERE, 'by1all.py'))))
+            .replace('{all}', rel(os.path.join(HERE, 'all.py'))))
     by1io.write_text(HOOK, body)
     print('  装了 %s' % os.path.relpath(HOOK, ROOT))
     print('  解释器记的是：%s' % sys.executable)
