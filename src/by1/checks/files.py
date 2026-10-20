@@ -100,10 +100,10 @@ GROUPS = [
 `by1export` 是**导出策略层** —— 把算好的语义变成 HF config 的字段。
 它原来是 `by1check.check()` 里嵌着的 13 个 `gen_*` / `name_*`
 （那个函数因此有 1243 行）。**劈开的理由写在那个文件的头注里。**''', [
-        'cli', 'by1contract', 'by1emit', 'by1name', 'by1vocab',
-        'by1export', 'by1blocks', 'by1tens',
-        'by1lower', 'by1hp', 'by1sched', 'by1stacks',
-        'by1state']),
+        'cli', 'contract', 'emit', 'name', 'vocab',
+        'export', 'blocks', 'tens',
+        'lower', 'hp', 'sched', 'stacks',
+        'state']),
 
     ('`checks/` —— 判卷人 · 神谕 · 跑检查', 'checks', '''这个项目最核心的资产。
 
@@ -118,21 +118,21 @@ GROUPS = [
         'run', 'fast', 'tiers', 'budget', 'attrs', 'gpu', 'gpusmoke', 'gpubench', 'gputrain', 'gpuday', 'llama', 'rules', 'sitedata', 'backends', 'sync', 'mutate', 'complete']),
 
     ('`modelcheck/` —— 一个模型一个判卷人', 'modelcheck', '''每个都用自己的官方产物当真相源。''', [
-        'by1gpt2', 'by1instella', 'by1mla', 'by1moe', 'by1rope',
-        'by1ssm', 'by1kda', 'by1sparse', 'by1gptoss', 'by1laguna', 'by1gemma', 'by1qknorm', 'by1real', 'by1load', 'by1mem',
-        'by1train', 'by1dev', 'by1quant', 'by1q2schema', 'by1shadow']),
+        'gpt2', 'instella', 'mla', 'moe', 'rope',
+        'ssm', 'kda', 'sparse', 'gptoss', 'laguna', 'gemma', 'qknorm', 'real', 'load', 'mem',
+        'train', 'dev', 'quant', 'q2schema', 'shadow']),
 
     ('`data/` —— 抓数据 / 推模型', 'data', '''从一个已发布的 checkpoint 反推描述，以及把 `refs/` 抓回来。
 
 `by1shapes` 补的是 `refs/` 的**第三种写法**：`by1fetch` / `by1index` 走
 `model.safetensors.index.json` 那条路时**只有名字、没有形状**（F3，读进来是空表），
 而形状只在 safetensors 头里 —— 所以它专门去读头，把 F3 补成 F1。''', [
-        'by1fetch', 'by1index', 'by1boot', 'by1triage', 'by1cmp',
-        'by1shapes', 'by1revname', 'by1cache', 'by1cloud']),
+        'fetch', 'index', 'triage', 'cmp',
+        'shapes', 'revname', 'cache', 'cloud']),
 
     ('`escape/` —— 逃生舱', 'escape', '''语言表达不了的东西有两个出口，**两个都不是"绕过检查"**：
 张量契约、三后端对拍、取值门照旧生效。''', [
-        'by1raw', 'by1extdemo', 'ext-demo.c']),
+        'raw', 'extdemo', 'ext-demo.c']),
 ]
 
 # 各目录的引言

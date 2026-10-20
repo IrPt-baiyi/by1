@@ -214,9 +214,35 @@ tools/distill.py  ggufrecon.py  site.py
 - **先说代价**：`lang/by1.py → cli.py` 本来排在阶段 4，但**必须提前** —— 它是模块 `by1`，和包 `by1` 撞名，`import by1` 会解析到它（`'by1' is not a package`）。`pyproject` 的入口点已改成 `lang.cli:main`。
 - 判据：by1fast 编译 106 / import 101 / 解析 71 全绿 · by1files 绿 · by1docs 绿。
 
-### 阶段 2 —— 未开始
+### 阶段 2 —— 完成（2026-10-20）
 
-下一步：核心链路 `ir` `codegen` `check` `boot` `full` `graph` `c` `ggml` `exec_` `sample` `ext` `refs`（注意 `exec` 是关键字 → `exec_.py`）。
+- 12 个核心模块进 `src/by1/`（`exec` 是关键字 → `exec_.py`）。
+- shim 升级成**双模式**：`globals().update`（按路径装载拿到 shim 对象时也要有属性）+ `sys.modules` 原地替换（按名字 import 直接拿真身，循环 import 按原生语义）。
+- 判据：编译 118 / import 113 · `by1ir --selftest` · 43 变异反例 · by1files/by1docs 绿。
+
+### 阶段 3 —— 完成（2026-10-20）
+
+- 38 个判卷人进 `src/by1/checks/`。
+- `by1paths.tool('by1<X>.py')` **先解析包里真身** —— 读源码 / 按路径装载的调用拿到 shim 会读到空表。
+- 包内模块的引导行改成「往上找到 `by1paths.py` 那一层」，并确保 `import by1paths`（否则 `SUBDIRS` 不在 `sys.path`，裸名 import 失败）。
+- 用 `__file__` 数层数算 `ROOT` 的判卷人（attrs/tiers/sitedata/langspec）改问 `by1paths.ROOT`。
+- `by1attrs` 的源码读取认「迁移期 shim」标记；自测夹具缺失 → `FileNotFoundError` → A5 按「缺语料」跳过（不拿真仓库的表去判假树）。
+- 判据：**档 3 120 项 0 失败** · 编译 157 / import 152。
+
+### 阶段 3.5 —— CI 三条腿修复（`ec6c71d`）
+
+- **打包**：`WANT` 的 `by1.py` → `cli.py`、删 `history/plan.md`；`_where()`/`disk_modules()` 递归收 `src/by1/**`；`closure_missing` 跳过标准库名（包里有 `by1/io.py` 后 `import io` 会误报）。
+- **完整模型腿**：`by1complete` 里漏改的一处 `tool('by1.py')` → `tool('cli.py')`。
+- 本地复现并通过：打包 → 解包 → **包内档 1 全过**（15 项 0 失败）· by1complete/by1rules exit 0。
+
+### 阶段 4 —— 完成（2026-10-20）
+
+- `lang` 13（含 `cli`）· `modelcheck` 20 · `data` 8 · `escape` 2 → `src/by1/{lang,modelcheck,data,escape}/`，四个子包各加 `__init__.py`。
+- 判据：**档 3 120 项 0 失败** · 编译 204 / import 199 · by1files/by1docs 绿。
+
+### 阶段 5 —— 未开始
+
+下一步：`by1paths` → `by1/paths.py`；44 份脚本开头的引导统一；`check_boot` 判据同步。然后阶段 6：拆 shim、`pyproject` 单包、文档引用、`src/` 下 `by1*.py` 归零。
 
 ## 九、不做的事
 

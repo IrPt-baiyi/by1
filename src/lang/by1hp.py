@@ -1,33 +1,27 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""by1hp -- **hparams 块：模型有多宽、多少层、词表多大。**
+"""迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.lang.hp。
 
-从 `by1check.check()` 的主体里整段搬出来的。**段体一字未改。**
-
-搬它不需要枚举"依赖哪些名字" —— 因为主体是**命名空间形式**：
-段体里写的是 `_['...']`，`_` 是唯一的外部依赖。
-
-（前面有 21 次尝试失败在"枚举名字"上：Python 的函数局部名在编译期
-定死，清单要对就得有完整的数据流分析。）
-
-`_mod` 收调用方的 `globals()`，补齐本模块没有的模块级名字（只加不改）。
+**兼容期上限 2 个阶段**：拆完 shim 就删。它做两件事，缺一不可：
+  ① `globals().update(...)`：按**文件路径**装载的调用（`spec_from_file_location`）
+     拿到的是本 shim 对象，必须有属性；
+  ② `sys.modules[本名] = 真身`：按**名字** `import by1xxx` 的直接拿到真身，
+     循环 import / 后定义属性都按 Python 原生语义解析。
+当脚本执行时转发真身的 __main__（判卷人都当脚本跑）。
 """
+import os as _os
+import sys as _sys
+# 引导（生成的，别手改）：见 by1paths.check_boot
+_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+import by1paths  # noqa: E402,F401
+import importlib as _il  # noqa: E402
 
+_m = _il.import_module('by1.lang.hp')
 
-def read_hparams(*, _mod, _):
-    """把 hparams 读进 `_['hp']` 等。"""
-    _g = globals()
-    for _k, _v in _mod.items():
-        if not _k.startswith('__') and _k not in _g:
-            _g[_k] = _v
-
-    # ---- hparams -------------------------------------------------
-    _['hp']: Dict[str, str] = {}
-    _['nlayer_decl'] = None
-    _['hb'] = _['scope'].first("hparams")
-    if _['hb']:
-        _['hp'] = dict(_['hb'].assigns)
-        _['nlayer_decl'] = eval_num(_['hp'].get("n_layer"))
-    _['d_model'] = eval_num(_['hp'].get("d_model"))
-    _['vocab'] = eval_num(_['hp'].get("vocab"))
-
+if __name__ == '__main__':
+    import runpy
+    runpy.run_path(_m.__file__, run_name='__main__')
+else:
+    globals().update({_k: _v for _k, _v in vars(_m).items()
+                      if not _k.startswith('__')})
+    _sys.modules[__name__] = _m
