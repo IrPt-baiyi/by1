@@ -1,6 +1,6 @@
 # 这个仓库里每个文件是干什么的
 
-> 538 个跟踪文件。按"你会想找什么"分组，不按字母表。
+> 550 个跟踪文件。按"你会想找什么"分组，不按字母表。
 >
 > **这份文档是生成的**：`python src/by1files.py --write`。
 > 文件清单、每组的个数、每个文件的一句话都从目录树和 docstring 来 ——
@@ -43,7 +43,7 @@
 
 ---
 
-## `src/` —— 100 个模块 + 1 个非 .py
+## `src/` —— 112 个模块 + 1 个非 .py
 
 ### 底座（留在 src/ 顶层）
 
@@ -71,21 +71,6 @@
 | 文件 | 用途 |
 |---|---|
 | `by1paths.py` | 仓库布局的唯一真相源 |
-| `by1io.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.io |
-| `by1codegen.py` | 把 .by1 编译成**后端无关的 IR**，再由后端生成可训练模型 |
-| `by1skip.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.skip |
-| `by1ir.py` | 规范化的 by1 IR：schema、校验、JSON 往返 |
-| `by1ver.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.ver |
-| `by1exec.py` | 第二个后端：纯 NumPy 执行器 |
-| `by1c.py` | 第三个后端：从 IR 生成 **C 代码**，编译，跑起来，和 NumPy 后端对拍 |
-| `by1ggml.py` | 第四个后端：从 IR 生成 **调 ggml 原语的 C 代码**，编译， |
-| `by1graph.py` | 原语图：IR kind -> 原语节点的唯一语义定义**（1.0.0-rc0 部件 A） |
-| `by1refs.py` | refs/ 的路径规则，只此一处 |
-| `by1check.py` | 不变式检查器 v0.1 |
-| `by1boot.py` | 从一个已发布的 checkpoint **反推**一份 .by1 草稿 |
-| `by1ext.py` | 逃生舱第二层：**引用一个外部符号** |
-| `by1full.py` | 从完整架构声明生成 Transformers 模型，包含视觉与独立 MTP 分支 |
-| `by1sample.py` | 采样与生成闭环的**可执行规格**（T25） |
 
 ### `by1/` —— 迁移中的包（见 docs/TEMP-rename-plan.md）
 
@@ -102,6 +87,18 @@
 | `io.py` | 文件读写的每一种意图，各有一个名字 |
 | `skip.py` | 一次检查有五种结论，不是两种 |
 | `ver.py` | 版本号的唯一真相源 |
+| `sample.py` | 采样与生成闭环的**可执行规格**（T25） |
+| `ext.py` | 逃生舱第二层：**引用一个外部符号** |
+| `refs.py` | refs/ 的路径规则，只此一处 |
+| `boot.py` | 从一个已发布的 checkpoint **反推**一份 .by1 草稿 |
+| `graph.py` | 原语图：IR kind -> 原语节点的唯一语义定义**（1.0.0-rc0 部件 A） |
+| `ggml.py` | 第四个后端：从 IR 生成 **调 ggml 原语的 C 代码**，编译， |
+| `c.py` | 第三个后端：从 IR 生成 **C 代码**，编译，跑起来，和 NumPy 后端对拍 |
+| `full.py` | 从完整架构声明生成 Transformers 模型，包含视觉与独立 MTP 分支 |
+| `ir.py` | 规范化的 by1 IR：schema、校验、JSON 往返 |
+| `codegen.py` | 把 .by1 编译成**后端无关的 IR**，再由后端生成可训练模型 |
+| `exec_.py` | 第二个后端：纯 NumPy 执行器 |
+| `check.py` | 不变式检查器 v0.1 |
 
 ### `lang/` —— 语言本身
 
@@ -216,7 +213,7 @@
 |---|---|
 | `by1fetch.py` | 一条命令，把 refs/ 全部重抓回来 |
 | `by1index.py` | 抓张量名清单。**免费，而且这是"能不能描述"的真正判据 |
-| `by1boot.py` | 从一个已发布的 checkpoint **反推**一份 .by1 草稿 |
+| `by1boot.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.boot |
 | `by1triage.py` | 把一批新 config 过一遍 by1，看谁需要新原语 |
 | `by1cmp.py` | 把所有模型的架构摆成一张表 |
 | `by1shapes.py` | 把 `{名: null}` 的 refs 补成 F1（带 dtype + shape） |
@@ -234,6 +231,29 @@
 | `by1raw.py` | 逃生舱的**判卷人** |
 | `by1extdemo.py` | 逃生舱第二层的**判卷人** |
 | `ext-demo.c` | 逃生舱第二层的示例：两个语言里没有的机制。`by1extdemo` 编它 |
+
+### 迁移期 shim —— 到期就删（见 docs/TEMP-rename-plan.md）
+
+旧路径的可执行转发：`sys.modules` 原地替换真身 + `__main__` 转发。
+**兼容期上限 2 个阶段**：拆 shim 时整组消失。
+
+| 文件 | 用途 |
+|---|---|
+| `by1boot.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.boot |
+| `by1c.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.c |
+| `by1check.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.check |
+| `by1codegen.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.codegen |
+| `by1exec.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.exec_ |
+| `by1ext.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.ext |
+| `by1full.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.full |
+| `by1ggml.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.ggml |
+| `by1graph.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.graph |
+| `by1io.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.io |
+| `by1ir.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.ir |
+| `by1refs.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.refs |
+| `by1sample.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.sample |
+| `by1skip.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.skip |
+| `by1ver.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.ver |
 
 ---
 
@@ -585,11 +605,23 @@
 | `llama-shaped__llama3-shaped.js` | window.BY1_DIFF = window.BY1_DIFF || {}; |
 | `qwen3-next-shaped__laguna-tiny.js` | window.BY1_DIFF = window.BY1_DIFF || {}; |
 
-## `src/by1/` —— 3 个
+## `src/by1/` —— 15 个
 
 | 文件 | 用途 |
 |---|---|
+| `boot.py` | 从一个已发布的 checkpoint **反推**一份 .by1 草稿 |
+| `c.py` | 第三个后端：从 IR 生成 **C 代码**，编译，跑起来，和 NumPy 后端对拍 |
+| `check.py` | 不变式检查器 v0.1 |
+| `codegen.py` | 把 .by1 编译成**后端无关的 IR**，再由后端生成可训练模型 |
+| `exec_.py` | 第二个后端：纯 NumPy 执行器 |
+| `ext.py` | 逃生舱第二层：**引用一个外部符号** |
+| `full.py` | 从完整架构声明生成 Transformers 模型，包含视觉与独立 MTP 分支 |
+| `ggml.py` | 第四个后端：从 IR 生成 **调 ggml 原语的 C 代码**，编译， |
+| `graph.py` | 原语图：IR kind -> 原语节点的唯一语义定义**（1.0.0-rc0 部件 A） |
 | `io.py` | 文件读写的每一种意图，各有一个名字 |
+| `ir.py` | 规范化的 by1 IR：schema、校验、JSON 往返 |
+| `refs.py` | refs/ 的路径规则，只此一处 |
+| `sample.py` | 采样与生成闭环的**可执行规格**（T25） |
 | `skip.py` | 一次检查有五种结论，不是两种 |
 | `ver.py` | 版本号的唯一真相源 |
 

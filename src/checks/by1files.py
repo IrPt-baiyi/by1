@@ -77,9 +77,7 @@ GROUPS = [
 每个入口脚本开头那几行引导是**生成的**（判据在 `by1paths.check_boot`）——
 重复的东西必须能被检查，否则新加一个脚本忘了加，症状是
 `No module named 'by1paths'`，看起来像"文件丢了"。''', [
-        'by1paths', 'by1io', 'by1codegen', 'by1skip', 'by1ir', 'by1ver',
-        'by1exec', 'by1c', 'by1ggml', 'by1graph', 'by1refs', 'by1check',
-        'by1boot', 'by1ext', 'by1full', 'by1sample']),
+        'by1paths']),
 
     ('`by1/` —— 迁移中的包（见 docs/TEMP-rename-plan.md）', 'by1', '''
 **前缀只写在包名里一次。** 阶段 1 先搬了三个叶子：`io`（39 个模块 import 它）、
@@ -88,7 +86,9 @@ GROUPS = [
 
 **这个目录不能进 `by1paths.SUBDIRS`** —— 那会把 `src/by1/` 放上 `sys.path`，
 `by1/io.py` 就会遮蔽标准库 `io`。`by1fast` 是递归单独收它来编译/import 的。''', [
-        'io', 'skip', 'ver']),
+        'io', 'skip', 'ver', 'sample', 'ext', 'refs',
+        'boot', 'graph', 'ggml', 'c', 'full', 'ir', 'codegen',
+        'exec_', 'check']),
 
     ('`lang/` —— 语言本身', 'lang', '''把 `.by1` 变成一份能算的东西。
 
@@ -435,7 +435,26 @@ def generate():
     out.append('## `src/` —— %d 个模块 + %d 个非 .py\n'
                % (n_src_py, len(src_list) - n_src_py))
 
-    for title, _d, intro, members in GROUPS:
+    # **迁移期 shim 自动成组**（见 docs/TEMP-rename-plan.md）：shim 的名字
+    # 随阶段变化，手写清单必然过期 —— 按内容认（头 600 字符有标记）。
+    shim_names = set()
+    for m, path in src_map.items():
+        try:
+            with open(os.path.join(ROOT, path), encoding='utf-8',
+                      errors='replace') as fh:
+                head = fh.read(600)
+        except OSError:
+            continue
+        if '迁移期 shim' in head:
+            shim_names.add(m)
+    groups = list(GROUPS)
+    if shim_names:
+        groups.append((
+            '迁移期 shim —— 到期就删（见 docs/TEMP-rename-plan.md）', 'shim',
+            '旧路径的可执行转发：`sys.modules` 原地替换真身 + `__main__` 转发。\n'
+            '**兼容期上限 2 个阶段**：拆 shim 时整组消失。', sorted(shim_names)))
+
+    for title, _d, intro, members in groups:
         present = [m for m in members if m in src_files]
         missing = [m for m in members if m not in src_files]
         assigned.update(present)
