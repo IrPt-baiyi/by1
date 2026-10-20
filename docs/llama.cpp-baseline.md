@@ -144,15 +144,15 @@ Set `IMAGE` to a saved test image and record its SHA-256. Run text generation, i
 
 **机器判据**（两条，都进 `by1all` 档 5）：
 
-- `python src/checks/by1llama.py pin-check` —— 有构建时核对 tag/commit/两个
+- `python src/by1/checks/llama.py pin-check` —— 有构建时核对 tag/commit/两个
   二进制的版本串，**没构建时 `[跳过]`（rc=2）**。对旧的 `llamacpp/build-cli`
   跑会红（`9b0c827` + 缺 `llama-bench`）—— 这就是"钉定值是真的"的证词。
-- `python src/checks/by1llama.py bench-run` —— 先核对小模型的 **sha256**，
+- `python src/by1/checks/llama.py bench-run` —— 先核对小模型的 **sha256**，
   再跑 bench 抠出 `pp32`/`tg16` 的数，并核对表尾 build 是 `d812350`。
   模型不对/出不了数 -> 红；没构建或没下载模型 -> `[跳过]`。
 ## 基线判卷人 / Baseline judges
 
-配方本身由 `src/checks/by1llama.py` 当判卷人（每项判据可机器复核）：
+配方本身由 `src/by1/checks/llama.py` 当判卷人（每项判据可机器复核）：
 
 - `record` —— 基线记录表：tag/commit、编译器、CUDA、GPU、OS 逐项
   采集，**每个值带来源命令**，且与本文的 Pinned inputs 对账（不符即红）。

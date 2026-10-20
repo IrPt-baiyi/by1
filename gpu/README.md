@@ -15,8 +15,8 @@ python -m venv .venv
 .venv/bin/python -m pip install -e . --no-deps
 .venv/bin/python -m pip install -r gpu/requirements.txt accelerate
 .venv/bin/python -c "import torch; print(torch.cuda.is_available(), torch.version.cuda)"
-.venv/bin/python src/checks/by1gpusmoke.py --report cgen/gpu-smoke-fp32.json
-.venv/bin/python src/checks/by1gpusmoke.py --dtype bfloat16 --report cgen/gpu-smoke-bf16.json
+.venv/bin/python src/by1/checks/gpusmoke.py --report cgen/gpu-smoke-fp32.json
+.venv/bin/python src/by1/checks/gpusmoke.py --dtype bfloat16 --report cgen/gpu-smoke-bf16.json
 ```
 
 **Windows PowerShell:**
@@ -27,8 +27,8 @@ $PY = ".\.venv\Scripts\python.exe"
 & $PY -m pip install -e . --no-deps
 & $PY -m pip install -r gpu/requirements.txt accelerate
 & $PY -c "import torch; print(torch.cuda.is_available(), torch.version.cuda)"
-& $PY src/checks/by1gpusmoke.py --report cgen/gpu-smoke-fp32.json
-& $PY src/checks/by1gpusmoke.py --dtype bfloat16 --report cgen/gpu-smoke-bf16.json
+& $PY src/by1/checks/gpusmoke.py --report cgen/gpu-smoke-fp32.json
+& $PY src/by1/checks/gpusmoke.py --dtype bfloat16 --report cgen/gpu-smoke-bf16.json
 ```
 
 The smoke checks cover `hello.by1` and six reduced-size complete architectures:
@@ -49,16 +49,16 @@ This round uses random weights and reduced model sizes. It checks that computati
 **Bash:**
 
 ```bash
-.venv/bin/python src/checks/by1gpubench.py --report cgen/gpu-benchmark.json
-.venv/bin/python src/checks/by1gputrain.py --report cgen/gpu-real-traincheck.json
+.venv/bin/python src/by1/checks/gpubench.py --report cgen/gpu-benchmark.json
+.venv/bin/python src/by1/checks/gputrain.py --report cgen/gpu-real-traincheck.json
 ```
 
 **Windows PowerShell:**
 
 ```powershell
 $PY = ".\.venv\Scripts\python.exe"
-& $PY src/checks/by1gpubench.py --report cgen/gpu-benchmark.json
-& $PY src/checks/by1gputrain.py --report cgen/gpu-real-traincheck.json
+& $PY src/by1/checks/gpubench.py --report cgen/gpu-benchmark.json
+& $PY src/by1/checks/gputrain.py --report cgen/gpu-real-traincheck.json
 ```
 
 By default, the benchmark tests GPT-2, Qwen3-0.6B, Qwen2.5-7B-Instruct, Qwen3-8B, gpt-oss-20b, and Qwen3.8-27B. To test one model first:
@@ -66,14 +66,14 @@ By default, the benchmark tests GPT-2, Qwen3-0.6B, Qwen2.5-7B-Instruct, Qwen3-8B
 **Bash:**
 
 ```bash
-.venv/bin/python src/checks/by1gpubench.py --model Qwen/Qwen3-0.6B --report cgen/qwen-small-benchmark.json
+.venv/bin/python src/by1/checks/gpubench.py --model Qwen/Qwen3-0.6B --report cgen/qwen-small-benchmark.json
 ```
 
 **Windows PowerShell:**
 
 ```powershell
 $PY = ".\.venv\Scripts\python.exe"
-& $PY src/checks/by1gpubench.py --model Qwen/Qwen3-0.6B --report cgen/qwen-small-benchmark.json
+& $PY src/by1/checks/gpubench.py --model Qwen/Qwen3-0.6B --report cgen/qwen-small-benchmark.json
 ```
 
 Each model uses a pinned publisher revision and the same full checkpoint on both sides: the reference loads the publisher's configuration, while by1 compiles its configuration from the `.by1` file. The two large models load sequentially to avoid holding both in VRAM. The original Transformers Qwen3.8 class drops MTP parameters, so by1 strictly loads MTP and the report records this difference. By default, the published gpt-oss MXFP4 checkpoint is dequantized to BF16 on both sides.
@@ -83,27 +83,27 @@ To benchmark native MXFP4 execution instead, use `--gpt-oss-quant-mode native`. 
 **Linux Bash:**
 
 ```bash
-.venv/bin/python src/checks/by1gpubench.py --model openai/gpt-oss-20b --gpt-oss-quant-mode native --report cgen/gpt-oss-20b-native-mxfp4.json
+.venv/bin/python src/by1/checks/gpubench.py --model openai/gpt-oss-20b --gpt-oss-quant-mode native --report cgen/gpt-oss-20b-native-mxfp4.json
 ```
 
 **Windows PowerShell:**
 
 ```powershell
 $PY = ".\.venv\Scripts\python.exe"
-& $PY src/checks/by1gpubench.py --model openai/gpt-oss-20b --gpt-oss-quant-mode native --report cgen/gpt-oss-20b-native-mxfp4.json
+& $PY src/by1/checks/gpubench.py --model openai/gpt-oss-20b --gpt-oss-quant-mode native --report cgen/gpt-oss-20b-native-mxfp4.json
 ```
 
 The first native FP8 target is Qwen's official Qwen3.8-27B-FP8 checkpoint. Its immutable revision is pinned below. The contract declares 128×128 E4M3 blocks with BF16 inverse scales; text and MTP projections are quantized while the vision tower stays BF16. Before loading, the benchmark scans raw safetensors headers and verifies the declared scale dtype, block shapes, and all 407 weight/scale pairs. The run then covers text forward, image forward, greedy generation, MTP checks, shared-weight checks, runtime storage, latency, and peak VRAM. It downloads about 31 GB of weights, so reserve at least 60 GB of free disk for the model and temporary outputs.
 
 ```bash
-.venv/bin/python src/checks/by1gpubench.py --model Qwen/Qwen3.8-27B --checkpoint Qwen/Qwen3.8-27B-FP8 --revision 017b9c7af6b5689d5dd426a76e0bc077eb5ca20a --quant-contract models/Qwen3.8-27B-FP8.by1 --report cgen/qwen38-fp8.json
+.venv/bin/python src/by1/checks/gpubench.py --model Qwen/Qwen3.8-27B --checkpoint Qwen/Qwen3.8-27B-FP8 --revision 017b9c7af6b5689d5dd426a76e0bc077eb5ca20a --quant-contract models/Qwen3.8-27B-FP8.by1 --report cgen/qwen38-fp8.json
 ```
 
 **Windows PowerShell:**
 
 ```powershell
 $PY = ".\.venv\Scripts\python.exe"
-& $PY src/checks/by1gpubench.py --model Qwen/Qwen3.8-27B --checkpoint Qwen/Qwen3.8-27B-FP8 --revision 017b9c7af6b5689d5dd426a76e0bc077eb5ca20a --quant-contract models/Qwen3.8-27B-FP8.by1 --report cgen/qwen38-fp8.json
+& $PY src/by1/checks/gpubench.py --model Qwen/Qwen3.8-27B --checkpoint Qwen/Qwen3.8-27B-FP8 --revision 017b9c7af6b5689d5dd426a76e0bc077eb5ca20a --quant-contract models/Qwen3.8-27B-FP8.by1 --report cgen/qwen38-fp8.json
 ```
 
 The benchmark downloads every `*.safetensors` file rather than assuming the `model-*.safetensors` naming pattern: Qwen's official FP8 repository stores layer shards as `layers-*.safetensors` and also has separate MTP and non-layer shards. The `.by1` quant overlay selects 10 logical projection names; expanded over the declared layer pattern, these cover 407 weight/scale pairs. A raw-header audit checks the actual checkpoint's FP8/scale dtypes, pairing, and block shapes before loading. The runtime audit then records BF16 or F32 runtime scales and rejects dequantized BF16 weights. A GPU run is still required to confirm the installed Transformers and PyTorch kernels execute the weights natively; declaring `dequantize=False` alone is not evidence of that.
@@ -145,7 +145,7 @@ $PY = ".\.venv\Scripts\python.exe"
 
 ### Shadow mode: verify wiring without downloading weights
 
-On rented GPUs whose egress bandwidth is the bottleneck (no download trick helps), `--shadow` replaces the published checkpoint with a synthetic one built by `src/modelcheck/by1shadow.py`, so the benchmark downloads no weights at all:
+On rented GPUs whose egress bandwidth is the bottleneck (no download trick helps), `--shadow` replaces the published checkpoint with a synthetic one built by `src/by1/modelcheck/shadow.py`, so the benchmark downloads no weights at all:
 
 - **Real format:** tensor names, shapes, and dtypes come from the model class state dict (the main stack uses the publisher's naming), and `config.json` is the real published configuration — from `--shadow-config`, `refs/*.config.json`, or a config-only fetch of a few KB.
 - **Synthetic values:** seeded random numbers generated per tensor name, byte-for-byte reproducible; tied (shared) tensors are grouped exactly as `save_pretrained` semantics require.
@@ -154,21 +154,21 @@ On rented GPUs whose egress bandwidth is the bottleneck (no download trick helps
 What shadow mode does **not** verify: real weight values, quantized storage formats (packed MXFP4/FP8 blocks cannot be "random"), and the image-tower/processor path (the MTP block runs on text input instead). Quantized models (gpt-oss-20b, `--quant-contract` runs) are explicitly skipped — skipping, not passing — and still need real weights. The report marks these rows `"weights": "synthetic"` and records what was and was not verified.
 
 ```bash
-.venv/bin/python src/checks/by1gpubench.py --shadow --report cgen/gpu-benchmark-shadow.json
+.venv/bin/python src/by1/checks/gpubench.py --shadow --report cgen/gpu-benchmark-shadow.json
 ```
 
 **Windows PowerShell:**
 
 ```powershell
 $PY = ".\.venv\Scripts\python.exe"
-& $PY src/checks/by1gpubench.py --shadow --report cgen/gpu-benchmark-shadow.json
+& $PY src/by1/checks/gpubench.py --shadow --report cgen/gpu-benchmark-shadow.json
 ```
 
-`--shadow-seed` / `--shadow-dtype` change the synthetic weights; a local CPU self-check of the whole shadow pipeline is `python src/modelcheck/by1shadow.py --smoke`. Shadow passes are recorded as such and do not replace the real-weight reports above.
+`--shadow-seed` / `--shadow-dtype` change the synthetic weights; a local CPU self-check of the whole shadow pipeline is `python src/by1/modelcheck/shadow.py --smoke`. Shadow passes are recorded as such and do not replace the real-weight reports above.
 
 ### One-command GPU day
 
-For a rented-GPU session, `python src/checks/by1gpuday.py` runs the whole day in order (graph e2e full run → shadow checks → real-weight Q2 chain), writes one report file per step, and prints the recovery template. The resource checklist and template live in [the GPU day runbook](../docs/gpu-day-runbook.md); weight reuse is covered by the file-storage sheet (removed from the tree; see git history).
+For a rented-GPU session, `python src/by1/checks/gpuday.py` runs the whole day in order (graph e2e full run → shadow checks → real-weight Q2 chain), writes one report file per step, and prints the recovery template. The resource checklist and template live in [the GPU day runbook](../docs/gpu-day-runbook.md); weight reuse is covered by the file-storage sheet (removed from the tree; see git history).
 
 ## 3. Hardware requirements and limits
 
@@ -176,7 +176,7 @@ The first round requires little VRAM. Real BF16 weights for the 27B model use ab
 
 RTX PRO 6000 Blackwell needs a compatible CUDA/PyTorch build. The test instance used PyTorch 2.8.0 and CUDA 12.8 with `sm_120` support, confirmed by actual CUDA matrix operations. For newer images, follow the vendor's compatibility matrix and avoid replacing an already working CUDA-enabled PyTorch build just to standardize versions.
 
-`src/checks/by1gpu.py --plan 96` estimates VRAM candidates; it is not an execution report. The older random-weight FP32 forward check is not a substitute for the real BF16 checkpoint benchmark documented here.
+`src/by1/checks/gpu.py --plan 96` estimates VRAM candidates; it is not an execution report. The older random-weight FP32 forward check is not a substitute for the real BF16 checkpoint benchmark documented here.
 
 ---
 
@@ -197,8 +197,8 @@ python -m venv .venv
 .venv/bin/python -m pip install -e . --no-deps
 .venv/bin/python -m pip install -r gpu/requirements.txt accelerate
 .venv/bin/python -c "import torch; print(torch.cuda.is_available(), torch.version.cuda)"
-.venv/bin/python src/checks/by1gpusmoke.py --report cgen/gpu-smoke-fp32.json
-.venv/bin/python src/checks/by1gpusmoke.py --dtype bfloat16 --report cgen/gpu-smoke-bf16.json
+.venv/bin/python src/by1/checks/gpusmoke.py --report cgen/gpu-smoke-fp32.json
+.venv/bin/python src/by1/checks/gpusmoke.py --dtype bfloat16 --report cgen/gpu-smoke-bf16.json
 ```
 
 **Windows PowerShell：**
@@ -209,8 +209,8 @@ $PY = ".\.venv\Scripts\python.exe"
 & $PY -m pip install -e . --no-deps
 & $PY -m pip install -r gpu/requirements.txt accelerate
 & $PY -c "import torch; print(torch.cuda.is_available(), torch.version.cuda)"
-& $PY src/checks/by1gpusmoke.py --report cgen/gpu-smoke-fp32.json
-& $PY src/checks/by1gpusmoke.py --dtype bfloat16 --report cgen/gpu-smoke-bf16.json
+& $PY src/by1/checks/gpusmoke.py --report cgen/gpu-smoke-fp32.json
+& $PY src/by1/checks/gpusmoke.py --dtype bfloat16 --report cgen/gpu-smoke-bf16.json
 ```
 
 验收覆盖 `hello.by1` 和六种缩小尺寸的完整架构：
@@ -231,16 +231,16 @@ FP32 检查逐元素容差。BF16 梯度对比 FP32 CPU 参考时，同时限制
 **Bash：**
 
 ```bash
-.venv/bin/python src/checks/by1gpubench.py --report cgen/gpu-benchmark.json
-.venv/bin/python src/checks/by1gputrain.py --report cgen/gpu-real-traincheck.json
+.venv/bin/python src/by1/checks/gpubench.py --report cgen/gpu-benchmark.json
+.venv/bin/python src/by1/checks/gputrain.py --report cgen/gpu-real-traincheck.json
 ```
 
 **Windows PowerShell：**
 
 ```powershell
 $PY = ".\.venv\Scripts\python.exe"
-& $PY src/checks/by1gpubench.py --report cgen/gpu-benchmark.json
-& $PY src/checks/by1gputrain.py --report cgen/gpu-real-traincheck.json
+& $PY src/by1/checks/gpubench.py --report cgen/gpu-benchmark.json
+& $PY src/by1/checks/gputrain.py --report cgen/gpu-real-traincheck.json
 ```
 
 默认测试 GPT-2、Qwen3-0.6B、Qwen2.5-7B-Instruct、Qwen3-8B、gpt-oss-20b 和 Qwen3.8-27B。也可以先指定一个模型：
@@ -248,14 +248,14 @@ $PY = ".\.venv\Scripts\python.exe"
 **Bash：**
 
 ```bash
-.venv/bin/python src/checks/by1gpubench.py --model Qwen/Qwen3-0.6B --report cgen/qwen-small-benchmark.json
+.venv/bin/python src/by1/checks/gpubench.py --model Qwen/Qwen3-0.6B --report cgen/qwen-small-benchmark.json
 ```
 
 **Windows PowerShell：**
 
 ```powershell
 $PY = ".\.venv\Scripts\python.exe"
-& $PY src/checks/by1gpubench.py --model Qwen/Qwen3-0.6B --report cgen/qwen-small-benchmark.json
+& $PY src/by1/checks/gpubench.py --model Qwen/Qwen3-0.6B --report cgen/qwen-small-benchmark.json
 ```
 
 每个模型都固定发布方 revision，两边使用同一份完整 checkpoint：对照组加载发布方配置，by1 从 `.by1` 文件编译配置。两份大模型顺序加载，以免同时占用显存。原始 Transformers Qwen3.8 类会丢弃 MTP 参数，因此 by1 严格加载 MTP，报告会单独记录这项区别。默认情况下，发布的 gpt-oss MXFP4 checkpoint 在两边都解量化到 BF16。
@@ -265,20 +265,20 @@ $PY = ".\.venv\Scripts\python.exe"
 **Linux Bash：**
 
 ```bash
-.venv/bin/python src/checks/by1gpubench.py --model openai/gpt-oss-20b --gpt-oss-quant-mode native --report cgen/gpt-oss-20b-native-mxfp4.json
+.venv/bin/python src/by1/checks/gpubench.py --model openai/gpt-oss-20b --gpt-oss-quant-mode native --report cgen/gpt-oss-20b-native-mxfp4.json
 ```
 
 **Windows PowerShell：**
 
 ```powershell
 $PY = ".\.venv\Scripts\python.exe"
-& $PY src/checks/by1gpubench.py --model openai/gpt-oss-20b --gpt-oss-quant-mode native --report cgen/gpt-oss-20b-native-mxfp4.json
+& $PY src/by1/checks/gpubench.py --model openai/gpt-oss-20b --gpt-oss-quant-mode native --report cgen/gpt-oss-20b-native-mxfp4.json
 ```
 
 首个原生 FP8 目标是 Qwen 官方发布的 Qwen3.8-27B-FP8 checkpoint，下面固定了不可变 revision。合同声明使用 128×128 E4M3 block 和 BF16 inverse scale；文本与 MTP 投影量化，视觉塔保持 BF16。加载前，benchmark 会扫描 safetensors 头，核对实际 scale dtype、block 形状和全部 407 对 weight/scale。随后覆盖文本前向、图像前向、贪心生成、MTP、共享权重、运行时存储、耗时和峰值显存。权重约 31 GB；模型缓存及临时输出至少预留 60 GB 空间。
 
 ```powershell
-& $PY src/checks/by1gpubench.py --model Qwen/Qwen3.8-27B --checkpoint Qwen/Qwen3.8-27B-FP8 --revision 017b9c7af6b5689d5dd426a76e0bc077eb5ca20a --quant-contract models/Qwen3.8-27B-FP8.by1 --report cgen/qwen38-fp8.json
+& $PY src/by1/checks/gpubench.py --model Qwen/Qwen3.8-27B --checkpoint Qwen/Qwen3.8-27B-FP8 --revision 017b9c7af6b5689d5dd426a76e0bc077eb5ca20a --quant-contract models/Qwen3.8-27B-FP8.by1 --report cgen/qwen38-fp8.json
 ```
 
 benchmark 会下载全部 `*.safetensors`，不再假定分片都叫 `model-*.safetensors`：Qwen 官方 FP8 仓库的层分片名为 `layers-*.safetensors`，并将 MTP 与非层权重另存。`.by1` 量化覆盖层声明 10 个逻辑投影名，按层排布展开后对应 407 对 weight/scale。加载前的原始头审计会核对 checkpoint 实际 FP8/scale dtype、配对关系和块形状；运行时审计再记录 BF16 或 F32 scale，并拒绝已解量化为 BF16 的权重。仍需 GPU 实测确认当前 Transformers 和 PyTorch kernel 原生执行这些权重；仅设置 `dequantize=False` 不能作为原生执行的证据。
@@ -320,7 +320,7 @@ $PY = ".\.venv\Scripts\python.exe"
 
 ### 影子模式：不下载权重验接线
 
-租来的卡出口带宽是天花板时（下载手段都用尽也没用），`--shadow` 用 `src/modelcheck/by1shadow.py` 合成的影子 checkpoint 替换发布物，**0 权重下载**：
+租来的卡出口带宽是天花板时（下载手段都用尽也没用），`--shadow` 用 `src/by1/modelcheck/shadow.py` 合成的影子 checkpoint 替换发布物，**0 权重下载**：
 
 - **格式是真的**：张量名/形状/dtype 取自模型类的 state_dict（主干就是官方命名），`config.json` 是真品配置 —— 来自 `--shadow-config`、`refs/*.config.json`，或者只拉 config 一个文件（几 KB）。
 - **值是合成的**：按张量名哈希播种的随机数，逐字节可复现；tied（共享）张量按 `save_pretrained` 的语义归组。
@@ -329,21 +329,21 @@ $PY = ".\.venv\Scripts\python.exe"
 影子模式**不验**：真权重的数值语义、量化存储格式（MXFP4/FP8 打包块没法"随机"）、图像塔/processor 路径（MTP 改用文本输入对拍）。量化模型（gpt-oss-20b、`--quant-contract` 的运行）在影子模式下**显式跳过**——跳过不是通过——仍然需要真权重。报告里这些行标 `"weights": "synthetic"`，并记录验过什么、没验什么。
 
 ```bash
-.venv/bin/python src/checks/by1gpubench.py --shadow --report cgen/gpu-benchmark-shadow.json
+.venv/bin/python src/by1/checks/gpubench.py --shadow --report cgen/gpu-benchmark-shadow.json
 ```
 
 **Windows PowerShell：**
 
 ```powershell
 $PY = ".\.venv\Scripts\python.exe"
-& $PY src/checks/by1gpubench.py --shadow --report cgen/gpu-benchmark-shadow.json
+& $PY src/by1/checks/gpubench.py --shadow --report cgen/gpu-benchmark-shadow.json
 ```
 
-`--shadow-seed` / `--shadow-dtype` 换一套合成权重；整条影子流水线的 CPU 自检是 `python src/modelcheck/by1shadow.py --smoke`。影子结果按影子记录，**不替代**上面的真权重报告。
+`--shadow-seed` / `--shadow-dtype` 换一套合成权重；整条影子流水线的 CPU 自检是 `python src/by1/modelcheck/shadow.py --smoke`。影子结果按影子记录，**不替代**上面的真权重报告。
 
 ### GPU 日一条命令
 
-租卡那天跑 `python src/checks/by1gpuday.py`：三相按序（图 e2e 全量 → 影子线 → 真权重 Q2 链），每步独立报告文件，跑完打印回收模板。资源核对表与模板全文见 [GPU 日 runbook](../docs/gpu-day-runbook.md)；权重复用见文件存储操作单（已移出仓库，见 git 历史）。
+租卡那天跑 `python src/by1/checks/gpuday.py`：三相按序（图 e2e 全量 → 影子线 → 真权重 Q2 链），每步独立报告文件，跑完打印回收模板。资源核对表与模板全文见 [GPU 日 runbook](../docs/gpu-day-runbook.md)；权重复用见文件存储操作单（已移出仓库，见 git 历史）。
 
 ## 3. 机器需求与边界
 
@@ -351,4 +351,4 @@ $PY = ".\.venv\Scripts\python.exe"
 
 RTX PRO 6000 Blackwell 需要兼容的 CUDA/PyTorch 版本。本次实例的 PyTorch 2.8.0 与 CUDA 12.8 支持 `sm_120`，并通过了实际 CUDA 矩阵运算。较新的镜像请参考发布方兼容矩阵，不要为了统一版本盲目替换已经可用的 CUDA 版 PyTorch。
 
-`src/checks/by1gpu.py --plan 96` 只估算显存候选，不是执行报告。旧的随机权重 FP32 前向检查也不能代替这里的真实 BF16 checkpoint benchmark。
+`src/by1/checks/gpu.py --plan 96` 只估算显存候选，不是执行报告。旧的随机权重 FP32 前向检查也不能代替这里的真实 BF16 checkpoint benchmark。

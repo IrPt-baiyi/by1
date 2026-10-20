@@ -1,7 +1,7 @@
 # `.by1` 语言合同（T2 · 可执行规范）
 
 > 判据：语法、错误模型、版本策略和最小示例形成一份可执行规范；**示例、解析器和错误输出相互一致**。
-> 一致性判卷人：`src/checks/by1langspec.py`（把本文的示例喂给 `by1check`，绿例必须绿、红例必须红且信息含指定子串）。
+> 一致性判卷人：`src/by1/checks/langspec.py`（把本文的示例喂给 `by1check`，绿例必须绿、红例必须红且信息含指定子串）。
 > 本文不重复 [ir-spec.md](../ir-spec.md)（IR 是编译目标，这里是前端语言）。
 
 ## 1. 语法骨架
@@ -49,7 +49,7 @@ model <名字> {
 
 ## 3. 版本策略
 
-- **IR_VERSION**（`src/by1ver.py`）：只在 IR 结构变化时升**主版本**；加 `.by1` 语法不动 IR_VERSION，只动 TOOL_VERSION。
+- **IR_VERSION**（`src/by1/ver.py`）：只在 IR 结构变化时升**主版本**；加 `.by1` 语法不动 IR_VERSION，只动 TOOL_VERSION。
 - **HISTORY 追加不改写**：每条记录"版本 + 何时 + 何处 + 影响"。
 - 旧描述"要么继续有效，要么由可重复的迁移工具升级"（路线图阶段 A）。
 - 1.0 版的 1.0 文件继续可读：版本检查只对主版本硬（T22 判例：1.0 文件在 IR 1.1 下有效）。
@@ -120,4 +120,4 @@ model TinyRed {
 | selftest 基线 | `models/selftest.by1` 恰好 9 错（防漂移） |
 | 行尾/编码 | LF · UTF-8（`by1fast` ⑤） |
 
-判卷人命令：`python src/checks/by1langspec.py`。
+判卷人命令：`python src/by1/checks/langspec.py`。

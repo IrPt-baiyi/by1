@@ -34,11 +34,12 @@ CI 的"纯标准库"那条腿就会红；反过来一个只要标准库的挂在
 import os as _os
 import sys as _sys
 # 引导（生成的，别手改）：往上找到有 by1paths.py 的那一层 —— 迁移后
-# 模块可能在包内深处（src/by1/checks/…），固定层数会插错目录。
+# 模块在包内深处（src/by1/checks/…）—— 找**包所在的那一层**（src/）。
 _p = _os.path.dirname(_os.path.abspath(__file__))
-while _p and not _os.path.exists(_os.path.join(_p, 'by1paths.py')):
+while _p and not _os.path.isdir(_os.path.join(_p, 'by1')):
     _p = _os.path.dirname(_p)
 _sys.path.insert(0, _p)
+import by1  # noqa: E402,F401
 import by1paths  # noqa: E402,F401
 
 import ast
@@ -172,7 +173,9 @@ def check(root=ROOT, tiers_path=None, modelcheck_dir=None, resolve=None):
     """返回问题列表（空 = 过）。`root`/路径可换 —— 自检就靠这个。"""
     root = pathlib.Path(root)
     tiers_path = pathlib.Path(tiers_path or by1paths.tool('by1all.py'))
-    mc = pathlib.Path(modelcheck_dir or (root / 'src/modelcheck'))
+    # 迁移期（docs/TEMP-rename-plan.md）：判卷人真身在包里；
+    # `root/src/...` 只剩空目录（shim 已拆）。
+    mc = pathlib.Path(modelcheck_dir or (pathlib.Path(root) / 'src' / 'by1' / 'modelcheck'))
     problems = []
     # T7 的上游名字集：默认扫本机的 transformers（缓存一次）；没装 -> None -> 跳过
     upstream = upstream_names() if resolve is None else (resolve or None)
@@ -245,11 +248,16 @@ def check(root=ROOT, tiers_path=None, modelcheck_dir=None, resolve=None):
                             '（上游改过名？名字拼错？）' % (base, caps[:3]))
     if mc.is_dir():
         for f in sorted(mc.glob('*.py')):
-            if f.name == '__init__.py' or f.name in names:
+            if f.name == '__init__.py':
                 continue
-            if f.name not in EXEMPT:
+            # 迁移期：包里文件名没有 `by1` 前缀，而 JUDGES/EXEMPT 用旧名 ——
+            # 归一成旧名再比（否则每条都会误报“没被跑”）。
+            old = f.name if f.name.startswith('by1') else 'by1' + f.name
+            if old in names:
+                continue
+            if old not in EXEMPT:
                 problems.append('T5 %s 既没被 JUDGES 跑，也没在 EXEMPT 里写明理由'
-                                % f.name)
+                                % old)
     return problems
 
 

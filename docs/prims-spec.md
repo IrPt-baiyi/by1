@@ -1,7 +1,7 @@
 # by1 原语数值规格（生成物）
 
-> **这份文档是生成的**：`python src/by1graph.py --spec`（`--write` 落盘）。
-> 改措辞改 `src/by1graph.py` 的 `PRIMS` / `_SPEC`；键集对账是 import 时的
+> **这份文档是生成的**：`python src/by1/graph.py --spec`（`--write` 落盘）。
+> 改措辞改 `src/by1/graph.py` 的 `PRIMS` / `_SPEC`；键集对账是 import 时的
 > 硬断言，缺一个条目整个库都跑不起来 —— 所以它不可能比原语表少。
 >
 > 每条的**公式**与**状态更新**在 `f`；`ref()` 是可执行规格

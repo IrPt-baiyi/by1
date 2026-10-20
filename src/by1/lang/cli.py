@@ -18,12 +18,15 @@ by1 -- 用一份描述，写一个语言模型。
 
 import os as _os
 import sys as _sys
-# **引导：把自己上面那一层（`src/`）放上 sys.path。**
-# 加了它，`import by1paths` 才找得到；而 `by1paths` 在 import 时
-# 会把 `src/` 和每个子目录都放上 sys.path —— 于是 `import by1check`
-# 这种裸名 import 照旧能用。**这两行是生成的，别手改**
-# （判据在 `by1paths.check_boot()`）。
-_sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
+# **引导：把包所在的那一层（`src/`）放上 sys.path。**
+# 加了它，`import by1` 才找得到；`by1` 在 import 时会注册「旧名 → 真身」
+# 的转发钩子，于是 `import by1paths` / `import by1check` 这类旧拼写照旧能用。
+# **这段是生成的，别手改**（迁移计划见 docs/TEMP-rename-plan.md）。
+_p = _os.path.dirname(_os.path.abspath(__file__))
+while _p and not _os.path.isdir(_os.path.join(_p, 'by1')):
+    _p = _os.path.dirname(_p)
+_sys.path.insert(0, _p)
+import by1  # noqa: E402,F401
 import by1paths  # noqa: E402,F401
 
 import importlib.util

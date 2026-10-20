@@ -179,10 +179,12 @@ def tool(name):
     迁移期（docs/TEMP-rename-plan.md）：`by1<X>.py` 先问包里的 `<X>.py` ——
     旧路径只剩 shim，读源码 / 按路径装载的调用要的是真身。
     """
-    if name.startswith('by1') and name.endswith('.py'):
-        stem = name[3:-3]
+    if name.endswith(('.py', '.c')):
+        # 旧名 `by1<X>.py` → 包里 `<X>.py`；`cli.py` 这类没有前缀的直接按名查。
+        stem = name[3:-3] if name.startswith('by1') else name.rsplit('.', 1)[0]
         if stem:
-            hit = _pkg_tools().get(stem)
+            # 关键字的逃逸名：`by1exec` → `exec_`（`exec` 不能做模块名）。
+            hit = _pkg_tools().get(stem) or _pkg_tools().get(stem + '_')
             if hit:
                 return hit
     for d in (SRC,) + tuple(os.path.join(SRC, s) for s in SUBDIRS):

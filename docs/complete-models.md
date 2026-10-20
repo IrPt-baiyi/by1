@@ -97,7 +97,7 @@ MTP 连接：分别 RMSNorm embedding 与主干 hidden → 拼接 → `fc` → �
 ## 验收与边界
 
 ```bash
-python src/checks/by1complete.py
+python src/by1/checks/complete.py
 ```
 
 验收包括：

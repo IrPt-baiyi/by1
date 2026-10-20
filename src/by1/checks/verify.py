@@ -39,11 +39,12 @@ import sys as _sys
 # 这种裸名 import 照旧能用。**这两行是生成的，别手改**
 # （判据在 `by1paths.check_boot()`）。
 # 引导（生成的，别手改）：往上找到有 by1paths.py 的那一层 —— 迁移后
-# 模块可能在包内深处（src/by1/checks/…），固定层数会插错目录。
+# 模块在包内深处（src/by1/checks/…）—— 找**包所在的那一层**（src/）。
 _p = _os.path.dirname(_os.path.abspath(__file__))
-while _p and not _os.path.exists(_os.path.join(_p, 'by1paths.py')):
+while _p and not _os.path.isdir(_os.path.join(_p, 'by1')):
     _p = _os.path.dirname(_p)
 _sys.path.insert(0, _p)
+import by1  # noqa: E402,F401
 import by1paths  # noqa: E402,F401
 
 import importlib.util

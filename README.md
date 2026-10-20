@@ -81,7 +81,7 @@ since: **implement it or reject it, no third path.**
 agent (DeepSeek Harness) in a few days. A human set direction and decided what counted
 as done. Stated first to raise scrutiny, not to raise trust.
 
-**Verify it.** `python src/checks/by1all.py --tier 1` needs no dependencies at all.
+**Verify it.** `python src/by1/checks/all.py --tier 1` needs no dependencies at all.
 Then read [TESTING.md](TESTING.md) (five-state verdicts, tier semantics),
 [FILES.md](FILES.md) (what every file is), [1.md](1.md) (why), and
 [history/ir.md](history/ir.md) (what went wrong).
@@ -148,7 +148,7 @@ IR → exec 后端，与 transformers 官方前向 4.301e-06（档 5）；浏览
 **这份仓库是怎么来的。** 代码、文档、提交信息几乎全部由一个 AI agent（DeepSeek Harness）
 在几天内写出；人定方向、判定什么算做完。**写在最前，是为了提高审慎程度，而非增加信任。**
 
-**怎么验它。** `python src/checks/by1all.py --tier 1` 一个依赖都不用装。然后看
+**怎么验它。** `python src/by1/checks/all.py --tier 1` 一个依赖都不用装。然后看
 [TESTING.md](TESTING.md)（五态判定与档位）、[FILES.md](FILES.md)（每个文件干嘛的）、
 [1.md](1.md)（为什么做）、[history/ir.md](history/ir.md)（撞上了什么）。
 

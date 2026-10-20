@@ -1,7 +1,7 @@
 # 后端 × 机制矩阵（生成物，别手改）
 
-> 这个文件是 [`src/checks/by1backends.py`](../src/checks/by1backends.py) 的产物：
-> 跑 `python src/checks/by1backends.py --write` 重新生成。
+> 这个文件是 [`src/by1/checks/backends.py`](../src/by1/checks/backends.py) 的产物：
+> 跑 `python src/by1/checks/backends.py --write` 重新生成。
 > 实测与它不一致时，`by1all` 判卷人段会红 —— **所以它不会漂**。
 
 ## 一、矩阵

@@ -23,15 +23,15 @@ README 是给"想知道这是什么的人"看的。这一份是给"想验它对�
 三条命令，从仓库根目录跑：
 
 ```bash
-python src/checks/by1all.py --tier 1     # 不要任何依赖
-python src/checks/by1all.py --tier 3     # 要 numpy
-python src/checks/by1all.py --tier 4     # 要 torch
+python src/by1/checks/all.py --tier 1     # 不要任何依赖
+python src/by1/checks/all.py --tier 3     # 要 numpy
+python src/by1/checks/all.py --tier 4     # 要 torch
 ```
 
 想装依赖：`pip install -e ".[verify]"`。**只想跑 L1 的话不要装** ——
 核心是纯标准库（`pyproject.toml` 里 `dependencies = []`）。
 
-还有更省钱的一步：`src/checks/by1pack.py` 打出来的包**结构和仓库一样、
+还有更省钱的一步：`src/by1/checks/pack.py` 打出来的包**结构和仓库一样、
 不含权重**。递给别人用那个，别让人 clone 一个带权重的仓库。
 
 ---
@@ -198,8 +198,8 @@ Python 版本      ：
 `ubuntu-latest` / `windows-latest` × Python `3.9` / `3.12`；第三道只看 3.12）：
 
 ```yaml
-tier1: 什么都不装  -> python src/checks/by1all.py --tier 1   # 同时是"档 1 只要标准库"的证明
-tier3: 只装 numpy  -> python src/checks/by1all.py --tier 3   # 档是累积的：1+2+3
+tier1: 什么都不装  -> python src/by1/checks/all.py --tier 1   # 同时是"档 1 只要标准库"的证明
+tier3: 只装 numpy  -> python src/by1/checks/all.py --tier 3   # 档是累积的：1+2+3
 pack : 打包 -> 解到仓外 -> 在包里跑档 1                        # 递出去的那一包站得住吗
 ```
 
@@ -218,7 +218,7 @@ pack : 打包 -> 解到仓外 -> 在包里跑档 1                        # 递�
 
 ### 发布包也要自洽（`by1pack`）
 
-`python src/checks/by1pack.py <输出目录>` 打出来的包，是**要递给别人的东西**
+`python src/by1/checks/pack.py <输出目录>` 打出来的包，是**要递给别人的东西**
 （README 那句"别让人 clone 一个带权重的仓库"指的就是它）。既然要递出去，
 它就得自己站得住 —— 所以打包脚本除了两道清单守卫（import 闭包 ·
 `by1all` 会调用的判卷人），还有一道**自检**：把 `by1docs` 放进**刚打出来的产物**
@@ -233,7 +233,7 @@ pack : 打包 -> 解到仓外 -> 在包里跑档 1                        # 递�
 
 修之前那一包：**少 17 个判卷人 · 少 13 份文档 + LICENSE/NOTICE · 少 `graphs-golden.json`**，
 而打包脚本照样印"打包完成"。两个根因都记在 `by1pack.py`
-（`judges_missing()` 硬拼 `src/by1all.py` —— 那文件早搬进 `src/checks/`，
+（`judges_missing()` 硬拼 `src/by1/checks/all.py` —— 那文件早搬进 `src/checks/`，
 路径不存在就静默返回 `[]`；以及清单只覆盖脚本、不覆盖文档引用）。
 
 ---

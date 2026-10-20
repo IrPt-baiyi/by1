@@ -66,7 +66,7 @@ refs/<org>__<模型>.index.json      索引
 挑一个 GQA 模型，从 `refs/<模型>.config.json` 里取
 `num_attention_heads` / `num_key_value_heads` / `head_dim` / `num_hidden_layers`，
 **自己推出**每 token 的 KV cache 字节数（按 fp16 算）。
-再和 by1 声明的 state 尺寸比（`python src/checks/by1check.py <模型> --state`
+再和 by1 声明的 state 尺寸比（`python src/by1/check.py <模型> --state`
 或等价入口）。
 
 **这一条特别值得做**，因为 by1 历史上在"头数 × 头维"这类地方错过 ——
@@ -83,7 +83,7 @@ INVENTORY 的【A】是 **32 个**模型 —— 而这 32 个**是我挑的，�
 config + tensors 拉下来，走一遍（在仓库根跑）
 
 ```bash
-python src/data/by1triage.py <那个 config.json>
+python src/by1/data/triage.py <那个 config.json>
 ```
 
 看它是：

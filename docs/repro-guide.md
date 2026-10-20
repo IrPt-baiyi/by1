@@ -29,7 +29,7 @@
 ```bash
 git clone https://github.com/IrPt-baiyi/by1.git && cd by1
 python3 -m venv --without-pip .venv && python3 -m pip --python .venv install -e ".[run]"
-.venv/bin/python src/checks/by1all.py --tier 1
+.venv/bin/python src/by1/checks/all.py --tier 1
 ```
 
 **你应该看到**（最后两行）：
@@ -42,7 +42,7 @@ python3 -m venv --without-pip .venv && python3 -m pip --python .venv install -e 
 - 退出码 **0**。
 - "13 项跳过"不是失败 —— 那是"这一档没验"，档 1 不做档 2 以后的事。
 - 这一步**故意不装任何依赖**：它同时是"档 1 只要标准库"这句话的证明。
-- 想要英文输出：`BY1_LANG=en python3 src/checks/by1all.py --tier 1`；`BY1_LANG=both` 出中英两行，默认 `zh`。
+- 想要英文输出：`BY1_LANG=en python3 src/by1/checks/all.py --tier 1`；`BY1_LANG=both` 出中英两行，默认 `zh`。
 
 > `python3 -m venv` 在 `ensurepip` 那一步挂掉过（某些托管 Linux 上见过），
 > 所以上面用的是 `--without-pip` 的写法。README 里也有这一段。
@@ -51,7 +51,7 @@ python3 -m venv --without-pip .venv && python3 -m pip --python .venv install -e 
 
 ```bash
 .venv/bin/python -m pip install numpy
-.venv/bin/python src/checks/by1all.py --tier 3
+.venv/bin/python src/by1/checks/all.py --tier 3
 ```
 
 **你应该看到**：
@@ -69,7 +69,7 @@ python3 -m venv --without-pip .venv && python3 -m pip --python .venv install -e 
 
 ```bash
 .venv/bin/python -m pip install -e ".[full]"
-.venv/bin/python src/checks/by1complete.py
+.venv/bin/python src/by1/checks/complete.py
 ```
 
 **你应该看到**（最后一行）：
@@ -94,27 +94,27 @@ python3 -m venv --without-pip .venv && python3 -m pip --python .venv install -e 
 
 ```bash
 # A) 双 loader 前向逐位（Qwen3-0.6B）
-.venv/bin/python src/modelcheck/by1shadow.py --smoke-refs \
+.venv/bin/python src/by1/modelcheck/shadow.py --smoke-refs \
     --by1 complete-Qwen3-0.6B.by1 --weights-dir /path/to/qwen3-0.6b
 
 # B) 增量 == 全量（KV cache）
-.venv/bin/python src/modelcheck/by1shadow.py --smoke-state \
+.venv/bin/python src/by1/modelcheck/shadow.py --smoke-state \
     --by1 complete-Qwen3-0.6B.by1 --weights-dir /path/to/qwen3-0.6b
 
 # C) 双 loader 前向逐位（mamba-130m）
-.venv/bin/python src/modelcheck/by1shadow.py --smoke-refs \
+.venv/bin/python src/by1/modelcheck/shadow.py --smoke-refs \
     --by1 complete-mamba-130m-hf.by1 --weights-dir /path/to/mamba-130m-hf
 
 # D) 增量 == 全量（**递归状态**，不是 KV cache）
-.venv/bin/python src/modelcheck/by1shadow.py --smoke-state-ssm \
+.venv/bin/python src/by1/modelcheck/shadow.py --smoke-state-ssm \
     --by1 complete-mamba-130m-hf.by1 --weights-dir /path/to/mamba-130m-hf
 
 # E) 双 loader 前向逐位（granite 混合栈：28 个 Mamba2 层 + 4 个注意力层）
-.venv/bin/python src/modelcheck/by1shadow.py --smoke-refs \
+.venv/bin/python src/by1/modelcheck/shadow.py --smoke-refs \
     --by1 complete-granite-4.0-h-350m.by1 --weights-dir /path/to/granite-4.0-h-350m
 
 # F) 增量 == 全量（**混合状态**：两本账在同一个 cache 里）
-.venv/bin/python src/modelcheck/by1shadow.py --smoke-state-hybrid \
+.venv/bin/python src/by1/modelcheck/shadow.py --smoke-state-hybrid \
     --by1 complete-granite-4.0-h-350m.by1 --weights-dir /path/to/granite-4.0-h-350m
 ```
 

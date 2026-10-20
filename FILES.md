@@ -1,6 +1,6 @@
 # 这个仓库里每个文件是干什么的
 
-> 632 个跟踪文件。按"你会想找什么"分组，不按字母表。
+> 530 个跟踪文件。按"你会想找什么"分组，不按字母表。
 >
 > **这份文档是生成的**：`python src/by1files.py --write`。
 > 文件清单、每组的个数、每个文件的一句话都从目录树和 docstring 来 ——
@@ -43,7 +43,7 @@
 
 ---
 
-## `src/` —— 194 个模块 + 1 个非 .py
+## `src/` —— 97 个模块 + 1 个非 .py
 
 ### 底座（留在 src/ 顶层）
 
@@ -230,110 +230,6 @@
 | `raw.py` | **不是模型，是逃生舱的工厂函数实现**。必须和 `raw-escape.by1` 挨着（`by1codegen` 按名字找它） |
 | `extdemo.py` | 逃生舱第二层的**判卷人** |
 | `ext-demo.c` | 逃生舱第二层的示例：两个语言里没有的机制。`by1extdemo` 编它 |
-
-### 迁移期 shim —— 到期就删（见 docs/TEMP-rename-plan.md）
-
-旧路径的可执行转发：`sys.modules` 原地替换真身 + `__main__` 转发。
-**兼容期上限 2 个阶段**：拆 shim 时整组消失。
-
-| 文件 | 用途 |
-|---|---|
-| `by1all.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.all |
-| `by1attrs.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.attrs |
-| `by1backends.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.backends |
-| `by1blind.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.blind |
-| `by1blocks.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.lang.blocks |
-| `by1boot.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.boot |
-| `by1bootir.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.bootir |
-| `by1budget.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.budget |
-| `by1c.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.c |
-| `by1cache.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.data.cache |
-| `by1check.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.check |
-| `by1cloud.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.data.cloud |
-| `by1cmp.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.data.cmp |
-| `by1codegen.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.codegen |
-| `by1coerce.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.coerce |
-| `by1complete.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.complete |
-| `by1contract.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.lang.contract |
-| `by1debt.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.debt |
-| `by1dev.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.modelcheck.dev |
-| `by1diff.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.diff |
-| `by1docs.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.docs |
-| `by1e2e.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.e2e |
-| `by1emit.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.lang.emit |
-| `by1exec.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.exec_ |
-| `by1export.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.lang.export |
-| `by1ext.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.ext |
-| `by1extdemo.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.escape.extdemo |
-| `by1fast.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.fast |
-| `by1fetch.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.data.fetch |
-| `by1files.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.files |
-| `by1full.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.full |
-| `by1gate.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.gate |
-| `by1gemma.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.modelcheck.gemma |
-| `by1ggml.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.ggml |
-| `by1gpt2.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.modelcheck.gpt2 |
-| `by1gptoss.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.modelcheck.gptoss |
-| `by1gpu.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.gpu |
-| `by1gpubench.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.gpubench |
-| `by1gpuday.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.gpuday |
-| `by1gpusmoke.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.gpusmoke |
-| `by1gputrain.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.gputrain |
-| `by1graph.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.graph |
-| `by1hp.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.lang.hp |
-| `by1index.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.data.index |
-| `by1instella.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.modelcheck.instella |
-| `by1io.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.io |
-| `by1ir.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.ir |
-| `by1irentry.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.irentry |
-| `by1kda.py` | KDA（Kimi Delta Attention）的验证。它在 `by1check` 里是独立种类，不是 GDN |
-| `by1laguna.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.modelcheck.laguna |
-| `by1langspec.py` | T2 判卷人：规范示例 x by1check x 错误输出三方一致（绿例绿/红例红/selftest 基线 9 错） |
-| `by1lint.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.lint |
-| `by1llama.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.llama |
-| `by1load.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.modelcheck.load |
-| `by1lower.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.lang.lower |
-| `by1mem.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.modelcheck.mem |
-| `by1mla.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.modelcheck.mla |
-| `by1moe.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.modelcheck.moe |
-| `by1mutate.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.mutate |
-| `by1name.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.lang.name |
-| `by1opdiff.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.opdiff |
-| `by1oracle.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.oracle |
-| `by1oracles.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.oracles |
-| `by1pack.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.pack |
-| `by1pat.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.pat |
-| `by1paths.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.paths |
-| `by1q2schema.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.modelcheck.q2schema |
-| `by1qknorm.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.modelcheck.qknorm |
-| `by1quant.py` | 量化 checkpoint 的存储契约与权重/scale manifest 审计 |
-| `by1raw.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.escape.raw |
-| `by1real.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.modelcheck.real |
-| `by1rebuild.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.rebuild |
-| `by1refs.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.refs |
-| `by1revname.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.data.revname |
-| `by1rope.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.modelcheck.rope |
-| `by1rules.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.rules |
-| `by1run.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.run |
-| `by1sample.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.sample |
-| `by1sched.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.lang.sched |
-| `by1shadow.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.modelcheck.shadow |
-| `by1shapes.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.data.shapes |
-| `by1sitedata.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.sitedata |
-| `by1skip.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.skip |
-| `by1smoke.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.smoke |
-| `by1sparse.py` | DSA 稀疏索引器的验证（对着 transformers 的 `GlmMoeDsaIndexer`）。**`index_kpool_compress_*` 那两个张量没验** —— 没有可比的官方实现 |
-| `by1ssm.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.modelcheck.ssm |
-| `by1stacks.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.lang.stacks |
-| `by1state.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.lang.state |
-| `by1sync.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.sync |
-| `by1tens.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.lang.tens |
-| `by1tiers.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.tiers |
-| `by1train.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.modelcheck.train |
-| `by1triage.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.data.triage |
-| `by1ver.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.ver |
-| `by1verify.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.verify |
-| `by1vocab.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.lang.vocab |
 
 ---
 
@@ -812,117 +708,11 @@
 | `ssm.py` | Mamba2 的判卷人**：by1 要生成的递推 vs 官方 mixer |
 | `train.py` | 按 .by1 的描述搭一个模型，训练它，然后让它写字 |
 
-## `src/checks/` —— 39 个
+## `src/escape/` —— 1 个
 
 | 文件 | 用途 |
 |---|---|
-| `__init__.py` | 让这个目录成为一个包，这样 setuptools 装得上 |
-| `by1all.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.all |
-| `by1attrs.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.attrs |
-| `by1backends.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.backends |
-| `by1blind.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.blind |
-| `by1bootir.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.bootir |
-| `by1budget.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.budget |
-| `by1coerce.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.coerce |
-| `by1complete.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.complete |
-| `by1debt.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.debt |
-| `by1diff.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.diff |
-| `by1docs.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.docs |
-| `by1e2e.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.e2e |
-| `by1fast.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.fast |
-| `by1files.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.files |
-| `by1gate.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.gate |
-| `by1gpu.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.gpu |
-| `by1gpubench.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.gpubench |
-| `by1gpuday.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.gpuday |
-| `by1gpusmoke.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.gpusmoke |
-| `by1gputrain.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.gputrain |
-| `by1irentry.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.irentry |
-| `by1langspec.py` | T2 判卷人：规范示例 x by1check x 错误输出三方一致（绿例绿/红例红/selftest 基线 9 错） |
-| `by1lint.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.lint |
-| `by1llama.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.llama |
-| `by1mutate.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.mutate |
-| `by1opdiff.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.opdiff |
-| `by1oracle.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.oracle |
-| `by1oracles.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.oracles |
-| `by1pack.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.pack |
-| `by1pat.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.pat |
-| `by1rebuild.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.rebuild |
-| `by1rules.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.rules |
-| `by1run.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.run |
-| `by1sitedata.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.sitedata |
-| `by1smoke.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.smoke |
-| `by1sync.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.sync |
-| `by1tiers.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.tiers |
-| `by1verify.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.verify |
-
-## `src/data/` —— 9 个
-
-| 文件 | 用途 |
-|---|---|
-| `__init__.py` | 让这个目录成为一个包，这样 setuptools 装得上 |
-| `by1cache.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.data.cache |
-| `by1cloud.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.data.cloud |
-| `by1cmp.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.data.cmp |
-| `by1fetch.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.data.fetch |
-| `by1index.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.data.index |
-| `by1revname.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.data.revname |
-| `by1shapes.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.data.shapes |
-| `by1triage.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.data.triage |
-
-## `src/escape/` —— 4 个
-
-| 文件 | 用途 |
-|---|---|
-| `__init__.py` | 让这个目录成为一个包，这样 setuptools 装得上 |
-| `by1extdemo.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.escape.extdemo |
-| `by1raw.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.escape.raw |
 | `ext-demo.c` | 逃生舱第二层的示例：两个语言里没有的机制。`by1extdemo` 编它 |
-
-## `src/lang/` —— 14 个
-
-| 文件 | 用途 |
-|---|---|
-| `__init__.py` | 让这个目录成为一个包，这样 setuptools 装得上 |
-| `by1blocks.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.lang.blocks |
-| `by1contract.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.lang.contract |
-| `by1emit.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.lang.emit |
-| `by1export.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.lang.export |
-| `by1hp.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.lang.hp |
-| `by1lower.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.lang.lower |
-| `by1name.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.lang.name |
-| `by1sched.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.lang.sched |
-| `by1stacks.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.lang.stacks |
-| `by1state.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.lang.state |
-| `by1tens.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.lang.tens |
-| `by1vocab.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.lang.vocab |
-| `cli.py` | 兼容期上限 2 个阶段**：拆完 shim 就删。它做两件事，缺一不可： |
-
-## `src/modelcheck/` —— 21 个
-
-| 文件 | 用途 |
-|---|---|
-| `__init__.py` | 让这个目录成为一个包，这样 setuptools 装得上 |
-| `by1dev.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.modelcheck.dev |
-| `by1gemma.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.modelcheck.gemma |
-| `by1gpt2.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.modelcheck.gpt2 |
-| `by1gptoss.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.modelcheck.gptoss |
-| `by1instella.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.modelcheck.instella |
-| `by1kda.py` | KDA（Kimi Delta Attention）的验证。它在 `by1check` 里是独立种类，不是 GDN |
-| `by1laguna.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.modelcheck.laguna |
-| `by1load.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.modelcheck.load |
-| `by1mem.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.modelcheck.mem |
-| `by1mla.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.modelcheck.mla |
-| `by1moe.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.modelcheck.moe |
-| `by1q2schema.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.modelcheck.q2schema |
-| `by1qknorm.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.modelcheck.qknorm |
-| `by1quant.py` | 量化 checkpoint 的存储契约与权重/scale manifest 审计 |
-| `by1real.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.modelcheck.real |
-| `by1rope.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.modelcheck.rope |
-| `by1shadow.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.modelcheck.shadow |
-| `by1sparse.py` | DSA 稀疏索引器的验证（对着 transformers 的 `GlmMoeDsaIndexer`）。**`index_kpool_compress_*` 那两个张量没验** —— 没有可比的官方实现 |
-| `by1ssm.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.modelcheck.ssm |
-| `by1train.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.modelcheck.train |
 
 ## `tools/` —— 18 个
 

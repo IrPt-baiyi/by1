@@ -89,7 +89,7 @@ jobs:
         run: python -c "import sys; print(sys.version); print(len(sys.path))"
 
       - name: 档 1
-        run: python src/checks/by1all.py --tier 1
+        run: python src/by1/checks/all.py --tier 1
 
       # **判定行里写着「[全过（N 项没验）]」—— 那 N 项不是绿的。**
       # 档 1 会跳过档 2 以后的内容，那是"这一档没验"，不是失败。
@@ -131,7 +131,7 @@ jobs:
         run: python -m pip install numpy safetensors
 
       - name: 档 3
-        run: python src/checks/by1all.py --tier 3
+        run: python src/by1/checks/all.py --tier 3
 
       # 这一条会跑：编译/import/解析（档 1）· 26 份 .by1 检查器 · 模式分类 ·
       # lint 十类静默写法 · **变异反例库**（每条规则一个必红反例）·
@@ -160,7 +160,7 @@ jobs:
           python - <<'PY'
           import subprocess, sys
           bad = 0
-          for script in ("src/checks/by1complete.py", "src/checks/by1rules.py"):
+          for script in ("src/by1/checks/complete.py", "src/by1/checks/rules.py"):
               r = subprocess.run([sys.executable, script],
                                  capture_output=True, text=True)
               out = (r.stdout or "") + (r.stderr or "")
@@ -207,7 +207,7 @@ jobs:
         run: python -c "import glob, os; [os.remove(p) for p in glob.glob('../by1-upload-*.tar.gz')]"
 
       - name: 打包
-        run: python src/checks/by1pack.py ../pack-out
+        run: python src/by1/checks/pack.py ../pack-out
 
       # **解包用 python，不用 bash。**
       # 两个平台的默认 shell 不同（ubuntu 是 bash、windows 是 pwsh），
@@ -220,7 +220,7 @@ jobs:
       # `working-directory` 指到解出来的包里 —— 这就是"收包的人"的起点。
       - name: 在包里跑档 1
         working-directory: ../unpacked/pack-out
-        run: python src/checks/by1all.py --tier 1
+        run: python src/by1/checks/all.py --tier 1
 
       # **这一条要证明的是**：包不是"仓库的子集"那么简单，它得自己站得住。
       # 2026-10-16 实测（本机按同样步骤）：修之前那一包少 17 个判卷人、

@@ -26,11 +26,12 @@ import sys as _sys
 # 这种裸名 import 照旧能用。**这两行是生成的，别手改**
 # （判据在 `by1paths.check_boot()`）。
 # 引导（生成的，别手改）：往上找到有 by1paths.py 的那一层 —— 迁移后
-# 模块可能在包内深处（src/by1/checks/…），固定层数会插错目录。
+# 模块在包内深处（src/by1/checks/…）—— 找**包所在的那一层**（src/）。
 _p = _os.path.dirname(_os.path.abspath(__file__))
-while _p and not _os.path.exists(_os.path.join(_p, 'by1paths.py')):
+while _p and not _os.path.isdir(_os.path.join(_p, 'by1')):
     _p = _os.path.dirname(_p)
 _sys.path.insert(0, _p)
+import by1  # noqa: E402,F401
 import by1paths  # noqa: E402,F401
 import glob
 import os
@@ -234,14 +235,21 @@ def _where(name):
             if os.path.exists(norm(rel)):
                 return rel
         # **迁移中的包**（`src/by1/**`，计划见 docs/TEMP-rename-plan.md）：
-        # 按裸名递归找 —— 包里没有 shim，真身只在这一处。
+        # 旧名 `by1<X>.py` 在包里没有前缀（`<X>.py`），`exec` 还带逃逸下划线。
+        # 按名字逐个试 —— 包里没有 shim，真身只在这一处。
         pkg = norm('src/by1')
         if os.path.isdir(pkg):
+            cands = [name]
+            if name.startswith('by1') and len(name) > 6:
+                cands.append(name[3:])
+            if name == 'by1exec.py':
+                cands.append('exec_.py')
             for base, dirs, fs in os.walk(pkg):
                 dirs[:] = [d for d in dirs if d != '__pycache__']
-                if name in fs:
-                    return os.path.relpath(os.path.join(base, name),
-                                           ROOT).replace(os.sep, '/')
+                for cand in cands:
+                    if cand in fs:
+                        return os.path.relpath(os.path.join(base, cand),
+                                               ROOT).replace(os.sep, '/')
         return 'src/' + name      # 兜底：让 absent 报出来，而不是静默错位
     return name
 
@@ -405,9 +413,10 @@ def selfcheck(staged):
     # **必须绝对化**：下面 `cwd=staged` 一换，相对路径就会再拼一层
     # （实测报的是 `build/by1-pack/build/by1-pack/src/checks/by1docs.py`）。
     staged = os.path.abspath(staged)
-    script = os.path.join(staged, 'src', 'checks', 'by1all.py')
+    # 迁移期：入口在包里（`src/by1/checks/all.py`）；旧路径没有 shim 了。
+    script = os.path.join(staged, 'src', 'by1', 'checks', 'all.py')
     if not os.path.exists(script):
-        return '  产物里没有 src/checks/by1all.py —— 自检根本跑不了（这本身就是缺口）'
+        return '  产物里没有 src/by1/checks/all.py —— 自检根本跑不了（这本身就是缺口）'
     try:
         r = subprocess.run([sys.executable, script, '--tier', '1'], cwd=staged,
                            capture_output=True, text=True, encoding='utf-8',

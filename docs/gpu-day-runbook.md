@@ -1,6 +1,6 @@
 # GPU 日 runbook —— 租卡那天照这张纸走
 
-> 单入口：`python src/checks/by1gpuday.py`（三相按序，报告分文件落盘）。
+> 单入口：`python src/by1/checks/gpuday.py`（三相按序，报告分文件落盘）。
 > 本文是它的配套：**资源核对表**（跑之前）和**回收模板**（跑之后填）。
 >
 > 影子和真权重**永远分列**：影子 = 接线对拍（随机值），真权重 = 真值结论。
@@ -14,7 +14,7 @@
 | CPU 内存 | ≥ 260 GB（A3-0 e2e 全量 245 GB float32 足迹） | **e2e 全量不跑**（硬跑会冻结整机，这个账记过） | `free -g` |
 | 磁盘 | ≥ 60 GB（31 GB FP8 + 影子 + 临时输出） | 真权重相失败 | `df -h .` |
 | 文件存储 | 同区域挂载 + `by1cache verify` 全绿 | 又得重下（网速不够） | 见文件存储操作单（已移出仓库，见 git 历史） |
-| 权重缓存 | `HF_HOME` 指向文件存储，`cache-manifest.json` 在旁边 | 同上 | `python src/data/by1cache.py verify <清单>` |
+| 权重缓存 | `HF_HOME` 指向文件存储，`cache-manifest.json` 在旁边 | 同上 | `python src/by1/data/cache.py verify <清单>` |
 
 `by1gpuday.py` 的预检会自动查前四项并**明说哪项不够** —— 跳过要出声，
 不硬跑。
@@ -24,7 +24,7 @@
 ```bash
 export HF_HOME=/root/autodl-fs/hf-cache      # 权重走文件存储（0 外网）
 export HF_HUB_OFFLINE=1                      # 缺文件当场报错，不悄悄下
-python src/checks/by1gpuday.py               # 三相全跑
+python src/by1/checks/gpuday.py               # 三相全跑
 ```
 
 分相开关：`--shadow-only`（0 下载，验接线）· `--real-only`（真权重 Q2 链）
