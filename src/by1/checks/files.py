@@ -82,7 +82,7 @@ GROUPS = [
 每个入口脚本开头那几行引导是**生成的**（判据在 `by1paths.check_boot`）——
 重复的东西必须能被检查，否则新加一个脚本忘了加，症状是
 `No module named 'by1paths'`，看起来像"文件丢了"。''', [
-        'by1paths']),
+        ]),
 
     ('`by1/` —— 迁移中的包（见 docs/TEMP-rename-plan.md）', 'by1', '''
 **前缀只写在包名里一次。** 阶段 1 先搬了三个叶子：`io`（39 个模块 import 它）、
@@ -93,7 +93,7 @@ GROUPS = [
 `by1/io.py` 就会遮蔽标准库 `io`。`by1fast` 是递归单独收它来编译/import 的。''', [
         'io', 'skip', 'ver', 'sample', 'ext', 'refs',
         'boot', 'graph', 'ggml', 'c', 'full', 'ir', 'codegen',
-        'exec_', 'check']),
+        'exec_', 'check', 'paths']),
 
     ('`lang/` —— 语言本身', 'lang', '''把 `.by1` 变成一份能算的东西。
 

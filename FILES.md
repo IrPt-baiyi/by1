@@ -1,6 +1,6 @@
 # 这个仓库里每个文件是干什么的
 
-> 631 个跟踪文件。按"你会想找什么"分组，不按字母表。
+> 632 个跟踪文件。按"你会想找什么"分组，不按字母表。
 >
 > **这份文档是生成的**：`python src/by1files.py --write`。
 > 文件清单、每组的个数、每个文件的一句话都从目录树和 docstring 来 ——
@@ -43,7 +43,7 @@
 
 ---
 
-## `src/` —— 193 个模块 + 1 个非 .py
+## `src/` —— 194 个模块 + 1 个非 .py
 
 ### 底座（留在 src/ 顶层）
 
@@ -70,7 +70,6 @@
 
 | 文件 | 用途 |
 |---|---|
-| `by1paths.py` | 仓库布局的唯一真相源 |
 
 ### `by1/` —— 迁移中的包（见 docs/TEMP-rename-plan.md）
 
@@ -99,6 +98,7 @@
 | `codegen.py` | 把 .by1 编译成**后端无关的 IR**，再由后端生成可训练模型 |
 | `exec_.py` | 第二个后端：纯 NumPy 执行器 |
 | `check.py` | 不变式检查器 v0.1 |
+| `paths.py` | 仓库布局的唯一真相源 |
 
 ### `lang/` —— 语言本身
 
@@ -303,6 +303,7 @@
 | `by1oracles.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.oracles |
 | `by1pack.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.pack |
 | `by1pat.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.checks.pat |
+| `by1paths.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.paths |
 | `by1q2schema.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.modelcheck.q2schema |
 | `by1qknorm.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.modelcheck.qknorm |
 | `by1quant.py` | 量化 checkpoint 的存储契约与权重/scale manifest 审计 |
@@ -684,7 +685,7 @@
 | `llama-shaped__llama3-shaped.js` | window.BY1_DIFF = window.BY1_DIFF || {}; |
 | `qwen3-next-shaped__laguna-tiny.js` | window.BY1_DIFF = window.BY1_DIFF || {}; |
 
-## `src/by1/` —— 15 个
+## `src/by1/` —— 16 个
 
 | 文件 | 用途 |
 |---|---|
@@ -699,6 +700,7 @@
 | `graph.py` | 原语图：IR kind -> 原语节点的唯一语义定义**（1.0.0-rc0 部件 A） |
 | `io.py` | 文件读写的每一种意图，各有一个名字 |
 | `ir.py` | 规范化的 by1 IR：schema、校验、JSON 往返 |
+| `paths.py` | 仓库布局的唯一真相源 |
 | `refs.py` | refs/ 的路径规则，只此一处 |
 | `sample.py` | 采样与生成闭环的**可执行规格**（T25） |
 | `skip.py` | 一次检查有五种结论，不是两种 |
