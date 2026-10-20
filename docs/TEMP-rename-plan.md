@@ -202,7 +202,23 @@ tools/distill.py  ggufrecon.py  site.py
 - 文档：by1docs 绿（402 处引用全部指向新名）；
 - 规则落地：第 0 阶段那条“新文件不得带 by1 前缀”的检查，白名单为空后仍然绿。
 
-## 八、不做的事
+## 八、执行记录（就地更新）
+
+### 阶段 1 —— 完成（2026-10-20）
+
+- `src/by1/` 包骨架 + `__init__.py`（**故意不 import 任何子模块**——避免循环与启动开销）。
+- 搬了三个叶子：`by1io` → `by1/io.py` · `by1skip` → `by1/skip.py` · `by1ver` → `by1/ver.py`。
+- 旧路径留**可执行 shim**：`globals().update`（连私有名一起转）+ `runpy.run_path`（转发 `__main__`，不用 `run_module`——模块已被 import，会报 RuntimeWarning）。
+- `by1fast`：递归收 `src/by1/` 编译，包内模块按 `by1.<name>` import；**没有**把 `by1` 加进 `by1paths.SUBDIRS`（会把 `src/by1/` 放上 sys.path，遮蔽标准库 `io`）。
+- `by1files`：递归收包内文件 + 新分组（`io/skip/ver`），`lang/by1.py → cli.py` 同步进 GROUPS。
+- **先说代价**：`lang/by1.py → cli.py` 本来排在阶段 4，但**必须提前** —— 它是模块 `by1`，和包 `by1` 撞名，`import by1` 会解析到它（`'by1' is not a package`）。`pyproject` 的入口点已改成 `lang.cli:main`。
+- 判据：by1fast 编译 106 / import 101 / 解析 71 全绿 · by1files 绿 · by1docs 绿。
+
+### 阶段 2 —— 未开始
+
+下一步：核心链路 `ir` `codegen` `check` `boot` `full` `graph` `c` `ggml` `exec_` `sample` `ext` `refs`（注意 `exec` 是关键字 → `exec_.py`）。
+
+## 九、不做的事
 
 - 不改项目名、不改 CLI 名、不改 `models/` `refs/` 的数据命名；
 - 不借迁移顺手改任何逻辑（**搬家不装修** —— 否则出问题时分不清是搬的还是改的）；

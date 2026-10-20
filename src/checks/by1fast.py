@@ -132,8 +132,27 @@ def main():
         if os.path.isdir(d):
             py_files += [os.path.join(d, f) for f in sorted(os.listdir(d))
                          if f.endswith('.py')]
+    # **迁移中的包**（`src/by1/`，计划见 docs/TEMP-rename-plan.md）：
+    # 递归收包内模块。**不要把它加进 `by1paths.SUBDIRS`** —— 那会把
+    # `src/by1/` 放上 sys.path，`by1/io.py` 就会遮蔽标准库 `io`。
+    _pkg = os.path.join(by1paths.SRC, 'by1')
+    if os.path.isdir(_pkg):
+        for _base, _dirs, _fs in os.walk(_pkg):
+            _dirs[:] = [d for d in _dirs if d != '__pycache__']
+            py_files += [os.path.join(_base, f) for f in sorted(_fs)
+                         if f.endswith('.py')]
     py_files.sort()
-    py_mods = [(p, os.path.basename(p)[:-3]) for p in py_files]
+
+    def _modname(p):
+        """模块的 import 名：包内用 `by1.x`，其余仍是裸名（子目录在 path 上）。"""
+        rel = os.path.relpath(p, by1paths.SRC).replace(os.sep, '/')
+        if rel.startswith('by1/'):
+            if rel == 'by1/__init__.py':
+                return 'by1'
+            return 'by1.' + rel[len('by1/'):-3].replace('/', '.')
+        return os.path.basename(p)[:-3]
+
+    py_mods = [(p, _modname(p)) for p in py_files]
     n_ok = 0
     for p, _m in py_mods:
         try:

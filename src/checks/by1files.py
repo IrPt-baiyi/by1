@@ -81,12 +81,21 @@ GROUPS = [
         'by1exec', 'by1c', 'by1ggml', 'by1graph', 'by1refs', 'by1check',
         'by1boot', 'by1ext', 'by1full', 'by1sample']),
 
+    ('`by1/` —— 迁移中的包（见 docs/TEMP-rename-plan.md）', 'by1', '''
+**前缀只写在包名里一次。** 阶段 1 先搬了三个叶子：`io`（39 个模块 import 它）、
+`skip`（五态协议）、`ver`（IR/工具版本）。旧路径留了**可执行 shim**
+（转发到真身、带 `__main__`），兼容期上限 2 个阶段。
+
+**这个目录不能进 `by1paths.SUBDIRS`** —— 那会把 `src/by1/` 放上 `sys.path`，
+`by1/io.py` 就会遮蔽标准库 `io`。`by1fast` 是递归单独收它来编译/import 的。''', [
+        'io', 'skip', 'ver']),
+
     ('`lang/` —— 语言本身', 'lang', '''把 `.by1` 变成一份能算的东西。
 
 `by1export` 是**导出策略层** —— 把算好的语义变成 HF config 的字段。
 它原来是 `by1check.check()` 里嵌着的 13 个 `gen_*` / `name_*`
 （那个函数因此有 1243 行）。**劈开的理由写在那个文件的头注里。**''', [
-        'by1', 'by1contract', 'by1emit', 'by1name', 'by1vocab',
+        'cli', 'by1contract', 'by1emit', 'by1name', 'by1vocab',
         'by1export', 'by1blocks', 'by1tens',
         'by1lower', 'by1hp', 'by1sched', 'by1stacks',
         'by1state']),
@@ -402,6 +411,18 @@ def generate():
                 continue
             if f.endswith('.py') or f.endswith('.c'):
                 src_list.append(d + '/' + f)
+    # **迁移中的包**（`src/by1/`，计划见 docs/TEMP-rename-plan.md）：
+    # 递归收包内模块；`__init__.py` 同样不算模块。
+    _pkg = os.path.join(ROOT, 'src', 'by1')
+    if os.path.isdir(_pkg):
+        for _base, _dirs, _fs in os.walk(_pkg):
+            _dirs[:] = [x for x in _dirs if x != '__pycache__']
+            for f in sorted(_fs):
+                if f == '__init__.py' or not f.endswith('.py'):
+                    continue
+                _full = os.path.join(_base, f)
+                src_list.append(os.path.relpath(_full, ROOT)
+                                .replace(os.sep, '/'))
     by_dir['src'] = src_list
     # 名字 -> 路径。`by1check.py` 和 `ext-demo.c` 都按去扩展名的名字索引。
     src_map = {}

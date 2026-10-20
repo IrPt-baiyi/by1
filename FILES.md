@@ -1,6 +1,6 @@
 # 这个仓库里每个文件是干什么的
 
-> 535 个跟踪文件。按"你会想找什么"分组，不按字母表。
+> 538 个跟踪文件。按"你会想找什么"分组，不按字母表。
 >
 > **这份文档是生成的**：`python src/by1files.py --write`。
 > 文件清单、每组的个数、每个文件的一句话都从目录树和 docstring 来 ——
@@ -43,7 +43,7 @@
 
 ---
 
-## `src/` —— 97 个模块 + 1 个非 .py
+## `src/` —— 100 个模块 + 1 个非 .py
 
 ### 底座（留在 src/ 顶层）
 
@@ -71,11 +71,11 @@
 | 文件 | 用途 |
 |---|---|
 | `by1paths.py` | 仓库布局的唯一真相源 |
-| `by1io.py` | 文件读写的每一种意图，各有一个名字 |
+| `by1io.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.io |
 | `by1codegen.py` | 把 .by1 编译成**后端无关的 IR**，再由后端生成可训练模型 |
-| `by1skip.py` | 一次检查有五种结论，不是两种 |
+| `by1skip.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.skip |
 | `by1ir.py` | 规范化的 by1 IR：schema、校验、JSON 往返 |
-| `by1ver.py` | 版本号的唯一真相源 |
+| `by1ver.py` | """迁移期 shim（计划见 docs/TEMP-rename-plan.md）—— 真身在 by1.ver |
 | `by1exec.py` | 第二个后端：纯 NumPy 执行器 |
 | `by1c.py` | 第三个后端：从 IR 生成 **C 代码**，编译，跑起来，和 NumPy 后端对拍 |
 | `by1ggml.py` | 第四个后端：从 IR 生成 **调 ggml 原语的 C 代码**，编译， |
@@ -87,6 +87,22 @@
 | `by1full.py` | 从完整架构声明生成 Transformers 模型，包含视觉与独立 MTP 分支 |
 | `by1sample.py` | 采样与生成闭环的**可执行规格**（T25） |
 
+### `by1/` —— 迁移中的包（见 docs/TEMP-rename-plan.md）
+
+
+**前缀只写在包名里一次。** 阶段 1 先搬了三个叶子：`io`（39 个模块 import 它）、
+`skip`（五态协议）、`ver`（IR/工具版本）。旧路径留了**可执行 shim**
+（转发到真身、带 `__main__`），兼容期上限 2 个阶段。
+
+**这个目录不能进 `by1paths.SUBDIRS`** —— 那会把 `src/by1/` 放上 `sys.path`，
+`by1/io.py` 就会遮蔽标准库 `io`。`by1fast` 是递归单独收它来编译/import 的。
+
+| 文件 | 用途 |
+|---|---|
+| `io.py` | 文件读写的每一种意图，各有一个名字 |
+| `skip.py` | 一次检查有五种结论，不是两种 |
+| `ver.py` | 版本号的唯一真相源 |
+
 ### `lang/` —— 语言本身
 
 把 `.by1` 变成一份能算的东西。
@@ -97,7 +113,7 @@
 
 | 文件 | 用途 |
 |---|---|
-| `by1.py` | 用一份描述，写一个语言模型 |
+| `cli.py` | 用一份描述，写一个语言模型 |
 | `by1contract.py` | 从机制声明**推出**张量契约 |
 | `by1emit.py` | 从 IR 生成 **ggml 侧的后端需求 + 声明式图**，并和 GGUF manifest 双向对拍 |
 | `by1name.py` | 模型命名的唯一执行者 |
@@ -569,6 +585,14 @@
 | `llama-shaped__llama3-shaped.js` | window.BY1_DIFF = window.BY1_DIFF || {}; |
 | `qwen3-next-shaped__laguna-tiny.js` | window.BY1_DIFF = window.BY1_DIFF || {}; |
 
+## `src/by1/` —— 3 个
+
+| 文件 | 用途 |
+|---|---|
+| `io.py` | 文件读写的每一种意图，各有一个名字 |
+| `skip.py` | 一次检查有五种结论，不是两种 |
+| `ver.py` | 版本号的唯一真相源 |
+
 ## `src/checks/` —— 39 个
 
 | 文件 | 用途 |
@@ -641,7 +665,6 @@
 | 文件 | 用途 |
 |---|---|
 | `__init__.py` | 让这个目录成为一个包，这样 setuptools 装得上 |
-| `by1.py` | 用一份描述，写一个语言模型 |
 | `by1blocks.py` | 读 `.by1` 里那些"块"，把不一致报出来 |
 | `by1contract.py` | 从机制声明**推出**张量契约 |
 | `by1emit.py` | 从 IR 生成 **ggml 侧的后端需求 + 声明式图**，并和 GGUF manifest 双向对拍 |
@@ -654,6 +677,7 @@
 | `by1state.py` | 按选择器把 state 声明落到具体的层上 |
 | `by1tens.py` | 张量契约实例化：把契约按等价类求值出形状 |
 | `by1vocab.py` | 真实数据的词汇表。模式从这里来，不从想象来 |
+| `cli.py` | 用一份描述，写一个语言模型 |
 
 ## `src/modelcheck/` —— 21 个
 
