@@ -115,11 +115,6 @@ def _seed_for(seed, name):
     return int.from_bytes(digest[:8], 'big') % (2 ** 63 - 1)
 
 
-def _target_dtype(name, dtype):
-    """生成值的落地 dtype。整型/布尔 buffer 不是"值"，保持原样。"""
-    return dtype
-
-
 def sample(group, seed, std, torch):
     """一个共享组的随机值。判据：确定性、数值温和、语义像初始化。"""
     canonical = min(group['names'])

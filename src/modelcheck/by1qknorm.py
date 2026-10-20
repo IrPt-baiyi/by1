@@ -90,21 +90,6 @@ def _qwen3next_cfg():
     return cfg
 
 
-def _official_qwen3next():
-    """官方 `Qwen3NextAttention`：`q_proj` 出 2 倍宽，按**每头**切成 (q, gate)，
-
-    注意力算完之后 `attn_output = attn_output * torch.sigmoid(gate)`。
-    与 by1 的 `q_gate = true` 对应（同样每头一份门、同样乘在输出上）。
-    """
-    cfg = Qwen3NextConfig(hidden_size=D, num_attention_heads=NH,
-                          num_key_value_heads=KV, head_dim=HD,
-                          num_hidden_layers=1, intermediate_size=64,
-                          max_position_embeddings=64, rms_norm_eps=1e-6,
-                          attention_bias=False, attention_dropout=0.0,
-                          layer_types=["full_attention"])
-    cfg._attn_implementation = "eager"
-    return Qwen3NextAttention(cfg, layer_idx=0).eval()
-
 def _official_olmo2():
     """官方 `Olmo2Attention`：`q_norm`/`k_norm` 是**整宽** RMSNorm
 

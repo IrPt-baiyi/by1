@@ -83,14 +83,6 @@ def items_of(info):
     return out
 
 
-def _tail_of(nm, lname):
-    """物理名里属于逻辑名（+量化后缀）的那条尾巴。找不到返回 None。"""
-    for s in ("",) + Q_SUFFIXES:
-        if nm.endswith(lname + s):
-            return lname + s
-    return None
-
-
 def _fuzzy_tail(nm, lname):
     """逻辑名对物理尾巴**逐段对齐**（`embed.weight` 对 `embed_tokens.weight`），
     并允许尾巴后多出段（`q_proj` 对 `q_proj.weight`）—— 对上了就返回

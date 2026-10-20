@@ -119,26 +119,6 @@ def _layers_of(info, mech, nlay):
     return hits
 
 
-def internal_index(info):
-    """{(层号, 机制, 逻辑名去掉 .weight) -> 模型内部的参数名}。
-
-    模型的参数名是后端自己的（`layers.0.op1.in_proj_qkv`），
-    而契约里的逻辑名是 `in_proj_qkv.weight` —— 差一个后缀。
-    所以按"去掉 .weight"建索引。
-    """
-    out = {}
-    for item in (info.get('tens') or []):
-        mech, tensors = item[0], item[3]
-        for i in _layers_of(info, mech, item[2]):
-            for t in tensors:
-                logical = t[0]
-                if logical == '--':
-                    continue
-                key = logical.replace('.weight', '').replace('.', '_')
-                out[(i, mech, logical)] = None      # 由调用方按 op 序号补
-    return out
-
-
 def load(model, info, fetch, stack='main'):
     """把真权重装进去。
 

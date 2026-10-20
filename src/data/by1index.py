@@ -74,12 +74,6 @@ def ms_ids():
     return out
 
 
-def tensors_from_index(txt):
-    j = json.loads(txt)
-    return {k: list(v) for k, v in (j.get('weight_map') or {}).items()}, \
-        {k: list(v) for k, v in (j.get('weight_map') or {}).items()}
-
-
 def tensors_from_header(mid, where, shard='model.safetensors'):
     """没有 index 的单文件模型：抓 safetensors 的头。"""
     url = ('https://www.modelscope.cn/api/v1/models/%s/repo?FilePath=%s'

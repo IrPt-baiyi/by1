@@ -64,19 +64,17 @@ D, E, K, NG, TG = 256, 32, 4, 8, 4
 NT = 12
 
 
-def _note_links():
-    """判卷人现在验三层（2026-10-17 第十七轮）：
-
-      ① 路由式子 vs 官方 router（原来就有）；
-      ② **整块**：官方 `DeepseekV3MoE`（路由 + 专家 + 共享 + 缩放）-> `by1exec.op_moe`；
-      ③ **专家路径单独对拍**：官方权重手算逐专家 MLP（`shared=0`）。
-
-    **一个很隐蔽的坑**：官方模块独立构造时
-    `experts.gate_up_proj` / `down_proj` / `shared_experts.*` 是 `torch.empty`（未初始化），
-    实测恰好全零 —— 于是“官方 experts 返回 0”、“换掉 w1/w3 结果也不变”，
-    看上去还很一致（0 == 0）。判卷人必须**自己给权重**；
-    另外专家参考要**逐 token** 写（批量写法会轰出错形状，而结果又恰好是 0）。
-    """
+# 判卷人现在验三层（2026-10-17 第十七轮）：
+#
+#   ① 路由式子 vs 官方 router（原来就有）；
+#   ② **整块**：官方 `DeepseekV3MoE`（路由 + 专家 + 共享 + 缩放）-> `by1exec.op_moe`；
+#   ③ **专家路径单独对拍**：官方权重手算逐专家 MLP（`shared=0`）。
+#
+# **一个很隐蔽的坑**：官方模块独立构造时
+# `experts.gate_up_proj` / `down_proj` / `shared_experts.*` 是 `torch.empty`（未初始化），
+# 实测恰好全零 —— 于是“官方 experts 返回 0”、“换掉 w1/w3 结果也不变”，
+# 看上去还很一致（0 == 0）。判卷人必须**自己给权重**；
+# 另外专家参考要**逐 token** 写（批量写法会轰出错形状，而结果又恰好是 0）。
 
 def main():
     if DeepseekV4TopKRouter is None:

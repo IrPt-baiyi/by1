@@ -248,13 +248,6 @@ def write_text(path, text, encoding=ENCODING):
         f.write(text)
 
 
-def append_text(path, text, encoding=ENCODING):
-    """追加文本。行尾同样恒为 LF（理由见 `write_text`）。"""
-    _ensure_dir(path)
-    with io.open(path, 'a', encoding=encoding, newline='') as f:
-        f.write(text)
-
-
 def write_json(path, obj, encoding=ENCODING, **kw):
     """写 JSON。`indent=0` 是这个仓库 `refs/` 的既有格式。
 
