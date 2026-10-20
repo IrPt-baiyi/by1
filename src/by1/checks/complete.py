@@ -628,7 +628,7 @@ def main():
             batch['mtp_position_ids'] = torch.arange(n)[None] + 1
             batch['mtp_embedding_indices'] = torch.arange(n)[None].roll(-1, 1)
             torch.save(batch, root / 'batch.pt')
-            command = [_sys.executable, by1paths.tool('by1.py'), 'train', str(path), '--batch-file',
+            command = [_sys.executable, by1paths.tool('cli.py'), 'train', str(path), '--batch-file',
                        str(root / 'batch.pt'), '--weights', str(root / 'initial'), '--steps', '1',
                        '--save', str(root / 'trained')]
             result = subprocess.run(command, capture_output=True, encoding='utf-8', timeout=120)

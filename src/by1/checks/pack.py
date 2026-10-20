@@ -51,7 +51,7 @@ OUT = sys.argv[1] if len(sys.argv) > 1 else os.path.join(
 # 由 `_where()` 一处决定。原来这里把 30 个脚本名和 20 个文档名写在一起、
 # 还各自带目录前缀，搬一次家就要改 50 行。
 WANT = [
-    ('by1.py', '入口'),
+    ('cli.py', '入口'),
     ('by1check.py', '不变式检查器（解析 + 契约 + 等价类）'),
     ('by1codegen.py', '后端一：PyTorch nn.Module'),
     ('by1exec.py', '后端二：纯 NumPy'),
@@ -180,7 +180,6 @@ WANT = [
     ('models.tsv', '模型清单：长名/短名/HF repo 的唯一真相源 + refs 出处来源'),
     ('1.md', '项目说明（宣言）'),
     ('history/ir.md', '开发日志'),
-    ('history/plan.md', '2026-10-08 的计划'),
     ('docs/INVENTORY.txt', '验证清单：每个模型验到了什么'),
     ('.gitignore', ''),
     # **`.gitattributes` 也要进包。** 它是那份"文本一律 LF"的规则 ——
@@ -234,6 +233,15 @@ def _where(name):
             rel = 'src/' + (sub + '/' if sub else '') + name
             if os.path.exists(norm(rel)):
                 return rel
+        # **迁移中的包**（`src/by1/**`，计划见 docs/TEMP-rename-plan.md）：
+        # 按裸名递归找 —— 包里没有 shim，真身只在这一处。
+        pkg = norm('src/by1')
+        if os.path.isdir(pkg):
+            for base, dirs, fs in os.walk(pkg):
+                dirs[:] = [d for d in dirs if d != '__pycache__']
+                if name in fs:
+                    return os.path.relpath(os.path.join(base, name),
+                                           ROOT).replace(os.sep, '/')
         return 'src/' + name      # 兜底：让 absent 报出来，而不是静默错位
     return name
 
@@ -245,7 +253,37 @@ def disk_modules():
     for pat in ('src/*.py',) + tuple(
             'src/%s/*.py' % s for s in by1paths.SUBDIRS):
         out.update(os.path.basename(p) for p in _g.glob(norm(pat)))
+    # **迁移中的包**（`src/by1/**`）：递归收 —— 这些才是真身。
+    pkg = norm('src/by1')
+    if os.path.isdir(pkg):
+        for base, dirs, fs in os.walk(pkg):
+            dirs[:] = [d for d in dirs if d != '__pycache__']
+            out.update(f for f in fs if f.endswith('.py'))
     return out
+
+
+#: 标准库名字。**闭包要跳过它们** —— 包里有 `by1/io.py` 之后，
+#: `import io` 会被当成「仓库里的模块」而误报缺清单。3.9 没有
+#: `sys.stdlib_module_names`，所以留一份最小兜底集。
+_STDLIB_FALLBACK = {
+    'io', 'os', 'sys', 're', 'json', 'math', 'ast', 'glob', 'time', 'argparse',
+    'subprocess', 'hashlib', 'pathlib', 'shutil', 'tempfile', 'collections',
+    'functools', 'itertools', 'typing', 'importlib', 'contextlib', 'dataclasses',
+    'enum', 'types', 'warnings', 'random', 'struct', 'statistics', 'pickle',
+    'gzip', 'base64', 'csv', 'decimal', 'copy', 'datetime', 'uuid', 'traceback',
+    'inspect', 'sysconfig', 'platform', 'shlex', 'string', 'textwrap',
+    'threading', 'queue', 'logging', 'socket', 'ssl', 'zlib', 'fnmatch',
+    'codecs', 'unicodedata', 'operator', 'signal', 'ctypes', 'errno', 'heapq',
+    'bisect', 'array', 'abc', 'numbers', 'fractions', 'locale', 'getpass',
+}
+
+
+def _is_stdlib(name):
+    if name in getattr(sys, 'stdlib_module_names', ()):
+        return True
+    if name in sys.builtin_module_names:
+        return True
+    return name in _STDLIB_FALLBACK
 
 
 def closure_missing():
@@ -282,7 +320,10 @@ def closure_missing():
             else:
                 continue
             for m in mods:
-                base = m.split('.')[0] + '.py'
+                head = m.split('.')[0]
+                if _is_stdlib(head):
+                    continue
+                base = head + '.py'
                 if base in disk:
                     deps.add(base)
         graph[f] = deps
