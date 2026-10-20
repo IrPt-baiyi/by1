@@ -1,6 +1,6 @@
 # 这个仓库里每个文件是干什么的
 
-> 562 个跟踪文件。按"你会想找什么"分组，不按字母表。
+> 535 个跟踪文件。按"你会想找什么"分组，不按字母表。
 >
 > **这份文档是生成的**：`python src/by1files.py --write`。
 > 文件清单、每组的个数、每个文件的一句话都从目录树和 docstring 来 ——
@@ -227,7 +227,7 @@
 |---|---|
 | `ci.yml` | 每次提交都跑三道门 —— **这是这个仓库唯一的自动门 |
 
-## `docs/` —— 45 个
+## `docs/` —— 18 个
 
 活的文档 —— 还没做完的事记在这里，做完的挪去 `history/`。
 
@@ -236,48 +236,21 @@
 | `1.0-roadmap.md` | By1 长期路线图 |
 | `INVENTORY.txt` | 验证清单：每个模型验到了什么、判卷人是谁 |
 | `TEMP-rename-plan.md` | 命名重命名与大规模迁移计划（2026-10-20） |
-| `autodl-file-storage.md` | AutoDL 文件存储操作单 —— 重租卡 0 下载 |
 | `backend-matrix.md` | 后端 × 机制矩阵（生成物，别手改） |
 | `branch-exec-plan.md` | B 弧线：多分支从「能表达」到「能执行」（2026-10-20 起） |
 | `by1-language-spec.md` | T2 语言合同（可执行规范）：语法骨架/错误模型/版本策略/最小绿红例；一致性判卷人 by1langspec.py |
-| `check-map.md` | `check()` 的结构图 |
-| `closing-plan.md` | 收尾计划（2026-10-18 · 大收尾） |
 | `complete-models.md` | 完整模型：参数共享、视觉与 MTP |
-| `convert-diff.md` | by1 build-gguf 与上游 convert_hf_to_gguf 的结构差异（T24） |
 | `criteria-review.md` | **请人重算**的任务卡：判据本身没人验过，这一份是那份活。含"refs 判 by1 不是外部判卷"那一节 |
-| `distill-plan.md` | 蒸馏计划（A 层 MVP，2026-10-18） |
-| `gap-analysis.md` | 缺口盘点（rc1 后）：真 bug / 证据缺口 / 范围缺口 / 环境缺口 / 计划缺口 五类分账，每条带证据与收口路径 |
-| `ggml-gaps-feasibility.md` | ggml 缺口可行性（2026-10-17） |
-| `ggml-plan.md` | ggml 数值对拍：测量与判据 |
 | `gpu-day-runbook.md` | GPU 日 runbook —— 租卡那天照这张纸走 |
 | `gpu-validation-results.md` | GPU Validation Results / GPU 验证结果 |
 | `ir-multibranch-plan.md` | by1-ir 1.2「多分支」计划（2026-10-19 · A 弧线第 1 轮） |
 | `ir-multibranch-survey.json` | "model": "attn-fused-shaped.by1", |
 | `llama.cpp-baseline.md` | 原版 llama.cpp 与固定 Qwen3.8 GGUF 的可复现 GPU 基线命令 |
 | `llamacpp-plan.md` | llama.cpp 集成策略 |
-| `multimodal-gaps.md` | 多模态缺口单（T21 判据之一）/ Multimodal gap list |
-| `p0-loop-report.md` | P0 闭环报告（Qwen3-0.6B）：声明↔产物 311/311 · GGUF 产物 · 上游 logits 逐位（106949 值）· 生成同文；**未跑的（T13 GPU-only）单列，不写成通过** |
-| `p0-model-selection.md` | T1 选择记录：P0 代表模型（Qwen3-0.6B）、revision、许可证、参考实现、上游运行时与不纳入分支 |
-| `pattern-design-review.md` | 对上面那份草案的审查 —— **照做之前先读它** |
-| `pattern-design.md` | 设计草案 v0，**状态：待审**。它挡着 4 个模型 |
 | `precision-budget.md` | 精度预算表（B2）：每个判据阈值的出处/推导/实测余量。守卫 eps 与判据阈值是两回事，规矩在文档里 |
 | `prims-spec.md` | **生成物**：原语数值规格（公式/形状/dtype/边界/出处）。`by1graph.py --spec`；键集与原语表 import 时硬断言对账 |
-| `product-definition.md` | T1 产品定义（冻结版）：目标用户/输入输出/支持层级/不做的运行时职责/代表模型 |
 | `quantization.md` | 量化格式的存储合同、共享权重边界和 Q1–Q3 验收顺序 |
-| `qwen3asr-silent-load-report.md` | T21 取证报告：transformers 对 Qwen3-ASR-0.6B 静默装载错误模型（版本错配实录，A3 缺口的证据本体） |
-| `rc1-decision.md` | RC1 架构决策（T30） |
 | `repro-guide.md` | 复现指南：从零到绿的一条路 |
-| `site-plan.md` | 架构浏览器计划（2026-10-18） |
-| `step5-contract-plan.md` | A 线工作单：把 Step-5 反推草稿升格成 models/ 合同（① 95 层调度证据已就位 · ⑤ 六个语义未知项收缩到 1 个 · ③ 后端选择是方向题） |
-| `step5-convert-cheatsheet.md` | Step-5 发布日当天结构对账 + 转换速查（2449 张量逐项实测，非预测）：新张量名/新机制/转换器要改的 9 处/待确认坑 |
-| `step5-runbook.md` | Step-5 发布日快速反应手册：抓元数据/草稿 by1/合同审计/GGUF 产物/推销素材/风险预案 |
-| `step5-vs-h2-2026.md` | 2026 H2 四模型架构大表：Step-5 vs Step-3.7 / DSV4.1-Flash / Qwen3.8-Flash-Next / GLM-5.3-Flash |
-| `support-matrix.md` | 支持矩阵（四态）/ Support matrix (four states) |
-| `t26-plan.md` | T26 第二架构毕业选型：mamba-130m-hf（130M，递归状态）——判卷人实测表（transformers Mamba v1 走 AutoModel / llama.cpp mamba）、缺什么、四件事、完成定义 |
-| `t27-plan.md` | T27：第三个机制族 —— **混合栈**（Attention 与 SSM 在同一个模型里） |
-| `t28-plan.md` | T28：同一类的**第二个成员** —— 不同混合图案的 granite-4.0-h-1b |
-| `t29-plan.md` | T29：另一根轴 —— **层内并行**（Falcon-H1） |
-| `which-gpu.md` | > 从 `README.md` 挪出来的。它是一次**具体的调查** —— 这台开发机上 |
 
 ## `docs/gpu-results/` —— 16 个
 

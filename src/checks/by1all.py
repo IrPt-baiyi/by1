@@ -322,7 +322,7 @@ GGML_GRAPH_MODELS = ['hello.by1', 'llama-shaped.by1', 'gpt2-tiny.by1',
 #: 名单 = 上面那份**整份**（20 份，含 k-pool）：图->C 的发射器在第四轮对
 #: k-pool 明确拒绝过（NaN），第五轮补了 float 下标内核（`p_get_rows_f` /
 #: `p_one_hot_f`）+ 推断维形状（`_view_shp`）之后就吃得下了 ——
-#: `mla-sparse` 实测 **4.022e-07 绝对 / 6.746e-07 相对**（见 `docs/gap-analysis.md` A3-5）。
+#: `mla-sparse` 实测 **4.022e-07 绝对 / 6.746e-07 相对**（原记录见 git 历史 A3-5）。
 GRAPH_C_MODELS = list(GGML_GRAPH_MODELS)
 
 SHAPED = ['llama-shaped.by1', 'mixtral-shaped.by1', 'gpt-oss-shaped.by1',

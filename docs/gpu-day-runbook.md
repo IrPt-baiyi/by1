@@ -13,7 +13,7 @@
 | GPU 显存 | ≥ 80 GB（Qwen3.8-27B BF16 占 ~55 GB，短上下文前向） | 27B 相跳过 | `nvidia-smi --query-gpu=name,memory.total --format=csv` |
 | CPU 内存 | ≥ 260 GB（A3-0 e2e 全量 245 GB float32 足迹） | **e2e 全量不跑**（硬跑会冻结整机，这个账记过） | `free -g` |
 | 磁盘 | ≥ 60 GB（31 GB FP8 + 影子 + 临时输出） | 真权重相失败 | `df -h .` |
-| 文件存储 | 同区域挂载 + `by1cache verify` 全绿 | 又得重下（网速不够） | 见 [文件存储操作单](autodl-file-storage.md) |
+| 文件存储 | 同区域挂载 + `by1cache verify` 全绿 | 又得重下（网速不够） | 见文件存储操作单（已移出仓库，见 git 历史） |
 | 权重缓存 | `HF_HOME` 指向文件存储，`cache-manifest.json` 在旁边 | 同上 | `python src/data/by1cache.py verify <清单>` |
 
 `by1gpuday.py` 的预检会自动查前四项并**明说哪项不够** —— 跳过要出声，

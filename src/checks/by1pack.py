@@ -457,10 +457,9 @@ def main():
             if os.path.isfile(s):
                 put(s, 'gpu/' + f)
 
-    # drafts/（**草稿也要装**）：`docs/` 里的工作单引用它们
-    # （例如 `docs/step5-contract-plan.md` 指向 `drafts/step5-schedule-probe.by1`）
-    # —— 不装的话，拿到包的人照文档点链接就是 404。
-    # 它们不是"没有判卷人的草稿就不发"，而是"文档引用得到的东西必须在包里"。
+    # drafts/：**已移出仓库**（深历史留 git），这段循环自然为空。
+    # 保留它是因为 by1pack 的判据是「文档引用得到的东西必须在包里」——
+    # 草稿若回来，自动进包。
     for s in sorted(glob.glob(norm('drafts/*'))):
         if os.path.isfile(s):
             put(s, 'drafts/' + os.path.basename(s))

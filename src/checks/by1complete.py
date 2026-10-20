@@ -438,7 +438,7 @@ def main():
                                      (MAMBA, 'state-spaces__mamba-130m-hf.config.json'),
                                      # T27：第三架构（**混合栈**：Attention 与 SSM2 同栈）。
                                      # **还没进 GALLERY** —— 那张表要写 tiny/config_of/
-                                     # reference 三条分支，下一步做（见 docs/t27-plan.md）。
+                                     # reference 三条分支，下一步做（T27 记录已移出仓库，见 git 历史）。
                                      # config 逐字段与家族无关，先接上。
                                      (GRANITE, 'ibm-granite__granite-4.0-h-350m.config.json'),
                                      # T28：同类第二个成员（图案与 μP 都不同）。
