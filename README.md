@@ -163,11 +163,17 @@ The upstream-first approach is part of the plan. llama.cpp has merged Qwen3.8-Fl
 
 | | |
 |---|---|
-| **59** `.by1` files in `models/` | declarative architecture descriptions |
-| **15** real models verified | config field-by-field, tensor name-by-name and shape-by-shape, against the publisher's own artifacts |
+| **71** `.by1` files in `models/` | declarative architecture descriptions |
+| **31** real models verified | config field-by-field, tensor name-by-name and shape-by-shape, against the publisher's own artifacts |
 | **6** mechanisms computable | `Attention` · `FFN` · `KDA` · `MLA` · `MoE` · `SSM` |
 | **4** independent backends | NumPy · PyTorch · generated C · **generated ggml**, cross-checked |
-| **6** models, forward numerics | compared bitwise against official implementations |
+| **5** models, forward numerics | same weights and inputs against the official implementation (1e-3 family) |
+
+**2026-10-19/20:** `by1-ir` moved 1.2 → 1.4 — multibranch `stacks`/`wiring`/`shared`,
+vision entry/exit operators, and `causal`/`rope_pos` execution semantics.
+`complete-Qwen3-0.6B` runs through IR → exec backend and matches the official
+transformers forward at 4.301e-06 (tier 5); browser graphs now show real IR
+branch structure instead of a "partial" badge.
 
 **Verify the project.** Tier 1 needs no dependencies at all; the core is pure standard library.
 
@@ -324,11 +330,16 @@ PyTorch 模型源码；执行生成模型还需安装 PyTorch（`.[train]`）。
 
 | | |
 |---|---|
-| `models/` 里 **59** 份 `.by1` | 声明式的架构描述 |
-| **15** 个真实模型验过 | config 逐字段 · 张量逐名字逐形状，判卷人是发布方的官方产物 |
+| `models/` 里 **71** 份 `.by1` | 声明式的架构描述 |
+| **31** 个真实模型验过 | config 逐字段 · 张量逐名字逐形状，判卷人是发布方的官方产物 |
 | **6** 种机制算得了 | `Attention` · `FFN` · `KDA` · `MLA` · `MoE` · `SSM` |
 | **4** 个独立后端 | NumPy · PyTorch · 生成的 C · **生成的 ggml**，互相交叉验证 |
-| **6** 个模型比过前向数值 | 对着官方实现逐位对拍 |
+| **5** 个模型比过前向数值 | 与官方实现同权重同输入对拍（1e-3 族） |
+
+**2026-10-19/20：** `by1-ir` 从 1.2 走到 1.4 —— 多分支 `stacks`/`wiring`/`shared`、
+视觉入口/出口算子、`causal`/`rope_pos` 执行语义。`complete-Qwen3-0.6B` 走通
+IR → exec 后端，与 transformers 官方前向 4.301e-06（档 5）；浏览器图换成
+真 IR 分支结构，不再是「partial」标记。
 
 **验证项目。** 第一档一个依赖都不用装，核心是纯标准库。
 
@@ -386,5 +397,5 @@ not a lack of interest in this project......Nevertheless, I will continue to wor
 
 > 本次新增的入门说明由 AI 生成并翻译。The new quick-start instructions were generated and translated by AI.
 
-> 数字为 2026-10-12 现量。**"多少项"随机器与档位变化，不是常量** ——
+> 数字为 2026-10-20 现量。**"多少项"随机器与档位变化，不是常量** ——
 > 以你自己那次跑出来的为准，见 [`TESTING.md`](TESTING.md)。
