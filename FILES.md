@@ -1,6 +1,6 @@
 # 这个仓库里每个文件是干什么的
 
-> 529 个跟踪文件。按"你会想找什么"分组，不按字母表。
+> 535 个跟踪文件。按"你会想找什么"分组，不按字母表。
 >
 > **这份文档是生成的**：`python src/by1files.py --write`。
 > 文件清单、每组的个数、每个文件的一句话都从目录树和 docstring 来 ——
@@ -581,10 +581,11 @@
 | `llama-shaped__llama3-shaped.js` | window.BY1_DIFF = window.BY1_DIFF || {}; |
 | `qwen3-next-shaped__laguna-tiny.js` | window.BY1_DIFF = window.BY1_DIFF || {}; |
 
-## `src/by1/` —— 16 个
+## `src/by1/` —— 17 个
 
 | 文件 | 用途 |
 |---|---|
+| `__init__.py` | """by1 的内部包（迁移计划见 docs/TEMP-rename-plan.md） |
 | `boot.py` | 从一个已发布的 checkpoint **反推**一份 .by1 草稿 |
 | `c.py` | 第三个后端：从 IR 生成 **C 代码**，编译，跑起来，和 NumPy 后端对拍 |
 | `check.py` | 不变式检查器 v0.1 |
@@ -602,10 +603,11 @@
 | `skip.py` | 一次检查有五种结论，不是两种 |
 | `ver.py` | 版本号的唯一真相源 |
 
-## `src/by1/checks/` —— 38 个
+## `src/by1/checks/` —— 39 个
 
 | 文件 | 用途 |
 |---|---|
+| `__init__.py` | """by1 的判卷人层（迁移中 —— 计划见 docs/TEMP-rename-plan.md） |
 | `all.py` | 一次跑完全部验证，失败就非零退出 |
 | `attrs.py` | 机制属性的闭集 与 官方出处**：闭集里不许躺着一个谁都说不清来历的取值 |
 | `backends.py` | 后端 × 机制矩阵：**承诺的公共子集到底有多大** |
@@ -645,10 +647,11 @@
 | `tiers.py` | 档位归属的自动判据**：判卷人声明的档位 vs 它真的需要什么 |
 | `verify.py` | 差分验证：把 .by1 的展开结果与官方产物对拍 |
 
-## `src/by1/data/` —— 8 个
+## `src/by1/data/` —— 9 个
 
 | 文件 | 用途 |
 |---|---|
+| `__init__.py` | """by1 的数据取回/比对（迁移中 —— 计划见 docs/TEMP-rename-plan.md）。""" |
 | `cache.py` | 权重缓存清单：生成、校验、报红 |
 | `cloud.py` | 驱动一台租来的显卡机器**（AutoDL 或任何 SSH 可达的） |
 | `cmp.py` | 把所有模型的架构摆成一张表 |
@@ -658,17 +661,19 @@
 | `shapes.py` | 把 `{名: null}` 的 refs 补成 F1（带 dtype + shape） |
 | `triage.py` | 把一批新 config 过一遍 by1，看谁需要新原语 |
 
-## `src/by1/escape/` —— 2 个
+## `src/by1/escape/` —— 3 个
 
 | 文件 | 用途 |
 |---|---|
+| `__init__.py` | """by1 的逃生舱（迁移中 —— 计划见 docs/TEMP-rename-plan.md）。""" |
 | `extdemo.py` | 逃生舱第二层的**判卷人** |
 | `raw.py` | **不是模型，是逃生舱的工厂函数实现**。必须和 `raw-escape.by1` 挨着（`by1codegen` 按名字找它） |
 
-## `src/by1/lang/` —— 13 个
+## `src/by1/lang/` —— 14 个
 
 | 文件 | 用途 |
 |---|---|
+| `__init__.py` | """by1 的语言层（迁移中 —— 计划见 docs/TEMP-rename-plan.md）。""" |
 | `blocks.py` | 读 `.by1` 里那些"块"，把不一致报出来 |
 | `cli.py` | 用一份描述，写一个语言模型 |
 | `contract.py` | 从机制声明**推出**张量契约 |
@@ -683,10 +688,11 @@
 | `tens.py` | 张量契约实例化：把契约按等价类求值出形状 |
 | `vocab.py` | 真实数据的词汇表。模式从这里来，不从想象来 |
 
-## `src/by1/modelcheck/` —— 20 个
+## `src/by1/modelcheck/` —— 21 个
 
 | 文件 | 用途 |
 |---|---|
+| `__init__.py` | """by1 的逐模型判卷人（迁移中 —— 计划见 docs/TEMP-rename-plan.md）。""" |
 | `dev.py` | 设备无关性**的判卷人 |
 | `gemma.py` | GeGLU 那一支 FFN**：门控 + tanh 近似激活，对官方 GemmaMLP |
 | `gpt2.py` | GPT-2 前向的差分验证，**用真的 GPT-2** |
