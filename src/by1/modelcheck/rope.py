@@ -26,6 +26,17 @@ llama3 和 YaRN 不是一回事 —— YaRN 调的是 ramp 的起止维，llama3
 
 import os as _os
 import sys as _sys
+# 引导（生成的，别手改）：往上找到 `by1/` 目录（即 `src/`），让包可导入。
+# 判卷人是被**当脚本 spawn** 的（by1all），没有这层就 ModuleNotFoundError。
+_p = _os.path.dirname(_os.path.abspath(__file__))
+while _p and not _os.path.isdir(_os.path.join(_p, 'by1')):
+    _p = _os.path.dirname(_p)
+_sys.path.insert(0, _p)
+import by1  # noqa: E402,F401
+import by1paths  # noqa: E402,F401
+
+import os as _os
+import sys as _sys
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))
 import by1paths  # noqa: E402,F401
 import sys  # noqa: E402

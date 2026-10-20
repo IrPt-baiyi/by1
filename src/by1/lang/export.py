@@ -34,6 +34,17 @@
 
 **下一步劈语义层时，它们该跟谁走是那个决定的第一个问题。**
 """
+
+import os as _os
+import sys as _sys
+# 引导（生成的，别手改）：往上找到 `by1/` 目录（即 `src/`），让包可导入。
+# 判卷人是被**当脚本 spawn** 的（by1all），没有这层就 ModuleNotFoundError。
+_p = _os.path.dirname(_os.path.abspath(__file__))
+while _p and not _os.path.isdir(_os.path.join(_p, 'by1')):
+    _p = _os.path.dirname(_p)
+_sys.path.insert(0, _p)
+import by1  # noqa: E402,F401
+import by1paths  # noqa: E402,F401
 import re
 
 def make(*, _main_stack_names, hp, layer_seq, mechs, named, overrides, pb, rep, scope, ROPE_DROP, ROPE_KEYS, W, MISSING, eval_num, parse_state_key, selector_matches, split_top):

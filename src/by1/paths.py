@@ -65,6 +65,17 @@
 这个模块会被几乎所有 `by1*.py` import，所以它和 `by1io.py` 一样
 **不能**引入 numpy / torch / transformers。
 """
+
+import os as _os
+import sys as _sys
+# 引导（生成的，别手改）：往上找到 `by1/` 目录（即 `src/`），让包可导入。
+# 判卷人是被**当脚本 spawn** 的（by1all），没有这层就 ModuleNotFoundError。
+_p = _os.path.dirname(_os.path.abspath(__file__))
+while _p and not _os.path.isdir(_os.path.join(_p, 'by1')):
+    _p = _os.path.dirname(_p)
+_sys.path.insert(0, _p)
+import by1  # noqa: E402,F401
+import by1paths  # noqa: E402,F401
 import glob as _glob
 import io
 import os
