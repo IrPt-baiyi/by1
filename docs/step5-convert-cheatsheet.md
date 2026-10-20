@@ -140,7 +140,7 @@ python src/data/by1fetch.py --only Step-5-Preview   # 产出 refs/stepfun-ai__St
 - `refs/stepfun-ai__Step-5-Preview-BF16.config.json`
 - `refs/stepfun-ai__Step-5-Preview-BF16.tensors.json`（2449 个，含 dtype/shape）
 - `refs/stepfun-ai__Step-5-Preview-BF16.index.json`（工作缓存，不入语料）
-- `drafts/step5-preview-draft.by1`（by1boot 反推草稿：95 层注意力 / FFN×7 / MoE×88，与本文一致）
+- step5 预览草稿（by1boot 反推：95 层注意力 / FFN×7 / MoE×88，与本文一致；已移出仓库）
 
 ## 附录 C · 与 Step-3.7 的张量模式差异统计
 

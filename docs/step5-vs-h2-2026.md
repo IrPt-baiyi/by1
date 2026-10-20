@@ -20,7 +20,7 @@
 ### 表一 · 读表注意
 
 1. **「+MTP」不占主干层号**：MTP 是额外的预测层（3/3/3/1/1 家家不同），Step-5 的张量层号是 92–94（独立分片），DSV4.1 是 mtp.* 命名——别把「92 + MTP 3」读成 92 里含 3 层。
-2. **DSV4.1 的 20+20 是草稿口径**：出处是 drafts/deepseek-v4.1-flash.by1 的公开摘要（CED 编解码拆分），config 实测只有 num_hidden_layers=40。字段旁证（kv_source_layer_ids 到 20 为止、candidate_source_layer_id=20、dspark 在 37–39）与 20+20 **相容但不证实**——⚠ 未销。
+2. **DSV4.1 的 20+20 是草稿口径**：出处是 drafts 里 DSV4.1 草稿的公开摘要（已移出仓库；CED 编解码拆分），config 实测只有 num_hidden_layers=40。字段旁证（kv_source_layer_ids 到 20 为止、candidate_source_layer_id=20、dspark 在 37–39）与 20+20 **相容但不证实**——⚠ 未销。
 3. **vocab 已经分叉成两层**：Q3.8-FN 的 248320 之外还有 20M ngram 底表（ngram_vocab_size_base=20000000）；DSV4.1 另有 Engram 16M（engram_vocab_size=16000000，压缩后 99092）。表里只报主词表。
 4. **上下文是声明值不是实测值**：1M 来自 max_position_embeddings / max_seq_len；外推机制各家不同（Step-5 llama3 缩放 factor=1.0 但 high_freq_factor=32 仍进频率公式；DSV4.1 YaRN factor=16、基 65536），实际可达长度未验证。
 5. **张量总数 ≠ 规模**：它数的是存储布局。DSV4.1 的 96085 里 94821 个是逐专家量化张量（w1/w2/w3 + scale × 专家项）；Step-5 的 352 个专家被 3D 打包成 88×3 个张量。比参数量要另算。

@@ -59,8 +59,7 @@ x   = residual + x
 
 **by1 现在的 `pattern` 轴是"一层一个混合器"。** 证据：
 
-- 语法上 `pattern` 是机制序列：`*` 重复、`+` 拼接（`drafts/step5-schedule-probe.by1`
-  里就用了 `slide + full`），展开后 **`layer_seq` 每层一条记录、只带一个机制**；
+- 语法上 `pattern` 是机制序列：`*` 重复、`+` 拼接（step5 调度探针草稿里就用了 `slide + full`），展开后 **`layer_seq` 每层一条记录、只带一个机制**；
 - 每层**再挂一个 feed**（`main[:] >> FFN(...)`），这是唯一的"第二个东西"；
 - 把仓库里 49 份 `.by1` 全扫了一遍：**没有任何一份出现过"一层挂多个机制"**
   （`layer_seq` 里 attached 只有 feed，且长度恒为 1 或 0）；

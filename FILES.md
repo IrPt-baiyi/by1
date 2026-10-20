@@ -1,6 +1,6 @@
 # 这个仓库里每个文件是干什么的
 
-> 605 个跟踪文件。按"你会想找什么"分组，不按字母表。
+> 562 个跟踪文件。按"你会想找什么"分组，不按字母表。
 >
 > **这份文档是生成的**：`python src/by1files.py --write`。
 > 文件清单、每组的个数、每个文件的一句话都从目录树和 docstring 来 ——
@@ -227,21 +227,7 @@
 |---|---|
 | `ci.yml` | 每次提交都跑三道门 —— **这是这个仓库唯一的自动门 |
 
-## `article/` —— 7 个
-
-对外发布的图文成品：数据配图（charts.py 程序绘制，不用生图模型——数字必须程序画）与发布稿。
-
-| 文件 | 用途 |
-|---|---|
-| `2026q3-open-model-war.md` | Q3 开源模型大战图文发布稿：24 款阵容、★/●/○ 三级数据标注、张量级深挖 |
-| `charts.py` | import math |
-| `fig0-roster.png` | article/ 配图：Q3 24 款阵容全景（★张量级实测 / ●配置实测 / ○未验） |
-| `fig1-tensors.png` | article/ 配图：张量世界观（对数横条，1471~96085） |
-| `fig2-dtype.png` | article/ 配图：dtype 存储分布（BF16 / F8 / I8 三派） |
-| `fig3-schools.png` | article/ 配图：Q3 五大流派对比（含 Kimi-K3） |
-| `fig4-shape.png` | article/ 配图：收敛出的公共形状示意图 |
-
-## `docs/` —— 44 个
+## `docs/` —— 45 个
 
 活的文档 —— 还没做完的事记在这里，做完的挪去 `history/`。
 
@@ -249,6 +235,7 @@
 |---|---|
 | `1.0-roadmap.md` | By1 长期路线图 |
 | `INVENTORY.txt` | 验证清单：每个模型验到了什么、判卷人是谁 |
+| `TEMP-rename-plan.md` | 命名重命名与大规模迁移计划（2026-10-20） |
 | `autodl-file-storage.md` | AutoDL 文件存储操作单 —— 重租卡 0 下载 |
 | `backend-matrix.md` | 后端 × 机制矩阵（生成物，别手改） |
 | `branch-exec-plan.md` | B 弧线：多分支从「能表达」到「能执行」（2026-10-20 起） |
@@ -313,20 +300,6 @@
 | `gputrain-t4.json` | "schema": 1, |
 | `llama-bench-t4.txt` | ggml_cuda_init: found 1 CUDA devices (Total VRAM: 15935 MiB): |
 
-## `drafts/` —— 7 个
-
-还没进 `models/` 的草稿。**没有判卷人，所以不算数。**
-
-| 文件 | 用途 |
-|---|---|
-| `README.md` | 门面。是什么、怎么跑、数据从哪来 |
-| `deepseek-v4.1-flash.by1` | 验收 #5（最难的一个）。写它的目的就是逼出语法缺口，所以每一处当前草案 |
-| `discussion-next-steps.md` | 想请教一下：下一步先做哪个方向？ |
-| `discussion-testing-feedback.md` | 想请人帮忙跑一下 5 分钟（零依赖） |
-| `qwen3.8-flash-next.by1` | model Qwen3.8-Flash-Next { |
-| `step5-preview-draft.by1` | by1boot 从 Step-5-Preview-BF16 产物反推的草稿合同（drafts/，没有判卷人，不算数） |
-| `step5-schedule-probe.by1` | Step-5 调度探针（**只验调度**，不验契约） |
-
 ## `gpu/` —— 5 个
 
 只有显卡上能跑的那部分。
@@ -339,7 +312,7 @@
 | `requirements.txt` | 依赖（和本地不同：要 CUDA 版的 torch） |
 | `run.sh` | 入口 |
 
-## `history/` —— 5 个
+## `history/` —— 2 个
 
 以前的东西。留着的理由是：能看出当时是怎么想的。
 
@@ -347,9 +320,6 @@
 |---|---|
 | `README.md` | 门面。是什么、怎么跑、数据从哪来 |
 | `ir.md` | > **同一份 IR，两个后端（PyTorch / 自建执行器）跑出同一个前向 |
-| `llamacpp-plan-2026-10.md` | 接 llama.cpp：完整计划（执行版） |
-| `plan.md` | by1 · 接下来的计划 |
-| `roadmap-rc-2026-10.md` | 1.0.0 路线图（rc0 – rc9 → 1.0.0） |
 
 ## `history/external-repro/` —— 1 个
 
@@ -443,68 +413,6 @@
 | `raw.py` | **不是模型，是逃生舱的工厂函数实现**。必须和 `raw-escape.by1` 挨着（`by1codegen` 按名字找它） |
 | `selftest.by1` | 检查器自检。这个文件里每一处都是故意的错，用来证明检查不是空过 |
 | `ssm-shaped.by1` | SSM（选择性状态空间 / Mamba2）的最小可跑模型 |
-
-## `paper/` —— 9 个
-
-| 文件 | 用途 |
-|---|---|
-| `README.md` | 门面。是什么、怎么跑、数据从哪来 |
-| `build_docx.py` | 生成 Word 版：paper/by1-en.docx、paper/by1-zh.docx |
-| `by1-en.docx` | paper/ 的论文正文（英文版 docx） |
-| `by1-en.tex` | % ═══════════════════════════════════════════════════════════════════════ |
-| `by1-refs.bib` | % 两篇正文（by1-en.tex / by1-zh.tex）都引用这份文件 |
-| `by1-zh.docx` | paper/ 的论文正文（中文版 docx） |
-| `by1-zh.tex` | % ═══════════════════════════════════════════════════════════════════════ |
-| `check-en.json` | "format": "docx", |
-| `check-zh.json` | "format": "docx", |
-
-## `paper/preview-en/` —— 3 个
-
-| 文件 | 用途 |
-|---|---|
-| `manifest.json` | "schemaVersion": 1, |
-| `page-0001.png` | 论文页面预览图（paper/preview-*/ 里的 PNG 快照，按目录分语言和版本） |
-| `page-0002.png` | 论文页面预览图（paper/preview-*/ 里的 PNG 快照，按目录分语言和版本） |
-
-## `paper/preview-en-v2/` —— 3 个
-
-| 文件 | 用途 |
-|---|---|
-| `manifest.json` | "schemaVersion": 1, |
-| `page-0001.png` | 论文页面预览图（paper/preview-*/ 里的 PNG 快照，按目录分语言和版本） |
-| `page-0002.png` | 论文页面预览图（paper/preview-*/ 里的 PNG 快照，按目录分语言和版本） |
-
-## `paper/preview-en-v3/` —— 2 个
-
-| 文件 | 用途 |
-|---|---|
-| `manifest.json` | "schemaVersion": 1, |
-| `page-0001.png` | 论文页面预览图（paper/preview-*/ 里的 PNG 快照，按目录分语言和版本） |
-
-## `paper/preview-zh/` —— 4 个
-
-| 文件 | 用途 |
-|---|---|
-| `manifest.json` | "schemaVersion": 1, |
-| `page-0001.png` | 论文页面预览图（paper/preview-*/ 里的 PNG 快照，按目录分语言和版本） |
-| `page-0002.png` | 论文页面预览图（paper/preview-*/ 里的 PNG 快照，按目录分语言和版本） |
-| `page-0003.png` | 论文页面预览图（paper/preview-*/ 里的 PNG 快照，按目录分语言和版本） |
-
-## `paper/preview-zh-v2/` —— 4 个
-
-| 文件 | 用途 |
-|---|---|
-| `manifest.json` | "schemaVersion": 1, |
-| `page-0001.png` | 论文页面预览图（paper/preview-*/ 里的 PNG 快照，按目录分语言和版本） |
-| `page-0002.png` | 论文页面预览图（paper/preview-*/ 里的 PNG 快照，按目录分语言和版本） |
-| `page-0003.png` | 论文页面预览图（paper/preview-*/ 里的 PNG 快照，按目录分语言和版本） |
-
-## `paper/preview-zh-v3/` —— 2 个
-
-| 文件 | 用途 |
-|---|---|
-| `manifest.json` | "schemaVersion": 1, |
-| `page-0001.png` | 论文页面预览图（paper/preview-*/ 里的 PNG 快照，按目录分语言和版本） |
 
 ## `refs/` —— 94 个
 

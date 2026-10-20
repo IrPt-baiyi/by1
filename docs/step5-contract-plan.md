@@ -1,6 +1,6 @@
 # Step-5 旗舰合同：工作单（A 线）
 
-> 日期 **2026-10-16** · 目标：把 `drafts/step5-preview-draft.by1`（by1boot 从产物
+> 日期 **2026-10-16** · 目标：把 `drafts` 里的 step5 预览草稿（by1boot 从产物
 > **反推**的草稿，by1check 0/0/0 但**没有判卷人，不算数**）升格成 `models/` 里
 > 过档 3 的合同。
 >
@@ -18,15 +18,15 @@
 
 ## ① 95 层调度 —— **证据已就位 + 已落笔验证**
 
-> 落笔产物：`drafts/step5-schedule-probe.by1`（2.2 KB，**只验调度、不碰契约**）。
+> 落笔产物：step5 调度探针草稿（2.2 KB，**只验调度、不碰契约**；已移出仓库）。
 
 ```bash
-python src/checks/by1check.py drafts/step5-schedule-probe.by1
+python src/checks/by1check.py <step5 调度探针草稿>  # 草稿已移出仓库，见 git 历史
 #   展开层表：main 92 层 = 23 x [ 3 x Attn(window=512) + Attn(window=none) ]
 #             mtp   3 层
 #   合计 95 层，d_model = 4096，vocab = 128896（0 错误 / 1 警告）
 
-python src/checks/by1verify.py drafts/step5-schedule-probe.by1 \
+python src/checks/by1verify.py <step5 调度探针草稿> \
     refs/stepfun-ai__Step-5-Preview-BF16.config.json --sub text_config --config
 #   [2] layer_types：层数 by1 = 92 · config = 95（多出 3 项，是周期的延续）
 #       [PASS] 92 层类型逐项一致
@@ -169,7 +169,7 @@ print(sorted(set(c['rope_theta'])))"
 
 | 已经成立的（有判卷人） | 判卷人 |
 |---|---|
-| 95 层调度（`drafts/step5-schedule-probe.by1`） | **config 自己的 `layer_types`**（`by1verify [2]` PASS） |
+| 95 层调度（step5 调度探针草稿，已移出仓库） | **config 自己的 `layer_types`**（`by1verify [2]` PASS） |
 | 逐层张量数四档 / 总量 2449 对账 | **发布方产物**（tensors.json） |
 | 专家 3D 打包、bias 三处、`ssmax_s`、MTP 自带 shared_head | **发布方产物** |
 | 转换器要改的 9 处 | [速查](step5-convert-cheatsheet.md)（对外产物，已按"发布日对账"口径标注） |
@@ -211,7 +211,7 @@ print(sorted(set(c['rope_theta'])))"
 
 | 步 | 做什么 | 判据 | 状态 |
 |---|---|---|---|
-| 1 | ① 写成 `stack` / `pattern` | `by1check` 展开层表（95 层）+ `by1verify --layer_types` | **✅ 已落笔并 PASS**（`drafts/step5-schedule-probe.by1`） |
+| 1 | ① 写成 `stack` / `pattern` | `by1check` 展开层表（95 层）+ `by1verify --layer_types` | **✅ 已落笔并 PASS**（step5 调度探针草稿，已移出仓库） |
 | 2 | ⑤ 里"产物可判"的两项 | 直接对 `refs/stepfun-ai__Step-5-Preview-BF16.tensors.json` 判（名字与形状） | **✅ 已结**（专家 3D 打包 + bias 三处，见 ⑤） |
 | 3 | ② 符号化 | `by1check` 换算；换不动的登记为未知 | 待做 |
 | 4 | ③ 后端选择 | ~~人定~~ → **实测后定**：两条都缺判卷人 → 停在规格级，记 watch 触发条件 | **✅ 已决定（见 ③）** |

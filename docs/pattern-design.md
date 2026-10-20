@@ -1,7 +1,7 @@
 # `pattern` 属性方案（设计草案 v0）
 
 > 目的：把 `pattern` 的元素从「机制名」升级为「机制实例」，让调度能排**属性**而不只是排机制。
-> 起因：写 `deepseek-v4.1-flash.by1` 时，20 层全是同一个 `CSA2`，变的只是层上的 `mode ∈ {Full, Reindex, Reuse}`——现有 pattern 表达不了。
+> 起因：写 DSV4.1 草稿时，20 层全是同一个 `CSA2`，变的只是层上的 `mode ∈ {Full, Reindex, Reuse}`——现有 pattern 表达不了。
 > 状态：**待审**。定稿前不要写后面 4 个模型。
 >
 > **审查意见见 [`pattern-design-review.md`](pattern-design-review.md)。**
@@ -337,7 +337,7 @@ SSM 是**族表第 6 族**的补充，pattern 层面无新需求。但它会压�
 ## 10. 落地顺序
 
 1. 你答 Q1–Q5
-2. 按本方案重写 `deepseek-v4.1-flash.by1`（去掉全部 16 个 ⚠️ 中与 pattern 相关的那些）
+2. 按本方案重写 DSV4.1 草稿（去掉全部 16 个 ⚠️ 中与 pattern 相关的那些）
 3. 用 Gemma 4 压测**结构属性**这条路径——它是唯一能验证 §2 规则 3 的模型
 4. 张量契约的实例化单独定一版
 5. 回头改 1.md 的能力清单第 2 条（调度）

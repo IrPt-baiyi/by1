@@ -45,7 +45,7 @@ stack main {
 
 **代码早就答了**：`TOKEN_MIXER`（`by1check.py:659`）里没有 `SWA`。
 `SWA` 只能作为**用户自己声明的机制名**出现，种类仍是 `Sparse`。
-`drafts/deepseek-v4.1-flash.by1:40` 写的 `mech SWA : Sparse` 正是这个用法。
+`drafts` 里那份 DSV4.1 草稿（已移出仓库，见 git 历史）第 40 行写的 `mech SWA : Sparse` 正是这个用法。
 
 Q1 不用拍板了，它已经落地。
 
@@ -127,7 +127,7 @@ mech KDA : Linear { ... }        # Kimi Delta Attention
 
 ## 六、十六个缺口，草案实际关掉一个
 
-`drafts/deepseek-v4.1-flash.by1` 里标了 16 个缺口。逐个对：
+`drafts` 里那份 DSV4.1 草稿（已移出仓库）标了 16 个缺口。逐个对：
 
 | 缺口 | 内容 | 草案的态度 |
 |---|---|---|
